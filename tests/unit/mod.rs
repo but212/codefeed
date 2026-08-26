@@ -1,0 +1,236 @@
+use super::*;
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[test]
+fn parses_public_github_repository() -> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(
+        parse_source("https://github.com/rust-lang/cargo.git")?,
+        Source::GitHub {
+            owner: "rust-lang".into(),
+            repo: "cargo".into(),
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_unsupported_repository_url() {
+    assert!(parse_source("git@github.com:owner/repo.git").is_err());
+    assert!(parse_source("https://gitlab.com/owner/repo").is_err());
+    assert!(parse_source("https://github.com/owner/repo/issues").is_err());
+}
+
+#[test]
+fn renders_files_in_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
+    let files = vec![
+        digest::FileRecord {
+            path: "z.txt".into(),
+            content: "z".into(),
+        },
+        digest::FileRecord {
+            path: "a.txt".into(),
+            content: "a".into(),
+        },
+    ];
+    let digest = digest::render_digest("repo", Some("abc"), &files, 1)?;
+    let first = digest
+        .find("FILE: a.txt")
+        .ok_or_else(|| std::io::Error::other("a.txt is missing"))?;
+    let second = digest
+        .find("FILE: z.txt")
+        .ok_or_else(|| std::io::Error::other("z.txt is missing"))?;
+    assert!(first < second);
+    assert!(digest.contains("Revision: abc"));
+    assert!(digest.contains("Skipped: 1"));
+    Ok(())
+}
+
+#[test]
+fn ingests_local_text_and_skips_binary_and_git_directory() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = temp_dir("local")?;
+    fs::create_dir_all(root.join(".git"))?;
+    fs::write(root.join("README.md"), "hello")?;
+    fs::write(root.join("binary.bin"), [0, 1, 2])?;
+    fs::write(root.join(".git/config"), "secret")?;
+    fs::write(root.join(".gitignore"), "ignored.txt\n")?;
+    fs::write(root.join("ignored.txt"), "ignored")?;
+    let output = root.join("digest.txt");
+
+    let report = ingest(
+        &Source::Local(root.clone()),
+        &Options {
+            output: output.clone(),
+            reference: None,
+        },
+    )?;
+    let digest = fs::read_to_string(output)?;
+    assert_eq!(report.included_files, 1);
+    assert_eq!(report.skipped_files, 1);
+    assert!(digest.contains("FILE: README.md"));
+    assert!(!digest.contains("binary.bin"));
+    assert!(!digest.contains(".git/config"));
+    assert!(!digest.contains("ignored.txt"));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn rejects_digest_before_storing_over_budget_content() {
+    let candidate = digest::FileRecord {
+        path: "large.txt".into(),
+        content: "x".repeat(MAX_OUTPUT_SIZE as usize),
+    };
+    assert!(matches!(
+        digest::ensure_digest_fits("repo", None, &[], 0, Some(&candidate)),
+        Err(IngestError::OutputTooLarge)
+    ));
+}
+
+#[test]
+fn applies_gitignore_without_git_directory() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_dir("ignore_without_git")?;
+    fs::create_dir_all(&root)?;
+    fs::write(root.join(".gitignore"), "ignored.txt\n")?;
+    fs::write(root.join("kept.txt"), "kept")?;
+    fs::write(root.join("ignored.txt"), "ignored")?;
+    let output = root.join("digest.txt");
+
+    let report = ingest(
+        &Source::Local(root.clone()),
+        &Options {
+            output: output.clone(),
+            reference: None,
+        },
+    )?;
+    let digest = fs::read_to_string(output)?;
+    assert_eq!(report.included_files, 1);
+    assert!(digest.contains("FILE: kept.txt"));
+    assert!(!digest.contains("ignored.txt"));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn matches_remote_gitignore_hierarchy() {
+    fn rule(base: &str, pattern: &str) -> github::RemoteIgnoreRule {
+        let base = Path::new(REMOTE_ROOT).join(base);
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(&base);
+        builder.add_line(None, pattern).unwrap();
+        github::RemoteIgnoreRule {
+            base,
+            matcher: builder.build().unwrap(),
+        }
+    }
+
+    let rules = vec![
+        rule("", "target/"),
+        rule("", "*.log"),
+        rule("sub", "!keep.log"),
+        rule("", "ignored/"),
+        rule("ignored", "!keep.txt"),
+    ];
+    assert!(github::ignored_remote_path("target/debug/app", &rules));
+    assert!(!github::ignored_remote_path("sub/keep.log", &rules));
+    assert!(github::ignored_remote_path("sub/drop.log", &rules));
+    assert!(github::ignored_remote_path("other/keep.log", &rules));
+    assert!(github::ignored_remote_path("ignored/keep.txt", &rules));
+}
+
+#[test]
+fn rejects_non_regular_git_blobs() {
+    let symlink = github::TreeEntry {
+        path: "link".into(),
+        mode: "120000".into(),
+        entry_type: "blob".into(),
+        size: Some(4),
+    };
+    let executable = github::TreeEntry {
+        path: "run.sh".into(),
+        mode: "100755".into(),
+        entry_type: "blob".into(),
+        size: Some(4),
+    };
+    assert!(!github::is_regular_blob(&symlink));
+    assert!(github::is_regular_blob(&executable));
+}
+
+#[test]
+fn counts_candidate_before_content_filtering() {
+    let mut candidates = local::CandidateBudget::default();
+    for _ in 0..MAX_FILE_COUNT {
+        candidates.add().unwrap();
+    }
+    assert!(candidates.add().is_err());
+}
+
+#[test]
+fn distinguishes_complete_and_oversized_bodies() {
+    assert!(matches!(
+        github::classify_body(vec![0; 8], 8),
+        github::LimitedBody::Complete(body) if body.len() == 8
+    ));
+    assert!(matches!(
+        github::classify_body(vec![0; 9], 8),
+        github::LimitedBody::Exceeded
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn skips_non_utf8_paths() -> Result<(), Box<dyn std::error::Error>> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let root = temp_dir("invalid_paths")?;
+    fs::create_dir_all(&root)?;
+    fs::write(root.join(OsString::from_vec(b"a\x80".to_vec())), "a")?;
+    fs::write(root.join(OsString::from_vec(b"b\x81".to_vec())), "b")?;
+    let output = root.join("digest.txt");
+    let report = ingest(
+        &Source::Local(root.clone()),
+        &Options {
+            output,
+            reference: None,
+        },
+    )?;
+    assert_eq!(report.included_files, 0);
+    assert_eq!(report.skipped_files, 2);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn atomic_write_ignores_stale_temporary_file() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_dir("atomic")?;
+    fs::create_dir_all(&root)?;
+    let output = root.join("digest.txt");
+    fs::write(root.join(".digest.txt.123.tmp"), "stale")?;
+    output::write_atomic(&output, b"new")?;
+    assert_eq!(fs::read(&output)?, b"new");
+    assert_eq!(
+        fs::read_to_string(root.join(".digest.txt.123.tmp"))?,
+        "stale"
+    );
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn preserves_previous_output_on_atomic_failure() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_dir("atomic_failure")?;
+    fs::create_dir_all(&root)?;
+    let result = output::write_atomic(&root, b"new");
+    assert!(result.is_err());
+    assert!(root.is_dir());
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+fn temp_dir(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    Ok(env::temp_dir().join(format!("local_ingest_{label}_{nanos}")))
+}
