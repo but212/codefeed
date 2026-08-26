@@ -1,7 +1,7 @@
 use std::process::Command;
 
 fn run(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_local_ingest"))
+    Command::new(env!("CARGO_BIN_EXE_rustingest"))
         .args(args)
         .output()
         .expect("CLI process should start")
@@ -22,6 +22,7 @@ fn help_exits_successfully_without_ingesting() {
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert_eq!(stdout.matches("Usage:").count(), 1, "args: {args:?}");
+        assert!(stdout.contains("Usage: rustingest"), "args: {args:?}");
         assert!(output.stderr.is_empty(), "args: {args:?}");
     }
 }
@@ -36,4 +37,34 @@ fn invalid_arguments_exit_nonzero() {
         assert!(!output.status.success(), "args: {args:?}");
         assert!(String::from_utf8_lossy(&output.stderr).contains("error:"));
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn accepts_non_utf8_local_source_path() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after the Unix epoch")
+        .as_nanos();
+    let parent = std::env::temp_dir().join(format!("rustingest_cli_{suffix}"));
+    let source = parent.join(OsString::from_vec(b"source-\xff".to_vec()));
+    let output = source.join("digest.txt");
+    std::fs::create_dir_all(&source).expect("source directory should be created");
+    std::fs::write(source.join("visible.txt"), "visible").expect("source file should be written");
+
+    let result = Command::new(env!("CARGO_BIN_EXE_rustingest"))
+        .arg("ingest")
+        .arg(&source)
+        .arg("--output")
+        .arg(&output)
+        .output()
+        .expect("CLI process should start");
+
+    assert!(result.status.success(), "output: {result:?}");
+    assert!(output.is_file());
+    std::fs::remove_dir_all(parent).expect("temporary directory should be removed");
 }

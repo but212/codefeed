@@ -49,6 +49,54 @@ fn renders_files_in_deterministic_order() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
+fn digest_budget_matches_rendered_size() -> Result<(), Box<dyn std::error::Error>> {
+    let files = vec![
+        digest::FileRecord {
+            path: "z.txt".into(),
+            content: "z\n".into(),
+        },
+        digest::FileRecord {
+            path: "a.txt".into(),
+            content: "a".into(),
+        },
+    ];
+    let mut budget = digest::DigestBudget::new("repo", Some("abc"))?;
+    for file in &files {
+        budget.add(file)?;
+    }
+    budget.skip()?;
+    let rendered = digest::render_digest("repo", Some("abc"), &files, budget.skipped())?;
+
+    assert_eq!(budget.size(), Some(rendered.len() as u64));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn preserves_distinct_unix_paths() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_dir("path_encoding")?;
+    fs::create_dir_all(root.join("a"))?;
+    fs::write(root.join("a\\b.txt"), "backslash")?;
+    fs::write(root.join("a").join("b.txt"), "slash")?;
+    let output = root.join("digest.txt");
+
+    let report = ingest(
+        &Source::Local(root.clone()),
+        &Options {
+            output: output.clone(),
+            reference: None,
+        },
+    )?;
+    let digest = fs::read_to_string(output)?;
+
+    assert_eq!(report.included_files, 2);
+    assert!(digest.contains("FILE: a\\\\b.txt"));
+    assert!(digest.contains("FILE: a/b.txt"));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn ingests_local_text_and_skips_binary_and_git_directory() -> Result<(), Box<dyn std::error::Error>>
 {
     let root = temp_dir("local")?;
@@ -85,9 +133,59 @@ fn rejects_digest_before_storing_over_budget_content() {
         content: "x".repeat(MAX_OUTPUT_SIZE as usize),
     };
     assert!(matches!(
-        digest::ensure_digest_fits("repo", None, &[], 0, Some(&candidate)),
+        digest::render_digest("repo", None, &[candidate], 0),
         Err(IngestError::OutputTooLarge)
     ));
+}
+
+#[cfg(unix)]
+#[test]
+fn does_not_follow_local_symlink() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::symlink;
+
+    let root = temp_dir("symlink")?;
+    fs::create_dir_all(&root)?;
+    let target = root.join("outside.txt");
+    let link = root.join("link.txt");
+    fs::write(&target, "outside")?;
+    symlink(&target, &link)?;
+
+    assert!(matches!(
+        local::read_local_file(&root, &link)?,
+        local::LocalRead::Skip
+    ));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn bounds_local_file_reads() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_dir("bounded_read")?;
+    fs::create_dir_all(&root)?;
+    let path = root.join("large.txt");
+    fs::write(&path, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
+
+    assert!(matches!(
+        local::read_local_file(&root, &path)?,
+        local::LocalRead::Skip
+    ));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn includes_file_at_exact_size_limit() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_dir("exact_size")?;
+    fs::create_dir_all(&root)?;
+    let path = root.join("exact.txt");
+    fs::write(&path, vec![b'x'; MAX_FILE_SIZE as usize])?;
+
+    assert!(matches!(
+        local::read_local_file(&root, &path)?,
+        local::LocalRead::Text(_)
+    ));
+    fs::remove_dir_all(root)?;
+    Ok(())
 }
 
 #[test]
@@ -112,6 +210,56 @@ fn applies_gitignore_without_git_directory() -> Result<(), Box<dyn std::error::E
     assert!(!digest.contains("ignored.txt"));
     fs::remove_dir_all(root)?;
     Ok(())
+}
+
+#[test]
+fn does_not_apply_dot_ignore_files() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_dir("dot_ignore")?;
+    fs::create_dir_all(&root)?;
+    fs::write(root.join(".ignore"), "important.txt\n")?;
+    fs::write(root.join("important.txt"), "important")?;
+    let output = root.join("digest.txt");
+
+    let report = ingest(
+        &Source::Local(root.clone()),
+        &Options {
+            output: output.clone(),
+            reference: None,
+        },
+    )?;
+    let digest = fs::read_to_string(output)?;
+
+    assert_eq!(report.included_files, 1);
+    assert!(digest.contains("FILE: important.txt"));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn rejects_remote_ignore_budget_overflow() {
+    let mut budget = github::RemoteIgnoreBudget::default();
+    for _ in 0..MAX_REMOTE_IGNORE_FILES {
+        budget.reserve_file().unwrap();
+    }
+    assert!(matches!(
+        budget.reserve_file(),
+        Err(IngestError::InvalidMetadata(message)) if message.contains(".gitignore files")
+    ));
+
+    let mut budget = github::RemoteIgnoreBudget::default();
+    budget
+        .record_bytes(MAX_REMOTE_IGNORE_BYTES as usize)
+        .unwrap();
+    assert!(budget.read_limit().is_err());
+}
+
+#[test]
+fn rejects_oversized_remote_ignore_body() {
+    let body = github::classify_body(vec![0; MAX_FILE_SIZE as usize + 1], MAX_FILE_SIZE);
+    assert!(matches!(
+        github::remote_ignore_body(".gitignore", body),
+        Err(IngestError::InvalidMetadata(message)) if message.contains(".gitignore")
+    ));
 }
 
 #[test]

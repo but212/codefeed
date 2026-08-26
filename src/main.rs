@@ -1,13 +1,14 @@
+use std::ffi::OsString;
 use std::process;
 
 fn main() {
-    let args: Vec<_> = std::env::args().collect();
+    let args: Vec<_> = std::env::args_os().collect();
     if requests_help(&args) {
-        println!("{}", local_ingest::help_text());
+        println!("{}", rustingest::help_text());
         return;
     }
 
-    match local_ingest::run_cli(args) {
+    match rustingest::run_cli(args) {
         Ok(report) => {
             println!(
                 "Wrote {} ({} files, {} skipped)",
@@ -23,16 +24,19 @@ fn main() {
     }
 }
 
-fn requests_help(args: &[String]) -> bool {
-    if matches!(args.get(1).map(String::as_str), Some("--help" | "-h")) {
+fn requests_help(args: &[OsString]) -> bool {
+    if matches!(
+        args.get(1).and_then(|argument| argument.to_str()),
+        Some("--help" | "-h")
+    ) {
         return true;
     }
-    if args.get(1).map(String::as_str) != Some("ingest") {
+    if args.get(1).and_then(|argument| argument.to_str()) != Some("ingest") {
         return false;
     }
 
     let mut index = 2;
-    while let Some(argument) = args.get(index).map(String::as_str) {
+    while let Some(argument) = args.get(index).and_then(|argument| argument.to_str()) {
         match argument {
             "--help" | "-h" => return true,
             "--output" | "--ref" => index += 2,

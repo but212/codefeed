@@ -1,6 +1,16 @@
+use std::ffi::OsStr;
+use std::path::PathBuf;
+
 use url::Url;
 
 use crate::{IngestError, Source};
+
+pub(crate) fn parse_source_os(value: &OsStr) -> Result<Source, IngestError> {
+    match value.to_str() {
+        Some(value) => parse_source(value),
+        None => Ok(Source::Local(PathBuf::from(value))),
+    }
+}
 
 pub(crate) fn parse_source(value: &str) -> Result<Source, IngestError> {
     if value.starts_with("http://") || value.starts_with("https://") {

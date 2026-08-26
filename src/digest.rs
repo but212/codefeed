@@ -6,76 +6,117 @@ pub(crate) struct FileRecord {
     pub(crate) content: String,
 }
 
-pub(crate) fn ensure_digest_fits(
-    label: &str,
-    revision: Option<&str>,
-    files: &[FileRecord],
+#[derive(Debug, Clone)]
+pub(crate) struct DigestBudget {
+    label_bytes: u64,
+    revision_bytes: Option<u64>,
+    file_count: usize,
     skipped: usize,
-    candidate: Option<&FileRecord>,
-) -> Result<(), IngestError> {
-    if rendered_size(label, revision, files, skipped, candidate)
-        .is_none_or(|size| size > MAX_OUTPUT_SIZE)
-    {
-        return Err(IngestError::OutputTooLarge);
-    }
-    Ok(())
+    path_bytes: u64,
+    content_bytes: u64,
+    trailing_bytes: u64,
 }
 
-fn rendered_size(
-    label: &str,
-    revision: Option<&str>,
-    files: &[FileRecord],
-    skipped: usize,
-    candidate: Option<&FileRecord>,
-) -> Option<u64> {
-    let mut size = 0_u64;
-    let mut add = |value: usize| {
-        let Some(next) = size.checked_add(value as u64) else {
-            return false;
-        };
-        size = next;
-        true
-    };
-    if !add("Repository: ".len() + escape_header(label).len() + 1) {
-        return None;
+impl DigestBudget {
+    pub(crate) fn new(label: &str, revision: Option<&str>) -> Result<Self, IngestError> {
+        Ok(Self {
+            label_bytes: byte_count(&escape_header(label))?,
+            revision_bytes: revision.map(byte_count).transpose()?,
+            file_count: 0,
+            skipped: 0,
+            path_bytes: 0,
+            content_bytes: 0,
+            trailing_bytes: 0,
+        })
     }
-    if let Some(revision) = revision
-        && !add("Revision: ".len() + revision.len() + 1)
-    {
-        return None;
+
+    pub(crate) fn add(&mut self, file: &FileRecord) -> Result<(), IngestError> {
+        let mut next = self.clone();
+        next.file_count = next
+            .file_count
+            .checked_add(1)
+            .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
+        next.add_file_bytes(file)?;
+        next.ensure_fits()?;
+        *self = next;
+        Ok(())
     }
-    if !add("Files: ".len()
-        + (files.len() + usize::from(candidate.is_some()))
-            .to_string()
-            .len()
-        + "\nSkipped: ".len()
-        + skipped.to_string().len()
-        + 2)
-    {
-        return None;
+
+    pub(crate) fn skip(&mut self) -> Result<(), IngestError> {
+        self.skipped = self
+            .skipped
+            .checked_add(1)
+            .ok_or_else(|| IngestError::InvalidMetadata("skipped file count overflow".into()))?;
+        Ok(())
     }
-    if !add("Directory structure:\n".len()) {
-        return None;
+
+    pub(crate) fn skipped(&self) -> usize {
+        self.skipped
     }
-    for file in files.iter().chain(candidate) {
-        if !add(2 + escape_header(&file.path).len() + 1) {
-            return None;
-        }
+
+    #[cfg(test)]
+    pub(crate) fn size(&self) -> Option<u64> {
+        self.rendered_size()
     }
-    if !add("\nFiles:\n\n".len()) {
-        return None;
+
+    fn add_file_bytes(&mut self, file: &FileRecord) -> Result<(), IngestError> {
+        let path_bytes = byte_count(&escape_header(&file.path))?;
+        self.path_bytes = self
+            .path_bytes
+            .checked_add(path_bytes)
+            .ok_or(IngestError::OutputTooLarge)?;
+        self.content_bytes = self
+            .content_bytes
+            .checked_add(byte_count(&file.content)?)
+            .ok_or(IngestError::OutputTooLarge)?;
+        self.trailing_bytes = self
+            .trailing_bytes
+            .checked_add((usize::from(!file.content.ends_with('\n')) + 1) as u64)
+            .ok_or(IngestError::OutputTooLarge)?;
+        Ok(())
     }
-    for file in files.iter().chain(candidate) {
-        if !add("==================================================\nFILE: ".len())
-            || !add(escape_header(&file.path).len())
-            || !add("\n==================================================\n\n".len())
-            || !add(file.content.len())
-            || !add(usize::from(!file.content.ends_with('\n')) + 1)
+
+    fn ensure_fits(&self) -> Result<(), IngestError> {
+        if self
+            .rendered_size()
+            .is_none_or(|size| size > MAX_OUTPUT_SIZE)
         {
-            return None;
+            return Err(IngestError::OutputTooLarge);
         }
+        Ok(())
     }
-    Some(size)
+
+    fn rendered_size(&self) -> Option<u64> {
+        let file_count = u64::try_from(self.file_count).ok()?;
+        let mut size = 0_u64;
+        size = size.checked_add("Repository: ".len() as u64)?;
+        size = size.checked_add(self.label_bytes)?;
+        size = size.checked_add(1)?;
+        if let Some(revision_bytes) = self.revision_bytes {
+            size = size.checked_add("Revision: ".len() as u64)?;
+            size = size.checked_add(revision_bytes)?;
+            size = size.checked_add(1)?;
+        }
+        size = size.checked_add("Files: ".len() as u64)?;
+        size = size.checked_add(self.file_count.to_string().len() as u64)?;
+        size = size.checked_add("\nSkipped: ".len() as u64)?;
+        size = size.checked_add(self.skipped.to_string().len() as u64)?;
+        size = size.checked_add(2)?;
+        size = size.checked_add("Directory structure:\n".len() as u64)?;
+        size = size.checked_add(file_count.checked_mul(3)?)?;
+        size = size.checked_add(self.path_bytes)?;
+        size = size.checked_add("\nFiles:\n\n".len() as u64)?;
+        let file_block_bytes = "==================================================\nFILE: ".len()
+            + "\n==================================================\n\n".len();
+        size = size.checked_add(file_count.checked_mul(file_block_bytes as u64)?)?;
+        size = size.checked_add(self.path_bytes)?;
+        size = size.checked_add(self.content_bytes)?;
+        size.checked_add(self.trailing_bytes)
+    }
+}
+
+fn byte_count(value: &str) -> Result<u64, IngestError> {
+    u64::try_from(value.len()).map_err(|_| IngestError::OutputTooLarge)
 }
 
 pub(crate) fn render_digest(
@@ -84,7 +125,12 @@ pub(crate) fn render_digest(
     files: &[FileRecord],
     skipped: usize,
 ) -> Result<String, IngestError> {
-    ensure_digest_fits(label, revision, files, skipped, None)?;
+    let mut budget = DigestBudget::new(label, revision)?;
+    budget.skipped = skipped;
+    for file in files {
+        budget.add(file)?;
+    }
+    budget.ensure_fits()?;
     let mut digest = String::new();
     digest.push_str(&format!("Repository: {}\n", escape_header(label)));
     if let Some(revision) = revision {
@@ -115,5 +161,8 @@ pub(crate) fn render_digest(
 }
 
 fn escape_header(value: &str) -> String {
-    value.replace('\r', "\\r").replace('\n', "\\n")
+    value
+        .replace('\\', "\\\\")
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
 }

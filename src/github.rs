@@ -3,13 +3,17 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use reqwest::blocking::{Client, Response};
+use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use url::Url;
 
-use crate::digest::{ensure_digest_fits, FileRecord};
+use crate::digest::{DigestBudget, FileRecord};
 use crate::local::CandidateBudget;
-use crate::{text_content, IngestError, Options, MAX_FILE_SIZE, MAX_JSON_SIZE, REMOTE_ROOT};
+use crate::{
+    text_content, IngestError, Options, MAX_FILE_SIZE, MAX_JSON_SIZE, MAX_REMOTE_IGNORE_BYTES,
+    MAX_REMOTE_IGNORE_FILES, REMOTE_ROOT,
+};
 
 #[derive(Debug, Deserialize)]
 struct RepositoryResponse {
@@ -46,6 +50,62 @@ pub(crate) enum LimitedBody {
     Exceeded,
 }
 
+pub(crate) fn remote_ignore_body(path: &str, body: LimitedBody) -> Result<Vec<u8>, IngestError> {
+    match body {
+        LimitedBody::Complete(bytes) => Ok(bytes),
+        LimitedBody::Exceeded => Err(IngestError::InvalidMetadata(format!(
+            "remote .gitignore {path} exceeds the per-file or aggregate byte limit"
+        ))),
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct RemoteIgnoreBudget {
+    file_count: usize,
+    bytes: u64,
+}
+
+impl RemoteIgnoreBudget {
+    pub(crate) fn reserve_file(&mut self) -> Result<(), IngestError> {
+        if self.file_count >= MAX_REMOTE_IGNORE_FILES {
+            return Err(IngestError::InvalidMetadata(format!(
+                "repository contains more than {MAX_REMOTE_IGNORE_FILES} .gitignore files"
+            )));
+        }
+        self.file_count += 1;
+        Ok(())
+    }
+
+    pub(crate) fn read_limit(&self) -> Result<u64, IngestError> {
+        let remaining = MAX_REMOTE_IGNORE_BYTES
+            .checked_sub(self.bytes)
+            .ok_or_else(|| IngestError::InvalidMetadata("remote ignore byte overflow".into()))?;
+        if remaining == 0 {
+            return Err(IngestError::InvalidMetadata(format!(
+                "remote .gitignore files exceed the {MAX_REMOTE_IGNORE_BYTES} byte limit"
+            )));
+        }
+        Ok(remaining.min(MAX_FILE_SIZE))
+    }
+
+    pub(crate) fn record_bytes(&mut self, bytes: usize) -> Result<(), IngestError> {
+        self.bytes = self
+            .bytes
+            .checked_add(
+                u64::try_from(bytes).map_err(|_| {
+                    IngestError::InvalidMetadata("remote ignore byte overflow".into())
+                })?,
+            )
+            .ok_or_else(|| IngestError::InvalidMetadata("remote ignore byte overflow".into()))?;
+        if self.bytes > MAX_REMOTE_IGNORE_BYTES {
+            return Err(IngestError::InvalidMetadata(format!(
+                "remote .gitignore files exceed the {MAX_REMOTE_IGNORE_BYTES} byte limit"
+            )));
+        }
+        Ok(())
+    }
+}
+
 struct GithubClient {
     client: Client,
 }
@@ -53,7 +113,7 @@ struct GithubClient {
 impl GithubClient {
     fn new() -> Result<Self, IngestError> {
         let client = Client::builder()
-            .user_agent("local_ingest/0.1")
+            .user_agent("rustingest/0.1")
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|error| IngestError::Http(error.to_string()))?;
@@ -87,7 +147,8 @@ impl GithubClient {
         repo: &str,
         revision: &str,
         path: &str,
-    ) -> Result<Option<Vec<u8>>, IngestError> {
+        limit: u64,
+    ) -> Result<LimitedBody, IngestError> {
         let mut url = Url::parse("https://raw.githubusercontent.com")
             .map_err(|error| IngestError::InvalidMetadata(error.to_string()))?;
         {
@@ -99,24 +160,11 @@ impl GithubClient {
                 segments.push(part);
             }
         }
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .map_err(|error| IngestError::Http(error.to_string()))?;
-        let status = response.status();
-        let body = read_response(response, MAX_FILE_SIZE)?;
+        let (status, body) = self.response(url, limit)?;
         if !status.is_success() {
-            let detail = match body {
-                LimitedBody::Complete(body) => String::from_utf8_lossy(&body).replace('\n', " "),
-                LimitedBody::Exceeded => "response body exceeds the limit".into(),
-            };
-            return Err(IngestError::Api(format!("HTTP {status}: {detail}")));
+            return Err(api_error(status, body));
         }
-        Ok(match body {
-            LimitedBody::Complete(body) => Some(body),
-            LimitedBody::Exceeded => None,
-        })
+        Ok(body)
     }
 
     fn ignore_rules(
@@ -126,14 +174,34 @@ impl GithubClient {
         revision: &str,
         entries: &[TreeEntry],
     ) -> Result<Vec<RemoteIgnoreRule>, IngestError> {
+        let mut ignore_entries: Vec<_> = entries
+            .iter()
+            .filter(|entry| {
+                is_regular_blob(entry)
+                    && (entry.path == ".gitignore" || entry.path.ends_with("/.gitignore"))
+            })
+            .collect();
+        ignore_entries.sort_by(|left, right| {
+            left.path
+                .matches('/')
+                .count()
+                .cmp(&right.path.matches('/').count())
+                .then_with(|| left.path.cmp(&right.path))
+        });
+
         let mut rules = Vec::new();
-        for entry in entries.iter().filter(|entry| {
-            is_regular_blob(entry)
-                && (entry.path == ".gitignore" || entry.path.ends_with("/.gitignore"))
-        }) {
-            let Some(bytes) = self.raw_file(owner, repo, revision, &entry.path)? else {
+        let mut budget = RemoteIgnoreBudget::default();
+        for entry in ignore_entries {
+            if ignored_remote_path(&entry.path, &rules) {
                 continue;
-            };
+            }
+            budget.reserve_file()?;
+            let limit = budget.read_limit()?;
+            let bytes = remote_ignore_body(
+                &entry.path,
+                self.raw_file(owner, repo, revision, &entry.path, limit)?,
+            )?;
+            budget.record_bytes(bytes.len())?;
             let Ok(contents) = String::from_utf8(bytes) else {
                 continue;
             };
@@ -159,20 +227,21 @@ impl GithubClient {
         Ok(rules)
     }
 
-    fn json<T: DeserializeOwned>(&self, url: Url) -> Result<T, IngestError> {
+    fn response(&self, url: Url, limit: u64) -> Result<(StatusCode, LimitedBody), IngestError> {
         let response = self
             .client
             .get(url)
             .send()
             .map_err(|error| IngestError::Http(error.to_string()))?;
         let status = response.status();
-        let body = read_response(response, MAX_JSON_SIZE)?;
+        let body = read_response(response, limit)?;
+        Ok((status, body))
+    }
+
+    fn json<T: DeserializeOwned>(&self, url: Url) -> Result<T, IngestError> {
+        let (status, body) = self.response(url, MAX_JSON_SIZE)?;
         if !status.is_success() {
-            let detail = match body {
-                LimitedBody::Complete(body) => String::from_utf8_lossy(&body).replace('\n', " "),
-                LimitedBody::Exceeded => "response body exceeds the limit".into(),
-            };
-            return Err(IngestError::Api(format!("HTTP {status}: {detail}")));
+            return Err(api_error(status, body));
         }
         let LimitedBody::Complete(body) = body else {
             return Err(IngestError::Api(format!(
@@ -204,38 +273,41 @@ pub(crate) fn collect_github(
     let ignore_rules = client.ignore_rules(owner, repo, &revision, &tree.tree)?;
     let label = format!("https://github.com/{owner}/{repo}");
     let mut files = Vec::new();
-    let mut skipped = 0;
+    let mut budget = DigestBudget::new(&label, Some(&revision))?;
     let mut candidates = CandidateBudget::default();
     for entry in tree.tree {
         if !is_regular_blob(&entry) || is_hidden_path(&entry.path) {
             continue;
         }
         if ignored_remote_path(&entry.path, &ignore_rules) {
-            skipped += 1;
+            budget.skip()?;
             continue;
         }
         candidates.add()?;
         if entry.size.unwrap_or(0) > MAX_FILE_SIZE {
-            skipped += 1;
+            budget.skip()?;
             continue;
         }
-        let Some(bytes) = client.raw_file(owner, repo, &revision, &entry.path)? else {
-            skipped += 1;
-            continue;
+        let bytes = match client.raw_file(owner, repo, &revision, &entry.path, MAX_FILE_SIZE)? {
+            LimitedBody::Complete(bytes) => bytes,
+            LimitedBody::Exceeded => {
+                budget.skip()?;
+                continue;
+            }
         };
         if let Some(content) = text_content(bytes) {
             let candidate = FileRecord {
                 path: entry.path,
                 content,
             };
-            ensure_digest_fits(&label, Some(&revision), &files, skipped, Some(&candidate))?;
+            budget.add(&candidate)?;
             files.push(candidate);
         } else {
-            skipped += 1;
+            budget.skip()?;
         }
     }
 
-    Ok((label, Some(revision), files, skipped))
+    Ok((label, Some(revision), files, budget.skipped()))
 }
 
 fn is_hidden_path(path: &str) -> bool {
@@ -319,6 +391,14 @@ pub(crate) fn classify_body(bytes: Vec<u8>, limit: u64) -> LimitedBody {
     } else {
         LimitedBody::Complete(bytes)
     }
+}
+
+fn api_error(status: StatusCode, body: LimitedBody) -> IngestError {
+    let detail = match body {
+        LimitedBody::Complete(body) => String::from_utf8_lossy(&body).replace('\n', " "),
+        LimitedBody::Exceeded => "response body exceeds the limit".into(),
+    };
+    IngestError::Api(format!("HTTP {status}: {detail}"))
 }
 
 fn read_response(response: Response, limit: u64) -> Result<LimitedBody, IngestError> {

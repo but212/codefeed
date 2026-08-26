@@ -9,6 +9,7 @@ mod source;
 #[path = "../tests/unit/mod.rs"]
 mod tests;
 
+use std::ffi::OsStr;
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
@@ -17,6 +18,8 @@ pub(crate) const MAX_FILE_SIZE: u64 = 1024 * 1024;
 pub(crate) const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
 pub(crate) const MAX_FILE_COUNT: usize = 10_000;
 pub(crate) const MAX_JSON_SIZE: u64 = 8 * 1024 * 1024;
+pub(crate) const MAX_REMOTE_IGNORE_FILES: usize = 256;
+pub(crate) const MAX_REMOTE_IGNORE_BYTES: u64 = 8 * 1024 * 1024;
 pub(crate) const REMOTE_ROOT: &str = "/__local_ingest_repo";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +87,10 @@ pub fn parse_source(value: &str) -> Result<Source, IngestError> {
     source::parse_source(value)
 }
 
+pub(crate) fn parse_source_os(value: &OsStr) -> Result<Source, IngestError> {
+    source::parse_source_os(value)
+}
+
 pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, IngestError> {
     if options
         .reference
@@ -118,9 +125,10 @@ pub fn help_text() -> &'static str {
     cli::help_text()
 }
 
-pub fn run_cli<I>(args: I) -> Result<IngestReport, IngestError>
+pub fn run_cli<I, T>(args: I) -> Result<IngestReport, IngestError>
 where
-    I: IntoIterator<Item = String>,
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString>,
 {
     cli::run_cli(args)
 }

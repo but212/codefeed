@@ -1,5 +1,5 @@
 [package]
-name = "local_ingest"
+name = "rustingest"
 version = "0.1.0"
 edition = "2024"
 
@@ -9,3 +9,6 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
