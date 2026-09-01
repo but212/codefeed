@@ -97,6 +97,30 @@ fn preserves_distinct_unix_paths() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn excludes_output_through_nonexistent_parent_alias() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_dir("output_alias")?;
+    fs::create_dir_all(&root)?;
+    fs::write(root.join("source.txt"), "source")?;
+    fs::write(root.join("digest.txt"), "previous output")?;
+    let output = root.join("missing").join("..").join("digest.txt");
+
+    let report = ingest(
+        &Source::Local(root.clone()),
+        &Options {
+            output,
+            reference: None,
+        },
+    )?;
+    let digest = fs::read_to_string(root.join("digest.txt"))?;
+
+    assert_eq!(report.included_files, 1);
+    assert!(!digest.contains("previous output"));
+    assert!(digest.contains("FILE: source.txt"));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn ingests_local_text_and_skips_binary_and_git_directory() -> Result<(), Box<dyn std::error::Error>>
 {
     let root = temp_dir("local")?;
@@ -154,6 +178,38 @@ fn does_not_follow_local_symlink() -> Result<(), Box<dyn std::error::Error>> {
         local::read_local_file(&root, &link)?,
         local::LocalRead::Skip
     ));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn does_not_block_when_candidate_becomes_fifo() -> Result<(), Box<dyn std::error::Error>> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    let root = temp_dir("fifo")?;
+    fs::create_dir_all(&root)?;
+    let path = root.join("candidate");
+    let c_path = CString::new(path.as_os_str().as_bytes())?;
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+
+    let (sender, receiver) = mpsc::channel();
+    let thread_path = path.clone();
+    let thread_root = root.clone();
+    let worker = thread::spawn(move || {
+        let result = local::read_local_file(&thread_root, &thread_path);
+        sender.send(result).expect("result receiver should exist");
+    });
+    let result = receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("FIFO candidate must not block local ingestion")?;
+
+    assert!(matches!(result, local::LocalRead::Skip));
+    worker.join().expect("file reader thread should finish");
     fs::remove_dir_all(root)?;
     Ok(())
 }
@@ -286,6 +342,34 @@ fn matches_remote_gitignore_hierarchy() {
     assert!(github::ignored_remote_path("sub/drop.log", &rules));
     assert!(github::ignored_remote_path("other/keep.log", &rules));
     assert!(github::ignored_remote_path("ignored/keep.txt", &rules));
+}
+
+#[test]
+fn loads_ignored_nested_gitignore_when_parent_is_visible() {
+    fn rule(base: &str, pattern: &str) -> github::RemoteIgnoreRule {
+        let base = Path::new(REMOTE_ROOT).join(base);
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(&base);
+        builder.add_line(None, pattern).unwrap();
+        github::RemoteIgnoreRule {
+            base,
+            matcher: builder.build().unwrap(),
+        }
+    }
+
+    let file_is_ignored = vec![rule("", "sub/.gitignore")];
+    assert!(github::remote_ignore_file_is_reachable(
+        "sub/.gitignore",
+        &file_is_ignored
+    ));
+
+    let rules = vec![rule("", "sub/.gitignore"), rule("sub", "secret.txt")];
+    assert!(github::ignored_remote_path("sub/secret.txt", &rules));
+
+    let parent_is_ignored = vec![rule("", "sub/")];
+    assert!(!github::remote_ignore_file_is_reachable(
+        "sub/.gitignore",
+        &parent_is_ignored
+    ));
 }
 
 #[test]

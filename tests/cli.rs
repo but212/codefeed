@@ -70,6 +70,27 @@ fn creates_default_output_without_subcommand() -> Result<(), Box<dyn std::error:
 
 #[cfg(unix)]
 #[test]
+fn help_after_non_utf8_source_exits_successfully() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let source = OsString::from_vec(b"source-\xff".to_vec());
+    let output = Command::new(env!("CARGO_BIN_EXE_rustingest"))
+        .arg(source)
+        .arg("--help")
+        .output()
+        .expect("CLI process should start");
+
+    assert!(output.status.success(), "output: {output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "Usage: rustingest <SOURCE> [--output <PATH>] [--ref <REF>]"
+    );
+    assert!(output.stderr.is_empty(), "output: {output:?}");
+}
+
+#[cfg(unix)]
+#[test]
 fn accepts_non_utf8_local_source_path() {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;

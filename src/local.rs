@@ -89,7 +89,7 @@ fn open_local_file(root: &Path, path: &Path) -> io::Result<fs::File> {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
         let is_file = components.peek().is_none();
         let flags = if is_file {
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK
         } else {
             libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW
         };

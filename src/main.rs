@@ -26,10 +26,10 @@ fn main() {
 
 fn requests_help(args: &[OsString]) -> bool {
     let mut index = 1;
-    while let Some(argument) = args.get(index).and_then(|argument| argument.to_str()) {
-        match argument {
-            "--help" | "-h" => return true,
-            "--output" | "--ref" => index += 2,
+    while let Some(argument) = args.get(index) {
+        match argument.to_str() {
+            Some("--help" | "-h") => return true,
+            Some("--output" | "--ref") => index += 2,
             _ => index += 1,
         }
     }
