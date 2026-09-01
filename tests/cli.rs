@@ -9,11 +9,7 @@ fn run(args: &[&str]) -> std::process::Output {
 
 #[test]
 fn help_exits_successfully_without_ingesting() {
-    let cases: &[&[&str]] = &[
-        &["--help"],
-        &["ingest", "--help"],
-        &["ingest", ".", "--help"],
-    ];
+    let cases: &[&[&str]] = &[&["--help"], &[".", "--help"]];
     for args in cases {
         let output = run(args);
         assert!(
@@ -22,7 +18,11 @@ fn help_exits_successfully_without_ingesting() {
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert_eq!(stdout.matches("Usage:").count(), 1, "args: {args:?}");
-        assert!(stdout.contains("Usage: rustingest"), "args: {args:?}");
+        assert_eq!(
+            stdout.trim(),
+            "Usage: rustingest <SOURCE> [--output <PATH>] [--ref <REF>]",
+            "args: {args:?}"
+        );
         assert!(output.stderr.is_empty(), "args: {args:?}");
     }
 }
@@ -30,13 +30,42 @@ fn help_exits_successfully_without_ingesting() {
 #[test]
 fn invalid_arguments_exit_nonzero() {
     for args in [
-        &["ingest", ".", "--unknown"][..],
-        &["ingest", ".", "--output", "--help"][..],
+        &[][..],
+        &[".", "--unknown"][..],
+        &[".", "--output"][..],
+        &[".", "--output", "--help"][..],
+        &[".", "--ref"][..],
+        &[".", "--ref", "main"][..],
+        &["ingest", "."][..],
     ] {
         let output = run(args);
         assert!(!output.status.success(), "args: {args:?}");
         assert!(String::from_utf8_lossy(&output.stderr).contains("error:"));
     }
+}
+
+#[test]
+fn creates_default_output_without_subcommand() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after the Unix epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("rustingest_cli_default_{suffix}"));
+    std::fs::create_dir_all(&root).expect("temporary directory should be created");
+    std::fs::write(root.join("visible.txt"), "visible").expect("source file should be written");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rustingest"))
+        .current_dir(&root)
+        .arg(".")
+        .output()
+        .expect("CLI process should start");
+
+    assert!(output.status.success(), "output: {output:?}");
+    assert!(root.join("digest.txt").is_file());
+    std::fs::remove_dir_all(root).expect("temporary directory should be removed");
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -57,7 +86,6 @@ fn accepts_non_utf8_local_source_path() {
     std::fs::write(source.join("visible.txt"), "visible").expect("source file should be written");
 
     let result = Command::new(env!("CARGO_BIN_EXE_rustingest"))
-        .arg("ingest")
         .arg(&source)
         .arg("--output")
         .arg(&output)

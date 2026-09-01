@@ -25,17 +25,7 @@ fn main() {
 }
 
 fn requests_help(args: &[OsString]) -> bool {
-    if matches!(
-        args.get(1).and_then(|argument| argument.to_str()),
-        Some("--help" | "-h")
-    ) {
-        return true;
-    }
-    if args.get(1).and_then(|argument| argument.to_str()) != Some("ingest") {
-        return false;
-    }
-
-    let mut index = 2;
+    let mut index = 1;
     while let Some(argument) = args.get(index).and_then(|argument| argument.to_str()) {
         match argument {
             "--help" | "-h" => return true,

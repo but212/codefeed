@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::{ingest, parse_source_os, IngestError, IngestReport, Options};
 
-const HELP: &str = "Usage: rustingest ingest <SOURCE> [--output <PATH>] [--ref <REF>]";
+const HELP: &str = "Usage: rustingest <SOURCE> [--output <PATH>] [--ref <REF>]";
 
 pub(crate) fn help_text() -> &'static str {
     HELP
@@ -16,10 +16,6 @@ where
 {
     let mut args = args.into_iter().map(Into::into);
     let _program = args.next();
-    let command = args.next().ok_or_else(|| usage("missing command"))?;
-    if command != "ingest" {
-        return Err(usage("expected the 'ingest' command"));
-    }
     let source_value = args.next().ok_or_else(|| usage("missing source"))?;
     let mut options = Options::default();
     while let Some(argument) = args.next() {
