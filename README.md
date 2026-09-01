@@ -26,6 +26,17 @@ cargo run -- https://github.com/rust-lang/cargo --ref master --output ./cargo-di
 
 `<SOURCE>` is a local directory or a URL in the form `https://github.com/{owner}/{repo}`.
 
+## Install locally
+
+From a checked-out rustingest repository:
+
+```bash
+cargo install --path .
+rustingest ./my-repo
+```
+
+Cargo installs the binary in its configured binary directory, usually `~/.cargo/bin`.
+
 ### Options
 
 - `--output <PATH>` — Write the digest to `PATH`. Defaults to `digest.txt` in the current directory.
