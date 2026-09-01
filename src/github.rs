@@ -15,6 +15,15 @@ use crate::{
     MAX_REMOTE_IGNORE_FILES, REMOTE_ROOT,
 };
 
+const GITHUB_API_BASE_URL: &str = "https://api.github.com";
+const GITHUB_RAW_BASE_URL: &str = "https://raw.githubusercontent.com";
+const GITHUB_USER_AGENT: &str = "rustingest/0.1";
+const GITHUB_TIMEOUT_SECS: u64 = 30;
+const GITIGNORE_FILE_NAME: &str = ".gitignore";
+const NESTED_GITIGNORE_SUFFIX: &str = "/.gitignore";
+const GIT_BLOB_TYPE: &str = "blob";
+const REGULAR_FILE_MODES: &[&str] = &["100644", "100755"];
+
 #[derive(Debug, Deserialize)]
 struct RepositoryResponse {
     default_branch: String,
@@ -113,8 +122,8 @@ struct GithubClient {
 impl GithubClient {
     fn new() -> Result<Self, IngestError> {
         let client = Client::builder()
-            .user_agent("rustingest/0.1")
-            .timeout(Duration::from_secs(30))
+            .user_agent(GITHUB_USER_AGENT)
+            .timeout(Duration::from_secs(GITHUB_TIMEOUT_SECS))
             .build()
             .map_err(|error| IngestError::Http(error.to_string()))?;
         Ok(Self { client })
@@ -149,7 +158,7 @@ impl GithubClient {
         path: &str,
         limit: u64,
     ) -> Result<LimitedBody, IngestError> {
-        let mut url = Url::parse("https://raw.githubusercontent.com")
+        let mut url = Url::parse(GITHUB_RAW_BASE_URL)
             .map_err(|error| IngestError::InvalidMetadata(error.to_string()))?;
         {
             let mut segments = url
@@ -178,7 +187,8 @@ impl GithubClient {
             .iter()
             .filter(|entry| {
                 is_regular_blob(entry)
-                    && (entry.path == ".gitignore" || entry.path.ends_with("/.gitignore"))
+                    && (entry.path == GITIGNORE_FILE_NAME
+                        || entry.path.ends_with(NESTED_GITIGNORE_SUFFIX))
             })
             .collect();
         ignore_entries.sort_by(|left, right| {
@@ -316,7 +326,7 @@ fn is_hidden_path(path: &str) -> bool {
 }
 
 pub(crate) fn is_regular_blob(entry: &TreeEntry) -> bool {
-    entry.entry_type == "blob" && matches!(entry.mode.as_str(), "100644" | "100755")
+    entry.entry_type == GIT_BLOB_TYPE && REGULAR_FILE_MODES.contains(&entry.mode.as_str())
 }
 
 pub(crate) fn remote_ignore_file_is_reachable(path: &str, rules: &[RemoteIgnoreRule]) -> bool {
@@ -397,7 +407,7 @@ fn remote_match(
 }
 
 fn api_url(segments: &[&str]) -> Result<Url, IngestError> {
-    let mut url = Url::parse("https://api.github.com")
+    let mut url = Url::parse(GITHUB_API_BASE_URL)
         .map_err(|error| IngestError::InvalidMetadata(error.to_string()))?;
     {
         let mut path = url

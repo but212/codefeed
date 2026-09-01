@@ -1,5 +1,17 @@
 use crate::{IngestError, MAX_OUTPUT_SIZE};
 
+const REPOSITORY_PREFIX: &str = "Repository: ";
+const REVISION_PREFIX: &str = "Revision: ";
+const FILES_PREFIX: &str = "Files: ";
+const SKIPPED_PREFIX: &str = "\nSkipped: ";
+const DIRECTORY_HEADER: &str = "Directory structure:\n";
+const DIRECTORY_ENTRY_PREFIX: &str = "- ";
+const FILES_HEADER: &str = "\nFiles:\n\n";
+const FILE_BLOCK_PREFIX: &str = "==================================================\nFILE: ";
+const FILE_BLOCK_SUFFIX: &str = "\n==================================================\n\n";
+const NEWLINE: &str = "\n";
+const METADATA_SUFFIX: &str = "\n\n";
+
 #[derive(Debug)]
 pub(crate) struct FileRecord {
     pub(crate) path: String,
@@ -89,25 +101,26 @@ impl DigestBudget {
     fn rendered_size(&self) -> Option<u64> {
         let file_count = u64::try_from(self.file_count).ok()?;
         let mut size = 0_u64;
-        size = size.checked_add("Repository: ".len() as u64)?;
+        size = size.checked_add(REPOSITORY_PREFIX.len() as u64)?;
         size = size.checked_add(self.label_bytes)?;
-        size = size.checked_add(1)?;
+        size = size.checked_add(NEWLINE.len() as u64)?;
         if let Some(revision_bytes) = self.revision_bytes {
-            size = size.checked_add("Revision: ".len() as u64)?;
+            size = size.checked_add(REVISION_PREFIX.len() as u64)?;
             size = size.checked_add(revision_bytes)?;
-            size = size.checked_add(1)?;
+            size = size.checked_add(NEWLINE.len() as u64)?;
         }
-        size = size.checked_add("Files: ".len() as u64)?;
+        size = size.checked_add(FILES_PREFIX.len() as u64)?;
         size = size.checked_add(self.file_count.to_string().len() as u64)?;
-        size = size.checked_add("\nSkipped: ".len() as u64)?;
+        size = size.checked_add(SKIPPED_PREFIX.len() as u64)?;
         size = size.checked_add(self.skipped.to_string().len() as u64)?;
-        size = size.checked_add(2)?;
-        size = size.checked_add("Directory structure:\n".len() as u64)?;
-        size = size.checked_add(file_count.checked_mul(3)?)?;
+        size = size.checked_add(METADATA_SUFFIX.len() as u64)?;
+        size = size.checked_add(DIRECTORY_HEADER.len() as u64)?;
+        size = size.checked_add(
+            file_count.checked_mul((DIRECTORY_ENTRY_PREFIX.len() + NEWLINE.len()) as u64)?,
+        )?;
         size = size.checked_add(self.path_bytes)?;
-        size = size.checked_add("\nFiles:\n\n".len() as u64)?;
-        let file_block_bytes = "==================================================\nFILE: ".len()
-            + "\n==================================================\n\n".len();
+        size = size.checked_add(FILES_HEADER.len() as u64)?;
+        let file_block_bytes = FILE_BLOCK_PREFIX.len() + FILE_BLOCK_SUFFIX.len();
         size = size.checked_add(file_count.checked_mul(file_block_bytes as u64)?)?;
         size = size.checked_add(self.path_bytes)?;
         size = size.checked_add(self.content_bytes)?;
@@ -132,30 +145,38 @@ pub(crate) fn render_digest(
     }
     budget.ensure_fits()?;
     let mut digest = String::new();
-    digest.push_str(&format!("Repository: {}\n", escape_header(label)));
+    digest.push_str(REPOSITORY_PREFIX);
+    digest.push_str(&escape_header(label));
+    digest.push_str(NEWLINE);
     if let Some(revision) = revision {
-        digest.push_str(&format!("Revision: {revision}\n"));
+        digest.push_str(REVISION_PREFIX);
+        digest.push_str(revision);
+        digest.push_str(NEWLINE);
     }
-    digest.push_str(&format!("Files: {}\nSkipped: {skipped}\n\n", files.len()));
+    digest.push_str(FILES_PREFIX);
+    digest.push_str(&files.len().to_string());
+    digest.push_str(SKIPPED_PREFIX);
+    digest.push_str(&skipped.to_string());
+    digest.push_str(METADATA_SUFFIX);
     let mut ordered_files: Vec<_> = files.iter().collect();
     ordered_files.sort_by(|left, right| left.path.cmp(&right.path));
 
-    digest.push_str("Directory structure:\n");
+    digest.push_str(DIRECTORY_HEADER);
     for file in &ordered_files {
-        digest.push_str("- ");
+        digest.push_str(DIRECTORY_ENTRY_PREFIX);
         digest.push_str(&escape_header(&file.path));
-        digest.push('\n');
+        digest.push_str(NEWLINE);
     }
-    digest.push_str("\nFiles:\n\n");
+    digest.push_str(FILES_HEADER);
     for file in ordered_files {
-        digest.push_str("==================================================\nFILE: ");
+        digest.push_str(FILE_BLOCK_PREFIX);
         digest.push_str(&escape_header(&file.path));
-        digest.push_str("\n==================================================\n\n");
+        digest.push_str(FILE_BLOCK_SUFFIX);
         digest.push_str(&file.content);
         if !file.content.ends_with('\n') {
-            digest.push('\n');
+            digest.push_str(NEWLINE);
         }
-        digest.push('\n');
+        digest.push_str(NEWLINE);
     }
     Ok(digest)
 }
