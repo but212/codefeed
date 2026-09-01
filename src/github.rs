@@ -1,5 +1,5 @@
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use reqwest::blocking::{Client, Response};
@@ -9,10 +9,14 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::digest::{DigestBudget, FileRecord};
-use crate::local::CandidateBudget;
+
+pub(crate) use crate::github_ignore::{
+    ignored_remote_path, remote_ignore_file_is_reachable, RemoteIgnoreRule,
+};
+
 use crate::{
-    text_content, IngestError, Options, MAX_FILE_SIZE, MAX_JSON_SIZE, MAX_REMOTE_IGNORE_BYTES,
-    MAX_REMOTE_IGNORE_FILES, REMOTE_ROOT,
+    text_content, CandidateBudget, CollectionResult, IngestError, Options, MAX_FILE_SIZE,
+    MAX_JSON_SIZE, MAX_REMOTE_IGNORE_BYTES, MAX_REMOTE_IGNORE_FILES, REMOTE_ROOT,
 };
 
 const GITHUB_API_BASE_URL: &str = "https://api.github.com";
@@ -47,11 +51,6 @@ pub(crate) struct TreeEntry {
     #[serde(rename = "type")]
     pub(crate) entry_type: String,
     pub(crate) size: Option<u64>,
-}
-
-pub(crate) struct RemoteIgnoreRule {
-    pub(crate) base: PathBuf,
-    pub(crate) matcher: ignore::gitignore::Gitignore,
 }
 
 pub(crate) enum LimitedBody {
@@ -266,7 +265,7 @@ pub(crate) fn collect_github(
     owner: &str,
     repo: &str,
     options: &Options,
-) -> Result<(String, Option<String>, Vec<FileRecord>, usize), IngestError> {
+) -> Result<CollectionResult, IngestError> {
     let client = GithubClient::new()?;
     let reference = match &options.reference {
         Some(reference) if !reference.trim().is_empty() => reference.clone(),
@@ -317,7 +316,12 @@ pub(crate) fn collect_github(
         }
     }
 
-    Ok((label, Some(revision), files, budget.skipped()))
+    Ok(CollectionResult::GitHub {
+        label,
+        revision,
+        files,
+        skipped: budget.skipped(),
+    })
 }
 
 fn is_hidden_path(path: &str) -> bool {
@@ -327,83 +331,6 @@ fn is_hidden_path(path: &str) -> bool {
 
 pub(crate) fn is_regular_blob(entry: &TreeEntry) -> bool {
     entry.entry_type == GIT_BLOB_TYPE && REGULAR_FILE_MODES.contains(&entry.mode.as_str())
-}
-
-pub(crate) fn remote_ignore_file_is_reachable(path: &str, rules: &[RemoteIgnoreRule]) -> bool {
-    let parent = Path::new(path)
-        .parent()
-        .and_then(Path::to_str)
-        .unwrap_or("");
-    !ignored_remote_directory(parent, rules)
-}
-
-pub(crate) fn ignored_remote_path(path: &str, rules: &[RemoteIgnoreRule]) -> bool {
-    let absolute = Path::new(REMOTE_ROOT).join(path);
-    let ignored_directories = ignored_parent_directories(&absolute, rules);
-    if ignored_directories
-        .iter()
-        .any(|directory| absolute.starts_with(directory))
-    {
-        return true;
-    }
-    remote_match(&absolute, false, rules, &ignored_directories)
-}
-
-fn ignored_remote_directory(path: &str, rules: &[RemoteIgnoreRule]) -> bool {
-    let absolute = Path::new(REMOTE_ROOT).join(path);
-    let ignored_directories = ignored_parent_directories(&absolute, rules);
-    if ignored_directories
-        .iter()
-        .any(|directory| absolute.starts_with(directory))
-    {
-        return true;
-    }
-    remote_match(&absolute, true, rules, &ignored_directories)
-}
-
-fn ignored_parent_directories(absolute: &Path, rules: &[RemoteIgnoreRule]) -> Vec<PathBuf> {
-    let mut directories = Vec::new();
-    let mut current = absolute.parent();
-    while let Some(directory) = current {
-        if directory == Path::new(REMOTE_ROOT) {
-            break;
-        }
-        directories.push(directory.to_path_buf());
-        current = directory.parent();
-    }
-    directories.reverse();
-
-    let mut ignored_directories = Vec::new();
-    for directory in directories {
-        if remote_match(&directory, true, rules, &ignored_directories) {
-            ignored_directories.push(directory);
-        }
-    }
-    ignored_directories
-}
-
-fn remote_match(
-    path: &Path,
-    is_dir: bool,
-    rules: &[RemoteIgnoreRule],
-    ignored_directories: &[PathBuf],
-) -> bool {
-    let mut ignored = false;
-    for rule in rules {
-        if !path.starts_with(&rule.base)
-            || ignored_directories
-                .iter()
-                .any(|directory| rule.base.starts_with(directory))
-        {
-            continue;
-        }
-        match rule.matcher.matched_path_or_any_parents(path, is_dir) {
-            result if result.is_ignore() => ignored = true,
-            result if result.is_whitelist() => ignored = false,
-            _ => {}
-        }
-    }
-    ignored
 }
 
 fn api_url(segments: &[&str]) -> Result<Url, IngestError> {

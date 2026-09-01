@@ -20,27 +20,7 @@ use ignore::WalkBuilder;
 
 use crate::digest::{DigestBudget, FileRecord};
 use crate::output::output_identity;
-use crate::{text_content, IngestError, MAX_FILE_COUNT, MAX_FILE_SIZE};
-
-#[derive(Default)]
-pub(crate) struct CandidateBudget {
-    count: usize,
-}
-
-impl CandidateBudget {
-    pub(crate) fn add(&mut self) -> Result<(), IngestError> {
-        self.count = self
-            .count
-            .checked_add(1)
-            .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
-        if self.count > MAX_FILE_COUNT {
-            return Err(IngestError::InvalidMetadata(format!(
-                "repository contains more than {MAX_FILE_COUNT} files"
-            )));
-        }
-        Ok(())
-    }
-}
+use crate::{text_content, CandidateBudget, CollectionResult, IngestError, MAX_FILE_SIZE};
 
 pub(crate) enum LocalRead {
     Text(String),
@@ -134,10 +114,7 @@ fn is_symlink_open_error(_: &io::Error) -> bool {
     false
 }
 
-pub(crate) fn collect_local(
-    root: &Path,
-    output: &Path,
-) -> Result<(String, Option<String>, Vec<FileRecord>, usize), IngestError> {
+pub(crate) fn collect_local(root: &Path, output: &Path) -> Result<CollectionResult, IngestError> {
     let root = fs::canonicalize(root)
         .map_err(|error| IngestError::InvalidSource(format!("{} ({error})", root.display())))?;
     if !root.is_dir() {
@@ -197,5 +174,9 @@ pub(crate) fn collect_local(
         files.push(candidate);
     }
 
-    Ok((label, None, files, budget.skipped()))
+    Ok(CollectionResult::Local {
+        label,
+        files,
+        skipped: budget.skipped(),
+    })
 }

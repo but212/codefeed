@@ -1,6 +1,7 @@
 mod cli;
 mod digest;
 mod github;
+mod github_ignore;
 mod local;
 mod output;
 mod source;
@@ -48,6 +49,40 @@ pub struct IngestReport {
     pub output: PathBuf,
     pub included_files: usize,
     pub skipped_files: usize,
+}
+
+pub(crate) enum CollectionResult {
+    Local {
+        label: String,
+        files: Vec<digest::FileRecord>,
+        skipped: usize,
+    },
+    GitHub {
+        label: String,
+        revision: String,
+        files: Vec<digest::FileRecord>,
+        skipped: usize,
+    },
+}
+
+#[derive(Default)]
+pub(crate) struct CandidateBudget {
+    count: usize,
+}
+
+impl CandidateBudget {
+    pub(crate) fn add(&mut self) -> Result<(), IngestError> {
+        self.count = self
+            .count
+            .checked_add(1)
+            .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
+        if self.count > MAX_FILE_COUNT {
+            return Err(IngestError::InvalidMetadata(format!(
+                "repository contains more than {MAX_FILE_COUNT} files"
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -105,19 +140,39 @@ pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, Ingest
         ));
     }
 
-    let (label, revision, mut files, skipped) = match source {
+    let mut collection = match source {
         Source::Local(root) => local::collect_local(root, &options.output)?,
         Source::GitHub { owner, repo } => github::collect_github(owner, repo, options)?,
     };
 
-    files.sort_by(|left, right| left.path.cmp(&right.path));
-    let digest = digest::render_digest(&label, revision.as_deref(), &files, skipped)?;
+    match &mut collection {
+        CollectionResult::Local { files, .. } | CollectionResult::GitHub { files, .. } => {
+            files.sort_by(|left, right| left.path.cmp(&right.path));
+        }
+    }
+    let digest = match &collection {
+        CollectionResult::Local {
+            label,
+            files,
+            skipped,
+        } => digest::render_digest(label, None, files, *skipped)?,
+        CollectionResult::GitHub {
+            label,
+            revision,
+            files,
+            skipped,
+        } => digest::render_digest(label, Some(revision), files, *skipped)?,
+    };
     output::write_atomic(&options.output, digest.as_bytes())?;
 
+    let (included_files, skipped_files) = match &collection {
+        CollectionResult::Local { files, skipped, .. }
+        | CollectionResult::GitHub { files, skipped, .. } => (files.len(), *skipped),
+    };
     Ok(IngestReport {
         output: options.output.clone(),
-        included_files: files.len(),
-        skipped_files: skipped,
+        included_files,
+        skipped_files,
     })
 }
 

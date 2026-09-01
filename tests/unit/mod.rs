@@ -392,7 +392,7 @@ fn rejects_non_regular_git_blobs() {
 
 #[test]
 fn counts_candidate_before_content_filtering() {
-    let mut candidates = local::CandidateBudget::default();
+    let mut candidates = crate::CandidateBudget::default();
     for _ in 0..MAX_FILE_COUNT {
         candidates.add().unwrap();
     }
