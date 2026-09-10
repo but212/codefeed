@@ -2,21 +2,21 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
-use reqwest::blocking::{Client, Response};
 use reqwest::StatusCode;
-use serde::de::DeserializeOwned;
+use reqwest::blocking::{Client, Response};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use url::Url;
 
 use crate::digest::{DigestBudget, FileRecord};
 
-pub(crate) use crate::github_ignore::{
-    ignored_remote_path, remote_ignore_file_is_reachable, RemoteIgnoreRule,
+pub(crate) use super::ignore::{
+    RemoteIgnoreRule, ignored_remote_path, remote_ignore_file_is_reachable,
 };
 
 use crate::{
-    text_content, CandidateBudget, CollectionResult, IngestError, Options, MAX_FILE_SIZE,
-    MAX_JSON_SIZE, MAX_REMOTE_IGNORE_BYTES, MAX_REMOTE_IGNORE_FILES, REMOTE_ROOT,
+    CandidateBudget, CollectionResult, IngestError, MAX_FILE_SIZE, MAX_JSON_SIZE,
+    MAX_REMOTE_IGNORE_BYTES, MAX_REMOTE_IGNORE_FILES, Options, REMOTE_ROOT, text_content,
 };
 
 const GITHUB_API_BASE_URL: &str = "https://api.github.com";

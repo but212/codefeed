@@ -20,7 +20,7 @@ use ignore::WalkBuilder;
 
 use crate::digest::{DigestBudget, FileRecord};
 use crate::output::output_identity;
-use crate::{text_content, CandidateBudget, CollectionResult, IngestError, MAX_FILE_SIZE};
+use crate::{CandidateBudget, CollectionResult, IngestError, MAX_FILE_SIZE, text_content};
 
 pub(crate) enum LocalRead {
     Text(String),

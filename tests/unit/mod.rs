@@ -1,3 +1,5 @@
+use super::collect::{github, local};
+use super::model::MAX_FILE_COUNT;
 use super::*;
 use std::env;
 use std::fs;

@@ -1,8 +1,8 @@
 mod cli;
+mod collect;
 mod digest;
-mod github;
-mod github_ignore;
-mod local;
+mod error;
+pub(crate) mod model;
 mod output;
 mod source;
 
@@ -11,112 +11,13 @@ mod source;
 mod tests;
 
 use std::ffi::OsStr;
-use std::fmt;
-use std::io;
-use std::path::PathBuf;
 
-pub(crate) const MAX_FILE_SIZE: u64 = 1024 * 1024;
-pub(crate) const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
-pub(crate) const MAX_FILE_COUNT: usize = 10_000;
-pub(crate) const MAX_JSON_SIZE: u64 = 8 * 1024 * 1024;
-pub(crate) const MAX_REMOTE_IGNORE_FILES: usize = 256;
-pub(crate) const MAX_REMOTE_IGNORE_BYTES: u64 = 8 * 1024 * 1024;
-pub(crate) const REMOTE_ROOT: &str = "/__local_ingest_repo";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Source {
-    Local(PathBuf),
-    GitHub { owner: String, repo: String },
-}
-
-#[derive(Debug, Clone)]
-pub struct Options {
-    pub output: PathBuf,
-    pub reference: Option<String>,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            output: PathBuf::from("digest.txt"),
-            reference: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IngestReport {
-    pub output: PathBuf,
-    pub included_files: usize,
-    pub skipped_files: usize,
-}
-
-pub(crate) enum CollectionResult {
-    Local {
-        label: String,
-        files: Vec<digest::FileRecord>,
-        skipped: usize,
-    },
-    GitHub {
-        label: String,
-        revision: String,
-        files: Vec<digest::FileRecord>,
-        skipped: usize,
-    },
-}
-
-#[derive(Default)]
-pub(crate) struct CandidateBudget {
-    count: usize,
-}
-
-impl CandidateBudget {
-    pub(crate) fn add(&mut self) -> Result<(), IngestError> {
-        self.count = self
-            .count
-            .checked_add(1)
-            .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
-        if self.count > MAX_FILE_COUNT {
-            return Err(IngestError::InvalidMetadata(format!(
-                "repository contains more than {MAX_FILE_COUNT} files"
-            )));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-pub enum IngestError {
-    InvalidSource(String),
-    UnsupportedSource(String),
-    Io(io::Error),
-    Http(String),
-    Api(String),
-    InvalidMetadata(String),
-    OutputTooLarge,
-}
-
-impl fmt::Display for IngestError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidSource(message) => write!(f, "invalid source: {message}"),
-            Self::UnsupportedSource(message) => write!(f, "unsupported source: {message}"),
-            Self::Io(error) => write!(f, "filesystem error: {error}"),
-            Self::Http(message) => write!(f, "GitHub request failed: {message}"),
-            Self::Api(message) => write!(f, "GitHub API error: {message}"),
-            Self::InvalidMetadata(message) => write!(f, "invalid repository metadata: {message}"),
-            Self::OutputTooLarge => write!(f, "digest exceeds the 20 MiB output limit"),
-        }
-    }
-}
-
-impl std::error::Error for IngestError {}
-
-impl From<io::Error> for IngestError {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error)
-    }
-}
+pub use crate::error::IngestError;
+pub(crate) use crate::model::{
+    CandidateBudget, CollectionResult, MAX_FILE_SIZE, MAX_JSON_SIZE, MAX_OUTPUT_SIZE,
+    MAX_REMOTE_IGNORE_BYTES, MAX_REMOTE_IGNORE_FILES, REMOTE_ROOT, text_content,
+};
+pub use crate::model::{IngestReport, Options, Source};
 
 pub fn parse_source(value: &str) -> Result<Source, IngestError> {
     source::parse_source(value)
@@ -141,8 +42,8 @@ pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, Ingest
     }
 
     let mut collection = match source {
-        Source::Local(root) => local::collect_local(root, &options.output)?,
-        Source::GitHub { owner, repo } => github::collect_github(owner, repo, options)?,
+        Source::Local(root) => collect::local::collect_local(root, &options.output)?,
+        Source::GitHub { owner, repo } => collect::github::collect_github(owner, repo, options)?,
     };
 
     match &mut collection {
@@ -186,11 +87,4 @@ where
     T: Into<std::ffi::OsString>,
 {
     cli::run_cli(args)
-}
-
-pub(crate) fn text_content(bytes: Vec<u8>) -> Option<String> {
-    if bytes.contains(&0) {
-        return None;
-    }
-    String::from_utf8(bytes).ok()
 }
