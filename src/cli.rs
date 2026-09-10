@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use crate::{ingest, parse_source_os, IngestError, IngestReport, Options};
+use crate::{IngestError, IngestReport, Options, ingest, parse_source_os};
 
 const HELP: &str = "Usage: rustingest <SOURCE> [--output <PATH>] [--ref <REF>]";
 

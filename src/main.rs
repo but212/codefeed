@@ -1,14 +1,16 @@
+use rustingest::{help_text, run_cli};
+use std::env::args_os;
 use std::ffi::OsString;
 use std::process;
 
 fn main() {
-    let args: Vec<_> = std::env::args_os().collect();
+    let args: Vec<_> = args_os().collect();
     if requests_help(&args) {
-        println!("{}", rustingest::help_text());
+        println!("{}", help_text());
         return;
     }
 
-    match rustingest::run_cli(args) {
+    match run_cli(args) {
         Ok(report) => {
             println!(
                 "Wrote {} ({} files, {} skipped)",
