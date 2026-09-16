@@ -58,6 +58,7 @@ On success, rustingest prints the output path and the number of included and ski
 - Applies `.gitignore` rules inside local sources regardless of Git repository status. Does not apply `.ignore` files.
 - Applies nested GitHub `.gitignore` rules within their directory scope, including negation precedence. Reads at most 256 files and 8 MiB in total; exceeding either limit is an error.
 - Skips files larger than 1 MiB. Returns an error if more than 10,000 candidates remain after hidden and ignored paths are excluded.
+- Counts `skipped` as candidates rejected for size, encoding, or content reasons. Hidden and ignored paths are excluded before candidate accounting and are not counted as skipped.
 - Returns an error without committing content if the digest exceeds 20 MiB.
 - Rejects GitHub API responses larger than 8 MiB without parsing truncated JSON.
 - Sorts file paths lexicographically for deterministic output. Escapes backslashes and newlines in digest headers.

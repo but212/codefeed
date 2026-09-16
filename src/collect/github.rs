@@ -8,15 +8,15 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use url::Url;
 
-use crate::digest::{DigestBudget, FileRecord};
+use crate::decide::{Item, ItemPath, Probe, Selector};
 
 pub(crate) use super::ignore::{
     RemoteIgnoreRule, ignored_remote_path, remote_ignore_file_is_reachable,
 };
 
 use crate::{
-    CandidateBudget, CollectionResult, IngestError, MAX_FILE_SIZE, MAX_JSON_SIZE,
-    MAX_REMOTE_IGNORE_BYTES, MAX_REMOTE_IGNORE_FILES, Options, REMOTE_ROOT, text_content,
+    CollectionResult, IngestError, MAX_FILE_SIZE, MAX_JSON_SIZE, MAX_REMOTE_IGNORE_BYTES,
+    MAX_REMOTE_IGNORE_FILES, Options, REMOTE_ROOT,
 };
 
 const GITHUB_API_BASE_URL: &str = "https://api.github.com";
@@ -281,46 +281,34 @@ pub(crate) fn collect_github(
 
     let ignore_rules = client.ignore_rules(owner, repo, &revision, &tree.tree)?;
     let label = format!("https://github.com/{owner}/{repo}");
-    let mut files = Vec::new();
-    let mut budget = DigestBudget::new(&label, Some(&revision))?;
-    let mut candidates = CandidateBudget::default();
+    let mut selector = Selector::new(&label, Some(&revision))?;
     for entry in tree.tree {
         if !is_regular_blob(&entry) || is_hidden_path(&entry.path) {
             continue;
         }
-        if ignored_remote_path(&entry.path, &ignore_rules) {
-            budget.skip()?;
-            continue;
-        }
-        candidates.add()?;
-        if entry.size.unwrap_or(0) > MAX_FILE_SIZE {
-            budget.skip()?;
-            continue;
-        }
-        let bytes = match client.raw_file(owner, repo, &revision, &entry.path, MAX_FILE_SIZE)? {
-            LimitedBody::Complete(bytes) => bytes,
-            LimitedBody::Exceeded => {
-                budget.skip()?;
-                continue;
+        let ignored = ignored_remote_path(&entry.path, &ignore_rules);
+        let probe = if ignored {
+            Probe::Ignored
+        } else if entry.size.unwrap_or(0) > MAX_FILE_SIZE {
+            Probe::TooLarge
+        } else {
+            match client.raw_file(owner, repo, &revision, &entry.path, MAX_FILE_SIZE)? {
+                LimitedBody::Complete(bytes) => Probe::Bytes(bytes),
+                LimitedBody::Exceeded => Probe::TooLarge,
             }
         };
-        if let Some(content) = text_content(bytes) {
-            let candidate = FileRecord {
-                path: entry.path,
-                content,
-            };
-            budget.add(&candidate)?;
-            files.push(candidate);
-        } else {
-            budget.skip()?;
-        }
+        selector.decide(Item {
+            path: ItemPath::Utf8(entry.path),
+            probe,
+        })?;
     }
 
+    let (files, skipped) = selector.into_parts();
     Ok(CollectionResult::GitHub {
         label,
         revision,
         files,
-        skipped: budget.skipped(),
+        skipped,
     })
 }
 

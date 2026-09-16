@@ -18,36 +18,31 @@ const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 
 use ignore::WalkBuilder;
 
-use crate::digest::{DigestBudget, FileRecord};
+use crate::decide::{Item, ItemPath, Probe, Selector};
 use crate::output::output_identity;
-use crate::{CandidateBudget, CollectionResult, IngestError, MAX_FILE_SIZE, text_content};
+use crate::{CollectionResult, IngestError, MAX_FILE_SIZE};
 
-pub(crate) enum LocalRead {
-    Text(String),
-    Skip,
-}
-
-pub(crate) fn read_local_file(root: &Path, path: &Path) -> Result<LocalRead, IngestError> {
+pub(crate) fn read_local_file(root: &Path, path: &Path) -> Result<Probe, IngestError> {
     let file = match open_local_file(root, path) {
         Ok(file) => file,
-        Err(error) if is_symlink_open_error(&error) => return Ok(LocalRead::Skip),
+        Err(error) if is_symlink_open_error(&error) => return Ok(Probe::Missing),
         Err(error) => return Err(error.into()),
     };
     let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.len() > MAX_FILE_SIZE {
-        return Ok(LocalRead::Skip);
+    if !metadata.is_file() {
+        return Ok(Probe::Missing);
+    }
+    if metadata.len() > MAX_FILE_SIZE {
+        return Ok(Probe::TooLarge);
     }
 
     let mut bytes = Vec::new();
     file.take(MAX_FILE_SIZE.saturating_add(1))
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_FILE_SIZE {
-        return Ok(LocalRead::Skip);
+        return Ok(Probe::TooLarge);
     }
-    Ok(match text_content(bytes) {
-        Some(content) => LocalRead::Text(content),
-        None => LocalRead::Skip,
-    })
+    Ok(Probe::Bytes(bytes))
 }
 
 #[cfg(unix)]
@@ -125,9 +120,7 @@ pub(crate) fn collect_local(root: &Path, output: &Path) -> Result<CollectionResu
     }
     let output = output_identity(output)?;
     let label = root.display().to_string();
-    let mut files = Vec::new();
-    let mut budget = DigestBudget::new(&label, None)?;
-    let mut candidates = CandidateBudget::default();
+    let mut selector = Selector::new(&label, None)?;
 
     let walker = WalkBuilder::new(&root)
         .hidden(true)
@@ -142,41 +135,38 @@ pub(crate) fn collect_local(root: &Path, output: &Path) -> Result<CollectionResu
 
     for entry in walker {
         let entry = entry.map_err(|error| IngestError::Io(io::Error::other(error)))?;
-        let path = entry.path();
-        if path == root || path == output || !entry.file_type().is_some_and(|kind| kind.is_file()) {
+        let entry_path = entry.path();
+        if entry_path == root
+            || entry_path == output
+            || !entry.file_type().is_some_and(|kind| kind.is_file())
+        {
             continue;
         }
-        candidates.add()?;
-        let relative = path
+        let relative = entry_path
             .strip_prefix(&root)
             .map_err(|error| IngestError::InvalidMetadata(error.to_string()))?;
-        let Some(parts) = relative
+        let item_path = match relative
             .components()
             .map(|part| part.as_os_str().to_str())
             .collect::<Option<Vec<_>>>()
-        else {
-            budget.skip()?;
-            continue;
+        {
+            Some(parts) => ItemPath::Utf8(parts.join("/")),
+            None => ItemPath::NonUtf8,
         };
-        let relative = parts.join("/");
-        let content = match read_local_file(&root, path)? {
-            LocalRead::Text(content) => content,
-            LocalRead::Skip => {
-                budget.skip()?;
-                continue;
-            }
+        let probe = match item_path {
+            ItemPath::NonUtf8 => Probe::Missing,
+            ItemPath::Utf8(_) => read_local_file(&root, entry_path)?,
         };
-        let candidate = FileRecord {
-            path: relative,
-            content,
-        };
-        budget.add(&candidate)?;
-        files.push(candidate);
+        selector.decide(Item {
+            path: item_path,
+            probe,
+        })?;
     }
 
+    let (files, skipped) = selector.into_parts();
     Ok(CollectionResult::Local {
         label,
         files,
-        skipped: budget.skipped(),
+        skipped,
     })
 }

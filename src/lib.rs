@@ -1,5 +1,6 @@
 mod cli;
 mod collect;
+mod decide;
 mod digest;
 mod error;
 pub(crate) mod model;
@@ -41,16 +42,11 @@ pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, Ingest
         ));
     }
 
-    let mut collection = match source {
+    let collection = match source {
         Source::Local(root) => collect::local::collect_local(root, &options.output)?,
         Source::GitHub { owner, repo } => collect::github::collect_github(owner, repo, options)?,
     };
 
-    match &mut collection {
-        CollectionResult::Local { files, .. } | CollectionResult::GitHub { files, .. } => {
-            files.sort_by(|left, right| left.path.cmp(&right.path));
-        }
-    }
     let digest = match &collection {
         CollectionResult::Local {
             label,
