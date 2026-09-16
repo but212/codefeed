@@ -2,11 +2,11 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
-use reqwest::StatusCode;
-use reqwest::blocking::{Client, Response};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use url::Url;
+use ureq::Agent;
+use ureq::http::StatusCode;
+use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::decide::{Item, ItemPath, Probe, Selector};
 
@@ -115,26 +115,32 @@ impl RemoteIgnoreBudget {
 }
 
 struct GithubClient {
-    client: Client,
+    agent: Agent,
 }
 
 impl GithubClient {
-    fn new() -> Result<Self, IngestError> {
-        let client = Client::builder()
+    fn new() -> Self {
+        let tls = TlsConfig::builder()
+            .root_certs(RootCerts::PlatformVerifier)
+            .build();
+        let config = Agent::config_builder()
             .user_agent(GITHUB_USER_AGENT)
-            .timeout(Duration::from_secs(GITHUB_TIMEOUT_SECS))
-            .build()
-            .map_err(|error| IngestError::Http(error.to_string()))?;
-        Ok(Self { client })
+            .timeout_global(Some(Duration::from_secs(GITHUB_TIMEOUT_SECS)))
+            .http_status_as_error(false)
+            .tls_config(tls)
+            .build();
+        Self {
+            agent: Agent::new_with_config(config),
+        }
     }
 
     fn repository(&self, owner: &str, repo: &str) -> Result<RepositoryResponse, IngestError> {
-        self.json(api_url(&["repos", owner, repo])?)
+        self.json(&api_url(&["repos", owner, repo]))
     }
 
     fn commit_sha(&self, owner: &str, repo: &str, reference: &str) -> Result<String, IngestError> {
-        let url = api_url(&["repos", owner, repo, "commits", reference])?;
-        let commit: CommitResponse = self.json(url)?;
+        let url = api_url(&["repos", owner, repo, "commits", reference]);
+        let commit: CommitResponse = self.json(&url)?;
         if commit.sha.is_empty() {
             return Err(IngestError::InvalidMetadata(
                 "GitHub returned an empty commit SHA".into(),
@@ -144,9 +150,9 @@ impl GithubClient {
     }
 
     fn tree(&self, owner: &str, repo: &str, revision: &str) -> Result<TreeResponse, IngestError> {
-        let mut url = api_url(&["repos", owner, repo, "git", "trees", revision])?;
-        url.query_pairs_mut().append_pair("recursive", "1");
-        self.json(url)
+        let mut url = api_url(&["repos", owner, repo, "git", "trees", revision]);
+        url.push_str("?recursive=1");
+        self.json(&url)
     }
 
     fn raw_file(
@@ -157,18 +163,8 @@ impl GithubClient {
         path: &str,
         limit: u64,
     ) -> Result<LimitedBody, IngestError> {
-        let mut url = Url::parse(GITHUB_RAW_BASE_URL)
-            .map_err(|error| IngestError::InvalidMetadata(error.to_string()))?;
-        {
-            let mut segments = url
-                .path_segments_mut()
-                .map_err(|_| IngestError::InvalidMetadata("invalid raw URL".into()))?;
-            segments.push(owner).push(repo).push(revision);
-            for part in path.split('/') {
-                segments.push(part);
-            }
-        }
-        let (status, body) = self.response(url, limit)?;
+        let url = raw_url(owner, repo, revision, path);
+        let (status, body) = self.response(&url, limit)?;
         if !status.is_success() {
             return Err(api_error(status, body));
         }
@@ -236,18 +232,18 @@ impl GithubClient {
         Ok(rules)
     }
 
-    fn response(&self, url: Url, limit: u64) -> Result<(StatusCode, LimitedBody), IngestError> {
+    fn response(&self, url: &str, limit: u64) -> Result<(StatusCode, LimitedBody), IngestError> {
         let response = self
-            .client
+            .agent
             .get(url)
-            .send()
+            .call()
             .map_err(|error| IngestError::Http(error.to_string()))?;
         let status = response.status();
-        let body = read_response(response, limit)?;
+        let body = read_response(response.into_body(), limit)?;
         Ok((status, body))
     }
 
-    fn json<T: DeserializeOwned>(&self, url: Url) -> Result<T, IngestError> {
+    fn json<T: DeserializeOwned>(&self, url: &str) -> Result<T, IngestError> {
         let (status, body) = self.response(url, MAX_JSON_SIZE)?;
         if !status.is_success() {
             return Err(api_error(status, body));
@@ -266,7 +262,7 @@ pub(crate) fn collect_github(
     repo: &str,
     options: &Options,
 ) -> Result<CollectionResult, IngestError> {
-    let client = GithubClient::new()?;
+    let client = GithubClient::new();
     let reference = match &options.reference {
         Some(reference) if !reference.trim().is_empty() => reference.clone(),
         _ => client.repository(owner, repo)?.default_branch,
@@ -321,18 +317,43 @@ pub(crate) fn is_regular_blob(entry: &TreeEntry) -> bool {
     entry.entry_type == GIT_BLOB_TYPE && REGULAR_FILE_MODES.contains(&entry.mode.as_str())
 }
 
-fn api_url(segments: &[&str]) -> Result<Url, IngestError> {
-    let mut url = Url::parse(GITHUB_API_BASE_URL)
-        .map_err(|error| IngestError::InvalidMetadata(error.to_string()))?;
-    {
-        let mut path = url
-            .path_segments_mut()
-            .map_err(|_| IngestError::InvalidMetadata("invalid GitHub API URL".into()))?;
-        for segment in segments {
-            path.push(segment);
+pub(crate) fn api_url(segments: &[&str]) -> String {
+    let mut url = String::from(GITHUB_API_BASE_URL);
+    for segment in segments {
+        push_encoded_segment(&mut url, segment);
+    }
+    url
+}
+
+pub(crate) fn raw_url(owner: &str, repo: &str, revision: &str, path: &str) -> String {
+    let mut url = String::from(GITHUB_RAW_BASE_URL);
+    for segment in [owner, repo, revision] {
+        push_encoded_segment(&mut url, segment);
+    }
+    for part in path.split('/') {
+        push_encoded_segment(&mut url, part);
+    }
+    url
+}
+
+fn push_encoded_segment(url: &mut String, segment: &str) {
+    url.push('/');
+    url.push_str(&encode_path_segment(segment));
+}
+
+pub(crate) fn encode_path_segment(segment: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
         }
     }
-    Ok(url)
+    encoded
 }
 
 pub(crate) fn classify_body(bytes: Vec<u8>, limit: u64) -> LimitedBody {
@@ -351,9 +372,9 @@ fn api_error(status: StatusCode, body: LimitedBody) -> IngestError {
     IngestError::Api(format!("HTTP {status}: {detail}"))
 }
 
-fn read_response(response: Response, limit: u64) -> Result<LimitedBody, IngestError> {
+fn read_response(body: ureq::Body, limit: u64) -> Result<LimitedBody, IngestError> {
     let mut bytes = Vec::new();
-    response
+    body.into_reader()
         .take(limit.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|error| IngestError::Http(error.to_string()))?;

@@ -1,8 +1,6 @@
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
-use url::Url;
-
 use crate::{IngestError, Source};
 
 pub(crate) fn parse_source_os(value: &OsStr) -> Result<Source, IngestError> {
@@ -25,23 +23,38 @@ pub(crate) fn parse_source(value: &str) -> Result<Source, IngestError> {
 }
 
 fn parse_github_url(value: &str) -> Result<Source, IngestError> {
-    let url = Url::parse(value).map_err(|_| IngestError::InvalidSource(value.into()))?;
-    if url.scheme() != "https" || url.host_str() != Some("github.com") {
+    let remainder = value.strip_prefix("https://").ok_or_else(|| {
+        IngestError::UnsupportedSource("only https://github.com/{owner}/{repo} is supported".into())
+    })?;
+    let (authority, path) = match remainder.find('/') {
+        Some(index) => (&remainder[..index], &remainder[index..]),
+        None => (remainder, ""),
+    };
+    if authority.is_empty() {
+        return Err(IngestError::InvalidSource(value.into()));
+    }
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    let host = match host_port.split_once(':') {
+        Some((host, port)) => {
+            if !port.is_empty() && port.parse::<u16>().is_err() {
+                return Err(IngestError::InvalidSource(value.into()));
+            }
+            host
+        }
+        None => host_port,
+    };
+    if !host.eq_ignore_ascii_case("github.com") {
         return Err(IngestError::UnsupportedSource(
             "only https://github.com/{owner}/{repo} is supported".into(),
         ));
     }
-    if url.query().is_some() || url.fragment().is_some() {
+    if path.contains('?') || path.contains('#') {
         return Err(IngestError::InvalidSource(
             "repository URLs cannot contain a query or fragment".into(),
         ));
     }
 
-    let parts: Vec<_> = url
-        .path_segments()
-        .ok_or_else(|| IngestError::InvalidSource(value.into()))?
-        .filter(|part| !part.is_empty())
-        .collect();
+    let parts: Vec<_> = path.split('/').filter(|part| !part.is_empty()).collect();
     if parts.len() != 2 {
         return Err(IngestError::InvalidSource(
             "expected https://github.com/{owner}/{repo}".into(),
@@ -63,6 +76,8 @@ fn parse_github_url(value: &str) -> Result<Source, IngestError> {
 
 fn valid_github_name(value: &str) -> bool {
     !value.is_empty()
+        && value != "."
+        && value != ".."
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))

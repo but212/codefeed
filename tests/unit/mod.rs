@@ -27,6 +27,27 @@ fn rejects_unsupported_repository_url() {
 }
 
 #[test]
+fn rejects_dot_path_segments_in_repository_urls() {
+    assert!(parse_source("https://github.com/owner/..").is_err());
+    assert!(parse_source("https://github.com/owner/.").is_err());
+    assert!(parse_source("https://github.com/./repo").is_err());
+    assert!(parse_source("https://github.com/../repo").is_err());
+}
+
+#[test]
+fn rejects_invalid_repository_url_ports() -> Result<(), Box<dyn std::error::Error>> {
+    assert!(parse_source("https://github.com:99999/owner/repo").is_err());
+    assert!(parse_source("https://github.com:abc/owner/repo").is_err());
+    let expected = Source::GitHub {
+        owner: "owner".into(),
+        repo: "repo".into(),
+    };
+    assert_eq!(parse_source("https://github.com:443/owner/repo")?, expected);
+    assert_eq!(parse_source("https://github.com:/owner/repo")?, expected);
+    Ok(())
+}
+
+#[test]
 fn renders_files_in_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
     let files = vec![
         digest::FileRecord {
@@ -412,6 +433,32 @@ fn distinguishes_complete_and_oversized_bodies() {
         github::classify_body(vec![0; 9], 8),
         github::LimitedBody::Exceeded
     ));
+}
+
+#[test]
+fn percent_encodes_url_path_segments() {
+    assert_eq!(github::encode_path_segment("AZaz09-._~"), "AZaz09-._~");
+    assert_eq!(github::encode_path_segment("feature/x"), "feature%2Fx");
+    assert_eq!(github::encode_path_segment("a b"), "a%20b");
+    assert_eq!(github::encode_path_segment("100%"), "100%25");
+    assert_eq!(github::encode_path_segment("a#b?c"), "a%23b%3Fc");
+    assert_eq!(github::encode_path_segment("café"), "caf%C3%A9");
+}
+
+#[test]
+fn builds_github_api_and_raw_urls() {
+    assert_eq!(
+        github::api_url(&["repos", "rust-lang", "cargo", "commits", "master"]),
+        "https://api.github.com/repos/rust-lang/cargo/commits/master"
+    );
+    assert_eq!(
+        github::raw_url("rust-lang", "cargo", "abc123", "src/main.rs"),
+        "https://raw.githubusercontent.com/rust-lang/cargo/abc123/src/main.rs"
+    );
+    assert_eq!(
+        github::raw_url("o", "r", "feature/x", "dir/a b.txt"),
+        "https://raw.githubusercontent.com/o/r/feature%2Fx/dir/a%20b.txt"
+    );
 }
 
 #[cfg(unix)]
