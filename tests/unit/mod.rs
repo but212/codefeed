@@ -73,6 +73,19 @@ fn renders_files_in_deterministic_order() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
+fn escapes_revision_header() -> Result<(), Box<dyn std::error::Error>> {
+    let revision = "feature\\x\r\nFiles: 9";
+    let rendered = digest::render_digest("repo", Some(revision), &[], 0)?;
+
+    assert_eq!(
+        rendered.lines().nth(1),
+        Some("Revision: feature\\\\x\\r\\nFiles: 9")
+    );
+    assert!(!rendered.contains(revision));
+    Ok(())
+}
+
+#[test]
 fn digest_budget_matches_rendered_size() -> Result<(), Box<dyn std::error::Error>> {
     let files = vec![
         digest::FileRecord {
@@ -84,14 +97,20 @@ fn digest_budget_matches_rendered_size() -> Result<(), Box<dyn std::error::Error
             content: "a".into(),
         },
     ];
-    let mut budget = digest::DigestBudget::new("repo", Some("abc"))?;
-    for file in &files {
-        budget.add(file)?;
-    }
-    budget.skip()?;
-    let rendered = digest::render_digest("repo", Some("abc"), &files, budget.skipped())?;
+    for revision in ["abc", "feature\\x\r\nFiles: 9"] {
+        let mut budget = digest::DigestBudget::new("repo", Some(revision))?;
+        for file in &files {
+            budget.add(file)?;
+        }
+        budget.skip()?;
+        let rendered = digest::render_digest("repo", Some(revision), &files, budget.skipped())?;
 
-    assert_eq!(budget.size(), Some(rendered.len() as u64));
+        assert_eq!(
+            budget.size(),
+            Some(rendered.len() as u64),
+            "revision: {revision:?}"
+        );
+    }
     Ok(())
 }
 

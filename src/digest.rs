@@ -33,7 +33,9 @@ impl DigestBudget {
     pub(crate) fn new(label: &str, revision: Option<&str>) -> Result<Self, IngestError> {
         Ok(Self {
             label_bytes: byte_count(&escape_header(label))?,
-            revision_bytes: revision.map(byte_count).transpose()?,
+            revision_bytes: revision
+                .map(|value| byte_count(&escape_header(value)))
+                .transpose()?,
             file_count: 0,
             skipped: 0,
             path_bytes: 0,
@@ -150,7 +152,7 @@ pub(crate) fn render_digest(
     digest.push_str(NEWLINE);
     if let Some(revision) = revision {
         digest.push_str(REVISION_PREFIX);
-        digest.push_str(revision);
+        digest.push_str(&escape_header(revision));
         digest.push_str(NEWLINE);
     }
     digest.push_str(FILES_PREFIX);
