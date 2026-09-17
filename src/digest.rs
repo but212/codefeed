@@ -1,4 +1,6 @@
-use crate::{IngestError, MAX_OUTPUT_SIZE};
+use crate::error::IngestError;
+use crate::limits::MAX_OUTPUT_SIZE;
+use crate::model::FileRecord;
 
 const REPOSITORY_PREFIX: &str = "Repository: ";
 const REVISION_PREFIX: &str = "Revision: ";
@@ -11,12 +13,6 @@ const FILE_BLOCK_PREFIX: &str = "===============================================
 const FILE_BLOCK_SUFFIX: &str = "\n==================================================\n\n";
 const NEWLINE: &str = "\n";
 const METADATA_SUFFIX: &str = "\n\n";
-
-#[derive(Debug)]
-pub(crate) struct FileRecord {
-    pub(crate) path: String,
-    pub(crate) content: String,
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct DigestBudget {

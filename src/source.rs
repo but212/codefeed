@@ -1,7 +1,8 @@
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
-use crate::{IngestError, Source};
+use crate::error::IngestError;
+use crate::model::Source;
 
 pub(crate) fn parse_source_os(value: &OsStr) -> Result<Source, IngestError> {
     match value.to_str() {

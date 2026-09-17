@@ -3,6 +3,7 @@ mod collect;
 mod decide;
 mod digest;
 mod error;
+mod limits;
 pub(crate) mod model;
 mod output;
 mod source;
@@ -11,13 +12,11 @@ mod source;
 #[path = "../tests/unit/mod.rs"]
 mod tests;
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
+
+use crate::model::CollectionResult;
 
 pub use crate::error::IngestError;
-pub(crate) use crate::model::{
-    CandidateBudget, CollectionResult, MAX_FILE_SIZE, MAX_JSON_SIZE, MAX_OUTPUT_SIZE,
-    MAX_REMOTE_IGNORE_BYTES, MAX_REMOTE_IGNORE_FILES, REMOTE_ROOT, text_content,
-};
 pub use crate::model::{IngestReport, Options, Source};
 
 pub fn parse_source(value: &str) -> Result<Source, IngestError> {
@@ -75,6 +74,10 @@ pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, Ingest
 
 pub fn help_text() -> &'static str {
     cli::help_text()
+}
+
+pub fn requests_help(args: &[OsString]) -> bool {
+    cli::requests_help(args)
 }
 
 pub fn run_cli<I, T>(args: I) -> Result<IngestReport, IngestError>

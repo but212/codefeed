@@ -47,14 +47,24 @@ imperative-shell boundary.
 
 ## Functional core / imperative shell boundary
 
-- Pure core (`src/decide.rs`, `src/source.rs`, `src/digest.rs`,
-  `src/model.rs`, `src/collect/ignore.rs`): source parsing, per-item
-  `Selector::decide`, budget state machines, digest rendering, ignore
-  matching. No I/O, clock, network, or entropy.
-- Imperative shell (`src/main.rs`, `src/cli.rs`, `src/lib.rs::ingest`,
-  `src/collect/local.rs`, `src/collect/github.rs`, `src/output.rs`): argument
-  and process IO, filesystem walking and safe reads, HTTP, atomic writes. It
-  feeds observations to the core and reads the accounted result through
+Boundary rule: pure core code performs no I/O, clock, network, or entropy and
+never depends on shell code; shell code depends on the core in one direction.
+
+- Pure core: source parsing (`src/source.rs`), domain value types and results
+  (`src/model.rs`), numeric limits (`src/limits.rs`), per-item
+  `Selector::decide` and its candidate budget (`src/decide.rs`), digest budget
+  and rendering (`src/digest.rs`), ignore matching (`src/collect/ignore.rs`),
+  URL construction (`src/collect/github_url.rs`), and GitHub tree/response
+  classification (`src/collect/github_tree.rs`).
+- Imperative shell: argument and process IO (`src/main.rs`, `src/cli.rs`),
+  orchestration (`src/lib.rs::ingest`), filesystem walking and safe reads
+  (`src/collect/local.rs`, `src/collect/local_io.rs`), HTTP transport with
+  bounded response bodies (`src/collect/github_client.rs`), remote `.gitignore`
+  loading (`src/collect/github_ignore.rs`), GitHub orchestration
+  (`src/collect/github.rs`), and atomic output (`src/output.rs`). The shell feeds
+  observations to the core and reads the accounted result through
   `Selector::into_parts`.
-- `read_local_file` returns a `Probe`; it performs the bounded read but leaves
-  text/UTF-8 and budget judgment to the core.
+- `read_local_file` (`src/collect/local_io.rs`) returns a `Probe`; it performs
+  the bounded read but leaves text/UTF-8 and budget judgment to the core.
+- A shell module may host a pure budget state machine next to the I/O that
+  consumes it (`RemoteIgnoreBudget` in `src/collect/github_ignore.rs`).

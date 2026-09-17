@@ -1,6 +1,13 @@
-use super::collect::{github, local};
-use super::decide::{Item, ItemPath, Probe, Selector};
-use super::model::MAX_FILE_COUNT;
+use super::collect::ignore::{
+    RemoteIgnoreRule, ignored_remote_path, remote_ignore_file_is_reachable,
+};
+use super::collect::{github_client, github_ignore, github_tree, github_url, local_io};
+use super::decide::{CandidateBudget, Item, ItemPath, Probe, Selector};
+use super::limits::{
+    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE, MAX_REMOTE_IGNORE_BYTES,
+    MAX_REMOTE_IGNORE_FILES,
+};
+use super::model::REMOTE_ROOT;
 use super::*;
 use std::env;
 use std::fs;
@@ -50,11 +57,11 @@ fn rejects_invalid_repository_url_ports() -> Result<(), Box<dyn std::error::Erro
 #[test]
 fn renders_files_in_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
     let files = vec![
-        digest::FileRecord {
+        model::FileRecord {
             path: "z.txt".into(),
             content: "z".into(),
         },
-        digest::FileRecord {
+        model::FileRecord {
             path: "a.txt".into(),
             content: "a".into(),
         },
@@ -88,11 +95,11 @@ fn escapes_revision_header() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn digest_budget_matches_rendered_size() -> Result<(), Box<dyn std::error::Error>> {
     let files = vec![
-        digest::FileRecord {
+        model::FileRecord {
             path: "z.txt".into(),
             content: "z\n".into(),
         },
-        digest::FileRecord {
+        model::FileRecord {
             path: "a.txt".into(),
             content: "a".into(),
         },
@@ -195,7 +202,7 @@ fn ingests_local_text_and_skips_binary_and_git_directory() -> Result<(), Box<dyn
 
 #[test]
 fn rejects_digest_before_storing_over_budget_content() {
-    let candidate = digest::FileRecord {
+    let candidate = model::FileRecord {
         path: "large.txt".into(),
         content: "x".repeat(MAX_OUTPUT_SIZE as usize),
     };
@@ -203,6 +210,15 @@ fn rejects_digest_before_storing_over_budget_content() {
         digest::render_digest("repo", None, &[candidate], 0),
         Err(IngestError::OutputTooLarge)
     ));
+}
+
+#[test]
+fn output_too_large_message_derives_from_limit() {
+    let mib = MAX_OUTPUT_SIZE / (1024 * 1024);
+    assert_eq!(
+        IngestError::OutputTooLarge.to_string(),
+        format!("digest exceeds the {mib} MiB output limit")
+    );
 }
 
 #[cfg(unix)]
@@ -218,7 +234,7 @@ fn does_not_follow_local_symlink() -> Result<(), Box<dyn std::error::Error>> {
     symlink(&target, &link)?;
 
     assert!(matches!(
-        local::read_local_file(&root, &link)?,
+        local_io::read_local_file(&root, &link)?,
         Probe::Missing
     ));
     fs::remove_dir_all(root)?;
@@ -244,7 +260,7 @@ fn does_not_block_when_candidate_becomes_fifo() -> Result<(), Box<dyn std::error
     let thread_path = path.clone();
     let thread_root = root.clone();
     let worker = thread::spawn(move || {
-        let result = local::read_local_file(&thread_root, &thread_path);
+        let result = local_io::read_local_file(&thread_root, &thread_path);
         sender.send(result).expect("result receiver should exist");
     });
     let result = receiver
@@ -265,7 +281,7 @@ fn bounds_local_file_reads() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(&path, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
 
     assert!(matches!(
-        local::read_local_file(&root, &path)?,
+        local_io::read_local_file(&root, &path)?,
         Probe::TooLarge
     ));
     fs::remove_dir_all(root)?;
@@ -280,7 +296,7 @@ fn includes_file_at_exact_size_limit() -> Result<(), Box<dyn std::error::Error>>
     fs::write(&path, vec![b'x'; MAX_FILE_SIZE as usize])?;
 
     assert!(matches!(
-        local::read_local_file(&root, &path)?,
+        local_io::read_local_file(&root, &path)?,
         Probe::Bytes(_)
     ));
     fs::remove_dir_all(root)?;
@@ -336,7 +352,7 @@ fn does_not_apply_dot_ignore_files() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn rejects_remote_ignore_budget_overflow() {
-    let mut budget = github::RemoteIgnoreBudget::default();
+    let mut budget = github_ignore::RemoteIgnoreBudget::default();
     for _ in 0..MAX_REMOTE_IGNORE_FILES {
         budget.reserve_file().unwrap();
     }
@@ -345,7 +361,7 @@ fn rejects_remote_ignore_budget_overflow() {
         Err(IngestError::InvalidMetadata(message)) if message.contains(".gitignore files")
     ));
 
-    let mut budget = github::RemoteIgnoreBudget::default();
+    let mut budget = github_ignore::RemoteIgnoreBudget::default();
     budget
         .record_bytes(MAX_REMOTE_IGNORE_BYTES as usize)
         .unwrap();
@@ -354,20 +370,20 @@ fn rejects_remote_ignore_budget_overflow() {
 
 #[test]
 fn rejects_oversized_remote_ignore_body() {
-    let body = github::classify_body(vec![0; MAX_FILE_SIZE as usize + 1], MAX_FILE_SIZE);
+    let body = github_client::classify_body(vec![0; MAX_FILE_SIZE as usize + 1], MAX_FILE_SIZE);
     assert!(matches!(
-        github::remote_ignore_body(".gitignore", body),
+        github_ignore::remote_ignore_body(".gitignore", body),
         Err(IngestError::InvalidMetadata(message)) if message.contains(".gitignore")
     ));
 }
 
 #[test]
 fn matches_remote_gitignore_hierarchy() {
-    fn rule(base: &str, pattern: &str) -> github::RemoteIgnoreRule {
+    fn rule(base: &str, pattern: &str) -> RemoteIgnoreRule {
         let base = Path::new(REMOTE_ROOT).join(base);
         let mut builder = ignore::gitignore::GitignoreBuilder::new(&base);
         builder.add_line(None, pattern).unwrap();
-        github::RemoteIgnoreRule {
+        RemoteIgnoreRule {
             base,
             matcher: builder.build().unwrap(),
         }
@@ -380,36 +396,36 @@ fn matches_remote_gitignore_hierarchy() {
         rule("", "ignored/"),
         rule("ignored", "!keep.txt"),
     ];
-    assert!(github::ignored_remote_path("target/debug/app", &rules));
-    assert!(!github::ignored_remote_path("sub/keep.log", &rules));
-    assert!(github::ignored_remote_path("sub/drop.log", &rules));
-    assert!(github::ignored_remote_path("other/keep.log", &rules));
-    assert!(github::ignored_remote_path("ignored/keep.txt", &rules));
+    assert!(ignored_remote_path("target/debug/app", &rules));
+    assert!(!ignored_remote_path("sub/keep.log", &rules));
+    assert!(ignored_remote_path("sub/drop.log", &rules));
+    assert!(ignored_remote_path("other/keep.log", &rules));
+    assert!(ignored_remote_path("ignored/keep.txt", &rules));
 }
 
 #[test]
 fn loads_ignored_nested_gitignore_when_parent_is_visible() {
-    fn rule(base: &str, pattern: &str) -> github::RemoteIgnoreRule {
+    fn rule(base: &str, pattern: &str) -> RemoteIgnoreRule {
         let base = Path::new(REMOTE_ROOT).join(base);
         let mut builder = ignore::gitignore::GitignoreBuilder::new(&base);
         builder.add_line(None, pattern).unwrap();
-        github::RemoteIgnoreRule {
+        RemoteIgnoreRule {
             base,
             matcher: builder.build().unwrap(),
         }
     }
 
     let file_is_ignored = vec![rule("", "sub/.gitignore")];
-    assert!(github::remote_ignore_file_is_reachable(
+    assert!(remote_ignore_file_is_reachable(
         "sub/.gitignore",
         &file_is_ignored
     ));
 
     let rules = vec![rule("", "sub/.gitignore"), rule("sub", "secret.txt")];
-    assert!(github::ignored_remote_path("sub/secret.txt", &rules));
+    assert!(ignored_remote_path("sub/secret.txt", &rules));
 
     let parent_is_ignored = vec![rule("", "sub/")];
-    assert!(!github::remote_ignore_file_is_reachable(
+    assert!(!remote_ignore_file_is_reachable(
         "sub/.gitignore",
         &parent_is_ignored
     ));
@@ -417,25 +433,25 @@ fn loads_ignored_nested_gitignore_when_parent_is_visible() {
 
 #[test]
 fn rejects_non_regular_git_blobs() {
-    let symlink = github::TreeEntry {
+    let symlink = github_tree::TreeEntry {
         path: "link".into(),
         mode: "120000".into(),
         entry_type: "blob".into(),
         size: Some(4),
     };
-    let executable = github::TreeEntry {
+    let executable = github_tree::TreeEntry {
         path: "run.sh".into(),
         mode: "100755".into(),
         entry_type: "blob".into(),
         size: Some(4),
     };
-    assert!(!github::is_regular_blob(&symlink));
-    assert!(github::is_regular_blob(&executable));
+    assert!(!github_tree::is_regular_blob(&symlink));
+    assert!(github_tree::is_regular_blob(&executable));
 }
 
 #[test]
 fn counts_candidate_before_content_filtering() {
-    let mut candidates = crate::CandidateBudget::default();
+    let mut candidates = CandidateBudget::default();
     for _ in 0..MAX_FILE_COUNT {
         candidates.add().unwrap();
     }
@@ -445,37 +461,37 @@ fn counts_candidate_before_content_filtering() {
 #[test]
 fn distinguishes_complete_and_oversized_bodies() {
     assert!(matches!(
-        github::classify_body(vec![0; 8], 8),
-        github::LimitedBody::Complete(body) if body.len() == 8
+        github_client::classify_body(vec![0; 8], 8),
+        github_client::LimitedBody::Complete(body) if body.len() == 8
     ));
     assert!(matches!(
-        github::classify_body(vec![0; 9], 8),
-        github::LimitedBody::Exceeded
+        github_client::classify_body(vec![0; 9], 8),
+        github_client::LimitedBody::Exceeded
     ));
 }
 
 #[test]
 fn percent_encodes_url_path_segments() {
-    assert_eq!(github::encode_path_segment("AZaz09-._~"), "AZaz09-._~");
-    assert_eq!(github::encode_path_segment("feature/x"), "feature%2Fx");
-    assert_eq!(github::encode_path_segment("a b"), "a%20b");
-    assert_eq!(github::encode_path_segment("100%"), "100%25");
-    assert_eq!(github::encode_path_segment("a#b?c"), "a%23b%3Fc");
-    assert_eq!(github::encode_path_segment("café"), "caf%C3%A9");
+    assert_eq!(github_url::encode_path_segment("AZaz09-._~"), "AZaz09-._~");
+    assert_eq!(github_url::encode_path_segment("feature/x"), "feature%2Fx");
+    assert_eq!(github_url::encode_path_segment("a b"), "a%20b");
+    assert_eq!(github_url::encode_path_segment("100%"), "100%25");
+    assert_eq!(github_url::encode_path_segment("a#b?c"), "a%23b%3Fc");
+    assert_eq!(github_url::encode_path_segment("café"), "caf%C3%A9");
 }
 
 #[test]
 fn builds_github_api_and_raw_urls() {
     assert_eq!(
-        github::api_url(&["repos", "rust-lang", "cargo", "commits", "master"]),
+        github_url::api_url(&["repos", "rust-lang", "cargo", "commits", "master"]),
         "https://api.github.com/repos/rust-lang/cargo/commits/master"
     );
     assert_eq!(
-        github::raw_url("rust-lang", "cargo", "abc123", "src/main.rs"),
+        github_url::raw_url("rust-lang", "cargo", "abc123", "src/main.rs"),
         "https://raw.githubusercontent.com/rust-lang/cargo/abc123/src/main.rs"
     );
     assert_eq!(
-        github::raw_url("o", "r", "feature/x", "dir/a b.txt"),
+        github_url::raw_url("o", "r", "feature/x", "dir/a b.txt"),
         "https://raw.githubusercontent.com/o/r/feature%2Fx/dir/a%20b.txt"
     );
 }

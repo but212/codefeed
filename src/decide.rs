@@ -1,5 +1,7 @@
-use crate::digest::{DigestBudget, FileRecord};
-use crate::{CandidateBudget, IngestError, text_content};
+use crate::digest::DigestBudget;
+use crate::error::IngestError;
+use crate::limits::MAX_FILE_COUNT;
+use crate::model::FileRecord;
 
 /// Path text as observed by the imperative shell. Non-UTF-8 paths are still
 /// candidates and must be counted, then skipped.
@@ -66,4 +68,33 @@ impl Selector {
     pub(crate) fn into_parts(self) -> (Vec<FileRecord>, usize) {
         (self.files, self.digest.skipped())
     }
+}
+
+/// Candidate-count budget owned by the selector that consumes it.
+#[derive(Default)]
+pub(crate) struct CandidateBudget {
+    count: usize,
+}
+
+impl CandidateBudget {
+    pub(crate) fn add(&mut self) -> Result<(), IngestError> {
+        self.count = self
+            .count
+            .checked_add(1)
+            .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
+        if self.count > MAX_FILE_COUNT {
+            return Err(IngestError::InvalidMetadata(format!(
+                "repository contains more than {MAX_FILE_COUNT} files"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// UTF-8 text predicate: NUL-free bytes only.
+fn text_content(bytes: Vec<u8>) -> Option<String> {
+    if bytes.contains(&0) {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }

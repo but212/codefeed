@@ -9,6 +9,20 @@ pub(crate) fn help_text() -> &'static str {
     HELP
 }
 
+/// Scans for `--help`/`-h` in option position, skipping values of options that
+/// take one. Owned here so the binary does not re-implement the CLI grammar.
+pub fn requests_help(args: &[OsString]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = args.get(index) {
+        match argument.to_str() {
+            Some("--help" | "-h") => return true,
+            Some("--output" | "--ref") => index += 2,
+            _ => index += 1,
+        }
+    }
+    false
+}
+
 pub(crate) fn run_cli<I, T>(args: I) -> Result<IngestReport, IngestError>
 where
     I: IntoIterator<Item = T>,

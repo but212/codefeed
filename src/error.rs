@@ -21,7 +21,11 @@ impl Display for IngestError {
             Self::Http(message) => write!(f, "GitHub request failed: {message}"),
             Self::Api(message) => write!(f, "GitHub API error: {message}"),
             Self::InvalidMetadata(message) => write!(f, "invalid repository metadata: {message}"),
-            Self::OutputTooLarge => write!(f, "digest exceeds the 20 MiB output limit"),
+            Self::OutputTooLarge => write!(
+                f,
+                "digest exceeds the {} MiB output limit",
+                crate::limits::MAX_OUTPUT_SIZE / (1024 * 1024)
+            ),
         }
     }
 }
