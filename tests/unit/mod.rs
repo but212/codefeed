@@ -1,13 +1,12 @@
-use super::collect::ignore::{
-    RemoteIgnoreRule, ignored_remote_path, remote_ignore_file_is_reachable,
-};
-use super::collect::{github_client, github_ignore, github_tree, github_url, local_io};
-use super::decide::{CandidateBudget, Item, ItemPath, Probe, Selector};
-use super::limits::{
+use super::core::decide::{CandidateBudget, Item, ItemPath, Probe, Selector};
+use super::core::ignore::{RemoteIgnoreRule, ignored_remote_path, remote_ignore_file_is_reachable};
+use super::core::limits::{
     MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE, MAX_REMOTE_IGNORE_BYTES,
     MAX_REMOTE_IGNORE_FILES,
 };
-use super::model::REMOTE_ROOT;
+use super::core::model::REMOTE_ROOT;
+use super::core::{digest, github_tree, github_url, model};
+use super::shell::{github_client, github_ignore, local_io, output};
 use super::*;
 use std::env;
 use std::fs;

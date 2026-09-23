@@ -8,11 +8,10 @@ use ureq::Agent;
 use ureq::http::StatusCode;
 use ureq::tls::{RootCerts, TlsConfig};
 
-use crate::error::IngestError;
-use crate::limits::MAX_JSON_SIZE;
-
-use super::github_tree::{CommitResponse, RepositoryResponse, TreeResponse};
-use super::github_url::{api_url, raw_url};
+use crate::core::error::IngestError;
+use crate::core::github_tree::{CommitResponse, RepositoryResponse, TreeResponse};
+use crate::core::github_url::{api_url, raw_url};
+use crate::core::limits::MAX_JSON_SIZE;
 
 const GITHUB_USER_AGENT: &str = "rustingest/0.1";
 const GITHUB_TIMEOUT_SECS: u64 = 30;

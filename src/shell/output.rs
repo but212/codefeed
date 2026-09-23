@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::error::IngestError;
+use crate::core::error::IngestError;
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 

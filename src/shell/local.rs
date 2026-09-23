@@ -7,10 +7,10 @@ use std::path::Path;
 use ignore::WalkBuilder;
 
 use super::local_io::read_local_file;
-use crate::decide::{Item, ItemPath, Probe, Selector};
-use crate::error::IngestError;
-use crate::model::CollectionResult;
-use crate::output::output_identity;
+use crate::core::decide::{Item, ItemPath, Probe, Selector};
+use crate::core::error::IngestError;
+use crate::core::model::CollectionResult;
+use crate::shell::output::output_identity;
 
 pub(crate) fn collect_local(root: &Path, output: &Path) -> Result<CollectionResult, IngestError> {
     let root = fs::canonicalize(root)

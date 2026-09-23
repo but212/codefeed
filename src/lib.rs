@@ -1,12 +1,5 @@
-mod cli;
-mod collect;
-mod decide;
-mod digest;
-mod error;
-mod limits;
-pub(crate) mod model;
-mod output;
-mod source;
+mod core;
+mod shell;
 
 #[cfg(test)]
 #[path = "../tests/unit/mod.rs"]
@@ -14,17 +7,17 @@ mod tests;
 
 use std::ffi::{OsStr, OsString};
 
-use crate::model::CollectionResult;
+use crate::core::model::CollectionResult;
 
-pub use crate::error::IngestError;
-pub use crate::model::{IngestReport, Options, Source};
+pub use crate::core::error::IngestError;
+pub use crate::core::model::{IngestReport, Options, Source};
 
 pub fn parse_source(value: &str) -> Result<Source, IngestError> {
-    source::parse_source(value)
+    core::source::parse_source(value)
 }
 
 pub(crate) fn parse_source_os(value: &OsStr) -> Result<Source, IngestError> {
-    source::parse_source_os(value)
+    core::source::parse_source_os(value)
 }
 
 pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, IngestError> {
@@ -42,8 +35,8 @@ pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, Ingest
     }
 
     let collection = match source {
-        Source::Local(root) => collect::local::collect_local(root, &options.output)?,
-        Source::GitHub { owner, repo } => collect::github::collect_github(owner, repo, options)?,
+        Source::Local(root) => shell::local::collect_local(root, &options.output)?,
+        Source::GitHub { owner, repo } => shell::github::collect_github(owner, repo, options)?,
     };
 
     let digest = match &collection {
@@ -51,15 +44,15 @@ pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, Ingest
             label,
             files,
             skipped,
-        } => digest::render_digest(label, None, files, *skipped)?,
+        } => core::digest::render_digest(label, None, files, *skipped)?,
         CollectionResult::GitHub {
             label,
             revision,
             files,
             skipped,
-        } => digest::render_digest(label, Some(revision), files, *skipped)?,
+        } => core::digest::render_digest(label, Some(revision), files, *skipped)?,
     };
-    output::write_atomic(&options.output, digest.as_bytes())?;
+    shell::output::write_atomic(&options.output, digest.as_bytes())?;
 
     let (included_files, skipped_files) = match &collection {
         CollectionResult::Local { files, skipped, .. }
@@ -73,11 +66,11 @@ pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, Ingest
 }
 
 pub fn help_text() -> &'static str {
-    cli::help_text()
+    shell::cli::help_text()
 }
 
 pub fn requests_help(args: &[OsString]) -> bool {
-    cli::requests_help(args)
+    shell::cli::requests_help(args)
 }
 
 pub fn run_cli<I, T>(args: I) -> Result<IngestReport, IngestError>
@@ -85,5 +78,5 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString>,
 {
-    cli::run_cli(args)
+    shell::cli::run_cli(args)
 }

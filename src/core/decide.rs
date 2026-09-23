@@ -1,7 +1,7 @@
-use crate::digest::DigestBudget;
-use crate::error::IngestError;
-use crate::limits::MAX_FILE_COUNT;
-use crate::model::FileRecord;
+use crate::core::digest::DigestBudget;
+use crate::core::error::IngestError;
+use crate::core::limits::MAX_FILE_COUNT;
+use crate::core::model::FileRecord;
 
 /// Path text as observed by the imperative shell. Non-UTF-8 paths are still
 /// candidates and must be counted, then skipped.

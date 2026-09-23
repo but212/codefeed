@@ -1,6 +1,6 @@
-use crate::error::IngestError;
-use crate::limits::MAX_OUTPUT_SIZE;
-use crate::model::FileRecord;
+use crate::core::error::IngestError;
+use crate::core::limits::MAX_OUTPUT_SIZE;
+use crate::core::model::FileRecord;
 
 const REPOSITORY_PREFIX: &str = "Repository: ";
 const REVISION_PREFIX: &str = "Revision: ";

@@ -19,9 +19,9 @@ use std::os::windows::fs::OpenOptionsExt;
 #[cfg(windows)]
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 
-use crate::decide::Probe;
-use crate::error::IngestError;
-use crate::limits::MAX_FILE_SIZE;
+use crate::core::decide::Probe;
+use crate::core::error::IngestError;
+use crate::core::limits::MAX_FILE_SIZE;
 
 pub(crate) fn read_local_file(root: &Path, path: &Path) -> Result<Probe, IngestError> {
     let file = match open_local_file(root, path) {

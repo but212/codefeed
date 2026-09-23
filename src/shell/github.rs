@@ -1,14 +1,14 @@
 //! GitHub collection orchestration: tree walk, per-entry probe, selection.
 
-use crate::decide::{Item, ItemPath, Probe, Selector};
-use crate::error::IngestError;
-use crate::limits::MAX_FILE_SIZE;
-use crate::model::{CollectionResult, Options};
+use crate::core::decide::{Item, ItemPath, Probe, Selector};
+use crate::core::error::IngestError;
+use crate::core::github_tree::{is_hidden_path, is_regular_blob};
+use crate::core::ignore::ignored_remote_path;
+use crate::core::limits::MAX_FILE_SIZE;
+use crate::core::model::{CollectionResult, Options};
 
 use super::github_client::{GithubClient, LimitedBody};
 use super::github_ignore::load_ignore_rules;
-use super::github_tree::{is_hidden_path, is_regular_blob};
-use super::ignore::ignored_remote_path;
 
 pub(crate) fn collect_github(
     owner: &str,

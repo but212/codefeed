@@ -24,7 +24,7 @@ impl Display for IngestError {
             Self::OutputTooLarge => write!(
                 f,
                 "digest exceeds the {} MiB output limit",
-                crate::limits::MAX_OUTPUT_SIZE / (1024 * 1024)
+                crate::core::limits::MAX_OUTPUT_SIZE / (1024 * 1024)
             ),
         }
     }

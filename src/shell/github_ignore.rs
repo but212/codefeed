@@ -2,13 +2,13 @@
 
 use std::path::Path;
 
-use crate::error::IngestError;
-use crate::limits::{MAX_FILE_SIZE, MAX_REMOTE_IGNORE_BYTES, MAX_REMOTE_IGNORE_FILES};
-use crate::model::REMOTE_ROOT;
+use crate::core::error::IngestError;
+use crate::core::github_tree::{TreeEntry, is_regular_blob};
+use crate::core::ignore::{RemoteIgnoreRule, remote_ignore_file_is_reachable};
+use crate::core::limits::{MAX_FILE_SIZE, MAX_REMOTE_IGNORE_BYTES, MAX_REMOTE_IGNORE_FILES};
+use crate::core::model::REMOTE_ROOT;
 
 use super::github_client::{GithubClient, LimitedBody};
-use super::github_tree::{TreeEntry, is_regular_blob};
-use super::ignore::{RemoteIgnoreRule, remote_ignore_file_is_reachable};
 
 const GITIGNORE_FILE_NAME: &str = ".gitignore";
 const NESTED_GITIGNORE_SUFFIX: &str = "/.gitignore";

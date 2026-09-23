@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::model::REMOTE_ROOT;
+use crate::core::model::REMOTE_ROOT;
 
 pub(crate) struct RemoteIgnoreRule {
     pub(crate) base: PathBuf,
