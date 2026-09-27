@@ -495,6 +495,48 @@ fn builds_github_api_and_raw_urls() {
     );
 }
 
+#[test]
+fn auth_scope_api_target() {
+    assert_eq!(
+        github_url::request_target("https://api.github.com/repos/owner/repo"),
+        github_url::RequestTarget::Api
+    );
+    assert_eq!(
+        github_url::request_target("https://api.github.com"),
+        github_url::RequestTarget::Api
+    );
+}
+
+#[test]
+fn auth_scope_raw_target() {
+    assert_eq!(
+        github_url::request_target("https://raw.githubusercontent.com/owner/repo/main/lib.rs"),
+        github_url::RequestTarget::Raw
+    );
+    assert_eq!(
+        github_url::request_target("https://raw.githubusercontent.com"),
+        github_url::RequestTarget::Raw
+    );
+}
+
+#[test]
+fn auth_scope_rejects_host_confusion() {
+    for url in [
+        "https://api.github.com.evil.example/x",
+        "https://api.github.com@evil.example/x",
+        "https://raw.githubusercontent.com.evil.example/x",
+        "https://raw.githubusercontent.com@evil.example/x",
+        "http://127.0.0.1:8080/repos/owner/repo",
+        "https://evil.example/",
+    ] {
+        assert_eq!(
+            github_url::request_target(url),
+            github_url::RequestTarget::Other,
+            "non-GitHub origin must not receive credentials: {url}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn skips_non_utf8_paths() -> Result<(), Box<dyn std::error::Error>> {
@@ -633,4 +675,43 @@ fn decide_rejects_output_overflow() -> Result<(), Box<dyn std::error::Error>> {
 fn temp_dir(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     Ok(env::temp_dir().join(format!("local_ingest_{label}_{nanos}")))
+}
+
+#[test]
+fn resolves_token_with_correct_precedence_and_trimming() {
+    use std::collections::HashMap;
+    use std::env::VarError;
+
+    let mock_env = |map: HashMap<&'static str, &'static str>| {
+        move |key: &str| {
+            map.get(key)
+                .copied()
+                .map(String::from)
+                .ok_or(VarError::NotPresent)
+        }
+    };
+
+    let env = HashMap::from([("GITHUB_TOKEN", "token_a"), ("GH_TOKEN", "token_b")]);
+    assert_eq!(
+        github_client::resolve_token_with(mock_env(env)),
+        Some("token_a".into())
+    );
+
+    let env = HashMap::from([("GH_TOKEN", "token_b")]);
+    assert_eq!(
+        github_client::resolve_token_with(mock_env(env)),
+        Some("token_b".into())
+    );
+
+    let env = HashMap::from([("GITHUB_TOKEN", "   "), ("GH_TOKEN", "valid_token")]);
+    assert_eq!(
+        github_client::resolve_token_with(mock_env(env)),
+        Some("valid_token".into())
+    );
+
+    let env = HashMap::from([("GITHUB_TOKEN", "")]);
+    assert_eq!(github_client::resolve_token_with(mock_env(env)), None);
+
+    let env = HashMap::new();
+    assert_eq!(github_client::resolve_token_with(mock_env(env)), None);
 }

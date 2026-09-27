@@ -1,7 +1,37 @@
-//! Pure GitHub URL construction and percent-encoding.
+//! Pure GitHub URL construction, percent-encoding, and origin classification
+//! used to scope credentials and API-only headers.
 
 const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 const GITHUB_RAW_BASE_URL: &str = "https://raw.githubusercontent.com";
+
+/// Origin of a request URL: which headers and credentials the shell may attach.
+///
+/// `Other` covers every non-GitHub origin and host-confusion lookalikes
+/// (`https://api.github.com.evil.example/...`, `https://api.github.com@evil.example/...`);
+/// those requests must never carry `Authorization`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RequestTarget {
+    Api,
+    Raw,
+    Other,
+}
+
+pub(crate) fn request_target(url: &str) -> RequestTarget {
+    if has_origin(url, GITHUB_API_BASE_URL) {
+        RequestTarget::Api
+    } else if has_origin(url, GITHUB_RAW_BASE_URL) {
+        RequestTarget::Raw
+    } else {
+        RequestTarget::Other
+    }
+}
+
+/// Exact-origin match: `url == base` or `url` starts with `base + "/"`.
+/// A plain prefix check would also match `https://api.github.com.evil.example`.
+fn has_origin(url: &str, base: &str) -> bool {
+    url.strip_prefix(base)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
 
 pub(crate) fn api_url(segments: &[&str]) -> String {
     let mut url = String::from(GITHUB_API_BASE_URL);

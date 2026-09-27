@@ -33,6 +33,9 @@ imperative-shell boundary.
 - Output is written atomically: create-new temporary file, sync, rename.
 - Local file opening never follows symlinks and never blocks on special files
   (`O_NOFOLLOW` / `O_NONBLOCK`).
+- HTTP credentials (`Authorization: Bearer <token>`) attach only to
+  exact-origin GitHub API and raw-content hosts; lookalike or foreign origins
+  never receive credentials.
 
 ## Limits
 
@@ -54,13 +57,15 @@ never depends on shell code; shell code depends on the core in one direction.
   and results (`model.rs`), domain errors (`error.rs`), numeric limits
   (`limits.rs`), per-item `Selector::decide` and its candidate budget
   (`decide.rs`), digest budget and rendering (`digest.rs`), ignore matching
-  (`ignore.rs`), URL construction (`github_url.rs`), and GitHub tree/response
+  (`ignore.rs`), URL construction and request-target classification for
+  credential scoping (`github_url.rs`), and GitHub tree/response
   classification (`github_tree.rs`).
 - Imperative shell (`src/shell/`): argument and process IO (`src/main.rs`,
   `shell/cli.rs`), orchestration (`src/lib.rs::ingest`), filesystem walking and
   safe reads (`shell/local.rs`, `shell/local_io.rs`), HTTP transport with
-  bounded response bodies (`shell/github_client.rs`), remote `.gitignore`
-  loading (`shell/github_ignore.rs`), GitHub orchestration (`shell/github.rs`),
+  bounded response bodies and GitHub token credential resolution
+  (`shell/github_client.rs`), remote `.gitignore` loading
+  (`shell/github_ignore.rs`), GitHub orchestration (`shell/github.rs`),
   and atomic output (`shell/output.rs`). The shell feeds observations to the
   core and reads the accounted result through `Selector::into_parts`.
 - `read_local_file` (`src/shell/local_io.rs`) returns a `Probe`; it performs the

@@ -1,6 +1,6 @@
 # rustingest
 
-Convert a local directory or public GitHub repository into one LLM-friendly text file.
+Convert a local directory or a public or token-authenticated GitHub repository into one LLM-friendly text file.
 
 ## Usage
 
@@ -17,7 +17,7 @@ cargo run -- ./my-repo
 cargo run -- /path/to/project --output ./digest.txt
 ```
 
-### Public GitHub repository
+### GitHub repository
 
 ```bash
 cargo run -- https://github.com/rust-lang/cargo
@@ -43,6 +43,15 @@ Cargo installs the binary in its configured binary directory, usually `~/.cargo/
 - `--ref <BRANCH|TAG|COMMIT>` — Use a GitHub branch, tag, or commit. Defaults to the repository's default branch and is invalid for local sources.
 - `--help`, `-h` — Print usage.
 
+### Authentication
+
+Public GitHub repositories need no credentials. For private repositories or higher rate limits, set one of:
+
+- `GITHUB_TOKEN` — used first when set.
+- `GH_TOKEN` — used when `GITHUB_TOKEN` is unset or blank.
+
+Values are trimmed; a blank value falls through to the next variable. The token is sent as `Authorization: Bearer <token>` only to `https://api.github.com` and `https://raw.githubusercontent.com`; requests to any other host never carry credentials.
+
 To run the release binary:
 
 ```bash
@@ -50,7 +59,7 @@ cargo build --release
 target/release/rustingest ./my-repo --output digest.txt
 ```
 
-On success, rustingest prints the output path and the number of included and skipped files. GitHub sources must be public; rustingest does not use the Git executable.
+On success, rustingest prints the output path and the number of included and skipped files. Without a token (see Authentication), GitHub sources must be public; rustingest does not use the Git executable.
 
 ## Filtering and limits
 

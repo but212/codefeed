@@ -10,7 +10,7 @@ use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::core::error::IngestError;
 use crate::core::github_tree::{CommitResponse, RepositoryResponse, TreeResponse};
-use crate::core::github_url::{api_url, raw_url};
+use crate::core::github_url::{RequestTarget, api_url, raw_url, request_target};
 use crate::core::limits::MAX_JSON_SIZE;
 
 const GITHUB_USER_AGENT: &str = "rustingest/0.1";
@@ -23,6 +23,7 @@ pub(crate) enum LimitedBody {
 
 pub(crate) struct GithubClient {
     agent: Agent,
+    auth_header: Option<String>,
 }
 
 impl GithubClient {
@@ -36,8 +37,12 @@ impl GithubClient {
             .http_status_as_error(false)
             .tls_config(tls)
             .build();
+
+        let auth_header = resolve_token_from_env().map(|token| format!("Bearer {token}"));
+
         Self {
             agent: Agent::new_with_config(config),
+            auth_header,
         }
     }
 
@@ -93,9 +98,19 @@ impl GithubClient {
     }
 
     fn response(&self, url: &str, limit: u64) -> Result<(StatusCode, LimitedBody), IngestError> {
-        let response = self
-            .agent
-            .get(url)
+        let mut request = self.agent.get(url);
+        let target = request_target(url);
+
+        if matches!(target, RequestTarget::Api | RequestTarget::Raw)
+            && let Some(auth) = &self.auth_header
+        {
+            request = request.header("Authorization", auth);
+        }
+        if target == RequestTarget::Api {
+            request = request.header("X-Github-Api-Version", "2022-11-28");
+        }
+
+        let response = request
             .call()
             .map_err(|error| IngestError::Http(error.to_string()))?;
         let status = response.status();
@@ -140,4 +155,20 @@ fn read_response(body: ureq::Body, limit: u64) -> Result<LimitedBody, IngestErro
         .read_to_end(&mut bytes)
         .map_err(|error| IngestError::Http(error.to_string()))?;
     Ok(classify_body(bytes, limit))
+}
+
+pub(crate) fn resolve_token_with<F>(mut lookup: F) -> Option<String>
+where
+    F: FnMut(&str) -> Result<String, std::env::VarError>,
+{
+    ["GITHUB_TOKEN", "GH_TOKEN"].into_iter().find_map(|key| {
+        lookup(key)
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+    })
+}
+
+pub(crate) fn resolve_token_from_env() -> Option<String> {
+    resolve_token_with(|k| std::env::var(k))
 }
