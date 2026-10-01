@@ -8,16 +8,24 @@ pub enum Source {
     GitHub { owner: String, repo: String },
 }
 
+/// Where the digest is delivered. Distinguishes a filesystem path from the
+/// standard output stream at the type level; there is no sentinel path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputTarget {
+    File(PathBuf),
+    Stdout,
+}
+
 #[derive(Debug, Clone)]
 pub struct Options {
-    pub output: PathBuf,
+    pub output: OutputTarget,
     pub reference: Option<String>,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            output: PathBuf::from("digest.txt"),
+            output: OutputTarget::File(PathBuf::from("digest.txt")),
             reference: None,
         }
     }
@@ -25,7 +33,7 @@ impl Default for Options {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IngestReport {
-    pub output: PathBuf,
+    pub output: OutputTarget,
     pub included_files: usize,
     pub skipped_files: usize,
 }

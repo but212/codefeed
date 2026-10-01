@@ -6,9 +6,10 @@ use super::core::limits::{
 };
 use super::core::model::REMOTE_ROOT;
 use super::core::{digest, github_tree, github_url, model};
-use super::shell::{github_client, github_ignore, local_io, output};
+use super::shell::{cli, github_client, github_ignore, local_io, output};
 use super::*;
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -132,7 +133,7 @@ fn preserves_distinct_unix_paths() -> Result<(), Box<dyn std::error::Error>> {
     let report = ingest(
         &Source::Local(root.clone()),
         &Options {
-            output: output.clone(),
+            output: model::OutputTarget::File(output.clone()),
             reference: None,
         },
     )?;
@@ -156,7 +157,7 @@ fn excludes_output_through_nonexistent_parent_alias() -> Result<(), Box<dyn std:
     let report = ingest(
         &Source::Local(root.clone()),
         &Options {
-            output,
+            output: model::OutputTarget::File(output),
             reference: None,
         },
     )?;
@@ -184,7 +185,7 @@ fn ingests_local_text_and_skips_binary_and_git_directory() -> Result<(), Box<dyn
     let report = ingest(
         &Source::Local(root.clone()),
         &Options {
-            output: output.clone(),
+            output: model::OutputTarget::File(output.clone()),
             reference: None,
         },
     )?;
@@ -314,7 +315,7 @@ fn applies_gitignore_without_git_directory() -> Result<(), Box<dyn std::error::E
     let report = ingest(
         &Source::Local(root.clone()),
         &Options {
-            output: output.clone(),
+            output: model::OutputTarget::File(output.clone()),
             reference: None,
         },
     )?;
@@ -337,7 +338,7 @@ fn does_not_apply_dot_ignore_files() -> Result<(), Box<dyn std::error::Error>> {
     let report = ingest(
         &Source::Local(root.clone()),
         &Options {
-            output: output.clone(),
+            output: model::OutputTarget::File(output.clone()),
             reference: None,
         },
     )?;
@@ -551,7 +552,7 @@ fn skips_non_utf8_paths() -> Result<(), Box<dyn std::error::Error>> {
     let report = ingest(
         &Source::Local(root.clone()),
         &Options {
-            output,
+            output: model::OutputTarget::File(output),
             reference: None,
         },
     )?;
@@ -670,6 +671,22 @@ fn decide_rejects_output_overflow() -> Result<(), Box<dyn std::error::Error>> {
     ));
     assert!(matches!(result, Err(IngestError::OutputTooLarge)));
     Ok(())
+}
+
+#[test]
+fn parses_stdout_output_target() {
+    assert_eq!(
+        cli::parse_output_target(OsStr::new("-")),
+        model::OutputTarget::Stdout
+    );
+    assert_eq!(
+        cli::parse_output_target(OsStr::new("digest.txt")),
+        model::OutputTarget::File(PathBuf::from("digest.txt"))
+    );
+    assert_eq!(
+        cli::parse_output_target(OsStr::new("-digest.txt")),
+        model::OutputTarget::File(PathBuf::from("-digest.txt"))
+    );
 }
 
 fn temp_dir(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {

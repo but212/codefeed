@@ -15,6 +15,7 @@ imperative-shell boundary.
   (`Probe::Bytes | Missing | TooLarge | Ignored`).
 - `FileRecord` — digest entry: `path`, `content`.
 - `IngestReport` — `output`, `included_files`, `skipped_files`.
+- `OutputTarget` — digest destination: `File(PathBuf)` or `Stdout`.
 - Budgets — `CandidateBudget` (candidate count), `DigestBudget` (rendered
   bytes and skipped count), `RemoteIgnoreBudget` (remote `.gitignore` count
   and bytes).
@@ -30,7 +31,17 @@ imperative-shell boundary.
 - Digest size accounting rejects content that would exceed `MAX_OUTPUT_SIZE`;
   overflow is never included.
 - File-path ordering is lexicographic and owned solely by `render_digest`.
-- Output is written atomically: create-new temporary file, sync, rename.
+- A file output target is written atomically: create-new temporary file, sync,
+  rename.
+- A stdout output target writes the rendered digest to the stream directly, with
+  no temporary file and no filesystem sync.
+- The success completion message goes to standard output for a file target and to
+  standard error for a stdout target; a stdout target's stream carries digest
+  text only.
+- A closed consumer pipe is a normal early close, not an error: a broken pipe on
+  the stdout target exits successfully.
+- The local walk excludes the output file by identity. A stdout target has no
+  filesystem path, so no path is normalized and nothing is excluded.
 - Local file opening never follows symlinks and never blocks on special files
   (`O_NOFOLLOW` / `O_NONBLOCK`).
 - HTTP credentials (`Authorization: Bearer <token>`) attach only to
@@ -66,7 +77,8 @@ never depends on shell code; shell code depends on the core in one direction.
   bounded response bodies and GitHub token credential resolution
   (`shell/github_client.rs`), remote `.gitignore` loading
   (`shell/github_ignore.rs`), GitHub orchestration (`shell/github.rs`),
-  and atomic output (`shell/output.rs`). The shell feeds observations to the
+  and digest emission, atomic file write or stdout stream write
+  (`shell/output.rs`). The shell feeds observations to the
   core and reads the accounted result through `Selector::into_parts`.
 - `read_local_file` (`src/shell/local_io.rs`) returns a `Probe`; it performs the
   bounded read but leaves text/UTF-8 and budget judgment to the core.

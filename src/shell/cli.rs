@@ -1,12 +1,22 @@
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
-use crate::{IngestError, IngestReport, Options, ingest, parse_source_os};
+use crate::{IngestError, IngestReport, Options, OutputTarget, ingest, parse_source_os};
 
-const HELP: &str = "Usage: rustingest <SOURCE> [--output <PATH>] [--ref <REF>]";
+const HELP: &str = "Usage: rustingest <SOURCE> [--output <PATH|->] [--ref <REF>]";
 
 pub(crate) fn help_text() -> &'static str {
     HELP
+}
+
+/// `--output -` selects standard output; every other value is a filesystem
+/// path, including names that merely start with a dash.
+pub(crate) fn parse_output_target(value: &OsStr) -> OutputTarget {
+    if value == OsStr::new("-") {
+        OutputTarget::Stdout
+    } else {
+        OutputTarget::File(PathBuf::from(value))
+    }
 }
 
 /// Scans for `--help`/`-h` in option position, skipping values of options that
@@ -41,7 +51,7 @@ where
                 if matches!(value.to_str(), Some("--help" | "-h")) {
                     return Err(usage("--output requires a path"));
                 }
-                options.output = PathBuf::from(value);
+                options.output = parse_output_target(&value);
             }
             Some("--ref") => {
                 let value = args

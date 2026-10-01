@@ -7,7 +7,7 @@ Convert a local directory or a public or token-authenticated GitHub repository i
 Requires Rust and Cargo. From the project root:
 
 ```bash
-cargo run -- <SOURCE> [--output <PATH>] [--ref <BRANCH|TAG|COMMIT>]
+cargo run -- <SOURCE> [--output <PATH|->] [--ref <BRANCH|TAG|COMMIT>]
 ```
 
 ### Local directory
@@ -16,6 +16,14 @@ cargo run -- <SOURCE> [--output <PATH>] [--ref <BRANCH|TAG|COMMIT>]
 cargo run -- ./my-repo
 cargo run -- /path/to/project --output ./digest.txt
 ```
+
+### Standard output
+
+```bash
+rustingest ./my-repo --output - | your-tool
+```
+
+`--output -` writes the digest to standard output and creates no file.
 
 ### GitHub repository
 
@@ -39,7 +47,7 @@ Cargo installs the binary in its configured binary directory, usually `~/.cargo/
 
 ### Options
 
-- `--output <PATH>` — Write the digest to `PATH`. Defaults to `digest.txt` in the current directory.
+- `--output <PATH>` — Write the digest to `PATH`. Defaults to `digest.txt` in the current directory. `-` writes to standard output.
 - `--ref <BRANCH|TAG|COMMIT>` — Use a GitHub branch, tag, or commit. Defaults to the repository's default branch and is invalid for local sources.
 - `--help`, `-h` — Print usage.
 
@@ -59,7 +67,7 @@ cargo build --release
 target/release/rustingest ./my-repo --output digest.txt
 ```
 
-On success, rustingest prints the output path and the number of included and skipped files. Without a token (see Authentication), GitHub sources must be public; rustingest does not use the Git executable.
+When the digest goes to a file, rustingest prints the output path and the number of included and skipped files on success. With `--output -` it reports that summary on standard error instead, so standard output carries only digest text. A consumer that closes the pipe early, as in `rustingest . --output - | head -1`, is not an error. Without a token (see Authentication), GitHub sources must be public; rustingest does not use the Git executable.
 
 ## Filtering and limits
 
@@ -71,6 +79,6 @@ On success, rustingest prints the output path and the number of included and ski
 - Returns an error without committing content if the digest exceeds 20 MiB.
 - Rejects GitHub API responses larger than 8 MiB without parsing truncated JSON.
 - Sorts file paths lexicographically for deterministic output. Escapes backslashes and newlines in digest headers.
-- Writes to a collision-resistant temporary file, syncs it, and atomically renames it on success. Failed writes preserve the existing output.
+- Writes a file target to a collision-resistant temporary file, syncs it, and atomically renames it on success. Failed writes preserve the existing output. A standard output target skips the temporary file and sync and writes the rendered digest to the stream directly.
 
 `--help` exits with status 0. Invalid arguments and ingest errors are written to stderr and exit with a non-zero status.

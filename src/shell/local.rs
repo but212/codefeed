@@ -9,10 +9,13 @@ use ignore::WalkBuilder;
 use super::local_io::read_local_file;
 use crate::core::decide::{Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
-use crate::core::model::CollectionResult;
+use crate::core::model::{CollectionResult, OutputTarget};
 use crate::shell::output::output_identity;
 
-pub(crate) fn collect_local(root: &Path, output: &Path) -> Result<CollectionResult, IngestError> {
+pub(crate) fn collect_local(
+    root: &Path,
+    output: &OutputTarget,
+) -> Result<CollectionResult, IngestError> {
     let root = fs::canonicalize(root)
         .map_err(|error| IngestError::InvalidSource(format!("{} ({error})", root.display())))?;
     if !root.is_dir() {
@@ -21,7 +24,12 @@ pub(crate) fn collect_local(root: &Path, output: &Path) -> Result<CollectionResu
             root.display()
         )));
     }
-    let exclude = output_identity(output)?;
+    // Standard output has no filesystem path, so there is nothing to exclude
+    // from the walk.
+    let exclude = match output {
+        OutputTarget::File(path) => Some(output_identity(path)?),
+        OutputTarget::Stdout => None,
+    };
     let label = root.display().to_string();
     let mut selector = Selector::new(&label, None)?;
 
@@ -40,7 +48,9 @@ pub(crate) fn collect_local(root: &Path, output: &Path) -> Result<CollectionResu
         let entry = entry.map_err(|error| IngestError::Io(io::Error::other(error)))?;
         let entry_path = entry.path();
         if entry_path == root
-            || entry_path == exclude
+            || exclude
+                .as_ref()
+                .is_some_and(|excluded| entry_path == excluded)
             || !entry.file_type().is_some_and(|kind| kind.is_file())
         {
             continue;

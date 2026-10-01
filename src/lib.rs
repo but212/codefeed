@@ -10,7 +10,7 @@ use std::ffi::{OsStr, OsString};
 use crate::core::model::CollectionResult;
 
 pub use crate::core::error::IngestError;
-pub use crate::core::model::{IngestReport, Options, Source};
+pub use crate::core::model::{IngestReport, Options, OutputTarget, Source};
 
 pub fn parse_source(value: &str) -> Result<Source, IngestError> {
     core::source::parse_source(value)
@@ -52,7 +52,7 @@ pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, Ingest
             skipped,
         } => core::digest::render_digest(label, Some(revision), files, *skipped)?,
     };
-    shell::output::write_atomic(&options.output, digest.as_bytes())?;
+    shell::output::emit(&options.output, &digest)?;
 
     let (included_files, skipped_files) = match &collection {
         CollectionResult::Local { files, skipped, .. }

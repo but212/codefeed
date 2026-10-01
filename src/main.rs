@@ -1,4 +1,4 @@
-use rustingest::{help_text, requests_help, run_cli};
+use rustingest::{OutputTarget, help_text, requests_help, run_cli};
 use std::env::args_os;
 use std::process;
 
@@ -10,14 +10,20 @@ fn main() {
     }
 
     match run_cli(args) {
-        Ok(report) => {
-            println!(
+        // With `--output -` the digest owns stdout, so the completion message
+        // goes to stderr there and stays on stdout for a file target.
+        Ok(report) => match &report.output {
+            OutputTarget::File(path) => println!(
                 "Wrote {} ({} files, {} skipped)",
-                report.output.display(),
+                path.display(),
                 report.included_files,
                 report.skipped_files
-            );
-        }
+            ),
+            OutputTarget::Stdout => eprintln!(
+                "Wrote to stdout ({} files, {} skipped)",
+                report.included_files, report.skipped_files
+            ),
+        },
         Err(error) => {
             eprintln!("error: {error}");
             process::exit(1);
