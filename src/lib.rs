@@ -19,6 +19,7 @@
 //! let options = Options {
 //!     output: OutputTarget::File(PathBuf::from("digest.txt")),
 //!     reference: None,
+//!     ..Default::default()
 //! };
 //! let report = ingest(&source, &options)?;
 //! println!("Included {} files, skipped {}", report.included_files, report.skipped_files);
@@ -32,7 +33,7 @@ mod shell;
 use std::ffi::{OsStr, OsString};
 
 pub use crate::core::error::IngestError;
-pub use crate::core::model::{IngestReport, Options, OutputTarget, Source};
+pub use crate::core::model::{DigestFormat, IngestReport, Options, OutputTarget, Source};
 
 /// Parses a source string into a [`Source::Local`] directory or [`Source::GitHub`] repository.
 ///
@@ -105,10 +106,13 @@ pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, Ingest
     }
 
     let collection = match source {
-        Source::Local(root) => shell::local::collect_local(root, &options.output)?,
-        Source::GitHub { owner, repo } => {
-            shell::github::collect_github(owner, repo, options.reference.as_deref())?
-        }
+        Source::Local(root) => shell::local::collect_local(root, &options.output, options.format)?,
+        Source::GitHub { owner, repo } => shell::github::collect_github(
+            owner,
+            repo,
+            options.reference.as_deref(),
+            options.format,
+        )?,
     };
 
     let (label, revision, files, skipped) = match collection {
@@ -125,14 +129,24 @@ pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, Ingest
         } => (label, Some(revision), files, skipped),
     };
 
+    let mut estimated_tokens = 0;
     shell::output::emit(&options.output, |writer| {
-        core::digest::render_digest_to_writer(writer, &label, revision.as_deref(), &files, skipped)
+        estimated_tokens = core::digest::render_digest_to_writer(
+            writer,
+            &label,
+            revision.as_deref(),
+            &files,
+            skipped,
+            options.format,
+        )?;
+        Ok(())
     })?;
 
     Ok(IngestReport {
         output: options.output.clone(),
         included_files: files.len(),
         skipped_files: skipped,
+        estimated_tokens,
     })
 }
 

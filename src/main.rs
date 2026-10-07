@@ -17,14 +17,15 @@ fn main() {
         // goes to stderr there and stays on stdout for a file target.
         Ok(report) => match &report.output {
             OutputTarget::File(path) => println!(
-                "Wrote {} ({} files, {} skipped)",
+                "Wrote {} ({} files, {} skipped, ~{} tokens)",
                 path.display(),
                 report.included_files,
-                report.skipped_files
+                report.skipped_files,
+                report.estimated_tokens
             ),
             OutputTarget::Stdout => eprintln!(
-                "Wrote to stdout ({} files, {} skipped)",
-                report.included_files, report.skipped_files
+                "Wrote to stdout ({} files, {} skipped, ~{} tokens)",
+                report.included_files, report.skipped_files, report.estimated_tokens
             ),
         },
         Err(error) => {

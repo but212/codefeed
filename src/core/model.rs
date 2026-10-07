@@ -24,13 +24,25 @@ pub enum OutputTarget {
     Stdout,
 }
 
-/// Ingestion options controlling destination and remote revision.
+/// Output serialization format for the LLM digest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DigestFormat {
+    /// Delimiter-separated plain text format (default).
+    #[default]
+    Text,
+    /// Anthropic and LLM-optimized XML structured format.
+    Xml,
+}
+
+/// Ingestion options controlling destination, remote revision, and serialization format.
 #[derive(Debug, Clone)]
 pub struct Options {
     /// Target destination for the rendered digest. Defaults to `digest.txt`.
     pub output: OutputTarget,
     /// Optional GitHub branch, tag, or commit SHA. Invalid for local sources.
     pub reference: Option<String>,
+    /// Serialization format for the digest. Defaults to plain text.
+    pub format: DigestFormat,
 }
 
 impl Default for Options {
@@ -38,6 +50,7 @@ impl Default for Options {
         Self {
             output: OutputTarget::File(PathBuf::from("digest.txt")),
             reference: None,
+            format: DigestFormat::Text,
         }
     }
 }
@@ -51,6 +64,8 @@ pub struct IngestReport {
     pub included_files: usize,
     /// Number of candidate files rejected due to size, encoding, or binary content.
     pub skipped_files: usize,
+    /// Approximate token count of the rendered digest.
+    pub estimated_tokens: usize,
 }
 
 /// One digest entry. Owned by the domain core; rendered by `digest`.

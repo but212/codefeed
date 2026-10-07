@@ -3,9 +3,10 @@
 use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
 use crate::core::github_tree::{is_hidden_path, is_regular_blob};
-use crate::core::model::CollectionResult;
+use crate::core::model::{CollectionResult, DigestFormat};
 use crate::core::policy::{
     FETCH_WINDOW, MAX_FILE_COUNT, MAX_FILE_SIZE, has_binary_extension, is_noise_path,
+    is_sensitive_path,
 };
 
 use super::github_client::{GithubClient, LimitedBody};
@@ -14,6 +15,7 @@ pub(crate) fn collect_github(
     owner: &str,
     repo: &str,
     reference: Option<&str>,
+    format: DigestFormat,
 ) -> Result<CollectionResult, IngestError> {
     let client = GithubClient::new();
     let reference = match reference {
@@ -29,7 +31,7 @@ pub(crate) fn collect_github(
     }
 
     let label = format!("https://github.com/{owner}/{repo}");
-    let mut selector = Selector::new(&label, Some(&revision))?;
+    let mut selector = Selector::new(&label, Some(&revision), format)?;
 
     let entries: Vec<_> = tree
         .tree
@@ -38,6 +40,7 @@ pub(crate) fn collect_github(
             is_regular_blob(entry)
                 && !is_hidden_path(&entry.path)
                 && !is_noise_path(&entry.path)
+                && !is_sensitive_path(&entry.path)
         })
         .collect();
 
