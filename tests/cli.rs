@@ -188,7 +188,7 @@ fn help_after_non_utf8_source_exits_successfully() {
     assert!(output.status.success(), "output: {output:?}");
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "Usage: rustingest <SOURCE> [--output <PATH|->] [--ref <REF>]"
+        "Usage: rustingest <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]"
     );
     assert!(output.stderr.is_empty(), "output: {output:?}");
 }

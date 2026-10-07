@@ -1,9 +1,78 @@
 //! Command-line binary entry point for rustingest.
 
+mod core;
+mod shell;
+
 use std::env::args_os;
+use std::ffi::OsStr;
 use std::process;
 
-use rustingest::{OutputTarget, help_text, requests_help, run_cli};
+use crate::core::error::IngestError;
+use crate::core::model::{IngestReport, Options, OutputTarget, Source};
+use crate::shell::cli::{help_text, requests_help, run_cli};
+
+pub(crate) fn parse_source_os(value: &OsStr) -> Result<Source, IngestError> {
+    core::source::parse_source_os(value)
+}
+
+pub(crate) fn ingest(source: &Source, options: &Options) -> Result<IngestReport, IngestError> {
+    if options
+        .reference
+        .as_ref()
+        .is_some_and(|reference| reference.trim().is_empty())
+    {
+        return Err(IngestError::InvalidSource("--ref cannot be empty".into()));
+    }
+    if matches!(source, Source::Local(_)) && options.reference.is_some() {
+        return Err(IngestError::InvalidSource(
+            "--ref is only valid for GitHub sources".into(),
+        ));
+    }
+
+    let collection = match source {
+        Source::Local(root) => shell::local::collect_local(root, &options.output, options.format)?,
+        Source::GitHub { owner, repo } => shell::github::collect_github(
+            owner,
+            repo,
+            options.reference.as_deref(),
+            options.format,
+        )?,
+    };
+
+    let (label, revision, files, skipped) = match collection {
+        core::model::CollectionResult::Local {
+            label,
+            files,
+            skipped,
+        } => (label, None, files, skipped),
+        core::model::CollectionResult::GitHub {
+            label,
+            revision,
+            files,
+            skipped,
+        } => (label, Some(revision), files, skipped),
+    };
+
+    let mut estimated_tokens = 0;
+    shell::output::emit(&options.output, |writer| {
+        estimated_tokens = core::digest::render_digest_to_writer(
+            writer,
+            &label,
+            revision.as_deref(),
+            &files,
+            skipped,
+            options.format,
+        )?;
+        Ok(())
+    })?;
+
+    Ok(IngestReport {
+        output: options.output.clone(),
+        included_files: files.len(),
+        skipped_files: skipped,
+        estimated_tokens,
+    })
+}
 
 fn main() {
     let args: Vec<_> = args_os().collect();
