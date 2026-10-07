@@ -180,19 +180,22 @@ pub(crate) fn render_digest_to_writer<W: std::io::Write + ?Sized>(
     writer.write_all(skipped.to_string().as_bytes())?;
     writer.write_all(METADATA_SUFFIX.as_bytes())?;
 
-    let mut ordered_files: Vec<_> = files.iter().collect();
-    ordered_files.sort_by(|left, right| left.path.cmp(&right.path));
+    let mut ordered_files: Vec<_> = files
+        .iter()
+        .map(|file| (escape_header(&file.path), file))
+        .collect();
+    ordered_files.sort_by(|left, right| left.1.path.cmp(&right.1.path));
 
     writer.write_all(DIRECTORY_HEADER.as_bytes())?;
-    for file in &ordered_files {
+    for (escaped_path, _) in &ordered_files {
         writer.write_all(DIRECTORY_ENTRY_PREFIX.as_bytes())?;
-        writer.write_all(escape_header(&file.path).as_bytes())?;
+        writer.write_all(escaped_path.as_bytes())?;
         writer.write_all(NEWLINE.as_bytes())?;
     }
     writer.write_all(FILES_HEADER.as_bytes())?;
-    for file in ordered_files {
+    for (escaped_path, file) in ordered_files {
         writer.write_all(FILE_BLOCK_PREFIX.as_bytes())?;
-        writer.write_all(escape_header(&file.path).as_bytes())?;
+        writer.write_all(escaped_path.as_bytes())?;
         writer.write_all(FILE_BLOCK_SUFFIX.as_bytes())?;
         writer.write_all(file.content.as_bytes())?;
         if !file.content.ends_with('\n') {

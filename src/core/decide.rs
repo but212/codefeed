@@ -136,10 +136,11 @@ impl CandidateBudget {
 
 /// UTF-8 text predicate: NUL-free bytes only.
 fn text_content(bytes: Vec<u8>) -> Option<String> {
-    if bytes.contains(&0) {
+    let text = String::from_utf8(bytes).ok()?;
+    if text.contains('\0') {
         return None;
     }
-    String::from_utf8(bytes).ok()
+    Some(text)
 }
 
 #[cfg(test)]
