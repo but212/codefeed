@@ -57,7 +57,7 @@ fn push_encoded_segment(url: &mut String, segment: &str) {
     url.push_str(&encode_path_segment(segment));
 }
 
-pub(crate) fn encode_path_segment(segment: &str) -> String {
+fn encode_path_segment(segment: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut encoded = String::with_capacity(segment.len());
     for byte in segment.bytes() {
@@ -70,4 +70,74 @@ pub(crate) fn encode_path_segment(segment: &str) -> String {
         }
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percent_encodes_url_path_segments() {
+        assert_eq!(encode_path_segment("AZaz09-._~"), "AZaz09-._~");
+        assert_eq!(encode_path_segment("feature/x"), "feature%2Fx");
+        assert_eq!(encode_path_segment("a b"), "a%20b");
+        assert_eq!(encode_path_segment("100%"), "100%25");
+        assert_eq!(encode_path_segment("a#b?c"), "a%23b%3Fc");
+        assert_eq!(encode_path_segment("café"), "caf%C3%A9");
+    }
+
+    #[test]
+    fn builds_github_api_and_raw_urls() {
+        assert_eq!(
+            api_url(&["repos", "rust-lang", "cargo", "commits", "master"]),
+            "https://api.github.com/repos/rust-lang/cargo/commits/master"
+        );
+        assert_eq!(
+            raw_url("rust-lang", "cargo", "abc123", "src/main.rs"),
+            "https://raw.githubusercontent.com/rust-lang/cargo/abc123/src/main.rs"
+        );
+        assert_eq!(
+            raw_url("o", "r", "feature/x", "dir/a b.txt"),
+            "https://raw.githubusercontent.com/o/r/feature%2Fx/dir/a%20b.txt"
+        );
+    }
+
+    #[test]
+    fn auth_scope_api_target() {
+        assert_eq!(
+            request_target("https://api.github.com/repos/owner/repo"),
+            RequestTarget::Api
+        );
+        assert_eq!(request_target("https://api.github.com"), RequestTarget::Api);
+    }
+
+    #[test]
+    fn auth_scope_raw_target() {
+        assert_eq!(
+            request_target("https://raw.githubusercontent.com/owner/repo/main/lib.rs"),
+            RequestTarget::Raw
+        );
+        assert_eq!(
+            request_target("https://raw.githubusercontent.com"),
+            RequestTarget::Raw
+        );
+    }
+
+    #[test]
+    fn auth_scope_rejects_host_confusion() {
+        for url in [
+            "https://api.github.com.evil.example/x",
+            "https://api.github.com@evil.example/x",
+            "https://raw.githubusercontent.com.evil.example/x",
+            "https://raw.githubusercontent.com@evil.example/x",
+            "http://127.0.0.1:8080/repos/owner/repo",
+            "https://evil.example/",
+        ] {
+            assert_eq!(
+                request_target(url),
+                RequestTarget::Other,
+                "non-GitHub origin must not receive credentials: {url}"
+            );
+        }
+    }
 }

@@ -135,3 +135,167 @@ fn normalize_path(path: &Path) -> PathBuf {
     }
     normalized
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::model::{Options, Source};
+    use crate::ingest;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(unix)]
+    #[test]
+    fn preserves_distinct_unix_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("path_encoding")?;
+        fs::create_dir_all(root.join("a"))?;
+        fs::write(root.join("a\\b.txt"), "backslash")?;
+        fs::write(root.join("a").join("b.txt"), "slash")?;
+        let output = root.join("digest.txt");
+
+        let report = ingest(
+            &Source::Local(root.clone()),
+            &Options {
+                output: OutputTarget::File(output.clone()),
+                reference: None,
+            },
+        )?;
+        let digest = fs::read_to_string(output)?;
+
+        assert_eq!(report.included_files, 2);
+        assert!(digest.contains("FILE: a\\\\b.txt"));
+        assert!(digest.contains("FILE: a/b.txt"));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn excludes_output_through_nonexistent_parent_alias() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = temp_dir("output_alias")?;
+        fs::create_dir_all(&root)?;
+        fs::write(root.join("source.txt"), "source")?;
+        fs::write(root.join("digest.txt"), "previous output")?;
+        let output = root.join("missing").join("..").join("digest.txt");
+
+        let report = ingest(
+            &Source::Local(root.clone()),
+            &Options {
+                output: OutputTarget::File(output),
+                reference: None,
+            },
+        )?;
+        let digest = fs::read_to_string(root.join("digest.txt"))?;
+
+        assert_eq!(report.included_files, 1);
+        assert!(!digest.contains("previous output"));
+        assert!(digest.contains("FILE: source.txt"));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn ingests_local_text_and_skips_binary_and_git_directory()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("local")?;
+        fs::create_dir_all(root.join(".git"))?;
+        fs::write(root.join("README.md"), "hello")?;
+        fs::write(root.join("binary.bin"), [0, 1, 2])?;
+        fs::write(root.join(".git/config"), "secret")?;
+        fs::write(root.join(".gitignore"), "ignored.txt\n")?;
+        fs::write(root.join("ignored.txt"), "ignored")?;
+        let output = root.join("digest.txt");
+
+        let report = ingest(
+            &Source::Local(root.clone()),
+            &Options {
+                output: OutputTarget::File(output.clone()),
+                reference: None,
+            },
+        )?;
+        let digest = fs::read_to_string(output)?;
+        assert_eq!(report.included_files, 1);
+        assert_eq!(report.skipped_files, 1);
+        assert!(digest.contains("FILE: README.md"));
+        assert!(!digest.contains("binary.bin"));
+        assert!(!digest.contains(".git/config"));
+        assert!(!digest.contains("ignored.txt"));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn applies_gitignore_without_git_directory() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("ignore_without_git")?;
+        fs::create_dir_all(&root)?;
+        fs::write(root.join(".gitignore"), "ignored.txt\n")?;
+        fs::write(root.join("kept.txt"), "kept")?;
+        fs::write(root.join("ignored.txt"), "ignored")?;
+        let output = root.join("digest.txt");
+
+        let report = ingest(
+            &Source::Local(root.clone()),
+            &Options {
+                output: OutputTarget::File(output.clone()),
+                reference: None,
+            },
+        )?;
+        let digest = fs::read_to_string(output)?;
+        assert_eq!(report.included_files, 1);
+        assert!(digest.contains("FILE: kept.txt"));
+        assert!(!digest.contains("ignored.txt"));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn does_not_apply_dot_ignore_files() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("dot_ignore")?;
+        fs::create_dir_all(&root)?;
+        fs::write(root.join(".ignore"), "important.txt\n")?;
+        fs::write(root.join("important.txt"), "important")?;
+        let output = root.join("digest.txt");
+
+        let report = ingest(
+            &Source::Local(root.clone()),
+            &Options {
+                output: OutputTarget::File(output.clone()),
+                reference: None,
+            },
+        )?;
+        let digest = fs::read_to_string(output)?;
+
+        assert_eq!(report.included_files, 1);
+        assert!(digest.contains("FILE: important.txt"));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skips_non_utf8_paths() -> Result<(), Box<dyn std::error::Error>> {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = temp_dir("invalid_paths")?;
+        fs::create_dir_all(&root)?;
+        fs::write(root.join(OsString::from_vec(b"a\x80".to_vec())), "a")?;
+        fs::write(root.join(OsString::from_vec(b"b\x81".to_vec())), "b")?;
+        let output = root.join("digest.txt");
+        let report = ingest(
+            &Source::Local(root.clone()),
+            &Options {
+                output: OutputTarget::File(output),
+                reference: None,
+            },
+        )?;
+        assert_eq!(report.included_files, 0);
+        assert_eq!(report.skipped_files, 2);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    fn temp_dir(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        Ok(env::temp_dir().join(format!("local_ingest_{label}_{nanos}")))
+    }
+}

@@ -38,3 +38,26 @@ pub(crate) fn is_hidden_path(path: &str) -> bool {
 pub(crate) fn is_regular_blob(entry: &TreeEntry) -> bool {
     entry.entry_type == GIT_BLOB_TYPE && REGULAR_FILE_MODES.contains(&entry.mode.as_str())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_non_regular_git_blobs() {
+        let symlink = TreeEntry {
+            path: "link".into(),
+            mode: "120000".into(),
+            entry_type: "blob".into(),
+            size: Some(4),
+        };
+        let executable = TreeEntry {
+            path: "run.sh".into(),
+            mode: "100755".into(),
+            entry_type: "blob".into(),
+            size: Some(4),
+        };
+        assert!(!is_regular_blob(&symlink));
+        assert!(is_regular_blob(&executable));
+    }
+}

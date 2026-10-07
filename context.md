@@ -24,6 +24,9 @@ imperative-shell boundary.
 
 - Hidden and ignored paths are excluded before candidate accounting. They are
   neither candidates nor `skipped`.
+- Remote `.gitignore` files within hidden directory hierarchies are unreachable
+  and excluded before budget reservation or acquisition.
+- Remote parent directory traversal never ascends above `REMOTE_ROOT`.
 - A candidate slot is consumed before content, size, or encoding is judged
   (`L-02`).
 - `skipped` counts candidates rejected for content, size, or encoding reasons.

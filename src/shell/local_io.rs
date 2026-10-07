@@ -109,3 +109,89 @@ fn is_symlink_open_error(error: &io::Error) -> bool {
 fn is_symlink_open_error(_: &io::Error) -> bool {
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(unix)]
+    #[test]
+    fn does_not_follow_local_symlink() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("symlink")?;
+        fs::create_dir_all(&root)?;
+        let target = root.join("outside.txt");
+        let link = root.join("link.txt");
+        fs::write(&target, "outside")?;
+        symlink(&target, &link)?;
+
+        assert!(matches!(read_local_file(&root, &link)?, Probe::Missing));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn does_not_block_when_candidate_becomes_fifo() -> Result<(), Box<dyn std::error::Error>> {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        use std::sync::mpsc;
+        use std::thread;
+        use std::time::Duration;
+
+        let root = temp_dir("fifo")?;
+        fs::create_dir_all(&root)?;
+        let path = root.join("candidate");
+        let c_path = CString::new(path.as_os_str().as_bytes())?;
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+
+        let (sender, receiver) = mpsc::channel();
+        let thread_path = path.clone();
+        let thread_root = root.clone();
+        let worker = thread::spawn(move || {
+            let result = read_local_file(&thread_root, &thread_path);
+            sender.send(result).expect("result receiver should exist");
+        });
+        let result = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("FIFO candidate must not block local ingestion")?;
+
+        assert!(matches!(result, Probe::Missing));
+        worker.join().expect("file reader thread should finish");
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn bounds_local_file_reads() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("bounded_read")?;
+        fs::create_dir_all(&root)?;
+        let path = root.join("large.txt");
+        fs::write(&path, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
+
+        assert!(matches!(read_local_file(&root, &path)?, Probe::TooLarge));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn includes_file_at_exact_size_limit() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("exact_size")?;
+        fs::create_dir_all(&root)?;
+        let path = root.join("exact.txt");
+        fs::write(&path, vec![b'x'; MAX_FILE_SIZE as usize])?;
+
+        assert!(matches!(read_local_file(&root, &path)?, Probe::Bytes(_)));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    fn temp_dir(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        Ok(env::temp_dir().join(format!("local_ingest_{label}_{nanos}")))
+    }
+}

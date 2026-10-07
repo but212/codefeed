@@ -64,11 +64,6 @@ impl DigestBudget {
         self.skipped
     }
 
-    #[cfg(test)]
-    pub(crate) fn size(&self) -> Option<u64> {
-        self.rendered_size()
-    }
-
     fn add_file_bytes(&mut self, file: &FileRecord) -> Result<(), IngestError> {
         let path_bytes = byte_count(&escape_header(&file.path))?;
         self.path_bytes = self
@@ -184,4 +179,91 @@ fn escape_header(value: &str) -> String {
         .replace('\\', "\\\\")
         .replace('\r', "\\r")
         .replace('\n', "\\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::error::IngestError;
+    use crate::core::limits::MAX_OUTPUT_SIZE;
+    use crate::core::model::FileRecord;
+
+    #[test]
+    fn renders_files_in_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
+        let files = vec![
+            FileRecord {
+                path: "z.txt".into(),
+                content: "z".into(),
+            },
+            FileRecord {
+                path: "a.txt".into(),
+                content: "a".into(),
+            },
+        ];
+        let digest = render_digest("repo", Some("abc"), &files, 1)?;
+        let first = digest
+            .find("FILE: a.txt")
+            .ok_or_else(|| std::io::Error::other("a.txt is missing"))?;
+        let second = digest
+            .find("FILE: z.txt")
+            .ok_or_else(|| std::io::Error::other("z.txt is missing"))?;
+        assert!(first < second);
+        assert!(digest.contains("Revision: abc"));
+        assert!(digest.contains("Skipped: 1"));
+        Ok(())
+    }
+
+    #[test]
+    fn escapes_revision_header() -> Result<(), Box<dyn std::error::Error>> {
+        let revision = "feature\\x\r\nFiles: 9";
+        let rendered = render_digest("repo", Some(revision), &[], 0)?;
+
+        assert_eq!(
+            rendered.lines().nth(1),
+            Some("Revision: feature\\\\x\\r\\nFiles: 9")
+        );
+        assert!(!rendered.contains(revision));
+        Ok(())
+    }
+
+    #[test]
+    fn digest_budget_matches_rendered_size() -> Result<(), Box<dyn std::error::Error>> {
+        let files = vec![
+            FileRecord {
+                path: "z.txt".into(),
+                content: "z\n".into(),
+            },
+            FileRecord {
+                path: "a.txt".into(),
+                content: "a".into(),
+            },
+        ];
+        for revision in ["abc", "feature\\x\r\nFiles: 9"] {
+            let mut budget = DigestBudget::new("repo", Some(revision))?;
+            for file in &files {
+                budget.add(file)?;
+            }
+            budget.skip()?;
+            let rendered = render_digest("repo", Some(revision), &files, budget.skipped())?;
+
+            assert_eq!(
+                budget.rendered_size(),
+                Some(rendered.len() as u64),
+                "revision: {revision:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_digest_before_storing_over_budget_content() {
+        let candidate = FileRecord {
+            path: "large.txt".into(),
+            content: "x".repeat(MAX_OUTPUT_SIZE as usize),
+        };
+        assert!(matches!(
+            render_digest("repo", None, &[candidate], 0),
+            Err(IngestError::OutputTooLarge)
+        ));
+    }
 }

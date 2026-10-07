@@ -32,7 +32,7 @@ fn write_stdout(contents: &[u8]) -> Result<(), IngestError> {
     }
 }
 
-pub(crate) fn write_atomic(output: &Path, contents: &[u8]) -> Result<(), IngestError> {
+fn write_atomic(output: &Path, contents: &[u8]) -> Result<(), IngestError> {
     let parent = output.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let file_name = output
@@ -66,4 +66,43 @@ pub(crate) fn write_atomic(output: &Path, contents: &[u8]) -> Result<(), IngestE
         let _ = fs::remove_file(&temporary);
     }
     result.map_err(IngestError::Io)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::path::PathBuf;
+
+    fn temp_dir(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        Ok(env::temp_dir().join(format!("local_ingest_{label}_{nanos}")))
+    }
+
+    #[test]
+    fn atomic_write_ignores_stale_temporary_file() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("atomic")?;
+        fs::create_dir_all(&root)?;
+        let output = root.join("digest.txt");
+        fs::write(root.join(".digest.txt.123.tmp"), "stale")?;
+        write_atomic(&output, b"new")?;
+        assert_eq!(fs::read(&output)?, b"new");
+        assert_eq!(
+            fs::read_to_string(root.join(".digest.txt.123.tmp"))?,
+            "stale"
+        );
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn preserves_previous_output_on_atomic_failure() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("atomic_failure")?;
+        fs::create_dir_all(&root)?;
+        let result = write_atomic(&root, b"new");
+        assert!(result.is_err());
+        assert!(root.is_dir());
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
 }

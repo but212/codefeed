@@ -11,7 +11,7 @@ pub(crate) fn help_text() -> &'static str {
 
 /// `--output -` selects standard output; every other value is a filesystem
 /// path, including names that merely start with a dash.
-pub(crate) fn parse_output_target(value: &OsStr) -> OutputTarget {
+fn parse_output_target(value: &OsStr) -> OutputTarget {
     if value == OsStr::new("-") {
         OutputTarget::Stdout
     } else {
@@ -76,4 +76,23 @@ where
 
 fn usage(message: &str) -> IngestError {
     IngestError::InvalidSource(format!("{message}\n\n{HELP}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn parses_stdout_output_target() {
+        assert_eq!(parse_output_target(OsStr::new("-")), OutputTarget::Stdout);
+        assert_eq!(
+            parse_output_target(OsStr::new("digest.txt")),
+            OutputTarget::File(PathBuf::from("digest.txt"))
+        );
+        assert_eq!(
+            parse_output_target(OsStr::new("-digest.txt")),
+            OutputTarget::File(PathBuf::from("-digest.txt"))
+        );
+    }
 }

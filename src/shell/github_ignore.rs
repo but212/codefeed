@@ -13,7 +13,7 @@ use super::github_client::{GithubClient, LimitedBody};
 const GITIGNORE_FILE_NAME: &str = ".gitignore";
 const NESTED_GITIGNORE_SUFFIX: &str = "/.gitignore";
 
-pub(crate) fn remote_ignore_body(path: &str, body: LimitedBody) -> Result<Vec<u8>, IngestError> {
+fn remote_ignore_body(path: &str, body: LimitedBody) -> Result<Vec<u8>, IngestError> {
     match body {
         LimitedBody::Complete(bytes) => Ok(bytes),
         LimitedBody::Exceeded => Err(IngestError::InvalidMetadata(format!(
@@ -23,13 +23,13 @@ pub(crate) fn remote_ignore_body(path: &str, body: LimitedBody) -> Result<Vec<u8
 }
 
 #[derive(Default)]
-pub(crate) struct RemoteIgnoreBudget {
+struct RemoteIgnoreBudget {
     file_count: usize,
     bytes: u64,
 }
 
 impl RemoteIgnoreBudget {
-    pub(crate) fn reserve_file(&mut self) -> Result<(), IngestError> {
+    fn reserve_file(&mut self) -> Result<(), IngestError> {
         if self.file_count >= MAX_REMOTE_IGNORE_FILES {
             return Err(IngestError::InvalidMetadata(format!(
                 "repository contains more than {MAX_REMOTE_IGNORE_FILES} .gitignore files"
@@ -39,7 +39,7 @@ impl RemoteIgnoreBudget {
         Ok(())
     }
 
-    pub(crate) fn read_limit(&self) -> Result<u64, IngestError> {
+    fn read_limit(&self) -> Result<u64, IngestError> {
         let remaining = MAX_REMOTE_IGNORE_BYTES
             .checked_sub(self.bytes)
             .ok_or_else(|| IngestError::InvalidMetadata("remote ignore byte overflow".into()))?;
@@ -51,7 +51,7 @@ impl RemoteIgnoreBudget {
         Ok(remaining.min(MAX_FILE_SIZE))
     }
 
-    pub(crate) fn record_bytes(&mut self, bytes: usize) -> Result<(), IngestError> {
+    fn record_bytes(&mut self, bytes: usize) -> Result<(), IngestError> {
         self.bytes = self
             .bytes
             .checked_add(
@@ -128,4 +128,35 @@ pub(crate) fn load_ignore_rules(
     }
     rules.sort_by_key(|rule| rule.base.components().count());
     Ok(rules)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_remote_ignore_budget_overflow() {
+        let mut budget = RemoteIgnoreBudget::default();
+        for _ in 0..MAX_REMOTE_IGNORE_FILES {
+            budget.reserve_file().unwrap();
+        }
+        assert!(matches!(
+            budget.reserve_file(),
+            Err(IngestError::InvalidMetadata(message)) if message.contains(".gitignore files")
+        ));
+
+        let mut budget = RemoteIgnoreBudget::default();
+        budget
+            .record_bytes(MAX_REMOTE_IGNORE_BYTES as usize)
+            .unwrap();
+        assert!(budget.read_limit().is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_remote_ignore_body() {
+        assert!(matches!(
+            remote_ignore_body(".gitignore", LimitedBody::Exceeded),
+            Err(IngestError::InvalidMetadata(message)) if message.contains(".gitignore")
+        ));
+    }
 }

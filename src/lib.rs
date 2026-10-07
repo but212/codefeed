@@ -1,10 +1,6 @@
 mod core;
 mod shell;
 
-#[cfg(test)]
-#[path = "../tests/unit/mod.rs"]
-mod tests;
-
 use std::ffi::{OsStr, OsString};
 
 use crate::core::model::CollectionResult;

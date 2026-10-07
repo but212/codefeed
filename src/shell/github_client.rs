@@ -132,7 +132,7 @@ impl GithubClient {
     }
 }
 
-pub(crate) fn classify_body(bytes: Vec<u8>, limit: u64) -> LimitedBody {
+fn classify_body(bytes: Vec<u8>, limit: u64) -> LimitedBody {
     if bytes.len() as u64 > limit {
         LimitedBody::Exceeded
     } else {
@@ -157,7 +157,7 @@ fn read_response(body: ureq::Body, limit: u64) -> Result<LimitedBody, IngestErro
     Ok(classify_body(bytes, limit))
 }
 
-pub(crate) fn resolve_token_with<F>(mut lookup: F) -> Option<String>
+fn resolve_token_with<F>(mut lookup: F) -> Option<String>
 where
     F: FnMut(&str) -> Result<String, std::env::VarError>,
 {
@@ -169,6 +169,55 @@ where
     })
 }
 
-pub(crate) fn resolve_token_from_env() -> Option<String> {
+fn resolve_token_from_env() -> Option<String> {
     resolve_token_with(|k| std::env::var(k))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::env::VarError;
+
+    #[test]
+    fn distinguishes_complete_and_oversized_bodies() {
+        assert!(matches!(
+            classify_body(vec![0; 8], 8),
+            LimitedBody::Complete(body) if body.len() == 8
+        ));
+        assert!(matches!(
+            classify_body(vec![0; 9], 8),
+            LimitedBody::Exceeded
+        ));
+    }
+
+    #[test]
+    fn resolves_token_with_correct_precedence_and_trimming() {
+        let mock_env = |map: HashMap<&'static str, &'static str>| {
+            move |key: &str| {
+                map.get(key)
+                    .copied()
+                    .map(String::from)
+                    .ok_or(VarError::NotPresent)
+            }
+        };
+
+        let env = HashMap::from([("GITHUB_TOKEN", "token_a"), ("GH_TOKEN", "token_b")]);
+        assert_eq!(resolve_token_with(mock_env(env)), Some("token_a".into()));
+
+        let env = HashMap::from([("GH_TOKEN", "token_b")]);
+        assert_eq!(resolve_token_with(mock_env(env)), Some("token_b".into()));
+
+        let env = HashMap::from([("GITHUB_TOKEN", "   "), ("GH_TOKEN", "valid_token")]);
+        assert_eq!(
+            resolve_token_with(mock_env(env)),
+            Some("valid_token".into())
+        );
+
+        let env = HashMap::from([("GITHUB_TOKEN", "")]);
+        assert_eq!(resolve_token_with(mock_env(env)), None);
+
+        let env = HashMap::new();
+        assert_eq!(resolve_token_with(mock_env(env)), None);
+    }
 }

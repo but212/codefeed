@@ -98,3 +98,102 @@ fn text_content(bytes: Vec<u8>) -> Option<String> {
     }
     String::from_utf8(bytes).ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::limits::{MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE};
+
+    fn decide_item(path: &str, probe: Probe) -> Item {
+        Item {
+            path: ItemPath::Utf8(path.to_owned()),
+            probe,
+        }
+    }
+
+    #[test]
+    fn counts_candidate_before_content_filtering() {
+        let mut candidates = CandidateBudget::default();
+        for _ in 0..MAX_FILE_COUNT {
+            candidates.add().unwrap();
+        }
+        assert!(candidates.add().is_err());
+    }
+
+    #[test]
+    fn decide_includes_text_candidate() -> Result<(), Box<dyn std::error::Error>> {
+        let mut selector = Selector::new("repo", None)?;
+        selector.decide(decide_item("a.txt", Probe::Bytes(b"hello".to_vec())))?;
+        let (files, skipped) = selector.into_parts();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "a.txt");
+        assert_eq!(skipped, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn decide_skips_binary_candidate() -> Result<(), Box<dyn std::error::Error>> {
+        let mut selector = Selector::new("repo", None)?;
+        selector.decide(decide_item("bin", Probe::Bytes(vec![0, 1, 2])))?;
+        selector.decide(decide_item("bad", Probe::Bytes(vec![0xff])))?;
+        let (files, skipped) = selector.into_parts();
+        assert!(files.is_empty());
+        assert_eq!(skipped, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn decide_handles_size_boundary() -> Result<(), Box<dyn std::error::Error>> {
+        let mut selector = Selector::new("repo", None)?;
+        selector.decide(decide_item("big", Probe::TooLarge))?;
+        selector.decide(decide_item("gone", Probe::Missing))?;
+        selector.decide(decide_item(
+            "exact.txt",
+            Probe::Bytes(vec![b'x'; MAX_FILE_SIZE as usize]),
+        ))?;
+        let (files, skipped) = selector.into_parts();
+        assert_eq!(files.len(), 1);
+        assert_eq!(skipped, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn github_ignored_is_not_skipped() -> Result<(), Box<dyn std::error::Error>> {
+        let mut selector = Selector::new("repo", None)?;
+        for _ in 0..MAX_FILE_COUNT {
+            selector.decide(decide_item("ignored.txt", Probe::Ignored))?;
+        }
+        selector.decide(decide_item("kept.txt", Probe::Bytes(b"kept".to_vec())))?;
+        let (files, skipped) = selector.into_parts();
+        assert_eq!(files.len(), 1);
+        assert_eq!(skipped, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn decide_counts_candidate_before_content() -> Result<(), Box<dyn std::error::Error>> {
+        let mut selector = Selector::new("repo", None)?;
+        for index in 0..MAX_FILE_COUNT {
+            selector.decide(decide_item(
+                &format!("binary-{index}"),
+                Probe::Bytes(vec![0]),
+            ))?;
+        }
+        assert!(matches!(
+            selector.decide(decide_item("extra", Probe::Bytes(b"ok".to_vec()))),
+            Err(IngestError::InvalidMetadata(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn decide_rejects_output_overflow() -> Result<(), Box<dyn std::error::Error>> {
+        let mut selector = Selector::new("repo", None)?;
+        let result = selector.decide(decide_item(
+            "large.txt",
+            Probe::Bytes(vec![b'x'; MAX_OUTPUT_SIZE as usize]),
+        ));
+        assert!(matches!(result, Err(IngestError::OutputTooLarge)));
+        Ok(())
+    }
+}
