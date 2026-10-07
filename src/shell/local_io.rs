@@ -69,10 +69,14 @@ fn open_local_file(root: &Path, path: &Path) -> io::Result<fs::File> {
         } else {
             libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW
         };
+        // SAFETY: `directory.as_raw_fd()` is an open, valid directory descriptor.
+        // `name` is a valid null-terminated C string containing no intermediate slashes.
         let descriptor = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
         if descriptor == -1 {
             return Err(io::Error::last_os_error());
         }
+        // SAFETY: `descriptor` was checked to be non-negative, representing a newly
+        // opened, valid file descriptor whose unique ownership is transferred to `OwnedFd`.
         let opened = unsafe { OwnedFd::from_raw_fd(descriptor) };
         if is_file {
             return Ok(fs::File::from(opened));
@@ -96,6 +100,7 @@ fn open_local_file(_: &Path, path: &Path) -> io::Result<fs::File> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(windows)]
+    // Inhibit traversing reparse points (symlinks/mount points) on Windows.
     options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     options.open(path)
 }

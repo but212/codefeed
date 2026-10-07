@@ -3,15 +3,26 @@ use std::io;
 
 use crate::core::policy::MAX_OUTPUT_SIZE;
 
+/// Domain error encountered during ingestion or CLI execution.
 #[derive(Debug)]
 pub enum IngestError {
+    /// Source string or CLI argument is syntactically invalid.
     InvalidSource(String),
+    /// Source scheme or host is unsupported (e.g. non-GitHub remote or SSH).
     UnsupportedSource(String),
+    /// Local filesystem I/O failure.
     Io(io::Error),
+    /// Network transport or connection failure contacting GitHub.
     Http(String),
+    /// GitHub HTTP error response or rate limit exceeded.
     Api(String),
+    /// Repository metadata or API response payload is malformed.
     InvalidMetadata(String),
-    OutputTooLarge { largest_files: Vec<(String, usize)> },
+    /// Rendered digest exceeds the maximum allowed output size.
+    OutputTooLarge {
+        /// Up to five largest files contributing to the digest overflow.
+        largest_files: Vec<(String, usize)>,
+    },
 }
 
 impl Display for IngestError {

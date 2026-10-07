@@ -1,11 +1,17 @@
 //! Single source of truth for ingestion policies, limits, and conventions.
 
+/// Maximum individual file size accepted (1 MiB in bytes). Larger files are skipped.
 pub const MAX_FILE_SIZE: u64 = 1024 * 1024;
+/// Maximum rendered digest size (20 MiB in bytes). Overflows return [`IngestError::OutputTooLarge`](crate::core::error::IngestError::OutputTooLarge).
 pub const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
+/// Maximum candidate files evaluated before candidate budget overflows (10,000 files).
 pub const MAX_FILE_COUNT: usize = 10_000;
+/// Maximum GitHub API JSON response body size (8 MiB in bytes).
 pub const MAX_JSON_SIZE: u64 = 8 * 1024 * 1024;
+/// Number of concurrent remote download worker threads.
 pub const FETCH_WINDOW: usize = 16;
 
+/// Conventional lockfiles excluded before candidate budget accounting.
 pub const NOISE: &[&str] = &[
     "Cargo.lock",
     "package-lock.json",
@@ -14,20 +20,27 @@ pub const NOISE: &[&str] = &[
     "go.sum",
 ];
 
+/// Known binary file extensions filtered prior to remote download.
 pub const BINARY_EXT: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "ico", "webp", "woff", "woff2", "ttf", "pdf", "zip",
 ];
 
+/// Maximum total HTTP request attempts (1 initial + up to 2 retries).
 pub const MAX_RETRIES: usize = 3;
+/// Base initial delay in milliseconds for exponential backoff.
 pub const RETRY_INITIAL_DELAY_MS: u64 = 250;
+/// Maximum delay cap in milliseconds for exponential backoff.
 pub const RETRY_MAX_DELAY_MS: u64 = 5_000;
+/// Maximum random jitter in milliseconds added to backoff delay.
 pub const RETRY_JITTER_MAX_MS: u64 = 50;
 
+/// Returns `true` if `path` matches any conventional noise lockfile.
 pub(crate) fn is_noise_path(path: &str) -> bool {
     let file_name = path.rsplit('/').next().unwrap_or(path);
     NOISE.contains(&file_name)
 }
 
+/// Returns `true` if `path` has a known binary file extension (case-insensitive).
 pub(crate) fn has_binary_extension(path: &str) -> bool {
     if let Some((_, ext)) = path.rsplit_once('.') {
         BINARY_EXT.iter().any(|&b| b.eq_ignore_ascii_case(ext))
@@ -36,10 +49,12 @@ pub(crate) fn has_binary_extension(path: &str) -> bool {
     }
 }
 
+/// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
 pub(crate) fn is_retryable_status(status_code: u16) -> bool {
     status_code == 429 || (500..=599).contains(&status_code)
 }
 
+/// Calculates bounded exponential backoff duration with jitter for the given attempt.
 pub(crate) fn retry_delay(attempt: usize, entropy: u64) -> std::time::Duration {
     let multiplier = 1_u64.checked_shl(attempt as u32).unwrap_or(u64::MAX);
     let exponential = RETRY_INITIAL_DELAY_MS.saturating_mul(multiplier);

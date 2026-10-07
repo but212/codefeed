@@ -1,3 +1,5 @@
+//! Command-line binary entry point for rustingest.
+
 use std::env::args_os;
 use std::process;
 
