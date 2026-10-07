@@ -33,7 +33,7 @@ imperative-shell boundary.
   Ignored paths are not `skipped`.
 - Digest size accounting rejects content that would exceed `MAX_OUTPUT_SIZE`;
   overflow is never included.
-- File-path ordering is lexicographic and owned solely by `render_digest`.
+- File-path ordering is lexicographic and owned solely by `render_digest_to_writer` / `render_digest`.
 - A file output target is written atomically: create-new temporary file, sync,
   rename.
 - A stdout output target writes the rendered digest to the stream directly, with

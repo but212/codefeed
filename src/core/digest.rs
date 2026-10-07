@@ -135,14 +135,15 @@ fn byte_count(value: &str) -> Result<u64, IngestError> {
     })
 }
 
-pub(crate) fn render_digest(
+pub(crate) fn render_digest_to_writer<W: std::io::Write + ?Sized>(
+    writer: &mut W,
     label: &str,
     revision: Option<&str>,
     files: &[FileRecord],
     skipped: usize,
-) -> Result<String, IngestError> {
+) -> Result<(), IngestError> {
     // Defense-in-depth: Selector accounts for budget incrementally as files are selected;
-    // render_digest validates final rendered byte bounds before committing the formatted digest.
+    // render_digest_to_writer validates final rendered byte bounds before committing the formatted digest.
     let mut budget = DigestBudget::new(label, revision)?;
     budget.skipped = skipped;
     let overflow = (|| -> Result<(), IngestError> {
@@ -164,48 +165,66 @@ pub(crate) fn render_digest(
         });
     }
     overflow?;
-    let mut digest = String::new();
-    digest.push_str(REPOSITORY_PREFIX);
-    digest.push_str(&escape_header(label));
-    digest.push_str(NEWLINE);
+
+    writer.write_all(REPOSITORY_PREFIX.as_bytes())?;
+    writer.write_all(escape_header(label).as_bytes())?;
+    writer.write_all(NEWLINE.as_bytes())?;
     if let Some(revision) = revision {
-        digest.push_str(REVISION_PREFIX);
-        digest.push_str(&escape_header(revision));
-        digest.push_str(NEWLINE);
+        writer.write_all(REVISION_PREFIX.as_bytes())?;
+        writer.write_all(escape_header(revision).as_bytes())?;
+        writer.write_all(NEWLINE.as_bytes())?;
     }
-    digest.push_str(FILES_PREFIX);
-    digest.push_str(&files.len().to_string());
-    digest.push_str(SKIPPED_PREFIX);
-    digest.push_str(&skipped.to_string());
-    digest.push_str(METADATA_SUFFIX);
+    writer.write_all(FILES_PREFIX.as_bytes())?;
+    writer.write_all(files.len().to_string().as_bytes())?;
+    writer.write_all(SKIPPED_PREFIX.as_bytes())?;
+    writer.write_all(skipped.to_string().as_bytes())?;
+    writer.write_all(METADATA_SUFFIX.as_bytes())?;
+
     let mut ordered_files: Vec<_> = files.iter().collect();
     ordered_files.sort_by(|left, right| left.path.cmp(&right.path));
 
-    digest.push_str(DIRECTORY_HEADER);
+    writer.write_all(DIRECTORY_HEADER.as_bytes())?;
     for file in &ordered_files {
-        digest.push_str(DIRECTORY_ENTRY_PREFIX);
-        digest.push_str(&escape_header(&file.path));
-        digest.push_str(NEWLINE);
+        writer.write_all(DIRECTORY_ENTRY_PREFIX.as_bytes())?;
+        writer.write_all(escape_header(&file.path).as_bytes())?;
+        writer.write_all(NEWLINE.as_bytes())?;
     }
-    digest.push_str(FILES_HEADER);
+    writer.write_all(FILES_HEADER.as_bytes())?;
     for file in ordered_files {
-        digest.push_str(FILE_BLOCK_PREFIX);
-        digest.push_str(&escape_header(&file.path));
-        digest.push_str(FILE_BLOCK_SUFFIX);
-        digest.push_str(&file.content);
+        writer.write_all(FILE_BLOCK_PREFIX.as_bytes())?;
+        writer.write_all(escape_header(&file.path).as_bytes())?;
+        writer.write_all(FILE_BLOCK_SUFFIX.as_bytes())?;
+        writer.write_all(file.content.as_bytes())?;
         if !file.content.ends_with('\n') {
-            digest.push_str(NEWLINE);
+            writer.write_all(NEWLINE.as_bytes())?;
         }
-        digest.push_str(NEWLINE);
+        writer.write_all(NEWLINE.as_bytes())?;
     }
-    Ok(digest)
+    Ok(())
 }
 
-fn escape_header(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('\r', "\\r")
-        .replace('\n', "\\n")
+#[cfg(test)]
+pub(crate) fn render_digest(
+    label: &str,
+    revision: Option<&str>,
+    files: &[FileRecord],
+    skipped: usize,
+) -> Result<String, IngestError> {
+    let mut buffer = Vec::new();
+    render_digest_to_writer(&mut buffer, label, revision, files, skipped)?;
+    String::from_utf8(buffer).map_err(|error| IngestError::Io(std::io::Error::other(error)))
+}
+
+fn escape_header(value: &str) -> std::borrow::Cow<'_, str> {
+    if !value.contains('\\') && !value.contains('\r') && !value.contains('\n') {
+        return std::borrow::Cow::Borrowed(value);
+    }
+    std::borrow::Cow::Owned(
+        value
+            .replace('\\', "\\\\")
+            .replace('\r', "\\r")
+            .replace('\n', "\\n"),
+    )
 }
 
 #[cfg(test)]
@@ -254,6 +273,63 @@ mod tests {
     }
 
     #[test]
+    fn escape_header_borrows_clean_input() {
+        use std::borrow::Cow;
+        assert!(matches!(
+            escape_header("clean/path/file.rs"),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            escape_header("path\\with\\backslash"),
+            Cow::Owned(_)
+        ));
+    }
+
+    #[test]
+    fn streaming_matches_string_render() -> Result<(), Box<dyn std::error::Error>> {
+        let files = vec![
+            FileRecord {
+                path: "b.txt".into(),
+                content: "hello\n".into(),
+            },
+            FileRecord {
+                path: "a.txt".into(),
+                content: "world".into(),
+            },
+        ];
+        let mut streamed = Vec::new();
+        render_digest_to_writer(&mut streamed, "my-repo", Some("v1.0"), &files, 2)?;
+        let streamed_str = std::str::from_utf8(&streamed)?;
+
+        let expected = "\
+Repository: my-repo\n\
+Revision: v1.0\n\
+Files: 2\n\
+Skipped: 2\n\
+\n\
+Directory structure:\n\
+- a.txt\n\
+- b.txt\n\
+\n\
+Files:\n\
+\n\
+==================================================\n\
+FILE: a.txt\n\
+==================================================\n\
+\n\
+world\n\
+\n\
+==================================================\n\
+FILE: b.txt\n\
+==================================================\n\
+\n\
+hello\n\
+\n";
+        assert_eq!(streamed_str, expected);
+        Ok(())
+    }
+
+    #[test]
     fn digest_budget_matches_rendered_size() -> Result<(), Box<dyn std::error::Error>> {
         let files = vec![
             FileRecord {
@@ -296,5 +372,26 @@ mod tests {
             }
             other => panic!("expected OutputTooLarge with largest_files, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn streaming_rejects_overbudget() {
+        let candidate = FileRecord {
+            path: "large.txt".into(),
+            content: "x".repeat(MAX_OUTPUT_SIZE as usize),
+        };
+        let mut sink = Vec::new();
+        match render_digest_to_writer(&mut sink, "repo", None, &[candidate], 0) {
+            Err(IngestError::OutputTooLarge { largest_files }) => {
+                assert_eq!(largest_files.len(), 1);
+                assert_eq!(largest_files[0].0, "large.txt");
+                assert_eq!(largest_files[0].1, MAX_OUTPUT_SIZE as usize);
+            }
+            other => panic!("expected OutputTooLarge with largest_files, got {other:?}"),
+        }
+        assert!(
+            sink.is_empty(),
+            "sink should not have partial content written on overflow"
+        );
     }
 }

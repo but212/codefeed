@@ -125,8 +125,9 @@ pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, Ingest
         } => (label, Some(revision), files, skipped),
     };
 
-    let digest = core::digest::render_digest(&label, revision.as_deref(), &files, skipped)?;
-    shell::output::emit(&options.output, &digest)?;
+    shell::output::emit(&options.output, |writer| {
+        core::digest::render_digest_to_writer(writer, &label, revision.as_deref(), &files, skipped)
+    })?;
 
     Ok(IngestReport {
         output: options.output.clone(),
