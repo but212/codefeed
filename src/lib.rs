@@ -36,7 +36,9 @@ pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, Ingest
 
     let collection = match source {
         Source::Local(root) => shell::local::collect_local(root, &options.output)?,
-        Source::GitHub { owner, repo } => shell::github::collect_github(owner, repo, options)?,
+        Source::GitHub { owner, repo } => {
+            shell::github::collect_github(owner, repo, options.reference.as_deref())?
+        }
     };
 
     let digest = match &collection {

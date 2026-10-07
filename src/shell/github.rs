@@ -5,7 +5,7 @@ use crate::core::error::IngestError;
 use crate::core::github_tree::{is_hidden_path, is_regular_blob};
 use crate::core::ignore::ignored_remote_path;
 use crate::core::limits::MAX_FILE_SIZE;
-use crate::core::model::{CollectionResult, Options};
+use crate::core::model::CollectionResult;
 
 use super::github_client::{GithubClient, LimitedBody};
 use super::github_ignore::load_ignore_rules;
@@ -13,11 +13,11 @@ use super::github_ignore::load_ignore_rules;
 pub(crate) fn collect_github(
     owner: &str,
     repo: &str,
-    options: &Options,
+    reference: Option<&str>,
 ) -> Result<CollectionResult, IngestError> {
     let client = GithubClient::new();
-    let reference = match &options.reference {
-        Some(reference) if !reference.trim().is_empty() => reference.clone(),
+    let reference = match reference {
+        Some(reference) if !reference.trim().is_empty() => reference.to_owned(),
         _ => client.repository(owner, repo)?.default_branch,
     };
     let revision = client.commit_sha(owner, repo, &reference)?;

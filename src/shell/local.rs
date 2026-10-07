@@ -1,8 +1,9 @@
 //! Local directory collection orchestration: walk, map, select.
 
+use std::env;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use ignore::WalkBuilder;
 
@@ -10,7 +11,6 @@ use super::local_io::read_local_file;
 use crate::core::decide::{Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, OutputTarget};
-use crate::shell::output::output_identity;
 
 pub(crate) fn collect_local(
     root: &Path,
@@ -82,4 +82,56 @@ pub(crate) fn collect_local(
         files,
         skipped,
     })
+}
+
+fn output_identity(output: &Path) -> Result<PathBuf, IngestError> {
+    let absolute = if output.is_absolute() {
+        output.to_path_buf()
+    } else {
+        env::current_dir()?.join(output)
+    };
+    let file_name = absolute.file_name().unwrap_or_default().to_os_string();
+    let mut parent = absolute
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let mut unresolved = Vec::new();
+    let canonical_parent = loop {
+        match fs::canonicalize(&parent) {
+            Ok(parent) => break parent,
+            Err(_) => {
+                let Some(component) = parent.file_name() else {
+                    break parent;
+                };
+                unresolved.push(component.to_os_string());
+                parent = parent
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf();
+            }
+        }
+    };
+
+    let mut resolved = canonical_parent;
+    for component in unresolved.iter().rev() {
+        resolved.push(component);
+    }
+    resolved.push(file_name);
+    Ok(normalize_path(&resolved))
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
 }
