@@ -79,6 +79,7 @@ When the digest goes to a file, rustingest prints the output path and the number
 - Returns an error listing the largest files without committing content if the digest exceeds 20 MiB.
 - Rejects GitHub API responses larger than 8 MiB without parsing truncated JSON.
 - Writes a file target to a collision-resistant temporary file, syncs it, and atomically renames it on success. Failed writes preserve the existing output. A standard output target skips the temporary file and sync and writes the rendered digest to the stream directly.
-- All limits, batch sizes (`FETCH_WINDOW`), noise lockfile lists, and binary extensions are centralized in `src/core/policy.rs`.
+- Retries transient network failures and HTTP 429/5xx responses up to 3 total attempts (1 initial + up to 2 retries) with bounded exponential backoff and jitter (capped at 5s), failing immediately on non-retryable client errors.
+- All limits, batch sizes (`FETCH_WINDOW`), retry policies, noise lockfile lists, and binary extensions are centralized in `src/core/policy.rs`.
 
 `--help` exits with status 0. Invalid arguments and ingest errors are written to stderr and exit with a non-zero status.

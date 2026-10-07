@@ -59,6 +59,9 @@ imperative-shell boundary.
 - Known binary extensions (`BINARY_EXT`) are classified as `Probe::Missing`
   before remote download to save bandwidth while preserving candidate and
   skipped accounting.
+- HTTP transport retries transient network failures and HTTP 429 / 5xx responses
+  with bounded exponential backoff and jitter up to `MAX_RETRIES` total attempts
+  (1 initial + up to 2 retries), failing immediately on client errors (4xx except 429).
 
 ## Limits and Tunables (`src/core/policy.rs`)
 
@@ -69,6 +72,9 @@ imperative-shell boundary.
 | `MAX_FILE_COUNT` | 10,000 | Maximum candidate files evaluated |
 | `MAX_JSON_SIZE` | 8 MiB | Maximum GitHub API response body |
 | `FETCH_WINDOW` | 16 | Number of concurrent remote download threads |
+| `MAX_RETRIES` | 3 | Maximum total request attempts (1 initial + up to 2 retries) |
+| `RETRY_INITIAL_DELAY_MS` | 250 ms | Base initial delay for exponential backoff |
+| `RETRY_MAX_DELAY_MS` | 5,000 ms | Maximum delay cap for exponential backoff |
 | `NOISE` | lockfiles | Conventional lockfiles excluded before candidate budget |
 | `BINARY_EXT` | 11 extensions | Known binary file extensions filtered pre-download |
 
