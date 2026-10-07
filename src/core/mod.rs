@@ -8,7 +8,6 @@ pub(crate) mod digest;
 pub(crate) mod error;
 pub(crate) mod github_tree;
 pub(crate) mod github_url;
-pub(crate) mod ignore;
-pub(crate) mod limits;
 pub(crate) mod model;
+pub(crate) mod policy;
 pub(crate) mod source;

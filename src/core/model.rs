@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-pub(crate) const REMOTE_ROOT: &str = "/__local_ingest_repo";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
     Local(PathBuf),
@@ -45,6 +43,7 @@ pub(crate) struct FileRecord {
     pub(crate) content: String,
 }
 
+#[derive(Debug)]
 pub(crate) enum CollectionResult {
     Local {
         label: String,

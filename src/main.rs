@@ -1,6 +1,7 @@
-use rustingest::{OutputTarget, help_text, requests_help, run_cli};
 use std::env::args_os;
 use std::process;
+
+use rustingest::{OutputTarget, help_text, requests_help, run_cli};
 
 fn main() {
     let args: Vec<_> = args_os().collect();

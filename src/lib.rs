@@ -3,8 +3,6 @@ mod shell;
 
 use std::ffi::{OsStr, OsString};
 
-use crate::core::model::CollectionResult;
-
 pub use crate::core::error::IngestError;
 pub use crate::core::model::{IngestReport, Options, OutputTarget, Source};
 
@@ -37,29 +35,27 @@ pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, Ingest
         }
     };
 
-    let digest = match &collection {
-        CollectionResult::Local {
+    let (label, revision, files, skipped) = match collection {
+        core::model::CollectionResult::Local {
             label,
             files,
             skipped,
-        } => core::digest::render_digest(label, None, files, *skipped)?,
-        CollectionResult::GitHub {
+        } => (label, None, files, skipped),
+        core::model::CollectionResult::GitHub {
             label,
             revision,
             files,
             skipped,
-        } => core::digest::render_digest(label, Some(revision), files, *skipped)?,
+        } => (label, Some(revision), files, skipped),
     };
+
+    let digest = core::digest::render_digest(&label, revision.as_deref(), &files, skipped)?;
     shell::output::emit(&options.output, &digest)?;
 
-    let (included_files, skipped_files) = match &collection {
-        CollectionResult::Local { files, skipped, .. }
-        | CollectionResult::GitHub { files, skipped, .. } => (files.len(), *skipped),
-    };
     Ok(IngestReport {
         output: options.output.clone(),
-        included_files,
-        skipped_files,
+        included_files: files.len(),
+        skipped_files: skipped,
     })
 }
 
@@ -74,7 +70,7 @@ pub fn requests_help(args: &[OsString]) -> bool {
 pub fn run_cli<I, T>(args: I) -> Result<IngestReport, IngestError>
 where
     I: IntoIterator<Item = T>,
-    T: Into<std::ffi::OsString>,
+    T: Into<OsString>,
 {
     shell::cli::run_cli(args)
 }

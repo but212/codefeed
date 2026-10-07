@@ -1,13 +1,13 @@
 //! Local directory collection orchestration: walk, map, select.
 
-use std::env;
 use std::fs;
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 use ignore::WalkBuilder;
 
 use super::local_io::read_local_file;
+use super::output_exclusion::{is_same_path, output_identity};
 use crate::core::decide::{Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, OutputTarget};
@@ -30,7 +30,7 @@ pub(crate) fn collect_local(
         OutputTarget::File(path) => Some(output_identity(path)?),
         OutputTarget::Stdout => None,
     };
-    let label = root.display().to_string();
+    let label = local_label(&root);
     let mut selector = Selector::new(&label, None)?;
 
     let walker = WalkBuilder::new(&root)
@@ -50,7 +50,7 @@ pub(crate) fn collect_local(
         if entry_path == root
             || exclude
                 .as_ref()
-                .is_some_and(|excluded| entry_path == excluded)
+                .is_some_and(|excluded| is_same_path(entry_path, excluded))
             || !entry.file_type().is_some_and(|kind| kind.is_file())
         {
             continue;
@@ -66,8 +66,12 @@ pub(crate) fn collect_local(
             Some(parts) => ItemPath::Utf8(parts.join("/")),
             None => ItemPath::NonUtf8,
         };
-        let probe = match item_path {
+        let probe = match &item_path {
             ItemPath::NonUtf8 => Probe::Missing,
+            ItemPath::Utf8(path) if crate::core::policy::is_noise_path(path) => Probe::Ignored,
+            ItemPath::Utf8(path) if crate::core::policy::has_binary_extension(path) => {
+                Probe::Missing
+            }
             ItemPath::Utf8(_) => read_local_file(&root, entry_path)?,
         };
         selector.decide(Item {
@@ -84,64 +88,20 @@ pub(crate) fn collect_local(
     })
 }
 
-fn output_identity(output: &Path) -> Result<PathBuf, IngestError> {
-    let absolute = if output.is_absolute() {
-        output.to_path_buf()
-    } else {
-        env::current_dir()?.join(output)
-    };
-    let file_name = absolute.file_name().unwrap_or_default().to_os_string();
-    let mut parent = absolute
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf();
-    let mut unresolved = Vec::new();
-    let canonical_parent = loop {
-        match fs::canonicalize(&parent) {
-            Ok(parent) => break parent,
-            Err(_) => {
-                let Some(component) = parent.file_name() else {
-                    break parent;
-                };
-                unresolved.push(component.to_os_string());
-                parent = parent
-                    .parent()
-                    .unwrap_or_else(|| Path::new("."))
-                    .to_path_buf();
-            }
-        }
-    };
-
-    let mut resolved = canonical_parent;
-    for component in unresolved.iter().rev() {
-        resolved.push(component);
-    }
-    resolved.push(file_name);
-    Ok(normalize_path(&resolved))
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
-                normalized.push(component.as_os_str());
-            }
-        }
-    }
-    normalized
+fn local_label(root: &Path) -> String {
+    root.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("root")
+        .to_string()
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::temp_dir;
     use super::*;
     use crate::core::model::{Options, Source};
     use crate::ingest;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[cfg(unix)]
     #[test]
@@ -189,6 +149,58 @@ mod tests {
         assert_eq!(report.included_files, 1);
         assert!(!digest.contains("previous output"));
         assert!(digest.contains("FILE: source.txt"));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn excludes_output_case_insensitively() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("output_case")?;
+        fs::create_dir_all(&root)?;
+        fs::write(root.join("source.txt"), "source")?;
+        fs::write(root.join("digest.txt"), "previous output")?;
+        let output = root.join("DIGEST.TXT");
+
+        let report = ingest(
+            &Source::Local(root.clone()),
+            &Options {
+                output: OutputTarget::File(output),
+                reference: None,
+            },
+        )?;
+        let digest = fs::read_to_string(root.join("DIGEST.TXT"))?;
+
+        assert_eq!(report.included_files, 1);
+        assert!(!digest.contains("previous output"));
+        assert!(digest.contains("FILE: source.txt"));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn excludes_noise_files_conventionally() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("noise_files")?;
+        fs::create_dir_all(root.join("sub"))?;
+        fs::write(root.join("src.rs"), "fn main() {}")?;
+        fs::write(root.join("Cargo.lock"), "[lockfile]")?;
+        fs::write(root.join("sub").join("package-lock.json"), "{}")?;
+        let output = root.join("digest.txt");
+
+        let report = ingest(
+            &Source::Local(root.clone()),
+            &Options {
+                output: OutputTarget::File(output.clone()),
+                reference: None,
+            },
+        )?;
+        let digest = fs::read_to_string(output)?;
+
+        assert_eq!(report.included_files, 1);
+        assert_eq!(report.skipped_files, 0);
+        assert!(digest.contains("FILE: src.rs"));
+        assert!(!digest.contains("Cargo.lock"));
+        assert!(!digest.contains("package-lock.json"));
         fs::remove_dir_all(root)?;
         Ok(())
     }
@@ -270,6 +282,33 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn label_uses_directory_basename() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("custom_repo_name")?;
+        fs::create_dir_all(&root)?;
+        fs::write(root.join("file.txt"), "hello")?;
+        let output = root.join("digest.txt");
+        let _ = ingest(
+            &Source::Local(root.clone()),
+            &Options {
+                output: OutputTarget::File(output.clone()),
+                reference: None,
+            },
+        )?;
+        let digest = fs::read_to_string(&output)?;
+        let expected_basename = root.file_name().unwrap().to_str().unwrap();
+        assert!(digest.starts_with(&format!("Repository: {expected_basename}\n")));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn label_handles_filesystem_root() {
+        assert_eq!(local_label(Path::new("/")), "root");
+        #[cfg(windows)]
+        assert_eq!(local_label(Path::new("C:\\")), "root");
+    }
+
     #[cfg(unix)]
     #[test]
     fn skips_non_utf8_paths() -> Result<(), Box<dyn std::error::Error>> {
@@ -292,10 +331,5 @@ mod tests {
         assert_eq!(report.skipped_files, 2);
         fs::remove_dir_all(root)?;
         Ok(())
-    }
-
-    fn temp_dir(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        Ok(env::temp_dir().join(format!("local_ingest_{label}_{nanos}")))
     }
 }

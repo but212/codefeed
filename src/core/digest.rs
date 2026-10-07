@@ -1,6 +1,6 @@
 use crate::core::error::IngestError;
-use crate::core::limits::MAX_OUTPUT_SIZE;
 use crate::core::model::FileRecord;
+use crate::core::policy::MAX_OUTPUT_SIZE;
 
 const REPOSITORY_PREFIX: &str = "Repository: ";
 const REVISION_PREFIX: &str = "Revision: ";
@@ -66,18 +66,24 @@ impl DigestBudget {
 
     fn add_file_bytes(&mut self, file: &FileRecord) -> Result<(), IngestError> {
         let path_bytes = byte_count(&escape_header(&file.path))?;
-        self.path_bytes = self
-            .path_bytes
-            .checked_add(path_bytes)
-            .ok_or(IngestError::OutputTooLarge)?;
+        self.path_bytes =
+            self.path_bytes
+                .checked_add(path_bytes)
+                .ok_or_else(|| IngestError::OutputTooLarge {
+                    largest_files: Vec::new(),
+                })?;
         self.content_bytes = self
             .content_bytes
             .checked_add(byte_count(&file.content)?)
-            .ok_or(IngestError::OutputTooLarge)?;
+            .ok_or_else(|| IngestError::OutputTooLarge {
+                largest_files: Vec::new(),
+            })?;
         self.trailing_bytes = self
             .trailing_bytes
             .checked_add((usize::from(!file.content.ends_with('\n')) + 1) as u64)
-            .ok_or(IngestError::OutputTooLarge)?;
+            .ok_or_else(|| IngestError::OutputTooLarge {
+                largest_files: Vec::new(),
+            })?;
         Ok(())
     }
 
@@ -86,7 +92,9 @@ impl DigestBudget {
             .rendered_size()
             .is_none_or(|size| size > MAX_OUTPUT_SIZE)
         {
-            return Err(IngestError::OutputTooLarge);
+            return Err(IngestError::OutputTooLarge {
+                largest_files: Vec::new(),
+            });
         }
         Ok(())
     }
@@ -122,7 +130,9 @@ impl DigestBudget {
 }
 
 fn byte_count(value: &str) -> Result<u64, IngestError> {
-    u64::try_from(value.len()).map_err(|_| IngestError::OutputTooLarge)
+    u64::try_from(value.len()).map_err(|_| IngestError::OutputTooLarge {
+        largest_files: Vec::new(),
+    })
 }
 
 pub(crate) fn render_digest(
@@ -131,12 +141,29 @@ pub(crate) fn render_digest(
     files: &[FileRecord],
     skipped: usize,
 ) -> Result<String, IngestError> {
+    // Defense-in-depth: Selector accounts for budget incrementally as files are selected;
+    // render_digest validates final rendered byte bounds before committing the formatted digest.
     let mut budget = DigestBudget::new(label, revision)?;
     budget.skipped = skipped;
-    for file in files {
-        budget.add(file)?;
+    let overflow = (|| -> Result<(), IngestError> {
+        for file in files {
+            budget.add(file)?;
+        }
+        budget.ensure_fits()?;
+        Ok(())
+    })();
+    if let Err(IngestError::OutputTooLarge { .. }) = overflow {
+        let mut entries: Vec<(String, usize)> = files
+            .iter()
+            .map(|f| (f.path.clone(), f.content.len()))
+            .collect();
+        entries.sort_by_key(|b| std::cmp::Reverse(b.1));
+        entries.truncate(5);
+        return Err(IngestError::OutputTooLarge {
+            largest_files: entries,
+        });
     }
-    budget.ensure_fits()?;
+    overflow?;
     let mut digest = String::new();
     digest.push_str(REPOSITORY_PREFIX);
     digest.push_str(&escape_header(label));
@@ -185,8 +212,8 @@ fn escape_header(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::core::error::IngestError;
-    use crate::core::limits::MAX_OUTPUT_SIZE;
     use crate::core::model::FileRecord;
+    use crate::core::policy::MAX_OUTPUT_SIZE;
 
     #[test]
     fn renders_files_in_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
@@ -261,9 +288,13 @@ mod tests {
             path: "large.txt".into(),
             content: "x".repeat(MAX_OUTPUT_SIZE as usize),
         };
-        assert!(matches!(
-            render_digest("repo", None, &[candidate], 0),
-            Err(IngestError::OutputTooLarge)
-        ));
+        match render_digest("repo", None, &[candidate], 0) {
+            Err(IngestError::OutputTooLarge { largest_files }) => {
+                assert_eq!(largest_files.len(), 1);
+                assert_eq!(largest_files[0].0, "large.txt");
+                assert_eq!(largest_files[0].1, MAX_OUTPUT_SIZE as usize);
+            }
+            other => panic!("expected OutputTooLarge with largest_files, got {other:?}"),
+        }
     }
 }

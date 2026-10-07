@@ -71,14 +71,14 @@ When the digest goes to a file, rustingest prints the output path and the number
 
 ## Filtering and limits
 
-- Excludes `.git`, hidden paths, symlinks, binary files, and non-UTF-8 paths or file contents.
+- Excludes `.git`, hidden paths, symlinks, binary files, non-UTF-8 paths or file contents, and common lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`).
 - Applies `.gitignore` rules inside local sources regardless of Git repository status. Does not apply `.ignore` files.
-- Applies nested GitHub `.gitignore` rules within their directory scope, including negation precedence. Reads at most 256 files and 8 MiB in total; exceeding either limit is an error.
-- Skips files larger than 1 MiB. Returns an error if more than 10,000 candidates remain after hidden and ignored paths are excluded.
-- Counts `skipped` as candidates rejected for size, encoding, or content reasons. Hidden and ignored paths are excluded before candidate accounting and are not counted as skipped.
-- Returns an error without committing content if the digest exceeds 20 MiB.
+- Downloads GitHub files in parallel batches (window size 16) using standard threads, pre-filtering known binary extensions before download to save bandwidth while preserving candidate and skipped accounting.
+- Skips files larger than 1 MiB. Returns an error listing the largest directories (based on candidates observed up to the limit) if more than 10,000 candidates remain after hidden and ignored paths are excluded.
+- Counts `skipped` as candidates rejected for size, encoding, or content reasons. Hidden, ignored, and lockfile paths are excluded before candidate accounting and are not counted as skipped.
+- Returns an error listing the largest files without committing content if the digest exceeds 20 MiB.
 - Rejects GitHub API responses larger than 8 MiB without parsing truncated JSON.
-- Sorts file paths lexicographically for deterministic output. Escapes backslashes and newlines in digest headers.
 - Writes a file target to a collision-resistant temporary file, syncs it, and atomically renames it on success. Failed writes preserve the existing output. A standard output target skips the temporary file and sync and writes the rendered digest to the stream directly.
+- All limits, batch sizes (`FETCH_WINDOW`), noise lockfile lists, and binary extensions are centralized in `src/core/policy.rs`.
 
 `--help` exits with status 0. Invalid arguments and ingest errors are written to stderr and exit with a non-zero status.

@@ -3,12 +3,10 @@
 use crate::core::decide::{Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
 use crate::core::github_tree::{is_hidden_path, is_regular_blob};
-use crate::core::ignore::ignored_remote_path;
-use crate::core::limits::MAX_FILE_SIZE;
 use crate::core::model::CollectionResult;
+use crate::core::policy::{FETCH_WINDOW, MAX_FILE_SIZE, has_binary_extension, is_noise_path};
 
 use super::github_client::{GithubClient, LimitedBody};
-use super::github_ignore::load_ignore_rules;
 
 pub(crate) fn collect_github(
     owner: &str,
@@ -28,28 +26,56 @@ pub(crate) fn collect_github(
         ));
     }
 
-    let ignore_rules = load_ignore_rules(&client, owner, repo, &revision, &tree.tree)?;
     let label = format!("https://github.com/{owner}/{repo}");
     let mut selector = Selector::new(&label, Some(&revision))?;
-    for entry in tree.tree {
-        if !is_regular_blob(&entry) || is_hidden_path(&entry.path) {
-            continue;
+
+    let entries: Vec<_> = tree
+        .tree
+        .into_iter()
+        .filter(|entry| {
+            is_regular_blob(entry)
+                && !is_hidden_path(&entry.path)
+                && !is_noise_path(&entry.path)
+        })
+        .collect();
+
+    for batch in entries.chunks(FETCH_WINDOW) {
+        let probes: Vec<Result<Probe, IngestError>> = std::thread::scope(|s| {
+            let handles: Vec<_> = batch
+                .iter()
+                .map(|entry| {
+                    s.spawn(|| {
+                        if has_binary_extension(&entry.path) {
+                            Ok(Probe::Missing)
+                        } else if entry.size.unwrap_or(0) > MAX_FILE_SIZE {
+                            Ok(Probe::TooLarge)
+                        } else {
+                            match client.raw_file(
+                                owner,
+                                repo,
+                                &revision,
+                                &entry.path,
+                                MAX_FILE_SIZE,
+                            )? {
+                                LimitedBody::Complete(bytes) => Ok(Probe::Bytes(bytes)),
+                                LimitedBody::Exceeded => Ok(Probe::TooLarge),
+                            }
+                        }
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("fetch thread panicked"))
+                .collect()
+        });
+
+        for (entry, probe) in batch.iter().zip(probes) {
+            selector.decide(Item {
+                path: ItemPath::Utf8(entry.path.clone()),
+                probe: probe?,
+            })?;
         }
-        let ignored = ignored_remote_path(&entry.path, &ignore_rules);
-        let probe = if ignored {
-            Probe::Ignored
-        } else if entry.size.unwrap_or(0) > MAX_FILE_SIZE {
-            Probe::TooLarge
-        } else {
-            match client.raw_file(owner, repo, &revision, &entry.path, MAX_FILE_SIZE)? {
-                LimitedBody::Complete(bytes) => Probe::Bytes(bytes),
-                LimitedBody::Exceeded => Probe::TooLarge,
-            }
-        };
-        selector.decide(Item {
-            path: ItemPath::Utf8(entry.path),
-            probe,
-        })?;
     }
 
     let (files, skipped) = selector.into_parts();

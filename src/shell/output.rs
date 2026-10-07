@@ -70,14 +70,8 @@ fn write_atomic(output: &Path, contents: &[u8]) -> Result<(), IngestError> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::temp_dir;
     use super::*;
-    use std::env;
-    use std::path::PathBuf;
-
-    fn temp_dir(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        Ok(env::temp_dir().join(format!("local_ingest_{label}_{nanos}")))
-    }
 
     #[test]
     fn atomic_write_ignores_stale_temporary_file() -> Result<(), Box<dyn std::error::Error>> {

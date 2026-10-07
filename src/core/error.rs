@@ -1,6 +1,8 @@
 use std::fmt::{Display, Formatter, Result};
 use std::io;
 
+use crate::core::policy::MAX_OUTPUT_SIZE;
+
 #[derive(Debug)]
 pub enum IngestError {
     InvalidSource(String),
@@ -9,7 +11,7 @@ pub enum IngestError {
     Http(String),
     Api(String),
     InvalidMetadata(String),
-    OutputTooLarge,
+    OutputTooLarge { largest_files: Vec<(String, usize)> },
 }
 
 impl Display for IngestError {
@@ -21,12 +23,31 @@ impl Display for IngestError {
             Self::Http(message) => write!(f, "GitHub request failed: {message}"),
             Self::Api(message) => write!(f, "GitHub API error: {message}"),
             Self::InvalidMetadata(message) => write!(f, "invalid repository metadata: {message}"),
-            Self::OutputTooLarge => write!(
-                f,
-                "digest exceeds the {} MiB output limit",
-                crate::core::limits::MAX_OUTPUT_SIZE / (1024 * 1024)
-            ),
+            Self::OutputTooLarge { largest_files } => {
+                write!(
+                    f,
+                    "digest exceeds the {} MiB output limit",
+                    MAX_OUTPUT_SIZE / (1024 * 1024)
+                )?;
+                if !largest_files.is_empty() {
+                    write!(f, "\nlargest files:")?;
+                    for (path, size) in largest_files {
+                        write!(f, "\n  - {path} ({})", format_size(*size))?;
+                    }
+                }
+                Ok(())
+            }
         }
+    }
+}
+
+fn format_size(bytes: usize) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MiB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
     }
 }
 
@@ -41,13 +62,15 @@ impl From<io::Error> for IngestError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::limits::MAX_OUTPUT_SIZE;
 
     #[test]
     fn output_too_large_message_derives_from_limit() {
         let mib = MAX_OUTPUT_SIZE / (1024 * 1024);
         assert_eq!(
-            IngestError::OutputTooLarge.to_string(),
+            IngestError::OutputTooLarge {
+                largest_files: Vec::new()
+            }
+            .to_string(),
             format!("digest exceeds the {mib} MiB output limit")
         );
     }

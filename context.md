@@ -14,23 +14,23 @@ imperative-shell boundary.
   (`ItemPath::Utf8 | NonUtf8`) and `probe`
   (`Probe::Bytes | Missing | TooLarge | Ignored`).
 - `FileRecord` — digest entry: `path`, `content`.
+- `CollectionResult` — `Local { label, files, skipped }` or
+  `GitHub { label, revision, files, skipped }`.
 - `IngestReport` — `output`, `included_files`, `skipped_files`.
 - `OutputTarget` — digest destination: `File(PathBuf)` or `Stdout`.
 - Budgets — `CandidateBudget` (candidate count), `DigestBudget` (rendered
-  bytes and skipped count), `RemoteIgnoreBudget` (remote `.gitignore` count
-  and bytes).
+  bytes and skipped count).
+- Policy — centralised tunables, thresholds, noise lists, and extension sets
+  (`policy.rs`).
 
 ## Invariants
 
-- Hidden and ignored paths are excluded before candidate accounting. They are
-  neither candidates nor `skipped`.
-- Remote `.gitignore` files within hidden directory hierarchies are unreachable
-  and excluded before budget reservation or acquisition.
-- Remote parent directory traversal never ascends above `REMOTE_ROOT`.
-- A candidate slot is consumed before content, size, or encoding is judged
-  (`L-02`).
+- Hidden, ignored, and built-in noise paths (common lockfiles: `Cargo.lock`,
+  `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`) are excluded
+  before candidate accounting. They are neither candidates nor `skipped`.
+- A candidate slot is consumed before content, size, or encoding is judged.
 - `skipped` counts candidates rejected for content, size, or encoding reasons.
-  Ignored paths are not `skipped` (`D2=A`).
+  Ignored paths are not `skipped`.
 - Digest size accounting rejects content that would exceed `MAX_OUTPUT_SIZE`;
   overflow is never included.
 - File-path ordering is lexicographic and owned solely by `render_digest`.
@@ -43,47 +43,59 @@ imperative-shell boundary.
   text only.
 - A closed consumer pipe is a normal early close, not an error: a broken pipe on
   the stdout target exits successfully.
-- The local walk excludes the output file by identity. A stdout target has no
+- The local walk excludes the output file by identity (matching
+  case-insensitively on Windows and macOS). A stdout target has no
   filesystem path, so no path is normalized and nothing is excluded.
+- Local repository digest headers use the root directory basename (`Repository: <basename>`),
+  omitting absolute paths and system prefixes.
 - Local file opening never follows symlinks and never blocks on special files
   (`O_NOFOLLOW` / `O_NONBLOCK`).
 - HTTP credentials (`Authorization: Bearer <token>`) attach only to
   exact-origin GitHub API and raw-content hosts; lookalike or foreign origins
   never receive credentials.
+- GitHub collection downloads content in parallel batches (`FETCH_WINDOW = 16`)
+  using scoped threads, feeding items to `Selector::decide` in exact tree order
+  for deterministic accounting.
+- Known binary extensions (`BINARY_EXT`) are classified as `Probe::Missing`
+  before remote download to save bandwidth while preserving candidate and
+  skipped accounting.
 
-## Limits
+## Limits and Tunables (`src/core/policy.rs`)
 
-| Constant | Value |
-| --- | --- |
-| `MAX_FILE_SIZE` | 1 MiB |
-| `MAX_OUTPUT_SIZE` | 20 MiB |
-| `MAX_FILE_COUNT` | 10,000 |
-| `MAX_JSON_SIZE` | 8 MiB |
-| `MAX_REMOTE_IGNORE_FILES` | 256 |
-| `MAX_REMOTE_IGNORE_BYTES` | 8 MiB |
+| Constant | Value | Purpose |
+| --- | --- | --- |
+| `MAX_FILE_SIZE` | 1 MiB | Maximum individual file size accepted |
+| `MAX_OUTPUT_SIZE` | 20 MiB | Maximum rendered digest size |
+| `MAX_FILE_COUNT` | 10,000 | Maximum candidate files evaluated |
+| `MAX_JSON_SIZE` | 8 MiB | Maximum GitHub API response body |
+| `FETCH_WINDOW` | 16 | Number of concurrent remote download threads |
+| `NOISE` | lockfiles | Conventional lockfiles excluded before candidate budget |
+| `BINARY_EXT` | 11 extensions | Known binary file extensions filtered pre-download |
 
 ## Functional core / imperative shell boundary
 
 Boundary rule: pure core code performs no I/O, clock, network, or entropy and
 never depends on shell code; shell code depends on the core in one direction.
 
-- Pure core (`src/core/`): source parsing (`source.rs`), domain value types
-  and results (`model.rs`), domain errors (`error.rs`), numeric limits
-  (`limits.rs`), per-item `Selector::decide` and its candidate budget
-  (`decide.rs`), digest budget and rendering (`digest.rs`), ignore matching
-  (`ignore.rs`), URL construction and request-target classification for
-  credential scoping (`github_url.rs`), and GitHub tree/response
-  classification (`github_tree.rs`).
-- Imperative shell (`src/shell/`): argument and process IO (`src/main.rs`,
-  `shell/cli.rs`), orchestration (`src/lib.rs::ingest`), filesystem walking and
-  safe reads (`shell/local.rs`, `shell/local_io.rs`), HTTP transport with
-  bounded response bodies and GitHub token credential resolution
-  (`shell/github_client.rs`), remote `.gitignore` loading
-  (`shell/github_ignore.rs`), GitHub orchestration (`shell/github.rs`),
-  and digest emission, atomic file write or stdout stream write
-  (`shell/output.rs`). The shell feeds observations to the
-  core and reads the accounted result through `Selector::into_parts`.
-- `read_local_file` (`src/shell/local_io.rs`) returns a `Probe`; it performs the
-  bounded read but leaves text/UTF-8 and budget judgment to the core.
-- A shell module may host a pure budget state machine next to the I/O that
-  consumes it (`RemoteIgnoreBudget` in `src/shell/github_ignore.rs`).
+- Pure core (`src/core/`):
+  - `policy.rs`: all operational limits, noise patterns, binary extensions, and
+    their predicates (`is_noise_path`, `has_binary_extension`).
+  - `source.rs`: source string and OS-string parsing.
+  - `model.rs`: domain value types (`Source`, `FileRecord`, `CollectionResult`,
+    `IngestReport`, `Options`, `OutputTarget`).
+  - `error.rs`: domain error enum `IngestError` with structured diagnostic payload.
+  - `decide.rs`: `Selector::decide`, `CandidateBudget`, item evaluation, and
+    candidate overflow diagnostics.
+  - `digest.rs`: `DigestBudget`, defense-in-depth size check, and deterministic
+    digest rendering.
+  - `github_url.rs`: URL construction and origin credential scoping.
+  - `github_tree.rs`: GitHub tree DTO parsing and blob verification.
+- Imperative shell (`src/shell/`):
+  - `shell/cli.rs`: CLI argument parsing, help output, and options parsing.
+  - `src/lib.rs`: library entry points (`parse_source`, `parse_source_os`, `ingest`).
+  - `shell/local.rs`: filesystem walking and orchestration.
+  - `shell/local_io.rs`: safe, non-following bounded file reads (`read_local_file`).
+  - `shell/output_exclusion.rs`: output file identity detection and path normalization.
+  - `shell/github_client.rs`: HTTP transport, body bounding, and token resolution.
+  - `shell/github.rs`: windowed parallel GitHub tree download orchestration.
+  - `shell/output.rs`: atomic file writing or standard output stream emission.

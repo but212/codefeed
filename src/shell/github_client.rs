@@ -11,7 +11,7 @@ use ureq::tls::{RootCerts, TlsConfig};
 use crate::core::error::IngestError;
 use crate::core::github_tree::{CommitResponse, RepositoryResponse, TreeResponse};
 use crate::core::github_url::{RequestTarget, api_url, raw_url, request_target};
-use crate::core::limits::MAX_JSON_SIZE;
+use crate::core::policy::MAX_JSON_SIZE;
 
 const GITHUB_USER_AGENT: &str = "rustingest/0.1";
 const GITHUB_TIMEOUT_SECS: u64 = 30;
@@ -145,7 +145,13 @@ fn api_error(status: StatusCode, body: LimitedBody) -> IngestError {
         LimitedBody::Complete(body) => String::from_utf8_lossy(&body).replace('\n', " "),
         LimitedBody::Exceeded => "response body exceeds the limit".into(),
     };
-    IngestError::Api(format!("HTTP {status}: {detail}"))
+    if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::FORBIDDEN {
+        IngestError::Api(format!(
+            "HTTP {status}: {detail} (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
+        ))
+    } else {
+        IngestError::Api(format!("HTTP {status}: {detail}"))
+    }
 }
 
 fn read_response(body: ureq::Body, limit: u64) -> Result<LimitedBody, IngestError> {
@@ -219,5 +225,26 @@ mod tests {
 
         let env = HashMap::new();
         assert_eq!(resolve_token_with(mock_env(env)), None);
+    }
+
+    #[test]
+    fn api_error_suggests_token_on_rate_limit_and_forbidden() {
+        let err_429 = api_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            LimitedBody::Complete(b"rate limit".to_vec()),
+        );
+        assert!(err_429.to_string().contains("GITHUB_TOKEN"));
+
+        let err_403 = api_error(
+            StatusCode::FORBIDDEN,
+            LimitedBody::Complete(b"forbidden".to_vec()),
+        );
+        assert!(err_403.to_string().contains("GITHUB_TOKEN"));
+
+        let err_404 = api_error(
+            StatusCode::NOT_FOUND,
+            LimitedBody::Complete(b"not found".to_vec()),
+        );
+        assert!(!err_404.to_string().contains("GITHUB_TOKEN"));
     }
 }

@@ -21,7 +21,7 @@ const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 
 use crate::core::decide::Probe;
 use crate::core::error::IngestError;
-use crate::core::limits::MAX_FILE_SIZE;
+use crate::core::policy::MAX_FILE_SIZE;
 
 pub(crate) fn read_local_file(root: &Path, path: &Path) -> Result<Probe, IngestError> {
     let file = match open_local_file(root, path) {
@@ -112,10 +112,8 @@ fn is_symlink_open_error(_: &io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::temp_dir;
     use super::*;
-    use std::env;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[cfg(unix)]
     #[test]
@@ -188,10 +186,5 @@ mod tests {
         assert!(matches!(read_local_file(&root, &path)?, Probe::Bytes(_)));
         fs::remove_dir_all(root)?;
         Ok(())
-    }
-
-    fn temp_dir(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        Ok(env::temp_dir().join(format!("local_ingest_{label}_{nanos}")))
     }
 }

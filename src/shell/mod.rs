@@ -6,7 +6,14 @@
 pub(crate) mod cli;
 pub(crate) mod github;
 pub(crate) mod github_client;
-pub(crate) mod github_ignore;
 pub(crate) mod local;
 pub(crate) mod local_io;
 pub(crate) mod output;
+pub(crate) mod output_exclusion;
+
+#[cfg(test)]
+pub(crate) fn temp_dir(label: &str) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    Ok(std::env::temp_dir().join(format!("local_ingest_{label}_{nanos}")))
+}

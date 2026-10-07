@@ -1,7 +1,9 @@
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
-use crate::{IngestError, IngestReport, Options, OutputTarget, ingest, parse_source_os};
+use crate::core::error::IngestError;
+use crate::core::model::{IngestReport, Options, OutputTarget};
+use crate::{ingest, parse_source_os};
 
 const HELP: &str = "Usage: rustingest <SOURCE> [--output <PATH|->] [--ref <REF>]";
 
@@ -21,7 +23,7 @@ fn parse_output_target(value: &OsStr) -> OutputTarget {
 
 /// Scans for `--help`/`-h` in option position, skipping values of options that
 /// take one. Owned here so the binary does not re-implement the CLI grammar.
-pub fn requests_help(args: &[OsString]) -> bool {
+pub(crate) fn requests_help(args: &[OsString]) -> bool {
     let mut index = 1;
     while let Some(argument) = args.get(index) {
         match argument.to_str() {

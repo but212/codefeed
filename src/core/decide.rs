@@ -1,7 +1,7 @@
 use crate::core::digest::DigestBudget;
 use crate::core::error::IngestError;
-use crate::core::limits::MAX_FILE_COUNT;
 use crate::core::model::FileRecord;
+use crate::core::policy::MAX_FILE_COUNT;
 
 /// Path text as observed by the imperative shell. Non-UTF-8 paths are still
 /// candidates and must be counted, then skipped.
@@ -46,7 +46,11 @@ impl Selector {
         if let Probe::Ignored = item.probe {
             return Ok(());
         }
-        self.candidates.add()?;
+        let path_str = match &item.path {
+            ItemPath::Utf8(p) => Some(p.as_str()),
+            ItemPath::NonUtf8 => None,
+        };
+        self.candidates.add(path_str)?;
         let ItemPath::Utf8(path) = item.path else {
             self.digest.skip()?;
             return Ok(());
@@ -60,7 +64,22 @@ impl Selector {
             return Ok(());
         };
         let file = FileRecord { path, content };
-        self.digest.add(&file)?;
+        if let Err(err) = self.digest.add(&file) {
+            if matches!(err, IngestError::OutputTooLarge { .. }) {
+                let mut entries: Vec<(String, usize)> = self
+                    .files
+                    .iter()
+                    .map(|f| (f.path.clone(), f.content.len()))
+                    .collect();
+                entries.push((file.path, file.content.len()));
+                entries.sort_by_key(|b| std::cmp::Reverse(b.1));
+                entries.truncate(5);
+                return Err(IngestError::OutputTooLarge {
+                    largest_files: entries,
+                });
+            }
+            return Err(err);
+        }
         self.files.push(file);
         Ok(())
     }
@@ -74,18 +93,38 @@ impl Selector {
 #[derive(Default)]
 pub(crate) struct CandidateBudget {
     count: usize,
+    dir_counts: std::collections::HashMap<String, usize>,
 }
 
 impl CandidateBudget {
-    pub(crate) fn add(&mut self) -> Result<(), IngestError> {
+    pub(crate) fn add(&mut self, path: Option<&str>) -> Result<(), IngestError> {
         self.count = self
             .count
             .checked_add(1)
             .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
+        let dir = match path {
+            Some(p) => match p.find('/') {
+                Some(idx) => format!("{}/", &p[..idx]),
+                None => "<root>/".to_string(),
+            },
+            None => "<unknown>/".to_string(),
+        };
+        *self.dir_counts.entry(dir).or_insert(0) += 1;
+
         if self.count > MAX_FILE_COUNT {
-            return Err(IngestError::InvalidMetadata(format!(
-                "repository contains more than {MAX_FILE_COUNT} files"
-            )));
+            let mut dirs: Vec<(&String, usize)> =
+                self.dir_counts.iter().map(|(d, &c)| (d, c)).collect();
+            dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+            dirs.truncate(3);
+
+            let mut msg = format!(
+                "repository contains more than {MAX_FILE_COUNT} files\nlargest directories:"
+            );
+            for (dir, count) in dirs {
+                use std::fmt::Write;
+                let _ = write!(msg, "\n  - {dir} ({count} files)");
+            }
+            return Err(IngestError::InvalidMetadata(msg));
         }
         Ok(())
     }
@@ -102,7 +141,7 @@ fn text_content(bytes: Vec<u8>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::limits::{MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE};
+    use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE};
 
     fn decide_item(path: &str, probe: Probe) -> Item {
         Item {
@@ -115,9 +154,9 @@ mod tests {
     fn counts_candidate_before_content_filtering() {
         let mut candidates = CandidateBudget::default();
         for _ in 0..MAX_FILE_COUNT {
-            candidates.add().unwrap();
+            candidates.add(None).unwrap();
         }
-        assert!(candidates.add().is_err());
+        assert!(candidates.add(None).is_err());
     }
 
     #[test]
@@ -193,7 +232,54 @@ mod tests {
             "large.txt",
             Probe::Bytes(vec![b'x'; MAX_OUTPUT_SIZE as usize]),
         ));
-        assert!(matches!(result, Err(IngestError::OutputTooLarge)));
+        assert!(matches!(result, Err(IngestError::OutputTooLarge { .. })));
+        Ok(())
+    }
+
+    #[test]
+    fn output_overflow_includes_largest_files_diagnostic() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut selector = Selector::new("repo", None)?;
+        selector.decide(decide_item("small.txt", Probe::Bytes(vec![b'a'; 100])))?;
+        selector.decide(decide_item("medium.txt", Probe::Bytes(vec![b'b'; 50_000])))?;
+        let err = selector
+            .decide(decide_item(
+                "large.txt",
+                Probe::Bytes(vec![b'x'; MAX_OUTPUT_SIZE as usize]),
+            ))
+            .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("digest exceeds the 20 MiB output limit"));
+        assert!(message.contains("largest files:"));
+        assert!(message.contains("large.txt"));
+        assert!(message.contains("medium.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_overflow_includes_largest_directories_diagnostic()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut selector = Selector::new("repo", None)?;
+        for index in 0..8_000 {
+            selector.decide(decide_item(
+                &format!("vendor/pkg_{index}.rs"),
+                Probe::Bytes(b"x".to_vec()),
+            ))?;
+        }
+        for index in 0..2_000 {
+            selector.decide(decide_item(
+                &format!("src/file_{index}.rs"),
+                Probe::Bytes(b"x".to_vec()),
+            ))?;
+        }
+        let err = selector
+            .decide(decide_item("extra/one.rs", Probe::Bytes(b"x".to_vec())))
+            .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("repository contains more than 10000 files"));
+        assert!(message.contains("largest directories:"));
+        assert!(message.contains("vendor/ (8000 files)"));
+        assert!(message.contains("src/ (2000 files)"));
         Ok(())
     }
 }
