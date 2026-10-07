@@ -1,10 +1,12 @@
 //! GitHub collection orchestration: tree walk, per-entry probe, selection.
 
-use crate::core::decide::{Item, ItemPath, Probe, Selector};
+use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
 use crate::core::github_tree::{is_hidden_path, is_regular_blob};
 use crate::core::model::CollectionResult;
-use crate::core::policy::{FETCH_WINDOW, MAX_FILE_SIZE, has_binary_extension, is_noise_path};
+use crate::core::policy::{
+    FETCH_WINDOW, MAX_FILE_COUNT, MAX_FILE_SIZE, has_binary_extension, is_noise_path,
+};
 
 use super::github_client::{GithubClient, LimitedBody};
 
@@ -38,6 +40,13 @@ pub(crate) fn collect_github(
                 && !is_noise_path(&entry.path)
         })
         .collect();
+
+    if entries.len() > MAX_FILE_COUNT {
+        let mut budget = CandidateBudget::default();
+        for entry in &entries {
+            budget.add(Some(&entry.path))?;
+        }
+    }
 
     for batch in entries.chunks(FETCH_WINDOW) {
         let probes: Vec<Result<Probe, IngestError>> = std::thread::scope(|s| {

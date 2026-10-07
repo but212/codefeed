@@ -102,14 +102,18 @@ impl CandidateBudget {
             .count
             .checked_add(1)
             .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
-        let dir = match path {
+        let dir_slice = match path {
             Some(p) => match p.find('/') {
-                Some(idx) => format!("{}/", &p[..idx]),
-                None => "<root>/".to_string(),
+                Some(idx) => &p[..=idx],
+                None => "<root>/",
             },
-            None => "<unknown>/".to_string(),
+            None => "<unknown>/",
         };
-        *self.dir_counts.entry(dir).or_insert(0) += 1;
+        if let Some(count) = self.dir_counts.get_mut(dir_slice) {
+            *count += 1;
+        } else {
+            self.dir_counts.insert(dir_slice.to_owned(), 1);
+        }
 
         if self.count > MAX_FILE_COUNT {
             let mut dirs: Vec<(&String, usize)> =
