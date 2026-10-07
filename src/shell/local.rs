@@ -7,7 +7,7 @@ use std::path::Path;
 use ignore::WalkBuilder;
 
 use super::local_io::read_local_file;
-use super::output_exclusion::{is_same_path, output_identity};
+use super::output_exclusion::OutputFilter;
 use crate::core::decide::{Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, OutputTarget};
@@ -26,8 +26,8 @@ pub(crate) fn collect_local(
     }
     // Standard output has no filesystem path, so there is nothing to exclude
     // from the walk.
-    let exclude = match output {
-        OutputTarget::File(path) => Some(output_identity(path)?),
+    let output_filter = match output {
+        OutputTarget::File(path) => Some(OutputFilter::new(path)?),
         OutputTarget::Stdout => None,
     };
     let label = local_label(&root);
@@ -48,9 +48,9 @@ pub(crate) fn collect_local(
         let entry = entry.map_err(|error| IngestError::Io(io::Error::other(error)))?;
         let entry_path = entry.path();
         if entry_path == root
-            || exclude
+            || output_filter
                 .as_ref()
-                .is_some_and(|excluded| is_same_path(entry_path, excluded))
+                .is_some_and(|filter| filter.is_excluded(entry_path))
             || !entry.file_type().is_some_and(|kind| kind.is_file())
         {
             continue;
