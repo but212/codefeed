@@ -71,8 +71,8 @@ fn open_local_file(root: &Path, path: &Path) -> io::Result<fs::File> {
         static OPENAT2_UNAVAILABLE: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
 
-        if !OPENAT2_UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed) {
-            if let Ok(c_rel) = CString::new(relative.as_os_str().as_bytes()) {
+        if !OPENAT2_UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed)
+            && let Ok(c_rel) = CString::new(relative.as_os_str().as_bytes()) {
                 let how = OpenHow {
                     flags: (libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
                         as u64,
@@ -101,7 +101,6 @@ fn open_local_file(root: &Path, path: &Path) -> io::Result<fs::File> {
                     _ => return Err(err),
                 }
             }
-        }
     }
 
     open_local_file_components(directory, relative)
