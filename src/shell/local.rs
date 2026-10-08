@@ -124,15 +124,20 @@ pub(crate) fn collect_local(
     drop(tx);
 
     let mut candidates = Vec::with_capacity(crate::core::policy::MAX_FILE_COUNT.min(512));
-    let mut candidate_budget = crate::core::decide::CandidateBudget::default();
     for result in rx {
         let item = result?;
-        let path_str = match &item.1 {
-            ItemPath::Utf8(p) => Some(p.as_str()),
-            ItemPath::NonUtf8 => None,
-        };
-        candidate_budget.add(path_str)?;
         candidates.push(item);
+    }
+
+    if candidates.len() > crate::core::policy::MAX_FILE_COUNT {
+        let mut budget = crate::core::decide::CandidateBudget::default();
+        for item in &candidates {
+            let path_str = match &item.1 {
+                ItemPath::Utf8(p) => Some(p.as_str()),
+                ItemPath::NonUtf8 => None,
+            };
+            budget.add(path_str)?;
+        }
     }
 
     candidates.sort_by(|a, b| match (&a.1, &b.1) {

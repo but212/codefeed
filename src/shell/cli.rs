@@ -3,7 +3,8 @@ use std::path::PathBuf;
 
 use crate::core::error::IngestError;
 use crate::core::model::{DigestFormat, IngestReport, Options, OutputTarget};
-use crate::{ingest, parse_source_os};
+use crate::core::source::parse_source_os;
+use crate::ingest;
 
 const HELP: &str =
     "Usage: rustingest <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]";

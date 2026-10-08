@@ -4,16 +4,11 @@ mod core;
 mod shell;
 
 use std::env::args_os;
-use std::ffi::OsStr;
 use std::process;
 
 use crate::core::error::IngestError;
 use crate::core::model::{IngestReport, Options, OutputTarget, Source};
 use crate::shell::cli::{help_text, requests_help, run_cli};
-
-pub(crate) fn parse_source_os(value: &OsStr) -> Result<Source, IngestError> {
-    core::source::parse_source_os(value)
-}
 
 pub(crate) fn ingest(source: &Source, options: &Options) -> Result<IngestReport, IngestError> {
     if options
