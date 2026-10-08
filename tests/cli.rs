@@ -20,7 +20,7 @@ fn help_exits_successfully_without_ingesting() {
         assert_eq!(stdout.matches("Usage:").count(), 1, "args: {args:?}");
         assert_eq!(
             stdout.trim(),
-            "Usage: rustingest <SOURCE> [--output <PATH|->] [--ref <REF>]",
+            "Usage: rustingest <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]",
             "args: {args:?}"
         );
         assert!(output.stderr.is_empty(), "args: {args:?}");
@@ -36,6 +36,8 @@ fn invalid_arguments_exit_nonzero() {
         &[".", "--output", "--help"][..],
         &[".", "--ref"][..],
         &[".", "--ref", "main"][..],
+        &[".", "--format"][..],
+        &[".", "--format", "invalid"][..],
         &["ingest", "."][..],
     ] {
         let output = run(args);
@@ -94,11 +96,79 @@ fn writes_digest_only_to_stdout_for_dash_output() -> Result<(), Box<dyn std::err
     assert!(!stdout.contains("Wrote"), "stdout: {stdout}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Wrote to stdout (1 files, 0 skipped)"),
+        stderr.contains("Wrote to stdout (1 files, 0 skipped, ~"),
         "stderr: {stderr}"
     );
+    assert!(stderr.contains("tokens)"), "stderr: {stderr}");
     assert!(!root.join("digest.txt").exists(), "no output file expected");
-    std::fs::remove_dir_all(&root).expect("temporary directory should be removed");
+    std::fs::remove_dir_all(root).expect("temporary directory should be removed");
+    Ok(())
+}
+
+#[test]
+fn reports_estimated_tokens_in_file_summary() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after the Unix epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("rustingest_cli_tokens_{suffix}"));
+    std::fs::create_dir_all(&root).expect("temporary directory should be created");
+    std::fs::write(root.join("code.rs"), "pub fn test() -> i32 { 42 }")
+        .expect("source file should be written");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rustingest"))
+        .current_dir(&root)
+        .arg(".")
+        .output()
+        .expect("CLI process should start");
+
+    assert!(output.status.success(), "output: {output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Wrote digest.txt (1 files, 0 skipped, ~"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("tokens)"), "stdout: {stdout}");
+    std::fs::remove_dir_all(root).expect("temporary directory should be removed");
+    Ok(())
+}
+
+#[test]
+fn outputs_xml_when_format_xml_specified() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after the Unix epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("rustingest_cli_xml_{suffix}"));
+    std::fs::create_dir_all(&root).expect("temporary directory should be created");
+    std::fs::write(root.join("file.rs"), "fn main() { let x = 1 < 2; }")
+        .expect("file should be written");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rustingest"))
+        .current_dir(&root)
+        .arg(".")
+        .arg("--output")
+        .arg("-")
+        .arg("--format")
+        .arg("xml")
+        .output()
+        .expect("CLI process should start");
+
+    assert!(output.status.success(), "output: {output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("<repository name="), "stdout: {stdout}");
+    assert!(stdout.contains("<directory_structure>"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("<file path=\"file.rs\">"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("1 &lt; 2"), "stdout: {stdout}");
+    assert!(stdout.contains("</repository>"), "stdout: {stdout}");
+    std::fs::remove_dir_all(root).expect("temporary directory should be removed");
     Ok(())
 }
 
@@ -118,7 +188,7 @@ fn help_after_non_utf8_source_exits_successfully() {
     assert!(output.status.success(), "output: {output:?}");
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "Usage: rustingest <SOURCE> [--output <PATH|->] [--ref <REF>]"
+        "Usage: rustingest <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]"
     );
     assert!(output.stderr.is_empty(), "output: {output:?}");
 }

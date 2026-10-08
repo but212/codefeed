@@ -54,21 +54,26 @@ pub(crate) fn raw_url(owner: &str, repo: &str, revision: &str, path: &str) -> St
 
 fn push_encoded_segment(url: &mut String, segment: &str) {
     url.push('/');
-    url.push_str(&encode_path_segment(segment));
+    append_encoded_segment(url, segment);
 }
 
-fn encode_path_segment(segment: &str) -> String {
+fn append_encoded_segment(url: &mut String, segment: &str) {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut encoded = String::with_capacity(segment.len());
     for byte in segment.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(byte as char);
+            url.push(byte as char);
         } else {
-            encoded.push('%');
-            encoded.push(HEX[(byte >> 4) as usize] as char);
-            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+            url.push('%');
+            url.push(HEX[(byte >> 4) as usize] as char);
+            url.push(HEX[(byte & 0x0f) as usize] as char);
         }
     }
+}
+
+#[cfg(test)]
+fn encode_path_segment(segment: &str) -> String {
+    let mut encoded = String::with_capacity(segment.len());
+    append_encoded_segment(&mut encoded, segment);
     encoded
 }
 

@@ -2,10 +2,12 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use crate::core::error::IngestError;
-use crate::core::model::{IngestReport, Options, OutputTarget};
-use crate::{ingest, parse_source_os};
+use crate::core::model::{DigestFormat, IngestReport, Options, OutputTarget};
+use crate::core::source::parse_source_os;
+use crate::ingest;
 
-const HELP: &str = "Usage: rustingest <SOURCE> [--output <PATH|->] [--ref <REF>]";
+const HELP: &str =
+    "Usage: rustingest <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]";
 
 pub(crate) fn help_text() -> &'static str {
     HELP
@@ -28,7 +30,7 @@ pub(crate) fn requests_help(args: &[OsString]) -> bool {
     while let Some(argument) = args.get(index) {
         match argument.to_str() {
             Some("--help" | "-h") => return true,
-            Some("--output" | "--ref") => index += 2,
+            Some("--output" | "--ref" | "--format") => index += 2,
             _ => index += 1,
         }
     }
@@ -66,6 +68,26 @@ where
                     .to_str()
                     .ok_or_else(|| usage("--ref requires a UTF-8 value"))?;
                 options.reference = Some(value.to_owned());
+            }
+            Some("--format") => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| usage("--format requires a format (text, xml)"))?;
+                if matches!(value.to_str(), Some("--help" | "-h")) {
+                    return Err(usage("--format requires a format (text, xml)"));
+                }
+                let value_str = value
+                    .to_str()
+                    .ok_or_else(|| usage("--format requires a UTF-8 value"))?;
+                match value_str.to_ascii_lowercase().as_str() {
+                    "text" => options.format = DigestFormat::Text,
+                    "xml" => options.format = DigestFormat::Xml,
+                    other => {
+                        return Err(usage(&format!(
+                            "invalid format: {other} (expected text, xml)"
+                        )));
+                    }
+                }
             }
             Some("--help" | "-h") => return Err(usage(HELP)),
             Some(unknown) => return Err(usage(&format!("unknown option: {unknown}"))),

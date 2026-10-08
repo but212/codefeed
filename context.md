@@ -16,23 +16,33 @@ imperative-shell boundary.
 - `FileRecord` — digest entry: `path`, `content`.
 - `CollectionResult` — `Local { label, files, skipped }` or
   `GitHub { label, revision, files, skipped }`.
-- `IngestReport` — `output`, `included_files`, `skipped_files`.
+- `IngestReport` — `output`, `included_files`, `skipped_files`, `estimated_tokens`.
 - `OutputTarget` — digest destination: `File(PathBuf)` or `Stdout`.
+- `DigestFormat` — output serialization format: `Text` or `Xml`.
 - Budgets — `CandidateBudget` (candidate count), `DigestBudget` (rendered
   bytes and skipped count).
-- Policy — centralised tunables, thresholds, noise lists, and extension sets
+- Policy — centralised tunables, thresholds, noise lists, sensitive patterns, and extension sets
   (`policy.rs`).
 
 ## Invariants
 
-- Hidden, ignored, and built-in noise paths (common lockfiles: `Cargo.lock`,
-  `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`) are excluded
-  before candidate accounting. They are neither candidates nor `skipped`.
+- Hidden, ignored, built-in noise paths (common lockfiles: `Cargo.lock`,
+  `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and conventional
+  sensitive files (`.env*`, private keys `*.key`/`*.pem`, certificates `*.p12`/`*.pkcs12`,
+  SSH keys `id_rsa*`/`id_ed25519*`, and `credentials*`) are excluded before candidate
+  accounting. They are neither candidates nor `skipped`.
 - A candidate slot is consumed before content, size, or encoding is judged.
 - `skipped` counts candidates rejected for content, size, or encoding reasons.
   Ignored paths are not `skipped`.
 - Digest size accounting rejects content that would exceed `MAX_OUTPUT_SIZE`;
   overflow is never included.
+- Directory structure is rendered as an ASCII hierarchy tree (`├── `, `└── `, `│   `), matching `DigestBudget` byte-for-byte.
+- Estimated tokens are calculated on the full digest stream via zero-dependency BPE approximation and reported via `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
+- Local filesystem traversal utilizes multi-threaded `ignore::WalkParallel` with strict deterministic lexicographical sorting before `Selector` consumption.
+- XML serialization (`--format xml`) structures output into `<repository>`,
+  `<directory_structure>`, and `<files><file path="...">` tags, escaping essential XML
+  entities (`&`, `<`, `>`, `"`, `'`). Format overhead and escaped bytes are strictly accounted
+  for in `DigestBudget` before output.
 - File-path ordering is lexicographic and owned solely by `render_digest_to_writer` / `render_digest`.
 - A file output target is written atomically: create-new temporary file, sync,
   rename.
@@ -76,6 +86,7 @@ imperative-shell boundary.
 | `RETRY_INITIAL_DELAY_MS` | 250 ms | Base initial delay for exponential backoff |
 | `RETRY_MAX_DELAY_MS` | 5,000 ms | Maximum delay cap for exponential backoff |
 | `NOISE` | lockfiles | Conventional lockfiles excluded before candidate budget |
+| `SENSITIVE_EXT` | 5 extensions | Key, cert, credential extensions excluded before candidate budget |
 | `BINARY_EXT` | 11 extensions | Known binary file extensions filtered pre-download |
 
 ## Functional core / imperative shell boundary
@@ -84,21 +95,21 @@ Boundary rule: pure core code performs no I/O, clock, network, or entropy and
 never depends on shell code; shell code depends on the core in one direction.
 
 - Pure core (`src/core/`):
-  - `policy.rs`: all operational limits, noise patterns, binary extensions, and
-    their predicates (`is_noise_path`, `has_binary_extension`).
+  - `policy.rs`: all operational limits, noise patterns, sensitive patterns, binary extensions, and
+    their predicates (`is_noise_path`, `is_sensitive_path`, `has_binary_extension`).
   - `source.rs`: source string and OS-string parsing.
   - `model.rs`: domain value types (`Source`, `FileRecord`, `CollectionResult`,
-    `IngestReport`, `Options`, `OutputTarget`).
+    `IngestReport`, `Options`, `OutputTarget`, `DigestFormat`).
   - `error.rs`: domain error enum `IngestError` with structured diagnostic payload.
   - `decide.rs`: `Selector::decide`, `CandidateBudget`, item evaluation, and
     candidate overflow diagnostics.
-  - `digest.rs`: `DigestBudget`, defense-in-depth size check, and deterministic
-    digest rendering.
+  - `digest.rs`: `DigestBudget`, defense-in-depth size check, deterministic
+    digest rendering, and XML escaping / structuring (`xml_escape`).
   - `github_url.rs`: URL construction and origin credential scoping.
   - `github_tree.rs`: GitHub tree DTO parsing and blob verification.
 - Imperative shell (`src/shell/`):
   - `shell/cli.rs`: CLI argument parsing, help output, and options parsing.
-  - `src/lib.rs`: library entry points (`parse_source`, `parse_source_os`, `ingest`).
+  - `src/main.rs`: binary entry point and internal pipeline (`parse_source_os`, `ingest`).
   - `shell/local.rs`: filesystem walking and orchestration.
   - `shell/local_io.rs`: safe, non-following bounded file reads (`read_local_file`).
   - `shell/output_exclusion.rs`: output file identity detection and path normalization.

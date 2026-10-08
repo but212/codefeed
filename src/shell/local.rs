@@ -4,17 +4,18 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use ignore::WalkBuilder;
+use ignore::{WalkBuilder, WalkState};
 
 use super::local_io::read_local_file;
 use super::output_exclusion::OutputFilter;
 use crate::core::decide::{Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
-use crate::core::model::{CollectionResult, OutputTarget};
+use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
 
 pub(crate) fn collect_local(
     root: &Path,
     output: &OutputTarget,
+    format: DigestFormat,
 ) -> Result<CollectionResult, IngestError> {
     let root = fs::canonicalize(root)
         .map_err(|error| IngestError::InvalidSource(format!("{} ({error})", root.display())))?;
@@ -27,11 +28,11 @@ pub(crate) fn collect_local(
     // Standard output has no filesystem path, so there is nothing to exclude
     // from the walk.
     let output_filter = match output {
-        OutputTarget::File(path) => Some(OutputFilter::new(path)?),
+        OutputTarget::File(path) => Some(std::sync::Arc::new(OutputFilter::new(path)?)),
         OutputTarget::Stdout => None,
     };
     let label = local_label(&root);
-    let mut selector = Selector::new(&label, None)?;
+    let mut selector = Selector::new(&label, None, format)?;
 
     let walker = WalkBuilder::new(&root)
         .hidden(true)
@@ -42,37 +43,114 @@ pub(crate) fn collect_local(
         .require_git(false)
         .parents(false)
         .follow_links(false)
-        .build();
+        .build_parallel();
 
-    for entry in walker {
-        let entry = entry.map_err(|error| IngestError::Io(io::Error::other(error)))?;
-        let entry_path = entry.path();
-        if entry_path == root
-            || output_filter
-                .as_ref()
-                .is_some_and(|filter| filter.is_excluded(entry_path))
-            || !entry.file_type().is_some_and(|kind| kind.is_file())
-        {
-            continue;
-        }
-        let relative = entry_path
-            .strip_prefix(&root)
-            .map_err(|error| IngestError::InvalidMetadata(error.to_string()))?;
-        let item_path = match relative
-            .components()
-            .map(|part| part.as_os_str().to_str())
-            .collect::<Option<Vec<_>>>()
-        {
-            Some(parts) => ItemPath::Utf8(parts.join("/")),
-            None => ItemPath::NonUtf8,
-        };
-        let probe = match &item_path {
-            ItemPath::NonUtf8 => Probe::Missing,
-            ItemPath::Utf8(path) if crate::core::policy::is_noise_path(path) => Probe::Ignored,
-            ItemPath::Utf8(path) if crate::core::policy::has_binary_extension(path) => {
-                Probe::Missing
+    let (tx, rx) = std::sync::mpsc::channel();
+    let root_clone = root.clone();
+    let candidate_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    walker.run(|| {
+        let tx = tx.clone();
+        let output_filter = output_filter.clone();
+        let root = root_clone.clone();
+        let candidate_counter = candidate_counter.clone();
+        Box::new(move |entry| {
+            if candidate_counter.load(std::sync::atomic::Ordering::Relaxed)
+                > crate::core::policy::MAX_FILE_COUNT
+            {
+                return WalkState::Quit;
             }
-            ItemPath::Utf8(_) => read_local_file(&root, entry_path)?,
+            let entry = match entry {
+                Ok(e) => e,
+                Err(err) => {
+                    let _ = tx.send(Err(IngestError::Io(io::Error::other(err))));
+                    return WalkState::Continue;
+                }
+            };
+            let entry_path = entry.path();
+            if entry_path == root
+                || output_filter
+                    .as_ref()
+                    .is_some_and(|filter| filter.is_excluded(entry_path))
+                || !entry.file_type().is_some_and(|kind| kind.is_file())
+            {
+                return WalkState::Continue;
+            }
+            let relative = match entry_path.strip_prefix(&root) {
+                Ok(rel) => rel,
+                Err(err) => {
+                    let _ = tx.send(Err(IngestError::InvalidMetadata(err.to_string())));
+                    return WalkState::Quit;
+                }
+            };
+            let item_path = match relative
+                .components()
+                .map(|part| part.as_os_str().to_str())
+                .collect::<Option<Vec<_>>>()
+            {
+                Some(parts) => ItemPath::Utf8(parts.join("/")),
+                None => ItemPath::NonUtf8,
+            };
+
+            let probe = match &item_path {
+                ItemPath::NonUtf8 => Some(Probe::Missing),
+                ItemPath::Utf8(path)
+                    if crate::core::policy::is_noise_path(path)
+                        || crate::core::policy::is_sensitive_path(path) =>
+                {
+                    Some(Probe::Ignored)
+                }
+                ItemPath::Utf8(path) if crate::core::policy::has_binary_extension(path) => {
+                    Some(Probe::Missing)
+                }
+                ItemPath::Utf8(_) => None,
+            };
+
+            if matches!(probe, Some(Probe::Ignored)) {
+                return WalkState::Continue;
+            }
+
+            if candidate_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                > crate::core::policy::MAX_FILE_COUNT
+            {
+                return WalkState::Quit;
+            }
+
+            let _ = tx.send(Ok((entry_path.to_path_buf(), item_path, probe)));
+            WalkState::Continue
+        })
+    });
+
+    drop(tx);
+
+    let mut candidates = Vec::with_capacity(crate::core::policy::MAX_FILE_COUNT.min(512));
+    for result in rx {
+        let item = result?;
+        candidates.push(item);
+    }
+
+    if candidates.len() > crate::core::policy::MAX_FILE_COUNT {
+        let mut budget = crate::core::decide::CandidateBudget::default();
+        for item in &candidates {
+            let path_str = match &item.1 {
+                ItemPath::Utf8(p) => Some(p.as_str()),
+                ItemPath::NonUtf8 => None,
+            };
+            budget.add(path_str)?;
+        }
+    }
+
+    candidates.sort_by(|a, b| match (&a.1, &b.1) {
+        (ItemPath::Utf8(left), ItemPath::Utf8(right)) => left.cmp(right),
+        (ItemPath::Utf8(_), ItemPath::NonUtf8) => std::cmp::Ordering::Less,
+        (ItemPath::NonUtf8, ItemPath::Utf8(_)) => std::cmp::Ordering::Greater,
+        (ItemPath::NonUtf8, ItemPath::NonUtf8) => a.0.cmp(&b.0),
+    });
+
+    for (entry_path, item_path, probe_opt) in candidates {
+        let probe = match probe_opt {
+            Some(probe) => probe,
+            None => read_local_file(&root, &entry_path)?,
         };
         selector.decide(Item {
             path: item_path,
@@ -142,6 +220,7 @@ mod tests {
             &Options {
                 output: OutputTarget::File(output),
                 reference: None,
+                ..Default::default()
             },
         )?;
         let digest = fs::read_to_string(root.join("digest.txt"))?;
@@ -167,6 +246,7 @@ mod tests {
             &Options {
                 output: OutputTarget::File(output),
                 reference: None,
+                ..Default::default()
             },
         )?;
         let digest = fs::read_to_string(root.join("DIGEST.TXT"))?;
@@ -192,6 +272,7 @@ mod tests {
             &Options {
                 output: OutputTarget::File(output.clone()),
                 reference: None,
+                ..Default::default()
             },
         )?;
         let digest = fs::read_to_string(output)?;
@@ -201,6 +282,37 @@ mod tests {
         assert!(digest.contains("FILE: src.rs"));
         assert!(!digest.contains("Cargo.lock"));
         assert!(!digest.contains("package-lock.json"));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn excludes_sensitive_files_without_skipping() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("sensitive_files")?;
+        fs::create_dir_all(root.join("certs"))?;
+        fs::write(root.join("main.rs"), "fn main() {}")?;
+        fs::write(root.join(".env"), "SECRET=true")?;
+        fs::write(root.join(".env.production"), "KEY=123")?;
+        fs::write(root.join("certs").join("privkey.key"), "PRIVATE")?;
+        fs::write(root.join("id_rsa"), "SSH")?;
+        let output = root.join("digest.txt");
+
+        let report = ingest(
+            &Source::Local(root.clone()),
+            &Options {
+                output: OutputTarget::File(output.clone()),
+                reference: None,
+                ..Default::default()
+            },
+        )?;
+        let digest = fs::read_to_string(output)?;
+
+        assert_eq!(report.included_files, 1);
+        assert_eq!(report.skipped_files, 0);
+        assert!(digest.contains("FILE: main.rs"));
+        assert!(!digest.contains(".env"));
+        assert!(!digest.contains("privkey.key"));
+        assert!(!digest.contains("id_rsa"));
         fs::remove_dir_all(root)?;
         Ok(())
     }
@@ -222,6 +334,7 @@ mod tests {
             &Options {
                 output: OutputTarget::File(output.clone()),
                 reference: None,
+                ..Default::default()
             },
         )?;
         let digest = fs::read_to_string(output)?;
@@ -249,6 +362,7 @@ mod tests {
             &Options {
                 output: OutputTarget::File(output.clone()),
                 reference: None,
+                ..Default::default()
             },
         )?;
         let digest = fs::read_to_string(output)?;
@@ -272,6 +386,7 @@ mod tests {
             &Options {
                 output: OutputTarget::File(output.clone()),
                 reference: None,
+                ..Default::default()
             },
         )?;
         let digest = fs::read_to_string(output)?;
@@ -293,6 +408,7 @@ mod tests {
             &Options {
                 output: OutputTarget::File(output.clone()),
                 reference: None,
+                ..Default::default()
             },
         )?;
         let digest = fs::read_to_string(&output)?;
@@ -325,10 +441,82 @@ mod tests {
             &Options {
                 output: OutputTarget::File(output),
                 reference: None,
+                ..Default::default()
             },
         )?;
         assert_eq!(report.included_files, 0);
         assert_eq!(report.skipped_files, 2);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn parallel_walk_preserves_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("parallel_order")?;
+        for dir in ["b_dir", "a_dir", "c_dir"] {
+            fs::create_dir_all(root.join(dir))?;
+            for file_idx in 0..10 {
+                fs::write(
+                    root.join(dir).join(format!("file_{file_idx:02}.txt")),
+                    "content",
+                )?;
+            }
+        }
+        let result = collect_local(&root, &OutputTarget::Stdout, DigestFormat::Text)?;
+        let files = match result {
+            CollectionResult::Local { files, .. } => files,
+            _ => unreachable!(),
+        };
+        assert_eq!(files.len(), 30);
+        for window in files.windows(2) {
+            assert!(
+                window[0].path < window[1].path,
+                "ordering violated: {} >= {}",
+                window[0].path,
+                window[1].path
+            );
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn parallel_walk_excludes_sensitive_files() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("parallel_sensitive")?;
+        fs::create_dir_all(&root)?;
+        fs::write(root.join(".env"), "SECRET=1")?;
+        fs::write(root.join("id_rsa"), "PRIVATE KEY")?;
+        fs::write(root.join("public.txt"), "public")?;
+
+        let result = collect_local(&root, &OutputTarget::Stdout, DigestFormat::Text)?;
+        let (files, skipped) = match result {
+            CollectionResult::Local { files, skipped, .. } => (files, skipped),
+            _ => unreachable!(),
+        };
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "public.txt");
+        assert_eq!(
+            skipped, 0,
+            "sensitive files must be excluded without consuming skipped budget"
+        );
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn parallel_walk_bounds_candidate_memory_early() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("parallel_candidate_bound")?;
+        fs::create_dir_all(&root)?;
+        for idx in 0..10_005 {
+            fs::write(root.join(format!("f_{idx:05}.txt")), "x")?;
+        }
+        let result = collect_local(&root, &OutputTarget::Stdout, DigestFormat::Text);
+        match result {
+            Err(IngestError::InvalidMetadata(msg)) => {
+                assert!(msg.contains("repository contains more than 10000 files"));
+            }
+            other => panic!("expected InvalidMetadata candidate overflow, got {other:?}"),
+        }
         fs::remove_dir_all(root)?;
         Ok(())
     }

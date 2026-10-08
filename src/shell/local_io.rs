@@ -46,12 +46,72 @@ pub(crate) fn read_local_file(root: &Path, path: &Path) -> Result<Probe, IngestE
     Ok(Probe::Bytes(bytes))
 }
 
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+
+#[cfg(target_os = "linux")]
+const RESOLVE_BENEATH: u64 = 0x08;
+#[cfg(target_os = "linux")]
+const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+
 #[cfg(unix)]
 fn open_local_file(root: &Path, path: &Path) -> io::Result<fs::File> {
     let relative = path
         .strip_prefix(root)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
-    let mut directory = open_directory(root)?;
+    let directory = open_directory(root)?;
+
+    #[cfg(target_os = "linux")]
+    {
+        static OPENAT2_UNAVAILABLE: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+
+        if !OPENAT2_UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Ok(c_rel) = CString::new(relative.as_os_str().as_bytes()) {
+                let how = OpenHow {
+                    flags: (libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                        as u64,
+                    mode: 0,
+                    resolve: RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS,
+                };
+                let fd = unsafe {
+                    libc::syscall(
+                        libc::SYS_openat2,
+                        directory.as_raw_fd(),
+                        c_rel.as_ptr(),
+                        &how as *const OpenHow,
+                        std::mem::size_of::<OpenHow>(),
+                    )
+                };
+                if fd >= 0 {
+                    let opened = unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) };
+                    return Ok(fs::File::from(opened));
+                }
+                let err = io::Error::last_os_error();
+                match err.raw_os_error() {
+                    Some(libc::ENOSYS) | Some(libc::EPERM) => {
+                        OPENAT2_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Some(libc::EINVAL) | Some(libc::EOPNOTSUPP) => {}
+                    _ => return Err(err),
+                }
+            }
+        }
+    }
+
+    open_local_file_components(directory, relative)
+}
+
+#[cfg(unix)]
+fn open_local_file_components(
+    mut directory: OwnedFd,
+    relative: &Path,
+) -> io::Result<fs::File> {
     let mut components = relative.components().peekable();
     let Some(first) = components.next() else {
         return Err(io::Error::new(
@@ -191,5 +251,12 @@ mod tests {
         assert!(matches!(read_local_file(&root, &path)?, Probe::Bytes(_)));
         fs::remove_dir_all(root)?;
         Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_linux_openat2_constants() {
+        assert_eq!(RESOLVE_BENEATH, 0x08);
+        assert_eq!(RESOLVE_NO_SYMLINKS, 0x04);
     }
 }
