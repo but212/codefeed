@@ -426,7 +426,7 @@ mod tests {
         assert_eq!(local_label(Path::new("C:\\")), "root");
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn skips_non_utf8_paths() -> Result<(), Box<dyn std::error::Error>> {
         use std::ffi::OsString;
