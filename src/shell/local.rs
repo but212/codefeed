@@ -195,6 +195,7 @@ mod tests {
             &Options {
                 output: OutputTarget::File(output.clone()),
                 reference: None,
+                ..Default::default()
             },
         )?;
         let digest = fs::read_to_string(output)?;
