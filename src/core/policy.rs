@@ -23,9 +23,6 @@ pub const NOISE: &[&str] = &[
 /// Known sensitive file extensions (case-insensitive) excluded prior to reading or download.
 pub const SENSITIVE_EXT: &[&str] = &["pem", "key", "p12", "pkcs12", "credentials"];
 
-/// Known sensitive exact file names excluded prior to reading or download.
-pub const SENSITIVE_EXACT: &[&str] = &["id_rsa", "id_ed25519", "credentials.json"];
-
 /// Known binary file extensions filtered prior to remote download.
 pub const BINARY_EXT: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "ico", "webp", "woff", "woff2", "ttf", "pdf", "zip",
@@ -49,10 +46,11 @@ pub(crate) fn is_noise_path(path: &str) -> bool {
 /// Returns `true` if `path` matches conventional sensitive files (.env, keys, credentials).
 pub(crate) fn is_sensitive_path(path: &str) -> bool {
     let file_name = path.rsplit('/').next().unwrap_or(path);
-    if file_name.starts_with(".env") {
-        return true;
-    }
-    if SENSITIVE_EXACT.contains(&file_name) {
+    if file_name.starts_with(".env")
+        || file_name.starts_with("id_rsa")
+        || file_name.starts_with("id_ed25519")
+        || file_name.starts_with("credentials")
+    {
         return true;
     }
     if let Some((_, ext)) = file_name.rsplit_once('.') {
@@ -103,9 +101,13 @@ mod tests {
         assert!(is_sensitive_path("certs/server.pem"));
         assert!(is_sensitive_path("certs/privkey.key"));
         assert!(is_sensitive_path("id_rsa"));
-        assert!(is_sensitive_path(".ssh/id_ed25519"));
+        assert!(is_sensitive_path(".ssh/id_rsa_deploy"));
+        assert!(is_sensitive_path("id_ed25519"));
+        assert!(is_sensitive_path(".ssh/id_ed25519_backup"));
         assert!(is_sensitive_path("secrets/credentials.json"));
         assert!(is_sensitive_path("auth/aws.credentials"));
+        assert!(is_sensitive_path("aws/credentials"));
+        assert!(is_sensitive_path("config/credentials.yaml"));
         assert!(!is_sensitive_path("src/main.rs"));
         assert!(!is_sensitive_path("Cargo.toml"));
     }

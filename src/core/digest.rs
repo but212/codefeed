@@ -49,10 +49,6 @@ struct TrieUndo {
 }
 
 impl BudgetTrie {
-    fn insert(&mut self, path: &str) {
-        let _ = self.insert_with_undo(path);
-    }
-
     fn insert_with_undo(&mut self, path: &str) -> TrieUndo {
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         let mut undo = TrieUndo::default();
@@ -468,7 +464,7 @@ pub(crate) fn render_digest_to_writer<W: std::io::Write + ?Sized>(
             ordered_files.sort_by(|left, right| left.1.path.cmp(&right.1.path));
 
             writer.write_all(DIRECTORY_HEADER.as_bytes())?;
-            render_tree_formatted_to_writer(writer, files, false)?;
+            budget.trie.render_to_writer(writer, false)?;
             writer.write_all(FILES_HEADER.as_bytes())?;
             for (escaped_path, file) in ordered_files {
                 writer.write_all(FILE_BLOCK_PREFIX.as_bytes())?;
@@ -490,7 +486,7 @@ pub(crate) fn render_digest_to_writer<W: std::io::Write + ?Sized>(
             }
             writer.write_all(XML_TAG_CLOSE.as_bytes())?;
             writer.write_all(XML_DIR_START.as_bytes())?;
-            render_tree_formatted_to_writer(writer, files, true)?;
+            budget.trie.render_to_writer(writer, true)?;
             writer.write_all(XML_DIR_END.as_bytes())?;
             writer.write_all(XML_FILES_START.as_bytes())?;
             let mut ordered_files: Vec<_> = files.iter().collect();
@@ -511,25 +507,6 @@ pub(crate) fn render_digest_to_writer<W: std::io::Write + ?Sized>(
         }
     }
     Ok(estimator.finish())
-}
-
-#[cfg(test)]
-pub(crate) fn render_digest(
-    label: &str,
-    revision: Option<&str>,
-    files: &[FileRecord],
-    skipped: usize,
-) -> Result<String, IngestError> {
-    let mut buffer = Vec::new();
-    render_digest_to_writer(
-        &mut buffer,
-        label,
-        revision,
-        files,
-        skipped,
-        DigestFormat::Text,
-    )?;
-    String::from_utf8(buffer).map_err(|error| IngestError::Io(std::io::Error::other(error)))
 }
 
 struct TokenEstimatingWriter<'a, W: std::io::Write + ?Sized> {
@@ -623,28 +600,6 @@ impl<W: std::io::Write + ?Sized> std::io::Write for TokenEstimatingWriter<'_, W>
     }
 }
 
-/// Fast, zero-dependency token count estimator approximating standard BPE tokenization.
-#[cfg(test)]
-pub(crate) fn estimate_tokens(text: &str) -> usize {
-    let mut sink = std::io::sink();
-    let mut estimator = TokenEstimatingWriter::new(&mut sink);
-    let _ = std::io::Write::write_all(&mut estimator, text.as_bytes());
-    estimator.finish()
-}
-
-fn render_tree_formatted_to_writer<W: std::io::Write + ?Sized>(
-    writer: &mut W,
-    files: &[FileRecord],
-    escape_xml: bool,
-) -> Result<(), IngestError> {
-    let mut trie = BudgetTrie::default();
-    for file in files {
-        trie.insert(&file.path);
-    }
-    trie.render_to_writer(writer, escape_xml)
-        .map_err(IngestError::Io)
-}
-
 fn escape_header(value: &str) -> std::borrow::Cow<'_, str> {
     if !value.contains('\\') && !value.contains('\r') && !value.contains('\n') {
         return std::borrow::Cow::Borrowed(value);
@@ -682,6 +637,31 @@ mod tests {
     use crate::core::error::IngestError;
     use crate::core::model::FileRecord;
     use crate::core::policy::MAX_OUTPUT_SIZE;
+
+    fn render_digest(
+        label: &str,
+        revision: Option<&str>,
+        files: &[FileRecord],
+        skipped: usize,
+    ) -> Result<String, IngestError> {
+        let mut buffer = Vec::new();
+        render_digest_to_writer(
+            &mut buffer,
+            label,
+            revision,
+            files,
+            skipped,
+            DigestFormat::Text,
+        )?;
+        String::from_utf8(buffer).map_err(|error| IngestError::Io(std::io::Error::other(error)))
+    }
+
+    fn estimate_tokens(text: &str) -> usize {
+        let mut sink = std::io::sink();
+        let mut estimator = TokenEstimatingWriter::new(&mut sink);
+        let _ = std::io::Write::write_all(&mut estimator, text.as_bytes());
+        estimator.finish()
+    }
 
     #[test]
     fn renders_files_in_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
@@ -940,22 +920,12 @@ z &lt; 10
 
     #[test]
     fn renders_ascii_tree_correctly() -> Result<(), Box<dyn std::error::Error>> {
-        let files = vec![
-            FileRecord {
-                path: "Cargo.toml".into(),
-                content: "".into(),
-            },
-            FileRecord {
-                path: "src/core/a.rs".into(),
-                content: "".into(),
-            },
-            FileRecord {
-                path: "src/lib.rs".into(),
-                content: "".into(),
-            },
-        ];
+        let mut trie = BudgetTrie::default();
+        for path in ["Cargo.toml", "src/core/a.rs", "src/lib.rs"] {
+            trie.insert_with_undo(path);
+        }
         let mut buf = Vec::new();
-        render_tree_formatted_to_writer(&mut buf, &files, false)?;
+        trie.render_to_writer(&mut buf, false)?;
         let tree_str = std::str::from_utf8(&buf)?;
         let expected = "\
 ├── Cargo.toml
@@ -987,20 +957,13 @@ z &lt; 10
         for paths in test_cases {
             for escape_xml in [false, true] {
                 let mut trie = BudgetTrie::default();
-                let files: Vec<FileRecord> = paths
-                    .iter()
-                    .map(|p| {
-                        trie.insert(p);
-                        FileRecord {
-                            path: (*p).to_string(),
-                            content: "".into(),
-                        }
-                    })
-                    .collect();
+                for p in &paths {
+                    trie.insert_with_undo(p);
+                }
 
                 let trie_size = trie.calculate_size(escape_xml);
                 let mut rendered = Vec::new();
-                render_tree_formatted_to_writer(&mut rendered, &files, escape_xml)?;
+                trie.render_to_writer(&mut rendered, escape_xml)?;
                 assert_eq!(
                     trie_size,
                     rendered.len() as u64,
@@ -1014,7 +977,7 @@ z &lt; 10
     #[test]
     fn trie_rollback_restores_exact_state() {
         let mut trie = BudgetTrie::default();
-        trie.insert("src/core/digest.rs");
+        trie.insert_with_undo("src/core/digest.rs");
         let initial_size = trie.calculate_size(false);
 
         let undo = trie.insert_with_undo("src/core/sub/nested/file.rs");

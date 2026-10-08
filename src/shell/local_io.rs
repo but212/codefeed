@@ -97,7 +97,7 @@ fn open_local_file(root: &Path, path: &Path) -> io::Result<fs::File> {
                     Some(libc::ENOSYS) | Some(libc::EPERM) => {
                         OPENAT2_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                    Some(libc::EINVAL) | Some(libc::EOPNOTSUPP) | Some(libc::EXDEV) => {}
+                    Some(libc::EINVAL) | Some(libc::EOPNOTSUPP) => {}
                     _ => return Err(err),
                 }
             }

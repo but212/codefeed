@@ -87,7 +87,6 @@ imperative-shell boundary.
 | `RETRY_MAX_DELAY_MS` | 5,000 ms | Maximum delay cap for exponential backoff |
 | `NOISE` | lockfiles | Conventional lockfiles excluded before candidate budget |
 | `SENSITIVE_EXT` | 5 extensions | Key, cert, credential extensions excluded before candidate budget |
-| `SENSITIVE_EXACT` | 3 filenames | Exact SSH keys and credential JSON excluded before candidate budget |
 | `BINARY_EXT` | 11 extensions | Known binary file extensions filtered pre-download |
 
 ## Functional core / imperative shell boundary
@@ -110,7 +109,7 @@ never depends on shell code; shell code depends on the core in one direction.
   - `github_tree.rs`: GitHub tree DTO parsing and blob verification.
 - Imperative shell (`src/shell/`):
   - `shell/cli.rs`: CLI argument parsing, help output, and options parsing.
-  - `src/lib.rs`: library entry points (`parse_source`, `parse_source_os`, `ingest`).
+  - `src/main.rs`: binary entry point and internal pipeline (`parse_source_os`, `ingest`).
   - `shell/local.rs`: filesystem walking and orchestration.
   - `shell/local_io.rs`: safe, non-following bounded file reads (`read_local_file`).
   - `shell/output_exclusion.rs`: output file identity detection and path normalization.
