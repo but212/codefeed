@@ -106,9 +106,12 @@ pub(crate) fn collect_local(
                 ItemPath::Utf8(_) => None,
             };
 
-            if !matches!(probe, Some(Probe::Ignored))
-                && candidate_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    > crate::core::policy::MAX_FILE_COUNT
+            if matches!(probe, Some(Probe::Ignored)) {
+                return WalkState::Continue;
+            }
+
+            if candidate_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                > crate::core::policy::MAX_FILE_COUNT
             {
                 return WalkState::Quit;
             }
@@ -120,17 +123,15 @@ pub(crate) fn collect_local(
 
     drop(tx);
 
-    let mut candidates = Vec::new();
+    let mut candidates = Vec::with_capacity(crate::core::policy::MAX_FILE_COUNT.min(512));
     let mut candidate_budget = crate::core::decide::CandidateBudget::default();
     for result in rx {
         let item = result?;
-        if !matches!(item.2, Some(Probe::Ignored)) {
-            let path_str = match &item.1 {
-                ItemPath::Utf8(p) => Some(p.as_str()),
-                ItemPath::NonUtf8 => None,
-            };
-            candidate_budget.add(path_str)?;
-        }
+        let path_str = match &item.1 {
+            ItemPath::Utf8(p) => Some(p.as_str()),
+            ItemPath::NonUtf8 => None,
+        };
+        candidate_budget.add(path_str)?;
         candidates.push(item);
     }
 

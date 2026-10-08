@@ -43,29 +43,46 @@ struct BudgetTrie {
     children: Vec<BudgetTrieNode>,
 }
 
+#[derive(Debug, Default)]
+struct TrieUndo {
+    actions: Vec<Vec<usize>>,
+}
+
 impl BudgetTrie {
     fn insert(&mut self, path: &str) {
-        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        if parts.is_empty() {
-            return;
-        }
-        Self::insert_into(&mut self.children, &parts);
+        let _ = self.insert_with_undo(path);
     }
 
-    fn insert_into(children: &mut Vec<BudgetTrieNode>, parts: &[&str]) {
+    fn insert_with_undo(&mut self, path: &str) -> TrieUndo {
+        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let mut undo = TrieUndo::default();
+        if parts.is_empty() {
+            return undo;
+        }
+        let mut current_indices = Vec::new();
+        Self::insert_into_with_undo(&mut self.children, &parts, &mut current_indices, &mut undo);
+        undo
+    }
+
+    fn insert_into_with_undo(
+        children: &mut Vec<BudgetTrieNode>,
+        parts: &[&str],
+        current_indices: &mut Vec<usize>,
+        undo: &mut TrieUndo,
+    ) {
         if parts.is_empty() {
             return;
         }
         let part = parts[0];
         let is_dir = parts.len() > 1;
 
-        let pos = match children.binary_search_by(|c| {
+        let (idx, created) = match children.binary_search_by(|c| {
             c.name
                 .as_str()
                 .cmp(part)
                 .then_with(|| c.is_dir.cmp(&is_dir))
         }) {
-            Ok(idx) => idx,
+            Ok(idx) => (idx, false),
             Err(idx) => {
                 children.insert(
                     idx,
@@ -75,12 +92,48 @@ impl BudgetTrie {
                         children: Vec::new(),
                     },
                 );
-                idx
+                (idx, true)
             }
         };
 
+        current_indices.push(idx);
+
+        if created {
+            undo.actions.push(current_indices.clone());
+        }
+
         if is_dir {
-            Self::insert_into(&mut children[pos].children, &parts[1..]);
+            Self::insert_into_with_undo(
+                &mut children[idx].children,
+                &parts[1..],
+                current_indices,
+                undo,
+            );
+        }
+
+        current_indices.pop();
+    }
+
+    fn rollback(&mut self, undo: TrieUndo) {
+        // Rollback in reverse order of creation
+        for path_indices in undo.actions.into_iter().rev() {
+            Self::remove_node_at(&mut self.children, &path_indices);
+        }
+    }
+
+    fn remove_node_at(mut nodes: &mut Vec<BudgetTrieNode>, path_indices: &[usize]) {
+        if path_indices.is_empty() {
+            return;
+        }
+        for &idx in &path_indices[..path_indices.len() - 1] {
+            if idx >= nodes.len() {
+                return;
+            }
+            nodes = &mut nodes[idx].children;
+        }
+        let last_idx = path_indices[path_indices.len() - 1];
+        if last_idx < nodes.len() {
+            nodes.remove(last_idx);
         }
     }
 
@@ -209,15 +262,48 @@ impl DigestBudget {
     }
 
     pub(crate) fn add(&mut self, file: &FileRecord) -> Result<(), IngestError> {
-        let mut next = self.clone();
-        next.file_count = next
+        let (path_b, content_b, trailing_b) = self.calculate_file_bytes(file)?;
+
+        let new_file_count = self
             .file_count
             .checked_add(1)
             .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
-        next.trie.insert(&file.path);
-        next.add_file_bytes(file)?;
-        next.ensure_fits()?;
-        *self = next;
+
+        let new_path_bytes = self
+            .path_bytes
+            .checked_add(path_b)
+            .ok_or_else(|| IngestError::OutputTooLarge {
+                largest_files: Vec::new(),
+            })?;
+        let new_content_bytes = self
+            .content_bytes
+            .checked_add(content_b)
+            .ok_or_else(|| IngestError::OutputTooLarge {
+                largest_files: Vec::new(),
+            })?;
+        let new_trailing_bytes = self
+            .trailing_bytes
+            .checked_add(trailing_b)
+            .ok_or_else(|| IngestError::OutputTooLarge {
+                largest_files: Vec::new(),
+            })?;
+
+        let undo = self.trie.insert_with_undo(&file.path);
+
+        self.file_count = new_file_count;
+        self.path_bytes = new_path_bytes;
+        self.content_bytes = new_content_bytes;
+        self.trailing_bytes = new_trailing_bytes;
+
+        if let Err(err) = self.ensure_fits() {
+            self.trie.rollback(undo);
+            self.file_count -= 1;
+            self.path_bytes -= path_b;
+            self.content_bytes -= content_b;
+            self.trailing_bytes -= trailing_b;
+            return Err(err);
+        }
+
         Ok(())
     }
 
@@ -233,7 +319,7 @@ impl DigestBudget {
         self.skipped
     }
 
-    fn add_file_bytes(&mut self, file: &FileRecord) -> Result<(), IngestError> {
+    fn calculate_file_bytes(&self, file: &FileRecord) -> Result<(u64, u64, u64), IngestError> {
         let (path_bytes, content_bytes, trailing_bytes) = match self.format {
             DigestFormat::Text => {
                 let path_b = byte_count(&escape_header(&file.path))?;
@@ -249,25 +335,7 @@ impl DigestBudget {
                 (path_b, content_b, trailing_b)
             }
         };
-        self.path_bytes =
-            self.path_bytes
-                .checked_add(path_bytes)
-                .ok_or_else(|| IngestError::OutputTooLarge {
-                    largest_files: Vec::new(),
-                })?;
-        self.content_bytes = self
-            .content_bytes
-            .checked_add(content_bytes)
-            .ok_or_else(|| IngestError::OutputTooLarge {
-                largest_files: Vec::new(),
-            })?;
-        self.trailing_bytes = self
-            .trailing_bytes
-            .checked_add(trailing_bytes)
-            .ok_or_else(|| IngestError::OutputTooLarge {
-                largest_files: Vec::new(),
-            })?;
-        Ok(())
+        Ok((path_bytes, content_bytes, trailing_bytes))
     }
 
     fn ensure_fits(&self) -> Result<(), IngestError> {
@@ -941,5 +1009,37 @@ z &lt; 10
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn trie_rollback_restores_exact_state() {
+        let mut trie = BudgetTrie::default();
+        trie.insert("src/core/digest.rs");
+        let initial_size = trie.calculate_size(false);
+
+        let undo = trie.insert_with_undo("src/core/sub/nested/file.rs");
+        let modified_size = trie.calculate_size(false);
+        assert!(modified_size > initial_size);
+
+        trie.rollback(undo);
+        assert_eq!(trie.calculate_size(false), initial_size);
+
+        // Also test budget rollback
+        let mut budget = DigestBudget::new("repo", None, DigestFormat::Text).unwrap();
+        budget
+            .add(&FileRecord {
+                path: "src/main.rs".into(),
+                content: "fn main() {}".into(),
+            })
+            .unwrap();
+        let valid_size = budget.rendered_size().unwrap();
+
+        let oversized = FileRecord {
+            path: "large.rs".into(),
+            content: "a".repeat(crate::core::policy::MAX_OUTPUT_SIZE as usize),
+        };
+        assert!(budget.add(&oversized).is_err());
+        assert_eq!(budget.rendered_size(), Some(valid_size));
+        assert_eq!(budget.file_count, 1);
     }
 }
