@@ -72,45 +72,43 @@ fn open_local_file(root: &Path, path: &Path) -> io::Result<fs::File> {
             std::sync::atomic::AtomicBool::new(false);
 
         if !OPENAT2_UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed)
-            && let Ok(c_rel) = CString::new(relative.as_os_str().as_bytes()) {
-                let how = OpenHow {
-                    flags: (libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                        as u64,
-                    mode: 0,
-                    resolve: RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS,
-                };
-                let fd = unsafe {
-                    libc::syscall(
-                        libc::SYS_openat2,
-                        directory.as_raw_fd(),
-                        c_rel.as_ptr(),
-                        &how as *const OpenHow,
-                        std::mem::size_of::<OpenHow>(),
-                    )
-                };
-                if fd >= 0 {
-                    let opened = unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) };
-                    return Ok(fs::File::from(opened));
-                }
-                let err = io::Error::last_os_error();
-                match err.raw_os_error() {
-                    Some(libc::ENOSYS) | Some(libc::EPERM) => {
-                        OPENAT2_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Some(libc::EINVAL) | Some(libc::EOPNOTSUPP) => {}
-                    _ => return Err(err),
-                }
+            && let Ok(c_rel) = CString::new(relative.as_os_str().as_bytes())
+        {
+            let how = OpenHow {
+                flags: (libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                    as u64,
+                mode: 0,
+                resolve: RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS,
+            };
+            let fd = unsafe {
+                libc::syscall(
+                    libc::SYS_openat2,
+                    directory.as_raw_fd(),
+                    c_rel.as_ptr(),
+                    &how as *const OpenHow,
+                    std::mem::size_of::<OpenHow>(),
+                )
+            };
+            if fd >= 0 {
+                let opened = unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) };
+                return Ok(fs::File::from(opened));
             }
+            let err = io::Error::last_os_error();
+            match err.raw_os_error() {
+                Some(libc::ENOSYS) | Some(libc::EPERM) => {
+                    OPENAT2_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                Some(libc::EINVAL) | Some(libc::EOPNOTSUPP) => {}
+                _ => return Err(err),
+            }
+        }
     }
 
     open_local_file_components(directory, relative)
 }
 
 #[cfg(unix)]
-fn open_local_file_components(
-    mut directory: OwnedFd,
-    relative: &Path,
-) -> io::Result<fs::File> {
+fn open_local_file_components(mut directory: OwnedFd, relative: &Path) -> io::Result<fs::File> {
     let mut components = relative.components().peekable();
     let Some(first) = components.next() else {
         return Err(io::Error::new(
