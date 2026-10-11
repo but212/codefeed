@@ -104,20 +104,15 @@ impl<'a> BlobFetcher<'a> {
 
     fn fetch_all(&self, entries: &[TreeEntry], selector: &mut Selector) -> Result<(), IngestError> {
         std::thread::scope(|s| {
-            let (job_tx, job_rx) = std::sync::mpsc::channel();
+            let mut worker_senders = Vec::with_capacity(FETCH_WINDOW);
             let (res_tx, res_rx) = std::sync::mpsc::channel();
-            let job_rx = std::sync::Arc::new(std::sync::Mutex::new(job_rx));
 
             for _ in 0..FETCH_WINDOW {
-                let job_rx = job_rx.clone();
+                let (w_tx, w_rx) = std::sync::mpsc::channel::<Option<(usize, &TreeEntry)>>();
+                worker_senders.push(w_tx);
                 let res_tx = res_tx.clone();
                 s.spawn(move || {
-                    loop {
-                        let job: Option<(usize, &TreeEntry)> = {
-                            let Ok(lock) = job_rx.lock() else { break };
-                            lock.recv().ok()
-                        };
-                        let Some((idx, entry)) = job else { break };
+                    while let Ok(Some((idx, entry))) = w_rx.recv() {
                         let probe = self.probe_entry(entry);
                         if res_tx.send((idx, probe)).is_err() {
                             break;
@@ -130,7 +125,9 @@ impl<'a> BlobFetcher<'a> {
 
             for batch in entries.chunks(FETCH_WINDOW) {
                 for (idx, entry) in batch.iter().enumerate() {
-                    job_tx.send((idx, entry)).expect("worker channel failed");
+                    worker_senders[idx]
+                        .send(Some((idx, entry)))
+                        .expect("worker send failed");
                 }
 
                 let mut batch_results: Vec<Option<Result<Probe, IngestError>>> =
@@ -148,7 +145,10 @@ impl<'a> BlobFetcher<'a> {
                 }
             }
 
-            drop(job_tx);
+            // Signal workers to cleanly shut down
+            for sender in worker_senders {
+                let _ = sender.send(None);
+            }
             Ok::<(), IngestError>(())
         })
     }

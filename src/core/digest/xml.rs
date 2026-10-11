@@ -87,15 +87,14 @@ impl<'a> Iterator for XmlScanner<'a> {
             if classify_xml_byte(self.bytes, self.idx).is_some() {
                 break;
             }
-            if self.bytes[self.idx] < 0x80 {
+            let b = self.bytes[self.idx];
+            if b < 0x80 {
                 self.idx += 1;
+            } else if b >= 0xC0 {
+                let width = b.leading_ones() as usize;
+                self.idx += width.max(1);
             } else {
-                let rest = &self.value[self.idx..];
-                if let Some(c) = rest.chars().next() {
-                    self.idx += c.len_utf8();
-                } else {
-                    self.idx += 1;
-                }
+                self.idx += 1;
             }
         }
         Some(XmlChunk::Raw(&self.value[start..self.idx]))

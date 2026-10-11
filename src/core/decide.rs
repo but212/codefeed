@@ -87,11 +87,13 @@ impl Selector {
     }
 }
 
+use crate::core::digest::CompactString;
+
 /// Candidate-count budget owned by the selector that consumes it.
 #[derive(Default)]
 pub(crate) struct CandidateBudget {
     count: usize,
-    dir_counts: std::collections::HashMap<String, usize>,
+    dir_counts: Vec<(CompactString, usize)>,
 }
 
 impl CandidateBudget {
@@ -107,10 +109,10 @@ impl CandidateBudget {
             },
             None => "<unknown>/",
         };
-        if let Some(count) = self.dir_counts.get_mut(dir_slice) {
+        if let Some((_, count)) = self.dir_counts.iter_mut().find(|(d, _)| d.as_str() == dir_slice) {
             *count += 1;
         } else {
-            self.dir_counts.insert(dir_slice.to_owned(), 1);
+            self.dir_counts.push((CompactString::new(dir_slice), 1));
         }
 
         if self.count > MAX_FILE_COUNT {
@@ -122,8 +124,8 @@ impl CandidateBudget {
     }
 }
 
-fn format_overflow_diagnostic(dir_counts: &std::collections::HashMap<String, usize>) -> String {
-    let mut dirs: Vec<(&String, usize)> = dir_counts.iter().map(|(d, &c)| (d, c)).collect();
+fn format_overflow_diagnostic(dir_counts: &[(CompactString, usize)]) -> String {
+    let mut dirs: Vec<(&str, usize)> = dir_counts.iter().map(|(d, c)| (d.as_str(), *c)).collect();
     dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     dirs.truncate(3);
 
