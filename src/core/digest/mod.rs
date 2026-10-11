@@ -58,6 +58,8 @@ impl DigestFormat {
     }
 }
 
+/// Accounting budget for digest size. Once any operation returns an `Err`,
+/// the budget enters a terminal error state and must not be used further.
 #[derive(Debug, Clone)]
 pub(crate) struct DigestBudget {
     pub(crate) format: DigestFormat,
@@ -120,21 +122,14 @@ impl DigestBudget {
             }
         })?;
 
-        let undo = self.trie.insert_with_undo(&file.path);
+        self.trie.insert(&file.path);
 
         self.file_count = new_file_count;
         self.path_bytes = new_path_bytes;
         self.content_bytes = new_content_bytes;
         self.trailing_bytes = new_trailing_bytes;
 
-        if let Err(err) = self.ensure_fits() {
-            self.trie.rollback(undo);
-            self.file_count -= 1;
-            self.path_bytes -= path_b;
-            self.content_bytes -= content_b;
-            self.trailing_bytes -= trailing_b;
-            return Err(err);
-        }
+        self.ensure_fits()?;
 
         Ok(())
     }
@@ -144,11 +139,7 @@ impl DigestBudget {
             .skipped
             .checked_add(1)
             .ok_or_else(|| IngestError::InvalidMetadata("skipped file count overflow".into()))?;
-        if let Err(err) = self.ensure_fits() {
-            self.skipped -= 1;
-            return Err(err);
-        }
-        Ok(())
+        self.ensure_fits()
     }
 
     pub(crate) fn skipped(&self) -> usize {
@@ -235,7 +226,7 @@ mod tests {
     fn test_trie(files: &[FileRecord], escape_xml: bool) -> BudgetTrie {
         let mut trie = BudgetTrie::new(escape_xml);
         for file in files {
-            trie.insert_with_undo(&file.path);
+            trie.insert(&file.path);
         }
         trie
     }
@@ -497,25 +488,7 @@ z &lt; 10
         Ok(())
     }
 
-    #[test]
-    fn budget_rollback_restores_exact_state() {
-        let mut budget = DigestBudget::new("repo", None, DigestFormat::Text).unwrap();
-        budget
-            .add(&FileRecord {
-                path: "src/main.rs".into(),
-                content: "fn main() {}".into(),
-            })
-            .unwrap();
-        let valid_size = budget.rendered_size().unwrap();
 
-        let oversized = FileRecord {
-            path: "large.rs".into(),
-            content: "a".repeat(crate::core::policy::MAX_OUTPUT_SIZE as usize),
-        };
-        assert!(budget.add(&oversized).is_err());
-        assert_eq!(budget.rendered_size(), Some(valid_size));
-        assert_eq!(budget.file_count, 1);
-    }
 
     #[test]
     fn skip_enforces_budget_limit_on_digit_growth() {
@@ -534,7 +507,5 @@ z &lt; 10
         assert_eq!(budget.rendered_size(), Some(MAX_OUTPUT_SIZE));
 
         assert!(budget.skip().is_err());
-        assert_eq!(budget.skipped(), 9);
-        assert_eq!(budget.rendered_size(), Some(MAX_OUTPUT_SIZE));
     }
 }

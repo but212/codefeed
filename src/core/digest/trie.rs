@@ -26,11 +26,6 @@ pub(crate) struct BudgetTrie {
     pub(crate) children: Vec<BudgetTrieNode>,
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct TrieUndo {
-    pub(crate) actions: Vec<Vec<usize>>,
-}
-
 fn tree_display(name: &str, escape_xml: bool) -> String {
     let escaped = escape_header(name);
     if escape_xml {
@@ -50,30 +45,23 @@ impl BudgetTrie {
         }
     }
 
-    pub(crate) fn insert_with_undo(&mut self, path: &str) -> TrieUndo {
+    pub(crate) fn insert(&mut self, path: &str) {
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        let mut undo = TrieUndo::default();
         if parts.is_empty() {
-            return undo;
+            return;
         }
-        let mut current_indices = Vec::new();
-        Self::insert_into_with_undo(
+        Self::insert_into(
             &mut self.children,
             &parts,
-            &mut current_indices,
-            &mut undo,
             self.escape_xml,
             &mut self.node_count,
             &mut self.display_bytes,
         );
-        undo
     }
 
-    fn insert_into_with_undo(
+    fn insert_into(
         children: &mut Vec<BudgetTrieNode>,
         parts: &[&str],
-        current_indices: &mut Vec<usize>,
-        undo: &mut TrieUndo,
         escape_xml: bool,
         node_count: &mut usize,
         display_bytes: &mut u64,
@@ -84,13 +72,13 @@ impl BudgetTrie {
         let part = parts[0];
         let is_dir = parts.len() > 1;
 
-        let (idx, created) = match children.binary_search_by(|c| {
+        let idx = match children.binary_search_by(|c| {
             c.name
                 .as_str()
                 .cmp(part)
                 .then_with(|| c.is_dir.cmp(&is_dir))
         }) {
-            Ok(idx) => (idx, false),
+            Ok(idx) => idx,
             Err(idx) => {
                 let display = tree_display(part, escape_xml);
                 *display_bytes += display.len() as u64;
@@ -104,62 +92,18 @@ impl BudgetTrie {
                         children: Vec::new(),
                     },
                 );
-                (idx, true)
+                idx
             }
         };
 
-        current_indices.push(idx);
-
-        if created {
-            undo.actions.push(current_indices.clone());
-        }
-
         if is_dir {
-            Self::insert_into_with_undo(
+            Self::insert_into(
                 &mut children[idx].children,
                 &parts[1..],
-                current_indices,
-                undo,
                 escape_xml,
                 node_count,
                 display_bytes,
             );
-        }
-
-        current_indices.pop();
-    }
-
-    pub(crate) fn rollback(&mut self, undo: TrieUndo) {
-        for path_indices in undo.actions.into_iter().rev() {
-            Self::remove_node_at(
-                &mut self.children,
-                &path_indices,
-                &mut self.node_count,
-                &mut self.display_bytes,
-            );
-        }
-    }
-
-    fn remove_node_at(
-        mut nodes: &mut Vec<BudgetTrieNode>,
-        path_indices: &[usize],
-        node_count: &mut usize,
-        display_bytes: &mut u64,
-    ) {
-        if path_indices.is_empty() {
-            return;
-        }
-        for &idx in &path_indices[..path_indices.len() - 1] {
-            if idx >= nodes.len() {
-                return;
-            }
-            nodes = &mut nodes[idx].children;
-        }
-        let last_idx = path_indices[path_indices.len() - 1];
-        if last_idx < nodes.len() {
-            let removed = nodes.remove(last_idx);
-            *display_bytes -= removed.display.len() as u64;
-            *node_count -= 1;
         }
     }
 
@@ -238,7 +182,7 @@ mod tests {
     fn renders_ascii_tree_correctly() -> Result<(), Box<dyn std::error::Error>> {
         let mut trie = BudgetTrie::default();
         for path in ["Cargo.toml", "src/core/a.rs", "src/lib.rs"] {
-            trie.insert_with_undo(path);
+            trie.insert(path);
         }
         let mut buf = Vec::new();
         trie.render_to_writer(&mut buf)?;
@@ -274,7 +218,7 @@ mod tests {
             for escape_xml in [false, true] {
                 let mut trie = BudgetTrie::new(escape_xml);
                 for p in &paths {
-                    trie.insert_with_undo(p);
+                    trie.insert(p);
                 }
 
                 let trie_size = trie.calculate_size();
@@ -291,23 +235,9 @@ mod tests {
     }
 
     #[test]
-    fn trie_rollback_restores_exact_state() {
-        let mut trie = BudgetTrie::default();
-        trie.insert_with_undo("src/core/digest.rs");
-        let initial_size = trie.calculate_size();
-
-        let undo = trie.insert_with_undo("src/core/sub/nested/file.rs");
-        let modified_size = trie.calculate_size();
-        assert!(modified_size > initial_size);
-
-        trie.rollback(undo);
-        assert_eq!(trie.calculate_size(), initial_size);
-    }
-
-    #[test]
     fn escapes_tree_node_newlines() -> std::io::Result<()> {
         let mut trie = BudgetTrie::new(false);
-        trie.insert_with_undo("dir\nname/file\rname.txt");
+        trie.insert("dir\nname/file\rname.txt");
         let mut out = Vec::new();
         trie.render_to_writer(&mut out)?;
         let s = String::from_utf8_lossy(&out);
@@ -320,7 +250,7 @@ mod tests {
     #[test]
     fn escapes_tree_node_xml_entities() -> std::io::Result<()> {
         let mut trie = BudgetTrie::new(true);
-        trie.insert_with_undo("a & b/c < d.txt");
+        trie.insert("a & b/c < d.txt");
         let mut out = Vec::new();
         trie.render_to_writer(&mut out)?;
         let s = String::from_utf8_lossy(&out);

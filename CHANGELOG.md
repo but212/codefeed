@@ -15,7 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Refactored CLI parser into a zero-dependency streaming `ArgTokenizer` with semantic token folding.
+- Simplified CLI argument parser to direct linear traversal while retaining all syntax contracts.
+- Refactored `DigestBudget` and `BudgetTrie` to be lean and error-terminal, removing unnecessary transactional rollback tracking.
+- Streamlined GitHub blob fetching with direct scoped worker threads (`std::thread::scope`).
+- Replaced custom SWAR bitwise null scan with safe standard library routines.
+- Hardened intermediate directory symlink checks in Unix I/O and preserved inode-based hard link output exclusion.
 
 ## [0.1.0] - 2026-10-11
 

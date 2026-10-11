@@ -13,34 +13,13 @@ pub(crate) fn output_identity(output: &Path) -> Result<PathBuf, IngestError> {
     if let Ok(canonical) = fs::canonicalize(&absolute) {
         return Ok(canonical);
     }
-    let file_name = absolute.file_name().unwrap_or_default().to_os_string();
-    let mut parent = absolute
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf();
-    let mut unresolved = Vec::new();
-    let canonical_parent = loop {
-        match fs::canonicalize(&parent) {
-            Ok(parent) => break parent,
-            Err(_) => {
-                let Some(component) = parent.file_name() else {
-                    break parent;
-                };
-                unresolved.push(component.to_os_string());
-                parent = parent
-                    .parent()
-                    .unwrap_or_else(|| Path::new("."))
-                    .to_path_buf();
-            }
-        }
-    };
-
-    let mut resolved = canonical_parent;
-    for component in unresolved.iter().rev() {
-        resolved.push(component);
+    if let Some(parent) = absolute.parent()
+        && let Ok(canon_parent) = fs::canonicalize(parent)
+        && let Some(name) = absolute.file_name()
+    {
+        return Ok(canon_parent.join(name));
     }
-    resolved.push(file_name);
-    Ok(normalize_path(&resolved))
+    Ok(normalize_path(&absolute))
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +36,7 @@ impl OutputFilter {
         let normalized = output_identity(output)?;
         let target_name = normalized.file_name().unwrap_or_default().to_os_string();
         let canonical = fs::canonicalize(&normalized).ok();
+
         #[cfg(unix)]
         let dev_ino = canonical
             .as_deref()
@@ -77,6 +57,14 @@ impl OutputFilter {
     }
 
     pub(crate) fn is_excluded(&self, candidate: &Path) -> bool {
+        #[cfg(unix)]
+        if let (Some(target_id), Ok(meta)) = (self.dev_ino, fs::metadata(candidate)) {
+            use std::os::unix::fs::MetadataExt;
+            if (meta.dev(), meta.ino()) == target_id {
+                return true;
+            }
+        }
+
         let Some(name) = candidate.file_name() else {
             return false;
         };
@@ -107,14 +95,6 @@ impl OutputFilter {
             return true;
         }
 
-        #[cfg(unix)]
-        if let (Some(target_id), Ok(meta)) = (self.dev_ino, fs::metadata(candidate)) {
-            use std::os::unix::fs::MetadataExt;
-            if (meta.dev(), meta.ino()) == target_id {
-                return true;
-            }
-        }
-
         if let Some(target_canon) = &self.canonical
             && let Ok(cand_canon) = fs::canonicalize(candidate)
             && cand_canon == *target_canon
@@ -126,7 +106,7 @@ impl OutputFilter {
     }
 }
 
-fn normalize_path(path: &Path) -> PathBuf {
+pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
@@ -201,6 +181,28 @@ mod tests {
 
         #[cfg(any(windows, target_os = "macos"))]
         assert!(filter.is_excluded(&root.join("DIGEST.TXT")));
+
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn excludes_hard_link_to_output_file() -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "output_hard_link_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root)?;
+        let output = root.join("digest.txt");
+        let hardlink = root.join("notes.txt");
+        fs::write(&output, "output content")?;
+        fs::hard_link(&output, &hardlink)?;
+
+        let filter = OutputFilter::new(&output)?;
+        assert!(filter.is_excluded(&hardlink));
 
         fs::remove_dir_all(&root)?;
         Ok(())

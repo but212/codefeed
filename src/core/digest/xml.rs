@@ -22,97 +22,34 @@ const XML_FILE_END: &str = "</file>\n";
 const NEWLINE: &str = "\n";
 
 #[inline]
-fn disallowed_control_byte(b: u8) -> bool {
-    matches!(b, 1..=8 | 0x0B | 0x0C | 0x0E..=0x1F)
-}
-
-#[inline]
-fn classify_xml_byte(bytes: &[u8], idx: usize) -> Option<(&'static str, usize)> {
-    let b = bytes[idx];
-    match b {
-        b'&' => Some(("&amp;", 1)),
-        b'<' => Some(("&lt;", 1)),
-        b'>' => Some(("&gt;", 1)),
-        b'"' => Some(("&quot;", 1)),
-        b'\'' => Some(("&apos;", 1)),
-        b if disallowed_control_byte(b) => Some(("\u{FFFD}", 1)),
-        0xEF if idx + 2 < bytes.len() => {
-            // \u{FFFE} is [0xEF, 0xBF, 0xBE], \u{FFFF} is [0xEF, 0xBF, 0xBF]
-            if bytes[idx + 1] == 0xBF && (bytes[idx + 2] == 0xBE || bytes[idx + 2] == 0xBF) {
-                Some(("\u{FFFD}", 3))
-            } else {
-                None
-            }
-        }
+fn escape_char(ch: char) -> Option<&'static str> {
+    match ch {
+        '&' => Some("&amp;"),
+        '<' => Some("&lt;"),
+        '>' => Some("&gt;"),
+        '"' => Some("&quot;"),
+        '\'' => Some("&apos;"),
+        '\u{0001}'..='\u{0008}'
+        | '\u{000B}'
+        | '\u{000C}'
+        | '\u{000E}'..='\u{001F}'
+        | '\u{FFFE}'
+        | '\u{FFFF}' => Some("\u{FFFD}"),
         _ => None,
     }
 }
 
-enum XmlChunk<'a> {
-    Raw(&'a str),
-    Escaped(&'static str),
-}
-
-struct XmlScanner<'a> {
-    value: &'a str,
-    bytes: &'a [u8],
-    idx: usize,
-}
-
-impl<'a> XmlScanner<'a> {
-    fn new(value: &'a str) -> Self {
-        Self {
-            value,
-            bytes: value.as_bytes(),
-            idx: 0,
-        }
-    }
-}
-
-impl<'a> Iterator for XmlScanner<'a> {
-    type Item = XmlChunk<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.idx >= self.bytes.len() {
-            return None;
-        }
-
-        if let Some((rep, len)) = classify_xml_byte(self.bytes, self.idx) {
-            self.idx += len;
-            return Some(XmlChunk::Escaped(rep));
-        }
-
-        let start = self.idx;
-        while self.idx < self.bytes.len() {
-            if classify_xml_byte(self.bytes, self.idx).is_some() {
-                break;
-            }
-            let b = self.bytes[self.idx];
-            if b < 0x80 {
-                self.idx += 1;
-            } else if b >= 0xC0 {
-                let width = b.leading_ones() as usize;
-                self.idx += width.max(1);
-            } else {
-                self.idx += 1;
-            }
-        }
-        Some(XmlChunk::Raw(&self.value[start..self.idx]))
-    }
-}
-
 pub(crate) fn xml_escape(value: &str) -> Cow<'_, str> {
-    let bytes = value.as_bytes();
-    let has_escapes = (0..bytes.len()).any(|i| classify_xml_byte(bytes, i).is_some());
-    if !has_escapes {
+    if !value.chars().any(|ch| escape_char(ch).is_some()) {
         return Cow::Borrowed(value);
     }
 
     let mut result = String::with_capacity(value.len() + 16);
-    for chunk in XmlScanner::new(value) {
-        match chunk {
-            XmlChunk::Raw(s) => result.push_str(s),
-            XmlChunk::Escaped(rep) => result.push_str(rep),
+    for ch in value.chars() {
+        if let Some(escaped) = escape_char(ch) {
+            result.push_str(escaped);
+        } else {
+            result.push(ch);
         }
     }
     Cow::Owned(result)
@@ -122,21 +59,17 @@ pub(crate) fn escaped_metrics(value: &str) -> (u64, bool) {
     let mut len: u64 = 0;
     let mut last_char = None;
 
-    for chunk in XmlScanner::new(value) {
-        match chunk {
-            XmlChunk::Raw(s) => {
-                len += s.len() as u64;
-                last_char = s.chars().last();
-            }
-            XmlChunk::Escaped(rep) => {
-                len += rep.len() as u64;
-                last_char = rep.chars().last();
-            }
+    for ch in value.chars() {
+        if let Some(escaped) = escape_char(ch) {
+            len += escaped.len() as u64;
+            last_char = escaped.chars().last();
+        } else {
+            len += ch.len_utf8() as u64;
+            last_char = Some(ch);
         }
     }
 
-    let ends_with_nl = last_char == Some('\n');
-    (len, ends_with_nl)
+    (len, last_char == Some('\n'))
 }
 
 pub(crate) fn write_xml_escaped<W: Write + ?Sized>(
@@ -144,18 +77,24 @@ pub(crate) fn write_xml_escaped<W: Write + ?Sized>(
     value: &str,
 ) -> std::io::Result<bool> {
     let mut last_char = None;
+    let mut start = 0;
 
-    for chunk in XmlScanner::new(value) {
-        match chunk {
-            XmlChunk::Raw(s) => {
-                writer.write_all(s.as_bytes())?;
-                last_char = s.chars().last();
+    let bytes = value.as_bytes();
+    for (idx, ch) in value.char_indices() {
+        if let Some(escaped) = escape_char(ch) {
+            if idx > start {
+                writer.write_all(&bytes[start..idx])?;
             }
-            XmlChunk::Escaped(rep) => {
-                writer.write_all(rep.as_bytes())?;
-                last_char = rep.chars().last();
-            }
+            writer.write_all(escaped.as_bytes())?;
+            start = idx + ch.len_utf8();
+            last_char = escaped.chars().last();
+        } else {
+            last_char = Some(ch);
         }
+    }
+
+    if start < bytes.len() {
+        writer.write_all(&bytes[start..])?;
     }
 
     Ok(last_char == Some('\n'))

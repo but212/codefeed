@@ -40,124 +40,24 @@ fn starts_with_hyphen(arg: &OsStr) -> bool {
     }
 }
 
-/// Parsed semantic argument token.
-enum SemanticToken {
-    Help,
-    Source(OsString),
-    Output(OutputTarget),
-    Ref(String),
-    Format(DigestFormat),
-}
-
-/// Tokenizer that decodes raw CLI arguments into semantic tokens.
-struct ArgTokenizer<I> {
-    iter: I,
-    after_delimiter: bool,
-}
-
-impl<I: Iterator<Item = OsString>> ArgTokenizer<I> {
-    fn new(mut iter: I) -> Self {
-        let _program = iter.next();
-        Self {
-            iter,
-            after_delimiter: false,
-        }
+fn next_val<I: Iterator<Item = OsString>>(
+    args: &mut I,
+    inline_val: Option<&str>,
+    missing_msg: &str,
+) -> Result<OsString, IngestError> {
+    if let Some(v) = inline_val {
+        return Ok(OsString::from(v));
     }
-
-    fn next_value(
-        &mut self,
-        inline_val: Option<&str>,
-        missing_msg: &str,
-    ) -> Result<OsString, IngestError> {
-        if let Some(v) = inline_val {
-            return Ok(OsString::from(v));
-        }
-        let Some(next_arg) = self.iter.next() else {
-            return Err(usage(missing_msg));
-        };
-        if matches!(
-            next_arg.to_str(),
-            Some("--help" | "-h" | "--output" | "-o" | "--ref" | "-r" | "--format" | "-f")
-        ) {
-            return Err(usage(missing_msg));
-        }
-        Ok(next_arg)
+    let Some(next_arg) = args.next() else {
+        return Err(usage(missing_msg));
+    };
+    if matches!(
+        next_arg.to_str(),
+        Some("--help" | "-h" | "--output" | "-o" | "--ref" | "-r" | "--format" | "-f")
+    ) {
+        return Err(usage(missing_msg));
     }
-}
-
-impl<I: Iterator<Item = OsString>> Iterator for ArgTokenizer<I> {
-    type Item = Result<SemanticToken, IngestError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let argument = self.iter.next()?;
-
-        if !self.after_delimiter {
-            if argument == OsStr::new("--") {
-                self.after_delimiter = true;
-                return self.next();
-            }
-
-            if starts_with_hyphen(&argument) && argument != OsStr::new("-") {
-                let Some(arg_str) = argument.to_str() else {
-                    return Some(Err(usage("unknown option contains non-UTF-8 bytes")));
-                };
-
-                if arg_str == "--help" || arg_str == "-h" {
-                    return Some(Ok(SemanticToken::Help));
-                }
-
-                let (key, inline_val) = arg_str
-                    .split_once('=')
-                    .map_or((arg_str, None), |(k, v)| (k, Some(v)));
-
-                let token = match key {
-                    "--output" | "-o" => {
-                        let value = match self.next_value(inline_val, "--output requires a path") {
-                            Ok(v) => v,
-                            Err(e) => return Some(Err(e)),
-                        };
-                        SemanticToken::Output(parse_output_target(&value))
-                    }
-                    "--ref" | "-r" => {
-                        let value = match self
-                            .next_value(inline_val, "--ref requires a branch, tag, or commit")
-                        {
-                            Ok(v) => v,
-                            Err(e) => return Some(Err(e)),
-                        };
-                        let Some(value_str) = value.to_str() else {
-                            return Some(Err(usage("--ref requires a UTF-8 value")));
-                        };
-                        SemanticToken::Ref(value_str.to_owned())
-                    }
-                    "--format" | "-f" => {
-                        let value = match self
-                            .next_value(inline_val, "--format requires a format (text, xml)")
-                        {
-                            Ok(v) => v,
-                            Err(e) => return Some(Err(e)),
-                        };
-                        let Some(value_str) = value.to_str() else {
-                            return Some(Err(usage("--format requires a UTF-8 value")));
-                        };
-                        match value_str.to_ascii_lowercase().as_str() {
-                            "text" => SemanticToken::Format(DigestFormat::Text),
-                            "xml" => SemanticToken::Format(DigestFormat::Xml),
-                            other => {
-                                return Some(Err(usage(&format!(
-                                    "invalid format: {other} (expected text, xml)"
-                                ))));
-                            }
-                        }
-                    }
-                    unknown => return Some(Err(usage(&format!("unknown option: {unknown}")))),
-                };
-                return Some(Ok(token));
-            }
-        }
-
-        Some(Ok(SemanticToken::Source(argument)))
-    }
+    Ok(next_arg)
 }
 
 pub(crate) fn parse_cli<I, T>(args: I) -> Result<CliAction, IngestError>
@@ -165,26 +65,73 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
-    let mut tokens = ArgTokenizer::new(args.into_iter().map(Into::into));
+    let mut args = args.into_iter().map(Into::into);
+    let _program = args.next(); // skip binary name
+
     let mut source_slot: Option<OsString> = None;
     let mut options = Options::default();
+    let mut after_delimiter = false;
 
-    while let Some(token) = tokens.next().transpose()? {
-        match token {
-            SemanticToken::Help => return Ok(CliAction::Help),
-            SemanticToken::Source(source) => {
-                if source_slot.is_some() {
-                    return Err(usage(&format!(
-                        "unexpected argument: {}",
-                        source.to_string_lossy()
-                    )));
-                }
-                source_slot = Some(source);
+    while let Some(arg) = args.next() {
+        if !after_delimiter {
+            if arg == OsStr::new("--") {
+                after_delimiter = true;
+                continue;
             }
-            SemanticToken::Output(target) => options.output = target,
-            SemanticToken::Ref(reference) => options.reference = Some(reference),
-            SemanticToken::Format(format) => options.format = format,
+
+            if starts_with_hyphen(&arg) && arg != OsStr::new("-") {
+                let Some(arg_str) = arg.to_str() else {
+                    return Err(usage("unknown option contains non-UTF-8 bytes"));
+                };
+
+                if arg_str == "--help" || arg_str == "-h" {
+                    return Ok(CliAction::Help);
+                }
+
+                let (key, inline_val) = arg_str
+                    .split_once('=')
+                    .map_or((arg_str, None), |(k, v)| (k, Some(v)));
+
+                match key {
+                    "--output" | "-o" => {
+                        let val = next_val(&mut args, inline_val, "--output requires a path")?;
+                        options.output = parse_output_target(&val);
+                    }
+                    "--ref" | "-r" => {
+                        let val = next_val(&mut args, inline_val, "--ref requires a branch, tag, or commit")?;
+                        let Some(s) = val.to_str() else {
+                            return Err(usage("--ref requires a UTF-8 value"));
+                        };
+                        options.reference = Some(s.to_owned());
+                    }
+                    "--format" | "-f" => {
+                        let val = next_val(&mut args, inline_val, "--format requires a format (text, xml)")?;
+                        let Some(s) = val.to_str() else {
+                            return Err(usage("--format requires a UTF-8 value"));
+                        };
+                        match s.to_ascii_lowercase().as_str() {
+                            "text" => options.format = DigestFormat::Text,
+                            "xml" => options.format = DigestFormat::Xml,
+                            other => {
+                                return Err(usage(&format!(
+                                    "invalid format: {other} (expected text, xml)"
+                                )));
+                            }
+                        }
+                    }
+                    unknown => return Err(usage(&format!("unknown option: {unknown}"))),
+                }
+                continue;
+            }
         }
+
+        if source_slot.is_some() {
+            return Err(usage(&format!(
+                "unexpected argument: {}",
+                arg.to_string_lossy()
+            )));
+        }
+        source_slot = Some(arg);
     }
 
     let Some(source_value) = source_slot else {
