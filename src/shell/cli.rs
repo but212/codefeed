@@ -15,10 +15,7 @@ pub(crate) fn help_text() -> &'static str {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CliAction {
     Help,
-    Run {
-        source: Source,
-        options: Options,
-    },
+    Run { source: Source, options: Options },
 }
 
 /// `--output -` selects standard output; every other value is a filesystem
@@ -146,15 +143,7 @@ mod tests {
 
     #[test]
     fn parses_run_action() {
-        let action = parse_cli([
-            "rustingest",
-            ".",
-            "--format",
-            "xml",
-            "--output",
-            "-",
-        ])
-        .unwrap();
+        let action = parse_cli(["rustingest", ".", "--format", "xml", "--output", "-"]).unwrap();
         match action {
             CliAction::Run { source, options } => {
                 assert!(matches!(source, Source::Local(_)));

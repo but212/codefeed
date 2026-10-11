@@ -10,11 +10,6 @@ pub(crate) use format::spec_for;
 pub(crate) use token::TokenEstimatingWriter;
 pub(crate) use trie::BudgetTrie;
 
-#[cfg(test)]
-pub(crate) use text::escape_header;
-#[cfg(test)]
-pub(crate) use xml::xml_escape;
-
 use crate::core::error::IngestError;
 use crate::core::model::{DigestFormat, FileRecord};
 use crate::core::policy::MAX_OUTPUT_SIZE;
@@ -227,13 +222,6 @@ mod tests {
         String::from_utf8(buffer).map_err(|error| IngestError::Io(std::io::Error::other(error)))
     }
 
-    fn estimate_tokens(text: &str) -> usize {
-        let mut sink = std::io::sink();
-        let mut estimator = TokenEstimatingWriter::new(&mut sink);
-        let _ = std::io::Write::write_all(&mut estimator, text.as_bytes());
-        estimator.finish()
-    }
-
     #[test]
     fn renders_files_in_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
         let files = vec![
@@ -270,19 +258,6 @@ mod tests {
         );
         assert!(!rendered.contains(revision));
         Ok(())
-    }
-
-    #[test]
-    fn escape_header_borrows_clean_input() {
-        use std::borrow::Cow;
-        assert!(matches!(
-            escape_header("clean/path/file.rs"),
-            Cow::Borrowed(_)
-        ));
-        assert!(matches!(
-            escape_header("path\\with\\backslash"),
-            Cow::Owned(_)
-        ));
     }
 
     #[test]
@@ -404,30 +379,6 @@ hello\n\
     }
 
     #[test]
-    fn escapes_xml_entities() {
-        assert_eq!(xml_escape("plain text"), "plain text");
-        assert_eq!(xml_escape("a & b < c > d"), "a &amp; b &lt; c &gt; d");
-        assert_eq!(xml_escape("let x = a && b;"), "let x = a &amp;&amp; b;");
-        assert_eq!(
-            xml_escape("<tag attr=\"val\">'hello'</tag>"),
-            "&lt;tag attr=&quot;val&quot;&gt;&apos;hello&apos;&lt;/tag&gt;"
-        );
-    }
-
-    #[test]
-    fn sanitizes_xml_control_characters() {
-        assert_eq!(xml_escape("hello\x0Cworld"), "hello\u{FFFD}world");
-        assert_eq!(
-            xml_escape("valid\t\n\rwhitespace"),
-            "valid\t\n\rwhitespace"
-        );
-        assert_eq!(
-            xml_escape("code\u{0001}\u{0008}\u{000B}\u{001F}"),
-            "code\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"
-        );
-    }
-
-    #[test]
     fn renders_xml_in_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
         let files = vec![
             FileRecord {
@@ -494,15 +445,6 @@ z &lt; 10
     }
 
     #[test]
-    fn estimates_token_counts() {
-        assert_eq!(estimate_tokens(""), 0);
-        assert_eq!(estimate_tokens("hello"), 2);
-        assert!(estimate_tokens("let mut x = 123;") >= 4);
-        assert!(estimate_tokens("fn main() {\n    println!(\"Hello, world!\");\n}\n") >= 8);
-        assert!(estimate_tokens("한글 텍스트 테스트") >= 4);
-    }
-
-    #[test]
     fn escapes_tree_node_newlines() -> Result<(), Box<dyn std::error::Error>> {
         let files = vec![FileRecord {
             path: "dir\nname/file\rname.txt".into(),
@@ -530,75 +472,7 @@ z &lt; 10
     }
 
     #[test]
-    fn renders_ascii_tree_correctly() -> Result<(), Box<dyn std::error::Error>> {
-        let mut trie = BudgetTrie::default();
-        for path in ["Cargo.toml", "src/core/a.rs", "src/lib.rs"] {
-            trie.insert_with_undo(path);
-        }
-        let mut buf = Vec::new();
-        trie.render_to_writer(&mut buf)?;
-        let tree_str = std::str::from_utf8(&buf)?;
-        let expected = "\
-├── Cargo.toml
-└── src/
-    ├── core/
-    │   └── a.rs
-    └── lib.rs
-";
-        assert_eq!(tree_str, expected);
-        Ok(())
-    }
-
-    #[test]
-    fn trie_budget_matches_rendered_size() -> Result<(), Box<dyn std::error::Error>> {
-        let test_cases = vec![
-            vec![
-                "Cargo.toml",
-                "src/lib.rs",
-                "src/core/digest.rs",
-                "src/core/model.rs",
-            ],
-            vec!["a.txt", "b/c.txt", "b/d/e.txt", "f/g/h/i.txt"],
-            vec![
-                "file & with <special> \"chars'.txt",
-                "nested & dir/sub <dir>/test.rs",
-            ],
-        ];
-
-        for paths in test_cases {
-            for escape_xml in [false, true] {
-                let mut trie = BudgetTrie::new(escape_xml);
-                for p in &paths {
-                    trie.insert_with_undo(p);
-                }
-
-                let trie_size = trie.calculate_size();
-                let mut rendered = Vec::new();
-                trie.render_to_writer(&mut rendered)?;
-                assert_eq!(
-                    trie_size,
-                    rendered.len() as u64,
-                    "Trie size must match rendered tree bytes exactly (escape_xml: {escape_xml})"
-                );
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn trie_rollback_restores_exact_state() {
-        let mut trie = BudgetTrie::default();
-        trie.insert_with_undo("src/core/digest.rs");
-        let initial_size = trie.calculate_size();
-
-        let undo = trie.insert_with_undo("src/core/sub/nested/file.rs");
-        let modified_size = trie.calculate_size();
-        assert!(modified_size > initial_size);
-
-        trie.rollback(undo);
-        assert_eq!(trie.calculate_size(), initial_size);
-
-        // Also test budget rollback
+    fn budget_rollback_restores_exact_state() {
         let mut budget = DigestBudget::new("repo", None, DigestFormat::Text).unwrap();
         budget
             .add(&FileRecord {

@@ -191,7 +191,10 @@ impl BudgetTrie {
         total
     }
 
-    pub(crate) fn render_to_writer<W: Write + ?Sized>(&self, writer: &mut W) -> std::io::Result<()> {
+    pub(crate) fn render_to_writer<W: Write + ?Sized>(
+        &self,
+        writer: &mut W,
+    ) -> std::io::Result<()> {
         Self::render_nodes(writer, &self.children, "")
     }
 
@@ -223,6 +226,106 @@ impl BudgetTrie {
                 Self::render_nodes(writer, &node.children, &child_prefix)?;
             }
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_ascii_tree_correctly() -> Result<(), Box<dyn std::error::Error>> {
+        let mut trie = BudgetTrie::default();
+        for path in ["Cargo.toml", "src/core/a.rs", "src/lib.rs"] {
+            trie.insert_with_undo(path);
+        }
+        let mut buf = Vec::new();
+        trie.render_to_writer(&mut buf)?;
+        let tree_str = std::str::from_utf8(&buf)?;
+        let expected = "\
+├── Cargo.toml
+└── src/
+    ├── core/
+    │   └── a.rs
+    └── lib.rs
+";
+        assert_eq!(tree_str, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn trie_budget_matches_rendered_size() -> Result<(), Box<dyn std::error::Error>> {
+        let test_cases = vec![
+            vec![
+                "Cargo.toml",
+                "src/lib.rs",
+                "src/core/digest.rs",
+                "src/core/model.rs",
+            ],
+            vec!["a.txt", "b/c.txt", "b/d/e.txt", "f/g/h/i.txt"],
+            vec![
+                "file & with <special> \"chars'.txt",
+                "nested & dir/sub <dir>/test.rs",
+            ],
+        ];
+
+        for paths in test_cases {
+            for escape_xml in [false, true] {
+                let mut trie = BudgetTrie::new(escape_xml);
+                for p in &paths {
+                    trie.insert_with_undo(p);
+                }
+
+                let trie_size = trie.calculate_size();
+                let mut rendered = Vec::new();
+                trie.render_to_writer(&mut rendered)?;
+                assert_eq!(
+                    trie_size,
+                    rendered.len() as u64,
+                    "Trie size must match rendered tree bytes exactly (escape_xml: {escape_xml})"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn trie_rollback_restores_exact_state() {
+        let mut trie = BudgetTrie::default();
+        trie.insert_with_undo("src/core/digest.rs");
+        let initial_size = trie.calculate_size();
+
+        let undo = trie.insert_with_undo("src/core/sub/nested/file.rs");
+        let modified_size = trie.calculate_size();
+        assert!(modified_size > initial_size);
+
+        trie.rollback(undo);
+        assert_eq!(trie.calculate_size(), initial_size);
+    }
+
+    #[test]
+    fn escapes_tree_node_newlines() -> std::io::Result<()> {
+        let mut trie = BudgetTrie::new(false);
+        trie.insert_with_undo("dir\nname/file\rname.txt");
+        let mut out = Vec::new();
+        trie.render_to_writer(&mut out)?;
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.contains("dir\\nname/"));
+        assert!(s.contains("file\\rname.txt"));
+        assert!(!s.contains("dir\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn escapes_tree_node_xml_entities() -> std::io::Result<()> {
+        let mut trie = BudgetTrie::new(true);
+        trie.insert_with_undo("a & b/c < d.txt");
+        let mut out = Vec::new();
+        trie.render_to_writer(&mut out)?;
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.contains("a &amp; b/"));
+        assert!(s.contains("c &lt; d.txt"));
         Ok(())
     }
 }

@@ -3,12 +3,12 @@
 use std::borrow::Cow;
 use std::io::Write;
 
-use crate::core::error::IngestError;
-use crate::core::model::FileRecord;
+use super::DigestBudget;
 use super::byte_count;
 use super::format::FormatSpec;
 use super::trie::BudgetTrie;
-use super::DigestBudget;
+use crate::core::error::IngestError;
+use crate::core::model::FileRecord;
 
 const REPOSITORY_PREFIX: &str = "Repository: ";
 const REVISION_PREFIX: &str = "Revision: ";
@@ -119,5 +119,27 @@ impl FormatSpec for TextFormat {
             writer.write_all(NEWLINE.as_bytes())?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escape_header_borrows_clean_input() {
+        use std::borrow::Cow;
+        assert!(matches!(
+            escape_header("clean/path/file.rs"),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            escape_header("path\\with\\backslash"),
+            Cow::Owned(_)
+        ));
+        assert!(matches!(
+            escape_header("path\nwith\nnewline"),
+            Cow::Owned(_)
+        ));
     }
 }

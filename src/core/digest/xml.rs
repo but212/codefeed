@@ -3,12 +3,12 @@
 use std::borrow::Cow;
 use std::io::Write;
 
-use crate::core::error::IngestError;
-use crate::core::model::FileRecord;
+use super::DigestBudget;
 use super::byte_count;
 use super::format::FormatSpec;
 use super::trie::BudgetTrie;
-use super::DigestBudget;
+use crate::core::error::IngestError;
+use crate::core::model::FileRecord;
 
 const XML_REPO_START: &str = "<repository name=\"";
 const XML_REVISION_ATTR: &str = "\" revision=\"";
@@ -30,9 +30,9 @@ pub(crate) fn is_disallowed_xml_char(c: char) -> bool {
 }
 
 pub(crate) fn xml_escape(value: &str) -> Cow<'_, str> {
-    let needs_escape = value.chars().any(|c| {
-        matches!(c, '&' | '<' | '>' | '"' | '\'') || is_disallowed_xml_char(c)
-    });
+    let needs_escape = value
+        .chars()
+        .any(|c| matches!(c, '&' | '<' | '>' | '"' | '\'') || is_disallowed_xml_char(c));
     if !needs_escape {
         return Cow::Borrowed(value);
     }
@@ -129,5 +129,31 @@ impl FormatSpec for XmlFormat {
         writer.write_all(XML_FILES_END.as_bytes())?;
         writer.write_all(XML_REPO_END.as_bytes())?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escapes_xml_entities() {
+        assert_eq!(xml_escape("plain text"), "plain text");
+        assert_eq!(xml_escape("a & b < c > d"), "a &amp; b &lt; c &gt; d");
+        assert_eq!(xml_escape("let x = a && b;"), "let x = a &amp;&amp; b;");
+        assert_eq!(
+            xml_escape("<tag attr=\"val\">'hello'</tag>"),
+            "&lt;tag attr=&quot;val&quot;&gt;&apos;hello&apos;&lt;/tag&gt;"
+        );
+    }
+
+    #[test]
+    fn sanitizes_xml_control_characters() {
+        assert_eq!(xml_escape("hello\x0Cworld"), "hello\u{FFFD}world");
+        assert_eq!(xml_escape("valid\t\n\rwhitespace"), "valid\t\n\rwhitespace");
+        assert_eq!(
+            xml_escape("code\u{0001}\u{0008}\u{000B}\u{001F}"),
+            "code\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"
+        );
     }
 }

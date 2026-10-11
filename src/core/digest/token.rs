@@ -70,3 +70,24 @@ impl<W: Write + ?Sized> Write for TokenEstimatingWriter<'_, W> {
         self.inner.flush()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn estimate_tokens(text: &str) -> usize {
+        let mut sink = std::io::sink();
+        let mut estimator = TokenEstimatingWriter::new(&mut sink);
+        let _ = std::io::Write::write_all(&mut estimator, text.as_bytes());
+        estimator.finish()
+    }
+
+    #[test]
+    fn estimates_token_counts() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("hello"), 2);
+        assert!(estimate_tokens("let mut x = 123;") >= 4);
+        assert!(estimate_tokens("fn main() {\n    println!(\"Hello, world!\");\n}\n") >= 8);
+        assert!(estimate_tokens("한글 텍스트 테스트") >= 4);
+    }
+}

@@ -7,7 +7,7 @@ use std::env::args_os;
 use std::process;
 
 use crate::core::model::OutputTarget;
-use crate::shell::cli::{help_text, parse_cli, CliAction};
+use crate::shell::cli::{CliAction, help_text, parse_cli};
 
 pub(crate) use shell::orchestrate::ingest;
 

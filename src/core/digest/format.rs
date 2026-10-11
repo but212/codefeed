@@ -3,12 +3,12 @@
 use std::borrow::Cow;
 use std::io::Write;
 
-use crate::core::error::IngestError;
-use crate::core::model::{DigestFormat, FileRecord};
+use super::DigestBudget;
 use super::text::TextFormat;
 use super::trie::BudgetTrie;
 use super::xml::XmlFormat;
-use super::DigestBudget;
+use crate::core::error::IngestError;
+use crate::core::model::{DigestFormat, FileRecord};
 
 pub(crate) trait FormatSpec: Sync {
     fn escape_label_or_revision<'a>(&self, text: &'a str) -> Cow<'a, str>;
