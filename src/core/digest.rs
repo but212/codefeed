@@ -265,24 +265,22 @@ impl DigestBudget {
             .checked_add(1)
             .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
 
-        let new_path_bytes = self
-            .path_bytes
-            .checked_add(path_b)
-            .ok_or_else(|| IngestError::OutputTooLarge {
+        let new_path_bytes =
+            self.path_bytes
+                .checked_add(path_b)
+                .ok_or_else(|| IngestError::OutputTooLarge {
+                    largest_files: Vec::new(),
+                })?;
+        let new_content_bytes = self.content_bytes.checked_add(content_b).ok_or_else(|| {
+            IngestError::OutputTooLarge {
                 largest_files: Vec::new(),
-            })?;
-        let new_content_bytes = self
-            .content_bytes
-            .checked_add(content_b)
-            .ok_or_else(|| IngestError::OutputTooLarge {
+            }
+        })?;
+        let new_trailing_bytes = self.trailing_bytes.checked_add(trailing_b).ok_or_else(|| {
+            IngestError::OutputTooLarge {
                 largest_files: Vec::new(),
-            })?;
-        let new_trailing_bytes = self
-            .trailing_bytes
-            .checked_add(trailing_b)
-            .ok_or_else(|| IngestError::OutputTooLarge {
-                largest_files: Vec::new(),
-            })?;
+            }
+        })?;
 
         let undo = self.trie.insert_with_undo(&file.path);
 

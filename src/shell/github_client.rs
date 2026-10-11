@@ -341,8 +341,8 @@ mod tests {
     fn retries_up_to_max_budget_and_returns_final_error() {
         use std::io::Write;
         use std::net::TcpListener;
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::thread;
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");

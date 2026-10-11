@@ -155,7 +155,8 @@ mod tests {
 
     #[cfg(any(windows, target_os = "macos"))]
     #[test]
-    fn matches_non_ascii_cased_files_pointing_to_same_file() -> Result<(), Box<dyn std::error::Error>> {
+    fn matches_non_ascii_cased_files_pointing_to_same_file()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = std::env::temp_dir().join(format!(
             "output_non_ascii_{}",
             std::time::SystemTime::now()
