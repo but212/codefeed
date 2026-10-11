@@ -1,18 +1,64 @@
 //! Digest budgeting, tree structuring, format rendering, and token estimation.
 
-mod format;
 mod text;
 mod token;
 mod trie;
 mod xml;
 
-pub(crate) use format::spec_for;
 pub(crate) use token::TokenEstimatingWriter;
 pub(crate) use trie::BudgetTrie;
 
 use crate::core::error::IngestError;
-use crate::core::model::{DigestFormat, FileRecord};
+use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
 use crate::core::policy::MAX_OUTPUT_SIZE;
+
+impl DigestFormat {
+    pub(crate) fn escape_label_or_revision<'a>(self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        match self {
+            Self::Text => text::escape_header(text),
+            Self::Xml => xml::xml_escape(text),
+        }
+    }
+
+    pub(crate) fn escape_tree_xml(self) -> bool {
+        match self {
+            Self::Text => false,
+            Self::Xml => true,
+        }
+    }
+
+    pub(crate) fn calculate_file_bytes(
+        self,
+        file: &FileRecord,
+    ) -> Result<(u64, u64, u64), IngestError> {
+        match self {
+            Self::Text => text::calculate_file_bytes(file),
+            Self::Xml => xml::calculate_file_bytes(file),
+        }
+    }
+
+    pub(crate) fn rendered_base_size(self, budget: &DigestBudget) -> Option<u64> {
+        match self {
+            Self::Text => text::rendered_base_size(budget),
+            Self::Xml => xml::rendered_base_size(budget),
+        }
+    }
+
+    pub(crate) fn render<W: std::io::Write + ?Sized>(
+        self,
+        writer: &mut W,
+        label: &str,
+        revision: Option<&str>,
+        files: &[FileRecord],
+        skipped: usize,
+        trie: &BudgetTrie,
+    ) -> Result<(), IngestError> {
+        match self {
+            Self::Text => text::render(writer, label, revision, files, skipped, trie),
+            Self::Xml => xml::render(writer, label, revision, files, skipped, trie),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct DigestBudget {
@@ -33,10 +79,9 @@ impl DigestBudget {
         revision: Option<&str>,
         format: DigestFormat,
     ) -> Result<Self, IngestError> {
-        let spec = spec_for(format);
-        let label_bytes = byte_count(&spec.escape_label_or_revision(label))?;
+        let label_bytes = byte_count(&format.escape_label_or_revision(label))?;
         let revision_bytes = revision
-            .map(|value| byte_count(&spec.escape_label_or_revision(value)))
+            .map(|value| byte_count(&format.escape_label_or_revision(value)))
             .transpose()?;
 
         Ok(Self {
@@ -48,12 +93,12 @@ impl DigestBudget {
             path_bytes: 0,
             content_bytes: 0,
             trailing_bytes: 0,
-            trie: BudgetTrie::new(spec.escape_tree_xml()),
+            trie: BudgetTrie::new(format.escape_tree_xml()),
         })
     }
 
     pub(crate) fn add(&mut self, file: &FileRecord) -> Result<(), IngestError> {
-        let (path_b, content_b, trailing_b) = spec_for(self.format).calculate_file_bytes(file)?;
+        let (path_b, content_b, trailing_b) = self.format.calculate_file_bytes(file)?;
 
         let new_file_count = self
             .file_count
@@ -134,7 +179,7 @@ impl DigestBudget {
     }
 
     fn rendered_base_size(&self) -> Option<u64> {
-        spec_for(self.format).rendered_base_size(self)
+        self.format.rendered_base_size(self)
     }
 
     fn rendered_size(&self) -> Option<u64> {
@@ -163,36 +208,17 @@ pub(crate) fn byte_count(value: &str) -> Result<u64, IngestError> {
 
 pub(crate) fn render_digest_to_writer<W: std::io::Write + ?Sized>(
     writer: &mut W,
-    label: &str,
-    revision: Option<&str>,
-    files: &[FileRecord],
-    skipped: usize,
+    collection: &CollectionResult,
     format: DigestFormat,
 ) -> Result<usize, IngestError> {
-    let mut budget = DigestBudget::new(label, revision, format)?;
-    budget.skipped = skipped;
-    let overflow = (|| -> Result<(), IngestError> {
-        for file in files {
-            budget.add(file)?;
-        }
-        budget.ensure_fits()?;
-        Ok(())
-    })();
-    if let Err(IngestError::OutputTooLarge { .. }) = overflow {
-        return Err(IngestError::OutputTooLarge {
-            largest_files: largest_files(files),
-        });
-    }
-    overflow?;
-
     let mut estimator = TokenEstimatingWriter::new(writer);
-    spec_for(format).render(
+    format.render(
         &mut estimator,
-        label,
-        revision,
-        files,
-        skipped,
-        &budget.trie,
+        &collection.label,
+        collection.revision.as_deref(),
+        &collection.files,
+        collection.skipped,
+        &collection.trie,
     )?;
     Ok(estimator.finish())
 }
@@ -204,21 +230,30 @@ mod tests {
     use crate::core::model::FileRecord;
     use crate::core::policy::MAX_OUTPUT_SIZE;
 
+    fn test_trie(files: &[FileRecord], escape_xml: bool) -> BudgetTrie {
+        let mut trie = BudgetTrie::new(escape_xml);
+        for file in files {
+            trie.insert_with_undo(&file.path);
+        }
+        trie
+    }
+
     fn render_digest(
         label: &str,
         revision: Option<&str>,
         files: &[FileRecord],
         skipped: usize,
     ) -> Result<String, IngestError> {
-        let mut buffer = Vec::new();
-        render_digest_to_writer(
-            &mut buffer,
-            label,
-            revision,
-            files,
+        let trie = test_trie(files, false);
+        let collection = CollectionResult {
+            label: label.to_string(),
+            revision: revision.map(str::to_string),
+            files: files.to_vec(),
             skipped,
-            DigestFormat::Text,
-        )?;
+            trie,
+        };
+        let mut buffer = Vec::new();
+        render_digest_to_writer(&mut buffer, &collection, DigestFormat::Text)?;
         String::from_utf8(buffer).map_err(|error| IngestError::Io(std::io::Error::other(error)))
     }
 
@@ -272,15 +307,15 @@ mod tests {
                 content: "world".into(),
             },
         ];
+        let collection = CollectionResult {
+            label: "my-repo".into(),
+            revision: Some("v1.0".into()),
+            files: files.clone(),
+            skipped: 2,
+            trie: test_trie(&files, false),
+        };
         let mut streamed = Vec::new();
-        render_digest_to_writer(
-            &mut streamed,
-            "my-repo",
-            Some("v1.0"),
-            &files,
-            2,
-            DigestFormat::Text,
-        )?;
+        render_digest_to_writer(&mut streamed, &collection, DigestFormat::Text)?;
         let streamed_str = std::str::from_utf8(&streamed)?;
 
         let expected = "\
@@ -346,36 +381,11 @@ hello\n\
             path: "large.txt".into(),
             content: "x".repeat(MAX_OUTPUT_SIZE as usize),
         };
-        match render_digest("repo", None, &[candidate], 0) {
-            Err(IngestError::OutputTooLarge { largest_files }) => {
-                assert_eq!(largest_files.len(), 1);
-                assert_eq!(largest_files[0].0, "large.txt");
-                assert_eq!(largest_files[0].1, MAX_OUTPUT_SIZE as usize);
-            }
-            other => panic!("expected OutputTooLarge with largest_files, got {other:?}"),
+        let mut budget = DigestBudget::new("repo", None, DigestFormat::Text).unwrap();
+        match budget.add(&candidate) {
+            Err(IngestError::OutputTooLarge { .. }) => {}
+            other => panic!("expected OutputTooLarge, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn streaming_rejects_overbudget() {
-        let candidate = FileRecord {
-            path: "large.txt".into(),
-            content: "x".repeat(MAX_OUTPUT_SIZE as usize),
-        };
-        let mut sink = Vec::new();
-        match render_digest_to_writer(&mut sink, "repo", None, &[candidate], 0, DigestFormat::Text)
-        {
-            Err(IngestError::OutputTooLarge { largest_files }) => {
-                assert_eq!(largest_files.len(), 1);
-                assert_eq!(largest_files[0].0, "large.txt");
-                assert_eq!(largest_files[0].1, MAX_OUTPUT_SIZE as usize);
-            }
-            other => panic!("expected OutputTooLarge with largest_files, got {other:?}"),
-        }
-        assert!(
-            sink.is_empty(),
-            "sink should not have partial content written on overflow"
-        );
     }
 
     #[test]
@@ -390,15 +400,15 @@ hello\n\
                 content: "a & b".into(),
             },
         ];
+        let collection = CollectionResult {
+            label: "my-repo".into(),
+            revision: Some("v1.0".into()),
+            files: files.clone(),
+            skipped: 1,
+            trie: test_trie(&files, true),
+        };
         let mut out = Vec::new();
-        render_digest_to_writer(
-            &mut out,
-            "my-repo",
-            Some("v1.0"),
-            &files,
-            1,
-            DigestFormat::Xml,
-        )?;
+        render_digest_to_writer(&mut out, &collection, DigestFormat::Xml)?;
         let xml_str = std::str::from_utf8(&out)?;
         let expected = "\
 <repository name=\"my-repo\" revision=\"v1.0\">
@@ -437,8 +447,15 @@ z &lt; 10
             for file in &files {
                 budget.add(file)?;
             }
+            let collection = CollectionResult {
+                label: "repo".into(),
+                revision: revision.map(str::to_string),
+                files: files.clone(),
+                skipped: 0,
+                trie: budget.trie.clone(),
+            };
             let mut out = Vec::new();
-            render_digest_to_writer(&mut out, "repo", revision, &files, 0, DigestFormat::Xml)?;
+            render_digest_to_writer(&mut out, &collection, DigestFormat::Xml)?;
             assert_eq!(budget.rendered_size(), Some(out.len() as u64));
         }
         Ok(())
@@ -463,8 +480,15 @@ z &lt; 10
             path: "a & b/c < d.txt".into(),
             content: "content".into(),
         }];
+        let collection = CollectionResult {
+            label: "repo".into(),
+            revision: None,
+            files: files.clone(),
+            skipped: 0,
+            trie: test_trie(&files, true),
+        };
         let mut out = Vec::new();
-        render_digest_to_writer(&mut out, "repo", None, &files, 0, DigestFormat::Xml)?;
+        render_digest_to_writer(&mut out, &collection, DigestFormat::Xml)?;
         let xml_str = std::str::from_utf8(&out)?;
         assert!(xml_str.contains("a &amp; b/"));
         assert!(xml_str.contains("c &lt; d.txt"));

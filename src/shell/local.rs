@@ -158,12 +158,13 @@ pub(crate) fn collect_local(
         })?;
     }
 
-    let (files, skipped) = selector.into_parts();
+    let (files, skipped, trie) = selector.into_parts();
     Ok(CollectionResult {
         label,
         revision: None,
         files,
         skipped,
+        trie,
     })
 }
 

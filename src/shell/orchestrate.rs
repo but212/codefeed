@@ -1,7 +1,7 @@
 //! Pipeline orchestration: coordinates collection, emission, and digest rendering.
 
 use crate::core::error::IngestError;
-use crate::core::model::{CollectionResult, IngestReport, Options, Source};
+use crate::core::model::{IngestReport, Options, Source};
 use crate::shell;
 
 pub(crate) fn ingest(source: &Source, options: &Options) -> Result<IngestReport, IngestError> {
@@ -28,30 +28,17 @@ pub(crate) fn ingest(source: &Source, options: &Options) -> Result<IngestReport,
         )?,
     };
 
-    let CollectionResult {
-        label,
-        revision,
-        files,
-        skipped,
-    } = collection;
-
     let mut estimated_tokens = 0;
     shell::output::emit(&options.output, |writer| {
-        estimated_tokens = crate::core::digest::render_digest_to_writer(
-            writer,
-            &label,
-            revision.as_deref(),
-            &files,
-            skipped,
-            options.format,
-        )?;
+        estimated_tokens =
+            crate::core::digest::render_digest_to_writer(writer, &collection, options.format)?;
         Ok(())
     })?;
 
     Ok(IngestReport {
         output: options.output.clone(),
-        included_files: files.len(),
-        skipped_files: skipped,
+        included_files: collection.files.len(),
+        skipped_files: collection.skipped,
         estimated_tokens,
     })
 }

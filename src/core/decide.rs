@@ -82,8 +82,8 @@ impl Selector {
         Ok(())
     }
 
-    pub(crate) fn into_parts(self) -> (Vec<FileRecord>, usize) {
-        (self.files, self.digest.skipped())
+    pub(crate) fn into_parts(self) -> (Vec<FileRecord>, usize, crate::core::digest::BudgetTrie) {
+        (self.files, self.digest.skipped(), self.digest.trie)
     }
 }
 
@@ -165,7 +165,7 @@ mod tests {
     fn decide_includes_text_candidate() -> Result<(), Box<dyn std::error::Error>> {
         let mut selector = Selector::new("repo", None, DigestFormat::Text)?;
         selector.decide(decide_item("a.txt", Probe::Bytes(b"hello".to_vec())))?;
-        let (files, skipped) = selector.into_parts();
+        let (files, skipped, _) = selector.into_parts();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "a.txt");
         assert_eq!(skipped, 0);
@@ -177,7 +177,7 @@ mod tests {
         let mut selector = Selector::new("repo", None, DigestFormat::Text)?;
         selector.decide(decide_item("bin", Probe::Bytes(vec![0, 1, 2])))?;
         selector.decide(decide_item("bad", Probe::Bytes(vec![0xff])))?;
-        let (files, skipped) = selector.into_parts();
+        let (files, skipped, _) = selector.into_parts();
         assert!(files.is_empty());
         assert_eq!(skipped, 2);
         Ok(())
@@ -192,7 +192,7 @@ mod tests {
             "exact.txt",
             Probe::Bytes(vec![b'x'; MAX_FILE_SIZE as usize]),
         ))?;
-        let (files, skipped) = selector.into_parts();
+        let (files, skipped, _) = selector.into_parts();
         assert_eq!(files.len(), 1);
         assert_eq!(skipped, 2);
         Ok(())
@@ -205,7 +205,7 @@ mod tests {
             selector.decide(decide_item("ignored.txt", Probe::Ignored))?;
         }
         selector.decide(decide_item("kept.txt", Probe::Bytes(b"kept".to_vec())))?;
-        let (files, skipped) = selector.into_parts();
+        let (files, skipped, _) = selector.into_parts();
         assert_eq!(files.len(), 1);
         assert_eq!(skipped, 0);
         Ok(())

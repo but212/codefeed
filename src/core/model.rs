@@ -69,17 +69,18 @@ pub struct IngestReport {
 }
 
 /// One digest entry. Owned by the domain core; rendered by `digest`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct FileRecord {
     pub(crate) path: String,
     pub(crate) content: String,
 }
 
 /// Raw files and metadata collected by the shell before digest rendering.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct CollectionResult {
     pub(crate) label: String,
     pub(crate) revision: Option<String>,
     pub(crate) files: Vec<FileRecord>,
     pub(crate) skipped: usize,
+    pub(crate) trie: crate::core::digest::BudgetTrie,
 }

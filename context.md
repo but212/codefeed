@@ -14,7 +14,7 @@ imperative-shell boundary.
   (`ItemPath::Utf8 | NonUtf8`) and `probe`
   (`Probe::Bytes | Missing | TooLarge | Ignored`).
 - `FileRecord` — digest entry: `path`, `content`.
-- `CollectionResult` — uniform collection record: `label`, optional `revision`, `files`, `skipped`.
+- `CollectionResult` — uniform collection record: `label`, optional `revision`, `files`, `skipped`, `trie`.
 - `IngestReport` — `output`, `included_files`, `skipped_files`, `estimated_tokens`.
 - `OutputTarget` — digest destination: `File(PathBuf)` or `Stdout`.
 - `DigestFormat` — output serialization format: `Text` or `Xml`.
@@ -63,8 +63,8 @@ imperative-shell boundary.
   exact-origin GitHub API and raw-content hosts; lookalike or foreign origins
   never receive credentials.
 - GitHub collection downloads content in parallel batches (`FETCH_WINDOW = 16`)
-  using scoped threads, feeding items to `Selector::decide` in exact tree order
-  for deterministic accounting.
+  using scoped threads, feeding items to `Selector::decide` in deterministic
+  lexicographical path order matching local collection.
 - Known binary extensions (`BINARY_EXT`) are classified as `Probe::Missing`
   before remote download to save bandwidth while preserving candidate and
   skipped accounting.
@@ -103,7 +103,7 @@ never depends on shell code; shell code depends on the core in one direction.
   - `decide.rs`: `Selector::decide`, `CandidateBudget`, item evaluation, and
     candidate overflow diagnostics.
   - `digest/`: `DigestBudget`, defense-in-depth size check, deterministic
-    digest rendering (`render_digest_to_writer`), internal `FormatSpec` trait (`format.rs`), format implementations (`text.rs`, `xml.rs`), trie representation (`trie.rs`), and token estimation (`token.rs`).
+    digest rendering (`render_digest_to_writer`), format implementations (`text.rs`, `xml.rs`), trie representation (`trie.rs`), and token estimation (`token.rs`).
   - `github_url.rs`: URL construction and origin credential scoping.
   - `github_tree.rs`: GitHub tree DTO parsing and blob verification.
 - Imperative shell (`src/shell/`):
