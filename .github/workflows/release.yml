@@ -29,13 +29,13 @@ jobs:
             echo "Error: Tag version ($TAG_VERSION) does not match Cargo.toml version ($MANIFEST_VERSION)"
             exit 1
           fi
-          if ! grep -Eq "^## \[?$TAG_VERSION\]?" CHANGELOG.md; then
+          if ! grep -Eq "^## (\[${TAG_VERSION}\]|${TAG_VERSION})([[:space:]]|$)" CHANGELOG.md; then
             echo "Error: CHANGELOG.md does not contain an entry for version $TAG_VERSION"
             exit 1
           fi
 
       - name: Run test suite
-        run: cargo test --all-targets
+        run: cargo test --all-targets --locked
 
   build:
     name: Build (${{ matrix.target }})
@@ -74,7 +74,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package release assets (Unix)
         if: runner.os != 'Windows'
@@ -142,7 +142,7 @@ jobs:
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           awk -v ver="$TAG_VERSION" '
-            $0 ~ "^## \\[" ver "\\]" || $0 ~ "^## " ver { flag=1; next }
+            $0 ~ ("^## \\[" ver "\\]") || $0 ~ ("^## " ver "([ \t]|$)") { flag=1; next }
             flag && /^## / { flag=0 }
             flag { print }
           ' CHANGELOG.md > RELEASE_NOTES.md
