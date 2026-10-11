@@ -14,8 +14,7 @@ imperative-shell boundary.
   (`ItemPath::Utf8 | NonUtf8`) and `probe`
   (`Probe::Bytes | Missing | TooLarge | Ignored`).
 - `FileRecord` — digest entry: `path`, `content`.
-- `CollectionResult` — `Local { label, files, skipped }` or
-  `GitHub { label, revision, files, skipped }`.
+- `CollectionResult` — uniform collection record: `label`, optional `revision`, `files`, `skipped`.
 - `IngestReport` — `output`, `included_files`, `skipped_files`, `estimated_tokens`.
 - `OutputTarget` — digest destination: `File(PathBuf)` or `Stdout`.
 - `DigestFormat` — output serialization format: `Text` or `Xml`.
@@ -36,12 +35,12 @@ imperative-shell boundary.
   Ignored paths are not `skipped`.
 - Digest size accounting rejects content that would exceed `MAX_OUTPUT_SIZE`;
   overflow is never included.
-- Directory structure is rendered as an ASCII hierarchy tree (`├── `, `└── `, `│   `), matching `DigestBudget` byte-for-byte.
+- Directory structure is rendered as an ASCII hierarchy tree (`├── `, `└── `, `│   `), matching `DigestBudget` byte-for-byte, escaping control codes and XML entities to prevent tree line-break injections.
 - Estimated tokens are calculated on the full digest stream via zero-dependency BPE approximation and reported via `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
 - Local filesystem traversal utilizes multi-threaded `ignore::WalkParallel` with strict deterministic lexicographical sorting before `Selector` consumption.
 - XML serialization (`--format xml`) structures output into `<repository>`,
   `<directory_structure>`, and `<files><file path="...">` tags, escaping essential XML
-  entities (`&`, `<`, `>`, `"`, `'`). Format overhead and escaped bytes are strictly accounted
+  entities (`&`, `<`, `>`, `"`, `'`) and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`. Format overhead and escaped bytes are strictly accounted
   for in `DigestBudget` before output.
 - File-path ordering is lexicographic and owned solely by `render_digest_to_writer` / `render_digest`.
 - A file output target is written atomically: create-new temporary file, sync,
@@ -58,8 +57,8 @@ imperative-shell boundary.
   filesystem path, so no path is normalized and nothing is excluded.
 - Local repository digest headers use the root directory basename (`Repository: <basename>`),
   omitting absolute paths and system prefixes.
-- Local file opening never follows symlinks and never blocks on special files
-  (`O_NOFOLLOW` / `O_NONBLOCK`).
+- Local file opening never follows symlinks, never blocks on special files
+  (`O_NOFOLLOW` / `O_NONBLOCK`), and treats unlinked/missing files (`NotFound`) as `Probe::Missing` without aborting ingestion.
 - HTTP credentials (`Authorization: Bearer <token>`) attach only to
   exact-origin GitHub API and raw-content hosts; lookalike or foreign origins
   never receive credentials.
@@ -103,16 +102,17 @@ never depends on shell code; shell code depends on the core in one direction.
   - `error.rs`: domain error enum `IngestError` with structured diagnostic payload.
   - `decide.rs`: `Selector::decide`, `CandidateBudget`, item evaluation, and
     candidate overflow diagnostics.
-  - `digest.rs`: `DigestBudget`, defense-in-depth size check, deterministic
-    digest rendering, and XML escaping / structuring (`xml_escape`).
+  - `digest/`: `DigestBudget`, defense-in-depth size check, deterministic
+    digest rendering (`render_digest_to_writer`), internal `FormatSpec` trait (`format.rs`), format implementations (`text.rs`, `xml.rs`), trie representation (`trie.rs`), and token estimation (`token.rs`).
   - `github_url.rs`: URL construction and origin credential scoping.
   - `github_tree.rs`: GitHub tree DTO parsing and blob verification.
 - Imperative shell (`src/shell/`):
-  - `shell/cli.rs`: CLI argument parsing, help output, and options parsing.
-  - `src/main.rs`: binary entry point and internal pipeline (`parse_source_os`, `ingest`).
-  - `shell/local.rs`: filesystem walking and orchestration.
+  - `shell/cli.rs`: Pure CLI argument parsing, help detection, and `CliAction` generation.
+  - `shell/orchestrate.rs`: Pipeline orchestration (`ingest`) coordinating collection, emission, and digest rendering.
+  - `src/main.rs`: binary entry point and user-facing CLI completion report formatting.
+  - `shell/local.rs`: filesystem walking and collection (`collect_local`).
   - `shell/local_io.rs`: safe, non-following bounded file reads (`read_local_file`).
   - `shell/output_exclusion.rs`: output file identity detection and path normalization.
   - `shell/github_client.rs`: HTTP transport, body bounding, and token resolution.
-  - `shell/github.rs`: windowed parallel GitHub tree download orchestration.
+  - `shell/github.rs`: windowed parallel GitHub tree download orchestration (`collect_github`).
   - `shell/output.rs`: atomic file writing or standard output stream emission.

@@ -8,6 +8,7 @@ pub(crate) mod github;
 pub(crate) mod github_client;
 pub(crate) mod local;
 pub(crate) mod local_io;
+pub(crate) mod orchestrate;
 pub(crate) mod output;
 pub(crate) mod output_exclusion;
 

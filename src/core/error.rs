@@ -6,6 +6,10 @@ use crate::core::policy::MAX_OUTPUT_SIZE;
 /// Domain error encountered during ingestion or CLI execution.
 #[derive(Debug)]
 pub enum IngestError {
+    /// CLI usage error or missing argument.
+    Usage(String),
+    /// Candidate file budget exceeded.
+    CandidateLimitExceeded(String),
     /// Source string or CLI argument is syntactically invalid.
     InvalidSource(String),
     /// Source scheme or host is unsupported (e.g. non-GitHub remote or SSH).
@@ -28,6 +32,8 @@ pub enum IngestError {
 impl Display for IngestError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
+            Self::Usage(message) => write!(f, "{message}"),
+            Self::CandidateLimitExceeded(message) => write!(f, "{message}"),
             Self::InvalidSource(message) => write!(f, "invalid source: {message}"),
             Self::UnsupportedSource(message) => write!(f, "unsupported source: {message}"),
             Self::Io(error) => write!(f, "filesystem error: {error}"),

@@ -70,16 +70,10 @@ impl Selector {
         let file = FileRecord { path, content };
         if let Err(err) = self.digest.add(&file) {
             if matches!(err, IngestError::OutputTooLarge { .. }) {
-                let mut entries: Vec<(String, usize)> = self
-                    .files
-                    .iter()
-                    .map(|f| (f.path.clone(), f.content.len()))
-                    .collect();
-                entries.push((file.path, file.content.len()));
-                entries.sort_by_key(|b| std::cmp::Reverse(b.1));
-                entries.truncate(5);
                 return Err(IngestError::OutputTooLarge {
-                    largest_files: entries,
+                    largest_files: crate::core::digest::largest_files(
+                        self.files.iter().chain(std::iter::once(&file)),
+                    ),
                 });
             }
             return Err(err);
@@ -132,7 +126,7 @@ impl CandidateBudget {
                 use std::fmt::Write;
                 let _ = write!(msg, "\n  - {dir} ({count} files)");
             }
-            return Err(IngestError::InvalidMetadata(msg));
+            return Err(IngestError::CandidateLimitExceeded(msg));
         }
         Ok(())
     }
@@ -228,7 +222,7 @@ mod tests {
         }
         assert!(matches!(
             selector.decide(decide_item("extra", Probe::Bytes(b"ok".to_vec()))),
-            Err(IngestError::InvalidMetadata(_))
+            Err(IngestError::CandidateLimitExceeded(_))
         ));
         Ok(())
     }

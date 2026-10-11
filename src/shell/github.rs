@@ -19,8 +19,8 @@ pub(crate) fn collect_github(
 ) -> Result<CollectionResult, IngestError> {
     let client = GithubClient::new();
     let reference = match reference {
-        Some(reference) if !reference.trim().is_empty() => reference.to_owned(),
-        _ => client.repository(owner, repo)?.default_branch,
+        Some(reference) => reference.to_owned(),
+        None => client.repository(owner, repo)?.default_branch,
     };
     let revision = client.commit_sha(owner, repo, &reference)?;
     let tree = client.tree(owner, repo, &revision)?;
@@ -91,9 +91,9 @@ pub(crate) fn collect_github(
     }
 
     let (files, skipped) = selector.into_parts();
-    Ok(CollectionResult::GitHub {
+    Ok(CollectionResult {
         label,
-        revision,
+        revision: Some(revision),
         files,
         skipped,
     })
