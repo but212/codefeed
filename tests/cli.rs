@@ -230,3 +230,39 @@ fn accepts_non_utf8_local_source_path() {
     assert!(output.is_file());
     std::fs::remove_dir_all(parent).expect("temporary directory should be removed");
 }
+
+#[test]
+fn accepts_source_after_options() {
+    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+        .args(["--format", "xml", "--output", "-", "."])
+        .output()
+        .expect("CLI process should start");
+
+    assert!(output.status.success(), "output: {output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("<repository"));
+}
+
+#[test]
+fn accepts_short_flags_with_equal() {
+    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+        .args(["-f=xml", "-o=-", "."])
+        .output()
+        .expect("CLI process should start");
+
+    assert!(output.status.success(), "output: {output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("<repository"));
+}
+
+#[test]
+fn accepts_double_dash_delimiter() {
+    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+        .args(["--output", "-", "--", "."])
+        .output()
+        .expect("CLI process should start");
+
+    assert!(output.status.success(), "output: {output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.is_empty());
+}

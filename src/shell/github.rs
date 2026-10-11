@@ -100,54 +100,26 @@ impl<'a> BlobFetcher<'a> {
     }
 
     fn fetch_all(&self, entries: &[TreeEntry], selector: &mut Selector) -> Result<(), IngestError> {
-        std::thread::scope(|s| {
-            let mut worker_senders = Vec::with_capacity(FETCH_WINDOW);
-            let (res_tx, res_rx) = std::sync::mpsc::channel();
+        for batch in entries.chunks(FETCH_WINDOW) {
+            let results = std::thread::scope(|s| {
+                let handles: Vec<_> = batch
+                    .iter()
+                    .map(|entry| s.spawn(|| self.probe_entry(entry)))
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().expect("worker thread panicked"))
+                    .collect::<Vec<_>>()
+            });
 
-            for _ in 0..FETCH_WINDOW {
-                let (w_tx, w_rx) = std::sync::mpsc::channel::<Option<(usize, &TreeEntry)>>();
-                worker_senders.push(w_tx);
-                let res_tx = res_tx.clone();
-                s.spawn(move || {
-                    while let Ok(Some((idx, entry))) = w_rx.recv() {
-                        let probe = self.probe_entry(entry);
-                        if res_tx.send((idx, probe)).is_err() {
-                            break;
-                        }
-                    }
-                });
+            for (entry, probe_res) in batch.iter().zip(results) {
+                selector.decide(Item {
+                    path: ItemPath::Utf8(entry.path.clone()),
+                    probe: probe_res?,
+                })?;
             }
-
-            drop(res_tx);
-
-            for batch in entries.chunks(FETCH_WINDOW) {
-                for (idx, entry) in batch.iter().enumerate() {
-                    worker_senders[idx]
-                        .send(Some((idx, entry)))
-                        .expect("worker send failed");
-                }
-
-                let mut batch_results: Vec<Option<Result<Probe, IngestError>>> =
-                    (0..batch.len()).map(|_| None).collect();
-                for _ in 0..batch.len() {
-                    let (idx, probe) = res_rx.recv().expect("worker hung up");
-                    batch_results[idx] = Some(probe);
-                }
-
-                for (entry, probe) in batch.iter().zip(batch_results) {
-                    selector.decide(Item {
-                        path: ItemPath::Utf8(entry.path.clone()),
-                        probe: probe.expect("missing probe result")?,
-                    })?;
-                }
-            }
-
-            // Signal workers to cleanly shut down
-            for sender in worker_senders {
-                let _ = sender.send(None);
-            }
-            Ok::<(), IngestError>(())
-        })
+        }
+        Ok(())
     }
 }
 

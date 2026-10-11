@@ -45,8 +45,10 @@ imperative-shell boundary.
 - Completion messages emit to stdout for file targets and stderr for stdout targets.
 - Broken downstream pipe (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0.
 - Local walk excludes the output file by identity (case-insensitively on Windows and macOS). Stdout target normalizes and excludes nothing.
-- Local file reads never follow symlinks or block on special files (`O_NOFOLLOW` / `O_NONBLOCK`). Missing files are treated as `Probe::Missing` without aborting.
+- Local file reads never follow symlinks or block on special files (`O_NOFOLLOW` / `O_NONBLOCK`). Intermediate directory symlinks are prevented via `openat2` (Linux) or component-wise `openat` verification. Missing files are treated as `Probe::Missing` without aborting.
 - Local walk uses multi-threaded `ignore::WalkParallel` with strict deterministic lexicographical sorting before `Selector` consumption.
+- CLI arguments are parsed linearly into options and source without third-party dependencies, supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters.
+- Digest budget is error-terminal: limit breach immediately errors and aborts without internal transactional rollback.
 
 ### Network & GitHub
 - Scoped threads fetch GitHub blobs concurrently in batches (`FETCH_WINDOW = 16`), feeding items to `Selector::decide` in deterministic lexicographical path order matching local collection.

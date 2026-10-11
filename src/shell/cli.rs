@@ -27,18 +27,37 @@ fn parse_output_target(value: &OsStr) -> OutputTarget {
     }
 }
 
-/// Scans for `--help`/`-h` in option position, skipping values of options that
-/// take one. Owned here so the binary does not re-implement the CLI grammar.
-fn requests_help(args: &[OsString]) -> bool {
-    let mut index = 1;
-    while let Some(argument) = args.get(index) {
-        match argument.to_str() {
-            Some("--help" | "-h") => return true,
-            Some("--output" | "--ref" | "--format") => index += 2,
-            _ => index += 1,
-        }
+/// Returns `true` if the argument begins with a hyphen.
+fn starts_with_hyphen(arg: &OsStr) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        arg.as_bytes().starts_with(b"-")
     }
-    false
+    #[cfg(not(unix))]
+    {
+        arg.to_str().is_some_and(|s| s.starts_with('-'))
+    }
+}
+
+fn next_val<I: Iterator<Item = OsString>>(
+    args: &mut I,
+    inline_val: Option<&str>,
+    missing_msg: &str,
+) -> Result<OsString, IngestError> {
+    if let Some(v) = inline_val {
+        return Ok(OsString::from(v));
+    }
+    let Some(next_arg) = args.next() else {
+        return Err(usage(missing_msg));
+    };
+    if matches!(
+        next_arg.to_str(),
+        Some("--help" | "-h" | "--output" | "-o" | "--ref" | "-r" | "--format" | "-f")
+    ) {
+        return Err(usage(missing_msg));
+    }
+    Ok(next_arg)
 }
 
 pub(crate) fn parse_cli<I, T>(args: I) -> Result<CliAction, IngestError>
@@ -46,62 +65,78 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
-    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
-    if requests_help(&args) {
-        return Ok(CliAction::Help);
-    }
-    let mut iter = args.into_iter();
-    let _program = iter.next();
-    let source_value = iter.next().ok_or_else(|| usage("missing source"))?;
+    let mut args = args.into_iter().map(Into::into);
+    let _program = args.next(); // skip binary name
+
+    let mut source_slot: Option<OsString> = None;
     let mut options = Options::default();
-    while let Some(argument) = iter.next() {
-        match argument.to_str() {
-            Some("--output") => {
-                let Some(value) = iter.next() else {
-                    return Err(usage("--output requires a path"));
-                };
-                if matches!(value.to_str(), Some("--help" | "-h")) {
-                    return Err(usage("--output requires a path"));
-                }
-                options.output = parse_output_target(&value);
+    let mut after_delimiter = false;
+
+    while let Some(arg) = args.next() {
+        if !after_delimiter {
+            if arg == OsStr::new("--") {
+                after_delimiter = true;
+                continue;
             }
-            Some("--ref") => {
-                let Some(value) = iter.next() else {
-                    return Err(usage("--ref requires a branch, tag, or commit"));
+
+            if starts_with_hyphen(&arg) && arg != OsStr::new("-") {
+                let Some(arg_str) = arg.to_str() else {
+                    return Err(usage("unknown option contains non-UTF-8 bytes"));
                 };
-                if matches!(value.to_str(), Some("--help" | "-h")) {
-                    return Err(usage("--ref requires a branch, tag, or commit"));
+
+                if arg_str == "--help" || arg_str == "-h" {
+                    return Ok(CliAction::Help);
                 }
-                let Some(value) = value.to_str() else {
-                    return Err(usage("--ref requires a UTF-8 value"));
-                };
-                options.reference = Some(value.to_owned());
-            }
-            Some("--format") => {
-                let Some(value) = iter.next() else {
-                    return Err(usage("--format requires a format (text, xml)"));
-                };
-                if matches!(value.to_str(), Some("--help" | "-h")) {
-                    return Err(usage("--format requires a format (text, xml)"));
-                }
-                let Some(value_str) = value.to_str() else {
-                    return Err(usage("--format requires a UTF-8 value"));
-                };
-                match value_str.to_ascii_lowercase().as_str() {
-                    "text" => options.format = DigestFormat::Text,
-                    "xml" => options.format = DigestFormat::Xml,
-                    other => {
-                        return Err(usage(&format!(
-                            "invalid format: {other} (expected text, xml)"
-                        )));
+
+                let (key, inline_val) = arg_str
+                    .split_once('=')
+                    .map_or((arg_str, None), |(k, v)| (k, Some(v)));
+
+                match key {
+                    "--output" | "-o" => {
+                        let val = next_val(&mut args, inline_val, "--output requires a path")?;
+                        options.output = parse_output_target(&val);
                     }
+                    "--ref" | "-r" => {
+                        let val = next_val(&mut args, inline_val, "--ref requires a branch, tag, or commit")?;
+                        let Some(s) = val.to_str() else {
+                            return Err(usage("--ref requires a UTF-8 value"));
+                        };
+                        options.reference = Some(s.to_owned());
+                    }
+                    "--format" | "-f" => {
+                        let val = next_val(&mut args, inline_val, "--format requires a format (text, xml)")?;
+                        let Some(s) = val.to_str() else {
+                            return Err(usage("--format requires a UTF-8 value"));
+                        };
+                        match s.to_ascii_lowercase().as_str() {
+                            "text" => options.format = DigestFormat::Text,
+                            "xml" => options.format = DigestFormat::Xml,
+                            other => {
+                                return Err(usage(&format!(
+                                    "invalid format: {other} (expected text, xml)"
+                                )));
+                            }
+                        }
+                    }
+                    unknown => return Err(usage(&format!("unknown option: {unknown}"))),
                 }
+                continue;
             }
-            Some("--help" | "-h") => return Err(usage(HELP)),
-            Some(unknown) => return Err(usage(&format!("unknown option: {unknown}"))),
-            None => return Err(usage("unknown option contains non-UTF-8 bytes")),
         }
+
+        if source_slot.is_some() {
+            return Err(usage(&format!(
+                "unexpected argument: {}",
+                arg.to_string_lossy()
+            )));
+        }
+        source_slot = Some(arg);
     }
+
+    let Some(source_value) = source_slot else {
+        return Err(usage("missing source"));
+    };
     let source = parse_source_os(&source_value)?;
     Ok(CliAction::Run { source, options })
 }
@@ -150,5 +185,47 @@ mod tests {
     #[test]
     fn returns_error_on_missing_source() {
         assert!(parse_cli(["codefeed"]).is_err());
+    }
+
+    #[test]
+    fn parses_order_independent_source_and_short_flags() {
+        let action = parse_cli(["codefeed", "-f", "xml", "-o", "-", "."]).unwrap();
+        match action {
+            CliAction::Run { source, options } => {
+                assert!(matches!(source, Source::Local(_)));
+                assert_eq!(options.format, DigestFormat::Xml);
+                assert_eq!(options.output, OutputTarget::Stdout);
+            }
+            CliAction::Help => panic!("expected Run action"),
+        }
+    }
+
+    #[test]
+    fn parses_key_value_syntax() {
+        let action = parse_cli(["codefeed", "--format=xml", "-o=-", "."]).unwrap();
+        match action {
+            CliAction::Run { source, options } => {
+                assert!(matches!(source, Source::Local(_)));
+                assert_eq!(options.format, DigestFormat::Xml);
+                assert_eq!(options.output, OutputTarget::Stdout);
+            }
+            CliAction::Help => panic!("expected Run action"),
+        }
+    }
+
+    #[test]
+    fn rejects_multiple_positional_sources() {
+        assert!(parse_cli(["codefeed", "src", "tests"]).is_err());
+    }
+
+    #[test]
+    fn parses_posix_double_dash_delimiter() {
+        let action = parse_cli(["codefeed", "--", "-weird-path"]).unwrap();
+        match action {
+            CliAction::Run { source, .. } => {
+                assert_eq!(source, Source::Local(PathBuf::from("-weird-path")));
+            }
+            CliAction::Help => panic!("expected Run action"),
+        }
     }
 }

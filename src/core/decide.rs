@@ -5,6 +5,7 @@ use crate::core::policy::MAX_FILE_COUNT;
 
 /// Path text as observed by the imperative shell. Non-UTF-8 paths are still
 /// candidates and must be counted, then skipped.
+#[derive(Clone)]
 pub(crate) enum ItemPath {
     Utf8(String),
     NonUtf8,
@@ -13,6 +14,7 @@ pub(crate) enum ItemPath {
 /// Result of the shell's bounded resource acquisition. `Ignored`, `TooLarge`,
 /// and `Missing` carry no content. `TooLarge` and `Missing` still consume a
 /// candidate slot; `Ignored` is excluded before candidate accounting.
+#[derive(Clone)]
 pub(crate) enum Probe {
     Bytes(Vec<u8>),
     Missing,
@@ -156,36 +158,12 @@ fn format_overflow_diagnostic(dir_counts: &[(String, usize)]) -> String {
     msg
 }
 
-#[inline]
-fn contains_zero_swar(chunk: u64) -> bool {
-    const LOB: u64 = 0x0101010101010101;
-    const HIB: u64 = 0x8080808080808080;
-    chunk.wrapping_sub(LOB) & !chunk & HIB != 0
-}
-
-fn has_nul_byte_swar(bytes: &[u8]) -> bool {
-    let (chunks, rem) = bytes.as_chunks::<8>();
-    chunks
-        .iter()
-        .any(|&chunk| contains_zero_swar(u64::from_ne_bytes(chunk)))
-        || rem.contains(&0)
-}
-
 /// UTF-8 text predicate: NUL-free bytes only.
 fn text_content(bytes: Vec<u8>) -> Option<String> {
-    // Probe head with SWAR to reject binaries early
-    let probe_len = bytes.len().min(4096);
-    if has_nul_byte_swar(&bytes[..probe_len]) {
+    if bytes.contains(&0) {
         return None;
     }
-    // Single-pass UTF-8 validation
-    std::str::from_utf8(&bytes).ok()?;
-    // If buffer exceeds probe head, check if the remaining slice contains NUL
-    if bytes[probe_len..].contains(&0) {
-        return None;
-    }
-    // SAFETY: std::str::from_utf8 succeeded above; bytes is guaranteed valid UTF-8.
-    Some(unsafe { String::from_utf8_unchecked(bytes) })
+    String::from_utf8(bytes).ok()
 }
 
 #[cfg(test)]
@@ -359,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn swar_rejects_binary_early_and_preserves_text() {
+    fn rejects_binary_and_preserves_text() {
         let mut bin = vec![b'a'; 1024];
         bin[12] = 0;
         assert!(text_content(bin).is_none());

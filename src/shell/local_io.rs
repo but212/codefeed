@@ -28,6 +28,8 @@ pub(crate) fn read_local_file(root: &Path, path: &Path) -> Result<Probe, IngestE
         Ok(file) => file,
         Err(error) if is_symlink_open_error(&error) => return Ok(Probe::Missing),
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Probe::Missing),
+        #[cfg(unix)]
+        Err(error) if error.raw_os_error() == Some(libc::ENXIO) => return Ok(Probe::Missing),
         Err(error) => return Err(error.into()),
     };
     let metadata = file.metadata()?;
@@ -153,14 +155,17 @@ fn open_directory(path: &Path) -> io::Result<OwnedFd> {
     Ok(options.open(path)?.into())
 }
 
-#[cfg(not(unix))]
-fn open_local_file(_: &Path, path: &Path) -> io::Result<fs::File> {
+#[cfg(windows)]
+fn open_local_file(_root: &Path, path: &Path) -> io::Result<fs::File> {
     let mut options = OpenOptions::new();
     options.read(true);
-    #[cfg(windows)]
-    // Inhibit traversing reparse points (symlinks/mount points) on Windows.
     options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     options.open(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_local_file(_root: &Path, path: &Path) -> io::Result<fs::File> {
+    OpenOptions::new().read(true).open(path)
 }
 
 #[cfg(unix)]

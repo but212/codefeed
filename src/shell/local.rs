@@ -141,15 +141,30 @@ pub(crate) fn collect_local(
         (ItemPath::NonUtf8, ItemPath::NonUtf8) => a.0.cmp(&b.0),
     });
 
-    for (entry_path, item_path, probe_opt) in candidates {
-        let probe = match probe_opt {
-            Some(probe) => probe,
-            None => read_local_file(&root, &entry_path)?,
-        };
-        selector.decide(Item {
-            path: item_path,
-            probe,
-        })?;
+    for chunk in candidates.chunks(crate::core::policy::FETCH_WINDOW) {
+        let probes = std::thread::scope(|s| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|(entry_path, _, probe_opt)| {
+                    let root = &root;
+                    s.spawn(move || match probe_opt {
+                        Some(probe) => Ok(probe.clone()),
+                        None => read_local_file(root, entry_path),
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("reader thread panicked"))
+                .collect::<Vec<Result<Probe, IngestError>>>()
+        });
+
+        for ((_, item_path, _), probe_res) in chunk.iter().zip(probes) {
+            selector.decide(Item {
+                path: item_path.clone(),
+                probe: probe_res?,
+            })?;
+        }
     }
 
     let (files, skipped, trie) = selector.into_parts();
