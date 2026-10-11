@@ -6,6 +6,10 @@ use crate::core::policy::MAX_OUTPUT_SIZE;
 /// Domain error encountered during ingestion or CLI execution.
 #[derive(Debug)]
 pub enum IngestError {
+    /// CLI usage error or missing argument.
+    Usage(String),
+    /// Candidate file budget exceeded.
+    CandidateLimitExceeded(String),
     /// Source string or CLI argument is syntactically invalid.
     InvalidSource(String),
     /// Source scheme or host is unsupported (e.g. non-GitHub remote or SSH).
@@ -28,6 +32,8 @@ pub enum IngestError {
 impl Display for IngestError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
+            Self::Usage(message) => write!(f, "{message}"),
+            Self::CandidateLimitExceeded(message) => write!(f, "{message}"),
             Self::InvalidSource(message) => write!(f, "invalid source: {message}"),
             Self::UnsupportedSource(message) => write!(f, "unsupported source: {message}"),
             Self::Io(error) => write!(f, "filesystem error: {error}"),
@@ -35,15 +41,13 @@ impl Display for IngestError {
             Self::Api(message) => write!(f, "GitHub API error: {message}"),
             Self::InvalidMetadata(message) => write!(f, "invalid repository metadata: {message}"),
             Self::OutputTooLarge { largest_files } => {
-                write!(
-                    f,
-                    "digest exceeds the {} MiB output limit",
-                    MAX_OUTPUT_SIZE / (1024 * 1024)
-                )?;
+                let limit_mib = MAX_OUTPUT_SIZE / (1024 * 1024);
+                write!(f, "digest exceeds the {limit_mib} MiB output limit")?;
                 if !largest_files.is_empty() {
                     write!(f, "\nlargest files:")?;
                     for (path, size) in largest_files {
-                        write!(f, "\n  - {path} ({})", format_size(*size))?;
+                        let formatted_size = format_size(*size);
+                        write!(f, "\n  - {path} ({formatted_size})")?;
                     }
                 }
                 Ok(())
@@ -53,12 +57,10 @@ impl Display for IngestError {
 }
 
 fn format_size(bytes: usize) -> String {
-    if bytes >= 1024 * 1024 {
-        format!("{:.1} MiB", bytes as f64 / 1_048_576.0)
-    } else if bytes >= 1024 {
-        format!("{:.1} KiB", bytes as f64 / 1024.0)
-    } else {
-        format!("{bytes} B")
+    match bytes {
+        b @ 1_048_576.. => format!("{:.1} MiB", b as f64 / 1_048_576.0),
+        b @ 1024.. => format!("{:.1} KiB", b as f64 / 1024.0),
+        b => format!("{b} B"),
     }
 }
 

@@ -17,12 +17,13 @@ pub(crate) fn collect_local(
     output: &OutputTarget,
     format: DigestFormat,
 ) -> Result<CollectionResult, IngestError> {
+    let root_display = root.display();
     let root = fs::canonicalize(root)
-        .map_err(|error| IngestError::InvalidSource(format!("{} ({error})", root.display())))?;
+        .map_err(|error| IngestError::InvalidSource(format!("{root_display} ({error})")))?;
     if !root.is_dir() {
+        let display = root.display();
         return Err(IngestError::InvalidSource(format!(
-            "{} is not a directory",
-            root.display()
+            "{display} is not a directory"
         )));
     }
     // Standard output has no filesystem path, so there is nothing to exclude
@@ -158,11 +159,13 @@ pub(crate) fn collect_local(
         })?;
     }
 
-    let (files, skipped) = selector.into_parts();
-    Ok(CollectionResult::Local {
+    let (files, skipped, trie) = selector.into_parts();
+    Ok(CollectionResult {
         label,
+        revision: None,
         files,
         skipped,
+        trie,
     })
 }
 
@@ -464,10 +467,7 @@ mod tests {
             }
         }
         let result = collect_local(&root, &OutputTarget::Stdout, DigestFormat::Text)?;
-        let files = match result {
-            CollectionResult::Local { files, .. } => files,
-            _ => unreachable!(),
-        };
+        let files = result.files;
         assert_eq!(files.len(), 30);
         for window in files.windows(2) {
             assert!(
@@ -490,10 +490,8 @@ mod tests {
         fs::write(root.join("public.txt"), "public")?;
 
         let result = collect_local(&root, &OutputTarget::Stdout, DigestFormat::Text)?;
-        let (files, skipped) = match result {
-            CollectionResult::Local { files, skipped, .. } => (files, skipped),
-            _ => unreachable!(),
-        };
+        let files = result.files;
+        let skipped = result.skipped;
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "public.txt");
         assert_eq!(
@@ -513,10 +511,10 @@ mod tests {
         }
         let result = collect_local(&root, &OutputTarget::Stdout, DigestFormat::Text);
         match result {
-            Err(IngestError::InvalidMetadata(msg)) => {
+            Err(IngestError::CandidateLimitExceeded(msg)) => {
                 assert!(msg.contains("repository contains more than 10000 files"));
             }
-            other => panic!("expected InvalidMetadata candidate overflow, got {other:?}"),
+            other => panic!("expected CandidateLimitExceeded candidate overflow, got {other:?}"),
         }
         fs::remove_dir_all(root)?;
         Ok(())

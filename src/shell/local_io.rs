@@ -27,6 +27,7 @@ pub(crate) fn read_local_file(root: &Path, path: &Path) -> Result<Probe, IngestE
     let file = match open_local_file(root, path) {
         Ok(file) => file,
         Err(error) if is_symlink_open_error(&error) => return Ok(Probe::Missing),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Probe::Missing),
         Err(error) => return Err(error.into()),
     };
     let metadata = file.metadata()?;
@@ -246,6 +247,17 @@ mod tests {
         fs::write(&path, vec![b'x'; MAX_FILE_SIZE as usize])?;
 
         assert!(matches!(read_local_file(&root, &path)?, Probe::Bytes(_)));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn handles_unlinked_file_as_missing() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("missing_file")?;
+        fs::create_dir_all(&root)?;
+        let path = root.join("nonexistent.txt");
+
+        assert!(matches!(read_local_file(&root, &path)?, Probe::Missing));
         fs::remove_dir_all(root)?;
         Ok(())
     }

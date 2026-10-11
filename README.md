@@ -1,88 +1,92 @@
 # rustingest
 
-Convert a local directory or a public or token-authenticated GitHub repository into one LLM-friendly text file.
+Fast, zero-dependency CLI that converts a local directory or GitHub repository into an LLM-friendly text digest.
+
+## Scope
+
+`rustingest` supports two source types:
+
+- Local directory paths (`./path/to/project`).
+- HTTPS GitHub repository URLs (`https://github.com/{owner}/{repo}`).
+
+`rustingest` does not invoke the `git` binary, manage temporary disk clones, or parse non-GitHub remote URLs (`git@`, `ssh://`, GitLab, Bitbucket). For unsupported remote repositories, clone locally first:
+
+```bash
+git clone --depth 1 <URL> ./repo && rustingest ./repo
+```
 
 ## Usage
-
-Requires Rust and Cargo. From the project root:
 
 ```bash
 cargo run -- <SOURCE> [--output <PATH|->] [--ref <BRANCH|TAG|COMMIT>] [--format <text|xml>]
 ```
 
-### Local directory
+### Examples
 
 ```bash
-cargo run -- ./my-repo
-cargo run -- /path/to/project --output ./digest.txt
-```
-
-### Standard output
-
-```bash
-rustingest ./my-repo --output - | your-tool
-```
-
-`--output -` writes the digest to standard output and creates no file.
-
-### GitHub repository
-
-```bash
-cargo run -- https://github.com/rust-lang/cargo
-cargo run -- https://github.com/rust-lang/cargo --ref master --output ./cargo-digest.txt
-```
-
-`<SOURCE>` is a local directory or a URL in the form `https://github.com/{owner}/{repo}`.
-
-## Install locally
-
-From a checked-out rustingest repository:
-
-```bash
-cargo install --path .
+# Local directory to default digest.txt
 rustingest ./my-repo
-```
 
-Cargo installs the binary in its configured binary directory, usually `~/.cargo/bin`.
+# Local directory to custom file
+rustingest /path/to/project --output ./digest.txt
+
+# Stream pure digest to stdout (diagnostics go to stderr)
+rustingest ./my-repo --output - | your-tool
+
+# GitHub repository (default branch)
+rustingest https://github.com/rust-lang/cargo
+
+# GitHub repository at specific revision
+rustingest https://github.com/rust-lang/cargo --ref master --output ./cargo-digest.txt
+```
 
 ### Options
 
-- `--output <PATH>` — Write the digest to `PATH`. Defaults to `digest.txt` in the current directory. `-` writes to standard output.
-- `--ref <BRANCH|TAG|COMMIT>` — Use a GitHub branch, tag, or commit. Defaults to the repository's default branch and is invalid for local sources.
-- `--format <text|xml>` — Serialization format for the digest. Defaults to `text`. `xml` emits an Anthropic/LLM-optimized XML structure with entity escaping.
-- `--help`, `-h` — Print usage.
+- `--output <PATH>` — Output destination. Defaults to `digest.txt`. Pass `-` for stdout.
+- `--ref <BRANCH|TAG|COMMIT>` — GitHub branch, tag, or commit SHA. Invalid for local sources.
+- `--format <text|xml>` — Serialization format. Defaults to `text`. `xml` emits LLM-optimized XML tags with entity escaping.
+- `--help`, `-h` — Print usage and exit with code 0.
 
-### Authentication
+### Installation
 
-Public GitHub repositories need no credentials. For private repositories or higher rate limits, set one of:
+```bash
+cargo install --path .
+```
 
-- `GITHUB_TOKEN` — used first when set.
-- `GH_TOKEN` — used when `GITHUB_TOKEN` is unset or blank.
-
-Values are trimmed; a blank value falls through to the next variable. The token is sent as `Authorization: Bearer <token>` only to `https://api.github.com` and `https://raw.githubusercontent.com`; requests to any other host never carry credentials.
-
-To run the release binary:
+Or build the release binary directly:
 
 ```bash
 cargo build --release
-target/release/rustingest ./my-repo --output digest.txt
+./target/release/rustingest ./my-repo
 ```
 
-When the digest goes to a file, rustingest prints the output path, file counts, and approximate token estimate (`~N tokens`) on success. With `--output -` it reports that summary on standard error instead, so standard output carries only digest text. A consumer that closes the pipe early, as in `rustingest . --output - | head -1`, is not an error. Without a token (see Authentication), GitHub sources must be public; rustingest does not use the Git executable.
+## Output and Exit Contracts
 
-## Filtering and limits
+- **File output (`--output <PATH>`)**: Writes to a temporary file, syncs to disk, and atomically renames. Emits `<PATH> (<N> files, <N> skipped, ~<N> tokens)` to stdout. Preserves existing files on failure.
+- **Stream output (`--output -`)**: Writes raw digest to stdout; emits the completion summary to stderr.
+- **Pipe termination**: Downstream pipe closure (`BrokenPipe` / `EPIPE`) exits with status 0.
+- **Errors**: Invalid CLI arguments and ingest errors print to stderr and exit non-zero.
 
-- Emits directory structures as formatted ASCII hierarchy trees (`├── `, `└── `, `│   `).
-- Excludes `.git`, hidden paths, symlinks, binary files, non-UTF-8 paths or file contents, common lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and conventional sensitive files (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `id_rsa*`, `id_ed25519*`, `credentials*`).
-- Applies `.gitignore` rules inside local sources regardless of Git repository status. Does not apply `.ignore` files.
-- Traverses local directories concurrently with multi-threaded `ignore::WalkParallel`, sorting entries into strict deterministic lexicographical order before selection and reading.
-- Downloads GitHub files in parallel batches (window size 16) using standard threads, pre-filtering known binary extensions and sensitive files before download to save bandwidth while preserving candidate and skipped accounting.
-- Skips files larger than 1 MiB. Returns an error listing the largest directories (based on candidates observed up to the limit) if more than 10,000 candidates remain after hidden, ignored, and sensitive paths are excluded.
-- Counts `skipped` as candidates rejected for size, encoding, or content reasons. Hidden, ignored, lockfile, and sensitive paths are excluded before candidate accounting and are not counted as skipped.
-- Returns an error listing the largest files without committing content if the digest exceeds 20 MiB.
-- Rejects GitHub API responses larger than 8 MiB without parsing truncated JSON.
-- Writes a file target to a collision-resistant temporary file, syncs it, and atomically renames it on success. Failed writes preserve the existing output. A standard output target skips the temporary file and sync and writes the rendered digest to the stream directly.
-- Retries transient network failures and HTTP 429/5xx responses up to 3 total attempts (1 initial + up to 2 retries) with bounded exponential backoff and jitter (capped at 5s), failing immediately on non-retryable client errors.
-- All limits, batch sizes (`FETCH_WINDOW`), retry policies, noise lockfile lists, and binary extensions are centralized in `src/core/policy.rs`.
+## Authentication
 
-`--help` exits with status 0. Invalid arguments and ingest errors are written to stderr and exit with a non-zero status.
+Public GitHub repositories require no credentials. For private repositories or higher rate limits, set:
+
+- `GITHUB_TOKEN` — Checked first.
+- `GH_TOKEN` — Fallback if `GITHUB_TOKEN` is unset or empty.
+
+Credentials are sent as `Authorization: Bearer <token>` strictly to `https://api.github.com` and `https://raw.githubusercontent.com`. Foreign hosts never receive authorization headers.
+
+## Filtering and Budgets
+
+- **Hierarchy**: Renders directory structure as an ASCII tree (`├── `, `└── `, `│   `).
+- **Exclusions**: Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and sensitive patterns (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `id_rsa*`, `id_ed25519*`, `credentials*`). Excluded files consume neither candidate slots nor skipped counts.
+- **Gitignore**: Applies `.gitignore` rules in local sources without Git state. Ignores `.ignore` files.
+- **Traversal**: Traverses local filesystems via `ignore::WalkParallel` with strict deterministic lexicographical sorting.
+- **Remote Fetch**: Fetches GitHub blobs concurrently in batches of 16 (`FETCH_WINDOW`) via scoped OS threads, pre-filtering binary extensions before download.
+- **Limits**:
+  - Max candidate files: 10,000 (aborts with largest-directory diagnostics on overflow).
+  - Max file size: 1 MiB per file (files exceeding this are counted as `skipped`).
+  - Max digest size: 20 MiB (aborts with largest-file diagnostics on overflow).
+  - Max GitHub API JSON body: 8 MiB (rejects truncated responses).
+- **Network Resilience**: Retries transient transport errors and HTTP 429/5xx up to 3 total attempts with exponential backoff and jitter (capped at 5s). Fails immediately on 4xx client errors.
+- **Central Policy**: Operational constants and patterns reside in `src/core/policy.rs`.

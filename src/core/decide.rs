@@ -70,16 +70,10 @@ impl Selector {
         let file = FileRecord { path, content };
         if let Err(err) = self.digest.add(&file) {
             if matches!(err, IngestError::OutputTooLarge { .. }) {
-                let mut entries: Vec<(String, usize)> = self
-                    .files
-                    .iter()
-                    .map(|f| (f.path.clone(), f.content.len()))
-                    .collect();
-                entries.push((file.path, file.content.len()));
-                entries.sort_by_key(|b| std::cmp::Reverse(b.1));
-                entries.truncate(5);
                 return Err(IngestError::OutputTooLarge {
-                    largest_files: entries,
+                    largest_files: crate::core::digest::largest_files(
+                        self.files.iter().chain(std::iter::once(&file)),
+                    ),
                 });
             }
             return Err(err);
@@ -88,8 +82,8 @@ impl Selector {
         Ok(())
     }
 
-    pub(crate) fn into_parts(self) -> (Vec<FileRecord>, usize) {
-        (self.files, self.digest.skipped())
+    pub(crate) fn into_parts(self) -> (Vec<FileRecord>, usize, crate::core::digest::BudgetTrie) {
+        (self.files, self.digest.skipped(), self.digest.trie)
     }
 }
 
@@ -113,29 +107,29 @@ impl CandidateBudget {
             },
             None => "<unknown>/",
         };
-        if let Some(count) = self.dir_counts.get_mut(dir_slice) {
-            *count += 1;
-        } else {
-            self.dir_counts.insert(dir_slice.to_owned(), 1);
-        }
+        *self.dir_counts.entry(dir_slice.to_owned()).or_insert(0) += 1;
 
         if self.count > MAX_FILE_COUNT {
-            let mut dirs: Vec<(&String, usize)> =
-                self.dir_counts.iter().map(|(d, &c)| (d, c)).collect();
-            dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-            dirs.truncate(3);
-
-            let mut msg = format!(
-                "repository contains more than {MAX_FILE_COUNT} files\nlargest directories:"
-            );
-            for (dir, count) in dirs {
-                use std::fmt::Write;
-                let _ = write!(msg, "\n  - {dir} ({count} files)");
-            }
-            return Err(IngestError::InvalidMetadata(msg));
+            return Err(IngestError::CandidateLimitExceeded(
+                format_overflow_diagnostic(&self.dir_counts),
+            ));
         }
         Ok(())
     }
+}
+
+fn format_overflow_diagnostic(dir_counts: &std::collections::HashMap<String, usize>) -> String {
+    let mut dirs: Vec<(&String, usize)> = dir_counts.iter().map(|(d, &c)| (d, c)).collect();
+    dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    dirs.truncate(3);
+
+    let mut msg =
+        format!("repository contains more than {MAX_FILE_COUNT} files\nlargest directories:");
+    for (dir, count) in dirs {
+        use std::fmt::Write;
+        let _ = write!(msg, "\n  - {dir} ({count} files)");
+    }
+    msg
 }
 
 /// UTF-8 text predicate: NUL-free bytes only.
@@ -171,7 +165,7 @@ mod tests {
     fn decide_includes_text_candidate() -> Result<(), Box<dyn std::error::Error>> {
         let mut selector = Selector::new("repo", None, DigestFormat::Text)?;
         selector.decide(decide_item("a.txt", Probe::Bytes(b"hello".to_vec())))?;
-        let (files, skipped) = selector.into_parts();
+        let (files, skipped, _) = selector.into_parts();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "a.txt");
         assert_eq!(skipped, 0);
@@ -183,7 +177,7 @@ mod tests {
         let mut selector = Selector::new("repo", None, DigestFormat::Text)?;
         selector.decide(decide_item("bin", Probe::Bytes(vec![0, 1, 2])))?;
         selector.decide(decide_item("bad", Probe::Bytes(vec![0xff])))?;
-        let (files, skipped) = selector.into_parts();
+        let (files, skipped, _) = selector.into_parts();
         assert!(files.is_empty());
         assert_eq!(skipped, 2);
         Ok(())
@@ -198,7 +192,7 @@ mod tests {
             "exact.txt",
             Probe::Bytes(vec![b'x'; MAX_FILE_SIZE as usize]),
         ))?;
-        let (files, skipped) = selector.into_parts();
+        let (files, skipped, _) = selector.into_parts();
         assert_eq!(files.len(), 1);
         assert_eq!(skipped, 2);
         Ok(())
@@ -211,7 +205,7 @@ mod tests {
             selector.decide(decide_item("ignored.txt", Probe::Ignored))?;
         }
         selector.decide(decide_item("kept.txt", Probe::Bytes(b"kept".to_vec())))?;
-        let (files, skipped) = selector.into_parts();
+        let (files, skipped, _) = selector.into_parts();
         assert_eq!(files.len(), 1);
         assert_eq!(skipped, 0);
         Ok(())
@@ -228,7 +222,7 @@ mod tests {
         }
         assert!(matches!(
             selector.decide(decide_item("extra", Probe::Bytes(b"ok".to_vec()))),
-            Err(IngestError::InvalidMetadata(_))
+            Err(IngestError::CandidateLimitExceeded(_))
         ));
         Ok(())
     }

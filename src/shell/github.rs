@@ -2,7 +2,7 @@
 
 use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
-use crate::core::github_tree::{is_hidden_path, is_regular_blob};
+use crate::core::github_tree::{TreeEntry, is_hidden_path, is_regular_blob};
 use crate::core::model::{CollectionResult, DigestFormat};
 use crate::core::policy::{
     FETCH_WINDOW, MAX_FILE_COUNT, MAX_FILE_SIZE, has_binary_extension, is_noise_path,
@@ -19,8 +19,8 @@ pub(crate) fn collect_github(
 ) -> Result<CollectionResult, IngestError> {
     let client = GithubClient::new();
     let reference = match reference {
-        Some(reference) if !reference.trim().is_empty() => reference.to_owned(),
-        _ => client.repository(owner, repo)?.default_branch,
+        Some(reference) => reference.to_owned(),
+        None => client.repository(owner, repo)?.default_branch,
     };
     let revision = client.commit_sha(owner, repo, &reference)?;
     let tree = client.tree(owner, repo, &revision)?;
@@ -33,7 +33,7 @@ pub(crate) fn collect_github(
     let label = format!("https://github.com/{owner}/{repo}");
     let mut selector = Selector::new(&label, Some(&revision), format)?;
 
-    let entries: Vec<_> = tree
+    let mut entries: Vec<_> = tree
         .tree
         .into_iter()
         .filter(|entry| {
@@ -43,6 +43,8 @@ pub(crate) fn collect_github(
                 && !is_sensitive_path(&entry.path)
         })
         .collect();
+
+    sort_entries(&mut entries);
 
     if entries.len() > MAX_FILE_COUNT {
         let mut budget = CandidateBudget::default();
@@ -90,11 +92,50 @@ pub(crate) fn collect_github(
         }
     }
 
-    let (files, skipped) = selector.into_parts();
-    Ok(CollectionResult::GitHub {
+    let (files, skipped, trie) = selector.into_parts();
+    Ok(CollectionResult {
         label,
-        revision,
+        revision: Some(revision),
         files,
         skipped,
+        trie,
     })
+}
+
+fn sort_entries(entries: &mut [TreeEntry]) {
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sorts_tree_entries_lexicographically() {
+        let mut entries = vec![
+            TreeEntry {
+                path: "src/main.rs".into(),
+                mode: "100644".into(),
+                entry_type: "blob".into(),
+                size: Some(10),
+            },
+            TreeEntry {
+                path: "Cargo.toml".into(),
+                mode: "100644".into(),
+                entry_type: "blob".into(),
+                size: Some(10),
+            },
+            TreeEntry {
+                path: "src/core/mod.rs".into(),
+                mode: "100644".into(),
+                entry_type: "blob".into(),
+                size: Some(10),
+            },
+        ];
+
+        sort_entries(&mut entries);
+
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, vec!["Cargo.toml", "src/core/mod.rs", "src/main.rs"]);
+    }
 }

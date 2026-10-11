@@ -35,7 +35,7 @@ pub enum DigestFormat {
 }
 
 /// Ingestion options controlling destination, remote revision, and serialization format.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     /// Target destination for the rendered digest. Defaults to `digest.txt`.
     pub output: OutputTarget,
@@ -69,24 +69,18 @@ pub struct IngestReport {
 }
 
 /// One digest entry. Owned by the domain core; rendered by `digest`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct FileRecord {
     pub(crate) path: String,
     pub(crate) content: String,
 }
 
 /// Raw files and metadata collected by the shell before digest rendering.
-#[derive(Debug)]
-pub(crate) enum CollectionResult {
-    Local {
-        label: String,
-        files: Vec<FileRecord>,
-        skipped: usize,
-    },
-    GitHub {
-        label: String,
-        revision: String,
-        files: Vec<FileRecord>,
-        skipped: usize,
-    },
+#[derive(Debug, Clone)]
+pub(crate) struct CollectionResult {
+    pub(crate) label: String,
+    pub(crate) revision: Option<String>,
+    pub(crate) files: Vec<FileRecord>,
+    pub(crate) skipped: usize,
+    pub(crate) trie: crate::core::digest::BudgetTrie,
 }

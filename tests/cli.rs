@@ -47,6 +47,15 @@ fn invalid_arguments_exit_nonzero() {
 }
 
 #[test]
+fn usage_error_formatting_does_not_prefix_invalid_source() {
+    let output = run(&[".", "--unknown"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("error: unknown option: --unknown"));
+    assert!(!stderr.contains("error: invalid source: unknown option"));
+}
+
+#[test]
 fn creates_default_output_without_subcommand() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
