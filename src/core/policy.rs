@@ -67,6 +67,35 @@ pub(crate) fn has_binary_extension(path: &str) -> bool {
     BINARY_EXT.iter().any(|&b| b.eq_ignore_ascii_case(ext))
 }
 
+/// Returns `true` if `path` contains hidden directory or file components (starting with `.`).
+pub(crate) fn is_hidden_path(path: &str) -> bool {
+    path.split('/')
+        .any(|part| part.starts_with('.') || part.is_empty())
+}
+
+/// Pre-ingestion classification of a relative path candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PathClassification {
+    /// Noise, sensitive, or hidden: ignored completely (neither candidates nor skipped).
+    Ignored,
+    /// Known binary extension: candidate accounted, but body read/fetch is skipped (Probe::Missing).
+    PreclassifiedBinary,
+    /// Normal candidate: requires reading or downloading content to evaluate encoding and size.
+    NeedsContent,
+}
+
+impl PathClassification {
+    pub(crate) fn classify(path: &str) -> Self {
+        if is_hidden_path(path) || is_noise_path(path) || is_sensitive_path(path) {
+            Self::Ignored
+        } else if has_binary_extension(path) {
+            Self::PreclassifiedBinary
+        } else {
+            Self::NeedsContent
+        }
+    }
+}
+
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
 pub(crate) fn is_retryable_status(status_code: u16) -> bool {
     matches!(status_code, 429 | 500..=599)
@@ -151,5 +180,33 @@ mod tests {
 
         let d10_jitter = retry_delay(10, 50);
         assert_eq!(d10_jitter.as_millis(), 5000);
+    }
+
+    #[test]
+    fn classifies_candidate_paths() {
+        assert_eq!(
+            PathClassification::classify(".git/config"),
+            PathClassification::Ignored
+        );
+        assert_eq!(
+            PathClassification::classify("src/.hidden.rs"),
+            PathClassification::Ignored
+        );
+        assert_eq!(
+            PathClassification::classify("Cargo.lock"),
+            PathClassification::Ignored
+        );
+        assert_eq!(
+            PathClassification::classify("id_rsa"),
+            PathClassification::Ignored
+        );
+        assert_eq!(
+            PathClassification::classify("assets/logo.png"),
+            PathClassification::PreclassifiedBinary
+        );
+        assert_eq!(
+            PathClassification::classify("src/main.rs"),
+            PathClassification::NeedsContent
+        );
     }
 }

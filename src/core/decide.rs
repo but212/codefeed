@@ -87,13 +87,11 @@ impl Selector {
     }
 }
 
-use crate::core::digest::CompactString;
-
 /// Candidate-count budget owned by the selector that consumes it.
 #[derive(Default)]
 pub(crate) struct CandidateBudget {
     count: usize,
-    dir_counts: Vec<(CompactString, usize)>,
+    dir_counts: Vec<(String, usize)>,
 }
 
 impl CandidateBudget {
@@ -109,10 +107,14 @@ impl CandidateBudget {
             },
             None => "<unknown>/",
         };
-        if let Some((_, count)) = self.dir_counts.iter_mut().find(|(d, _)| d.as_str() == dir_slice) {
+        if let Some((_, count)) = self
+            .dir_counts
+            .iter_mut()
+            .find(|(d, _)| d.as_str() == dir_slice)
+        {
             *count += 1;
         } else {
-            self.dir_counts.push((CompactString::new(dir_slice), 1));
+            self.dir_counts.push((dir_slice.to_owned(), 1));
         }
 
         if self.count > MAX_FILE_COUNT {
@@ -122,9 +124,25 @@ impl CandidateBudget {
         }
         Ok(())
     }
+
+    /// Validates that total candidates do not exceed `MAX_FILE_COUNT`.
+    /// When exceeded, returns `CandidateLimitExceeded` with diagnostic details.
+    pub(crate) fn verify_count<'a>(
+        paths: impl IntoIterator<Item = Option<&'a str>>,
+        count: usize,
+    ) -> Result<(), IngestError> {
+        if count <= MAX_FILE_COUNT {
+            return Ok(());
+        }
+        let mut budget = Self::default();
+        for path in paths {
+            budget.add(path)?;
+        }
+        Ok(())
+    }
 }
 
-fn format_overflow_diagnostic(dir_counts: &[(CompactString, usize)]) -> String {
+fn format_overflow_diagnostic(dir_counts: &[(String, usize)]) -> String {
     let mut dirs: Vec<(&str, usize)> = dir_counts.iter().map(|(d, c)| (d.as_str(), *c)).collect();
     dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     dirs.truncate(3);
@@ -164,9 +182,9 @@ fn text_content(bytes: Vec<u8>) -> Option<String> {
         return None;
     }
     // Single-pass UTF-8 validation
-    let s = std::str::from_utf8(&bytes).ok()?;
+    std::str::from_utf8(&bytes).ok()?;
     // If buffer exceeds probe head, check if the remaining slice contains NUL
-    if probe_len < bytes.len() && s[probe_len..].contains('\0') {
+    if bytes[probe_len..].contains(&0) {
         return None;
     }
     // SAFETY: std::str::from_utf8 succeeded above; bytes is guaranteed valid UTF-8.
@@ -186,12 +204,37 @@ mod tests {
     }
 
     #[test]
+    fn text_content_handles_multibyte_straddling_probe_boundary() {
+        let mut bytes = vec![b'a'; 4095];
+        bytes.extend_from_slice("€tail\n".as_bytes());
+        let content = text_content(bytes);
+        assert!(content.is_some());
+        assert!(content.unwrap().ends_with("€tail\n"));
+
+        let mut bytes_with_nul = vec![b'a'; 4095];
+        bytes_with_nul.extend_from_slice("€\0tail\n".as_bytes());
+        assert!(text_content(bytes_with_nul).is_none());
+    }
+
+    #[test]
     fn counts_candidate_before_content_filtering() {
         let mut candidates = CandidateBudget::default();
         for _ in 0..MAX_FILE_COUNT {
             candidates.add(None).unwrap();
         }
         assert!(candidates.add(None).is_err());
+    }
+
+    #[test]
+    fn candidate_budget_verify_count_checks_limit() {
+        let items: Vec<Option<&str>> = (0..MAX_FILE_COUNT).map(|_| Some("src/file.rs")).collect();
+        assert!(CandidateBudget::verify_count(items.iter().copied(), items.len()).is_ok());
+
+        let overflowing: Vec<Option<&str>> =
+            (0..=MAX_FILE_COUNT).map(|_| Some("src/file.rs")).collect();
+        assert!(
+            CandidateBudget::verify_count(overflowing.iter().copied(), overflowing.len()).is_err()
+        );
     }
 
     #[test]

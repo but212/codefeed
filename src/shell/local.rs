@@ -8,9 +8,10 @@ use ignore::{WalkBuilder, WalkState};
 
 use super::local_io::read_local_file;
 use super::output_exclusion::OutputFilter;
-use crate::core::decide::{Item, ItemPath, Probe, Selector};
+use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
+use crate::core::policy::PathClassification;
 
 pub(crate) fn collect_local(
     root: &Path,
@@ -95,16 +96,11 @@ pub(crate) fn collect_local(
 
             let probe = match &item_path {
                 ItemPath::NonUtf8 => Some(Probe::Missing),
-                ItemPath::Utf8(path)
-                    if crate::core::policy::is_noise_path(path)
-                        || crate::core::policy::is_sensitive_path(path) =>
-                {
-                    Some(Probe::Ignored)
-                }
-                ItemPath::Utf8(path) if crate::core::policy::has_binary_extension(path) => {
-                    Some(Probe::Missing)
-                }
-                ItemPath::Utf8(_) => None,
+                ItemPath::Utf8(path) => match PathClassification::classify(path) {
+                    PathClassification::Ignored => Some(Probe::Ignored),
+                    PathClassification::PreclassifiedBinary => Some(Probe::Missing),
+                    PathClassification::NeedsContent => None,
+                },
             };
 
             if matches!(probe, Some(Probe::Ignored)) {
@@ -130,16 +126,13 @@ pub(crate) fn collect_local(
         candidates.push(item);
     }
 
-    if candidates.len() > crate::core::policy::MAX_FILE_COUNT {
-        let mut budget = crate::core::decide::CandidateBudget::default();
-        for item in &candidates {
-            let path_str = match &item.1 {
-                ItemPath::Utf8(p) => Some(p.as_str()),
-                ItemPath::NonUtf8 => None,
-            };
-            budget.add(path_str)?;
-        }
-    }
+    CandidateBudget::verify_count(
+        candidates.iter().map(|item| match &item.1 {
+            ItemPath::Utf8(p) => Some(p.as_str()),
+            ItemPath::NonUtf8 => None,
+        }),
+        candidates.len(),
+    )?;
 
     candidates.sort_by(|a, b| match (&a.1, &b.1) {
         (ItemPath::Utf8(left), ItemPath::Utf8(right)) => left.cmp(right),

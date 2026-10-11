@@ -195,7 +195,6 @@ pub(crate) fn render<W: Write + ?Sized>(
     label: &str,
     revision: Option<&str>,
     files: &[FileRecord],
-    _skipped: usize,
     trie: &BudgetTrie,
 ) -> Result<(), IngestError> {
     writer.write_all(XML_REPO_START.as_bytes())?;

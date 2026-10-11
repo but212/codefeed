@@ -2,7 +2,6 @@
 
 use std::io::Write;
 
-use super::CompactString;
 use super::text::escape_header;
 use super::xml::xml_escape;
 
@@ -13,8 +12,8 @@ const TREE_SPACE: &str = "    ";
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BudgetTrieNode {
-    pub(crate) name: CompactString,
-    pub(crate) display: CompactString,
+    pub(crate) name: String,
+    pub(crate) display: String,
     pub(crate) is_dir: bool,
     pub(crate) children: Vec<BudgetTrieNode>,
 }
@@ -99,8 +98,8 @@ impl BudgetTrie {
                 children.insert(
                     idx,
                     BudgetTrieNode {
-                        name: CompactString::new(part),
-                        display: CompactString::new(&display),
+                        name: part.to_string(),
+                        display,
                         is_dir,
                         children: Vec::new(),
                     },

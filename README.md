@@ -1,6 +1,6 @@
 # rustingest
 
-Fast, zero-dependency CLI that converts a local directory or GitHub repository into an LLM-friendly text digest.
+Fast CLI that converts a local directory or GitHub repository into an LLM-friendly text digest.
 
 ## Scope
 

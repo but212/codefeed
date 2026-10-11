@@ -2,12 +2,9 @@
 
 use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
-use crate::core::github_tree::{TreeEntry, is_hidden_path, is_regular_blob};
+use crate::core::github_tree::{TreeEntry, is_regular_blob};
 use crate::core::model::{CollectionResult, DigestFormat};
-use crate::core::policy::{
-    FETCH_WINDOW, MAX_FILE_COUNT, MAX_FILE_SIZE, has_binary_extension, is_noise_path,
-    is_sensitive_path,
-};
+use crate::core::policy::{FETCH_WINDOW, MAX_FILE_SIZE, PathClassification};
 
 use super::github_client::{GithubClient, LimitedBody};
 
@@ -38,20 +35,16 @@ pub(crate) fn collect_github(
         .into_iter()
         .filter(|entry| {
             is_regular_blob(entry)
-                && !is_hidden_path(&entry.path)
-                && !is_noise_path(&entry.path)
-                && !is_sensitive_path(&entry.path)
+                && PathClassification::classify(&entry.path) != PathClassification::Ignored
         })
         .collect();
 
     sort_entries(&mut entries);
 
-    if entries.len() > MAX_FILE_COUNT {
-        let mut budget = CandidateBudget::default();
-        for entry in &entries {
-            budget.add(Some(&entry.path))?;
-        }
-    }
+    CandidateBudget::verify_count(
+        entries.iter().map(|entry| Some(entry.path.as_str())),
+        entries.len(),
+    )?;
 
     BlobFetcher::new(&client, owner, repo, &revision).fetch_all(&entries, &mut selector)?;
 
@@ -83,21 +76,25 @@ impl<'a> BlobFetcher<'a> {
     }
 
     fn probe_entry(&self, entry: &TreeEntry) -> Result<Probe, IngestError> {
-        if has_binary_extension(&entry.path) {
-            Ok(Probe::Missing)
-        } else if entry.size.unwrap_or(0) > MAX_FILE_SIZE {
-            Ok(Probe::TooLarge)
-        } else {
-            match self.client.raw_file(
-                self.owner,
-                self.repo,
-                self.revision,
-                &entry.path,
-                MAX_FILE_SIZE,
-            ) {
-                Ok(LimitedBody::Complete(bytes)) => Ok(Probe::Bytes(bytes)),
-                Ok(LimitedBody::Exceeded) => Ok(Probe::TooLarge),
-                Err(err) => Err(err),
+        match PathClassification::classify(&entry.path) {
+            PathClassification::Ignored => Ok(Probe::Ignored),
+            PathClassification::PreclassifiedBinary => Ok(Probe::Missing),
+            PathClassification::NeedsContent => {
+                if entry.size.unwrap_or(0) > MAX_FILE_SIZE {
+                    Ok(Probe::TooLarge)
+                } else {
+                    match self.client.raw_file(
+                        self.owner,
+                        self.repo,
+                        self.revision,
+                        &entry.path,
+                        MAX_FILE_SIZE,
+                    ) {
+                        Ok(LimitedBody::Complete(bytes)) => Ok(Probe::Bytes(bytes)),
+                        Ok(LimitedBody::Exceeded) => Ok(Probe::TooLarge),
+                        Err(err) => Err(err),
+                    }
+                }
             }
         }
     }
