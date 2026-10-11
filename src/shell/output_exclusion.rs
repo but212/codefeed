@@ -189,7 +189,8 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_nanos()
         ));
-        fs::create_dir_all(&root)?;
+        fs::create_dir_all(root.join("subdir"))?;
+        let root = fs::canonicalize(&root)?;
         let output = root.join("digest.txt");
         fs::write(&output, "output")?;
 
