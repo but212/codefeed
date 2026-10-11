@@ -40,3 +40,21 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-targets
+
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Run tests on MSRV
+        run: cargo test --all-targets --locked
