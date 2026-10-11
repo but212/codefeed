@@ -27,13 +27,15 @@ where
     }
 }
 
+const BUF_WRITER_CAPACITY: usize = 64 * 1024;
+
 fn write_stdout<R, F>(write_fn: F) -> Result<R, IngestError>
 where
     R: Default,
     F: FnOnce(&mut dyn io::Write) -> Result<R, IngestError>,
 {
     let stdout = io::stdout();
-    let mut writer = io::BufWriter::new(stdout.lock());
+    let mut writer = io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, stdout.lock());
     let result = write_fn(&mut writer);
     match result {
         Ok(val) => match writer.flush() {
@@ -78,7 +80,7 @@ where
         }
     };
     let result: Result<R, IngestError> = 'atomic: {
-        let mut writer = io::BufWriter::new(file);
+        let mut writer = io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, file);
         let value = match write_fn(&mut writer) {
             Ok(val) => val,
             Err(err) => break 'atomic Err(err),

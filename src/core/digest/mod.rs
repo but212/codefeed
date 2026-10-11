@@ -1,10 +1,10 @@
-//! Digest budgeting, tree structuring, format rendering, and token estimation.
-
+mod compact_string;
 mod text;
 mod token;
 mod trie;
 mod xml;
 
+pub(crate) use compact_string::CompactString;
 pub(crate) use token::TokenEstimatingWriter;
 pub(crate) use trie::BudgetTrie;
 

@@ -107,7 +107,11 @@ impl CandidateBudget {
             },
             None => "<unknown>/",
         };
-        *self.dir_counts.entry(dir_slice.to_owned()).or_insert(0) += 1;
+        if let Some(count) = self.dir_counts.get_mut(dir_slice) {
+            *count += 1;
+        } else {
+            self.dir_counts.insert(dir_slice.to_owned(), 1);
+        }
 
         if self.count > MAX_FILE_COUNT {
             return Err(IngestError::CandidateLimitExceeded(
@@ -132,12 +136,39 @@ fn format_overflow_diagnostic(dir_counts: &std::collections::HashMap<String, usi
     msg
 }
 
+#[inline]
+fn contains_zero_swar(chunk: u64) -> bool {
+    const LOB: u64 = 0x0101010101010101;
+    const HIB: u64 = 0x8080808080808080;
+    chunk.wrapping_sub(LOB) & !chunk & HIB != 0
+}
+
+fn has_nul_byte_swar(bytes: &[u8]) -> bool {
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+        let val = u64::from_ne_bytes(chunk.try_into().unwrap());
+        if contains_zero_swar(val) {
+            return true;
+        }
+    }
+    chunks.remainder().contains(&0)
+}
+
 /// UTF-8 text predicate: NUL-free bytes only.
 fn text_content(bytes: Vec<u8>) -> Option<String> {
-    if bytes.contains(&0) {
+    // Probe head with SWAR to reject binaries early
+    let probe_len = bytes.len().min(4096);
+    if has_nul_byte_swar(&bytes[..probe_len]) {
         return None;
     }
-    String::from_utf8(bytes).ok()
+    // Single-pass UTF-8 validation
+    let s = std::str::from_utf8(&bytes).ok()?;
+    // If buffer exceeds probe head, check if the remaining slice contains NUL
+    if probe_len < bytes.len() && s[probe_len..].contains('\0') {
+        return None;
+    }
+    // SAFETY: std::str::from_utf8 succeeded above; bytes is guaranteed valid UTF-8.
+    Some(unsafe { String::from_utf8_unchecked(bytes) })
 }
 
 #[cfg(test)]
@@ -283,5 +314,22 @@ mod tests {
         assert!(message.contains("vendor/ (8000 files)"));
         assert!(message.contains("src/ (2000 files)"));
         Ok(())
+    }
+
+    #[test]
+    fn swar_rejects_binary_early_and_preserves_text() {
+        let mut bin = vec![b'a'; 1024];
+        bin[12] = 0;
+        assert!(text_content(bin).is_none());
+
+        let mut bin_tail = vec![b'b'; 5000];
+        bin_tail[4500] = 0;
+        assert!(text_content(bin_tail).is_none());
+
+        let text = vec![b'c'; 8000];
+        assert_eq!(
+            text_content(text.clone()),
+            Some(String::from_utf8(text).unwrap())
+        );
     }
 }
