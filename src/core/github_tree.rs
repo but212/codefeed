@@ -30,11 +30,6 @@ pub(crate) struct TreeEntry {
     pub(crate) size: Option<u64>,
 }
 
-pub(crate) fn is_hidden_path(path: &str) -> bool {
-    path.split('/')
-        .any(|part| part.starts_with('.') || part.is_empty())
-}
-
 pub(crate) fn is_regular_blob(entry: &TreeEntry) -> bool {
     entry.entry_type == GIT_BLOB_TYPE && REGULAR_FILE_MODES.contains(&entry.mode.as_str())
 }

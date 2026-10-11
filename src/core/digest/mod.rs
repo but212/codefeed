@@ -1,5 +1,3 @@
-//! Digest budgeting, tree structuring, format rendering, and token estimation.
-
 mod text;
 mod token;
 mod trie;
@@ -55,7 +53,7 @@ impl DigestFormat {
     ) -> Result<(), IngestError> {
         match self {
             Self::Text => text::render(writer, label, revision, files, skipped, trie),
-            Self::Xml => xml::render(writer, label, revision, files, skipped, trie),
+            Self::Xml => xml::render(writer, label, revision, files, trie),
         }
     }
 }
@@ -146,6 +144,10 @@ impl DigestBudget {
             .skipped
             .checked_add(1)
             .ok_or_else(|| IngestError::InvalidMetadata("skipped file count overflow".into()))?;
+        if let Err(err) = self.ensure_fits() {
+            self.skipped -= 1;
+            return Err(err);
+        }
         Ok(())
     }
 
@@ -513,5 +515,26 @@ z &lt; 10
         assert!(budget.add(&oversized).is_err());
         assert_eq!(budget.rendered_size(), Some(valid_size));
         assert_eq!(budget.file_count, 1);
+    }
+
+    #[test]
+    fn skip_enforces_budget_limit_on_digit_growth() {
+        let mut budget = DigestBudget::new("repo", None, DigestFormat::Text).unwrap();
+        for _ in 0..9 {
+            budget.skip().unwrap();
+        }
+        budget
+            .add(&FileRecord {
+                path: "a.txt".into(),
+                content: "a\n".into(),
+            })
+            .unwrap();
+        let current = budget.rendered_size().unwrap();
+        budget.content_bytes += MAX_OUTPUT_SIZE - current;
+        assert_eq!(budget.rendered_size(), Some(MAX_OUTPUT_SIZE));
+
+        assert!(budget.skip().is_err());
+        assert_eq!(budget.skipped(), 9);
+        assert_eq!(budget.rendered_size(), Some(MAX_OUTPUT_SIZE));
     }
 }

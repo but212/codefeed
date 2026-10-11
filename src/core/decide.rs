@@ -91,7 +91,7 @@ impl Selector {
 #[derive(Default)]
 pub(crate) struct CandidateBudget {
     count: usize,
-    dir_counts: std::collections::HashMap<String, usize>,
+    dir_counts: Vec<(String, usize)>,
 }
 
 impl CandidateBudget {
@@ -107,7 +107,15 @@ impl CandidateBudget {
             },
             None => "<unknown>/",
         };
-        *self.dir_counts.entry(dir_slice.to_owned()).or_insert(0) += 1;
+        if let Some((_, count)) = self
+            .dir_counts
+            .iter_mut()
+            .find(|(d, _)| d.as_str() == dir_slice)
+        {
+            *count += 1;
+        } else {
+            self.dir_counts.push((dir_slice.to_owned(), 1));
+        }
 
         if self.count > MAX_FILE_COUNT {
             return Err(IngestError::CandidateLimitExceeded(
@@ -116,10 +124,26 @@ impl CandidateBudget {
         }
         Ok(())
     }
+
+    /// Validates that total candidates do not exceed `MAX_FILE_COUNT`.
+    /// When exceeded, returns `CandidateLimitExceeded` with diagnostic details.
+    pub(crate) fn verify_count<'a>(
+        paths: impl IntoIterator<Item = Option<&'a str>>,
+        count: usize,
+    ) -> Result<(), IngestError> {
+        if count <= MAX_FILE_COUNT {
+            return Ok(());
+        }
+        let mut budget = Self::default();
+        for path in paths {
+            budget.add(path)?;
+        }
+        Ok(())
+    }
 }
 
-fn format_overflow_diagnostic(dir_counts: &std::collections::HashMap<String, usize>) -> String {
-    let mut dirs: Vec<(&String, usize)> = dir_counts.iter().map(|(d, &c)| (d, c)).collect();
+fn format_overflow_diagnostic(dir_counts: &[(String, usize)]) -> String {
+    let mut dirs: Vec<(&str, usize)> = dir_counts.iter().map(|(d, c)| (d.as_str(), *c)).collect();
     dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     dirs.truncate(3);
 
@@ -132,12 +156,36 @@ fn format_overflow_diagnostic(dir_counts: &std::collections::HashMap<String, usi
     msg
 }
 
+#[inline]
+fn contains_zero_swar(chunk: u64) -> bool {
+    const LOB: u64 = 0x0101010101010101;
+    const HIB: u64 = 0x8080808080808080;
+    chunk.wrapping_sub(LOB) & !chunk & HIB != 0
+}
+
+fn has_nul_byte_swar(bytes: &[u8]) -> bool {
+    let (chunks, rem) = bytes.as_chunks::<8>();
+    chunks
+        .iter()
+        .any(|&chunk| contains_zero_swar(u64::from_ne_bytes(chunk)))
+        || rem.contains(&0)
+}
+
 /// UTF-8 text predicate: NUL-free bytes only.
 fn text_content(bytes: Vec<u8>) -> Option<String> {
-    if bytes.contains(&0) {
+    // Probe head with SWAR to reject binaries early
+    let probe_len = bytes.len().min(4096);
+    if has_nul_byte_swar(&bytes[..probe_len]) {
         return None;
     }
-    String::from_utf8(bytes).ok()
+    // Single-pass UTF-8 validation
+    std::str::from_utf8(&bytes).ok()?;
+    // If buffer exceeds probe head, check if the remaining slice contains NUL
+    if bytes[probe_len..].contains(&0) {
+        return None;
+    }
+    // SAFETY: std::str::from_utf8 succeeded above; bytes is guaranteed valid UTF-8.
+    Some(unsafe { String::from_utf8_unchecked(bytes) })
 }
 
 #[cfg(test)]
@@ -153,12 +201,37 @@ mod tests {
     }
 
     #[test]
+    fn text_content_handles_multibyte_straddling_probe_boundary() {
+        let mut bytes = vec![b'a'; 4095];
+        bytes.extend_from_slice("€tail\n".as_bytes());
+        let content = text_content(bytes);
+        assert!(content.is_some());
+        assert!(content.unwrap().ends_with("€tail\n"));
+
+        let mut bytes_with_nul = vec![b'a'; 4095];
+        bytes_with_nul.extend_from_slice("€\0tail\n".as_bytes());
+        assert!(text_content(bytes_with_nul).is_none());
+    }
+
+    #[test]
     fn counts_candidate_before_content_filtering() {
         let mut candidates = CandidateBudget::default();
         for _ in 0..MAX_FILE_COUNT {
             candidates.add(None).unwrap();
         }
         assert!(candidates.add(None).is_err());
+    }
+
+    #[test]
+    fn candidate_budget_verify_count_checks_limit() {
+        let items: Vec<Option<&str>> = (0..MAX_FILE_COUNT).map(|_| Some("src/file.rs")).collect();
+        assert!(CandidateBudget::verify_count(items.iter().copied(), items.len()).is_ok());
+
+        let overflowing: Vec<Option<&str>> =
+            (0..=MAX_FILE_COUNT).map(|_| Some("src/file.rs")).collect();
+        assert!(
+            CandidateBudget::verify_count(overflowing.iter().copied(), overflowing.len()).is_err()
+        );
     }
 
     #[test]
@@ -283,5 +356,22 @@ mod tests {
         assert!(message.contains("vendor/ (8000 files)"));
         assert!(message.contains("src/ (2000 files)"));
         Ok(())
+    }
+
+    #[test]
+    fn swar_rejects_binary_early_and_preserves_text() {
+        let mut bin = vec![b'a'; 1024];
+        bin[12] = 0;
+        assert!(text_content(bin).is_none());
+
+        let mut bin_tail = vec![b'b'; 5000];
+        bin_tail[4500] = 0;
+        assert!(text_content(bin_tail).is_none());
+
+        let text = vec![b'c'; 8000];
+        assert_eq!(
+            text_content(text.clone()),
+            Some(String::from_utf8(text).unwrap())
+        );
     }
 }

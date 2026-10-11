@@ -34,7 +34,7 @@ imperative-shell boundary.
 
 ### Rendering & Formats
 - ASCII hierarchy tree (`├── `, `└── `, `│   `) matches `DigestBudget` byte-for-byte, escaping control codes and XML entities to prevent tree line-break injections.
-- BPE token estimation runs over the full digest stream, reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
+- Streaming heuristic token estimation runs over the full digest stream, reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
 - XML serialization (`--format xml`) structures output into `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`) and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`. Overhead and escaped bytes are accounted for in `DigestBudget`.
 - File-path ordering is strictly lexicographical and owned solely by `render_digest_to_writer` / `render_digest`.
 - Local digest headers use root directory basename (`Repository: <basename>`), omitting absolute paths and system prefixes.
