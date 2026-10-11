@@ -164,14 +164,11 @@ fn contains_zero_swar(chunk: u64) -> bool {
 }
 
 fn has_nul_byte_swar(bytes: &[u8]) -> bool {
-    let mut chunks = bytes.chunks_exact(8);
-    for chunk in &mut chunks {
-        let val = u64::from_ne_bytes(chunk.try_into().unwrap());
-        if contains_zero_swar(val) {
-            return true;
-        }
-    }
-    chunks.remainder().contains(&0)
+    let (chunks, rem) = bytes.as_chunks::<8>();
+    chunks
+        .iter()
+        .any(|&chunk| contains_zero_swar(u64::from_ne_bytes(chunk)))
+        || rem.contains(&0)
 }
 
 /// UTF-8 text predicate: NUL-free bytes only.
