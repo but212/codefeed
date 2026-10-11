@@ -18,8 +18,10 @@ git clone --depth 1 <URL> ./repo && codefeed ./repo
 ## Usage
 
 ```bash
-cargo run -- <SOURCE> [--output <PATH|->] [--ref <BRANCH|TAG|COMMIT>] [--format <text|xml>]
+codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]
 ```
+
+`codefeed` accepts options before or after the `<SOURCE>` argument, supports short aliases (`-o`, `-f`, `-r`, `-h`), and accepts `=` separators (`--format=xml`, `-o=output.txt`).
 
 ### Examples
 
@@ -27,8 +29,11 @@ cargo run -- <SOURCE> [--output <PATH|->] [--ref <BRANCH|TAG|COMMIT>] [--format 
 # Local directory to default digest.txt
 codefeed ./my-repo
 
-# Local directory to custom file
-codefeed /path/to/project --output ./digest.txt
+# Local directory to custom file with short flags
+codefeed ./my-repo -o ./digest.txt -f xml
+
+# Options placed before the source with key-value syntax
+codefeed --format=xml --output=- ./my-repo | your-tool
 
 # Stream pure digest to stdout (diagnostics go to stderr)
 codefeed ./my-repo --output - | your-tool
@@ -38,14 +43,18 @@ codefeed https://github.com/rust-lang/cargo
 
 # GitHub repository at specific revision
 codefeed https://github.com/rust-lang/cargo --ref master --output ./cargo-digest.txt
+
+# Use POSIX delimiter for directories starting with a dash
+codefeed -- -my-directory
 ```
 
 ### Options
 
-- `--output <PATH>` — Output destination. Defaults to `digest.txt`. Pass `-` for stdout.
-- `--ref <BRANCH|TAG|COMMIT>` — GitHub branch, tag, or commit SHA. Invalid for local sources.
-- `--format <text|xml>` — Serialization format. Defaults to `text`. `xml` emits LLM-optimized XML tags with entity escaping.
-- `--help`, `-h` — Print usage and exit with code 0.
+- `-o`, `--output <PATH|->` — Output destination. Defaults to `digest.txt`. Pass `-` for stdout. Supports `--output=<PATH>`.
+- `-r`, `--ref <BRANCH|TAG|COMMIT>` — GitHub branch, tag, or commit SHA. Invalid for local sources. Supports `--ref=<REF>`.
+- `-f`, `--format <text|xml>` — Serialization format. Defaults to `text`. `xml` emits LLM-optimized XML tags with entity escaping. Supports `--format=<FORMAT>`.
+- `-h`, `--help` — Print usage and exit with code 0.
+- `--` — Option delimiter. Treats all subsequent arguments as positional sources.
 
 ### Installation
 

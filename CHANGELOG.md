@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Order-independent positional source argument resolution.
+- Short option aliases (`-o`, `-f`, `-r`, `-h`) and key-value parameter syntax (`--key=val`, `-k=val`).
+- POSIX `--` option delimiter to treat subsequent arguments as positional sources.
+
+### Changed
+
+- Refactored CLI parser into a zero-dependency streaming `ArgTokenizer` with semantic token folding.
+
 ## [0.1.0] - 2026-10-11
 
 ### Added
