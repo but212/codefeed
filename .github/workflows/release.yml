@@ -21,12 +21,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Verify tag matches Cargo.toml version
+      - name: Verify tag matches Cargo.toml and CHANGELOG.md
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           MANIFEST_VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
           if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
             echo "Error: Tag version ($TAG_VERSION) does not match Cargo.toml version ($MANIFEST_VERSION)"
+            exit 1
+          fi
+          if ! grep -Eq "^## \[?$TAG_VERSION\]?" CHANGELOG.md; then
+            echo "Error: CHANGELOG.md does not contain an entry for version $TAG_VERSION"
             exit 1
           fi
 
@@ -77,7 +81,7 @@ jobs:
         run: |
           mkdir staging
           cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} staging/
-          cp README.md LICENSE-MIT LICENSE-APACHE NOTICE staging/
+          cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE NOTICE staging/
           tar -czvf "codefeed-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive_ext }}" -C staging .
 
       - name: Package release assets (Windows)
@@ -86,7 +90,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path staging
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" -Destination staging/
-          Copy-Item "README.md", "LICENSE-MIT", "LICENSE-APACHE", "NOTICE" -Destination staging/
+          Copy-Item "README.md", "CHANGELOG.md", "LICENSE-MIT", "LICENSE-APACHE", "NOTICE" -Destination staging/
           Compress-Archive -Path "staging/*" -DestinationPath "codefeed-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive_ext }}"
 
       - name: Upload artifact
@@ -126,6 +130,25 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$TAG_VERSION" '
+            $0 ~ "^## \\[" ver "\\]" || $0 ~ "^## " ver { flag=1; next }
+            flag && /^## / { flag=0 }
+            flag { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "Notice: Exact version section not extracted; using full CHANGELOG.md"
+            cp CHANGELOG.md RELEASE_NOTES.md
+          fi
+
       - name: Download all built assets
         uses: actions/download-artifact@v8
         with:
@@ -136,4 +159,4 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: dist/*
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
