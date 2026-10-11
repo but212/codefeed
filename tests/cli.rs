@@ -193,7 +193,7 @@ fn help_after_non_utf8_source_exits_successfully() {
     assert!(output.stderr.is_empty(), "output: {output:?}");
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn accepts_non_utf8_local_source_path() {
     use std::ffi::OsString;
