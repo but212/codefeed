@@ -17,12 +17,13 @@ pub(crate) fn collect_local(
     output: &OutputTarget,
     format: DigestFormat,
 ) -> Result<CollectionResult, IngestError> {
+    let root_display = root.display();
     let root = fs::canonicalize(root)
-        .map_err(|error| IngestError::InvalidSource(format!("{} ({error})", root.display())))?;
+        .map_err(|error| IngestError::InvalidSource(format!("{root_display} ({error})")))?;
     if !root.is_dir() {
+        let display = root.display();
         return Err(IngestError::InvalidSource(format!(
-            "{} is not a directory",
-            root.display()
+            "{display} is not a directory"
         )));
     }
     // Standard output has no filesystem path, so there is nothing to exclude

@@ -58,36 +58,36 @@ where
     while let Some(argument) = iter.next() {
         match argument.to_str() {
             Some("--output") => {
-                let value = iter
-                    .next()
-                    .ok_or_else(|| usage("--output requires a path"))?;
+                let Some(value) = iter.next() else {
+                    return Err(usage("--output requires a path"));
+                };
                 if matches!(value.to_str(), Some("--help" | "-h")) {
                     return Err(usage("--output requires a path"));
                 }
                 options.output = parse_output_target(&value);
             }
             Some("--ref") => {
-                let value = iter
-                    .next()
-                    .ok_or_else(|| usage("--ref requires a branch, tag, or commit"))?;
+                let Some(value) = iter.next() else {
+                    return Err(usage("--ref requires a branch, tag, or commit"));
+                };
                 if matches!(value.to_str(), Some("--help" | "-h")) {
                     return Err(usage("--ref requires a branch, tag, or commit"));
                 }
-                let value = value
-                    .to_str()
-                    .ok_or_else(|| usage("--ref requires a UTF-8 value"))?;
+                let Some(value) = value.to_str() else {
+                    return Err(usage("--ref requires a UTF-8 value"));
+                };
                 options.reference = Some(value.to_owned());
             }
             Some("--format") => {
-                let value = iter
-                    .next()
-                    .ok_or_else(|| usage("--format requires a format (text, xml)"))?;
+                let Some(value) = iter.next() else {
+                    return Err(usage("--format requires a format (text, xml)"));
+                };
                 if matches!(value.to_str(), Some("--help" | "-h")) {
                     return Err(usage("--format requires a format (text, xml)"));
                 }
-                let value_str = value
-                    .to_str()
-                    .ok_or_else(|| usage("--format requires a UTF-8 value"))?;
+                let Some(value_str) = value.to_str() else {
+                    return Err(usage("--format requires a UTF-8 value"));
+                };
                 match value_str.to_ascii_lowercase().as_str() {
                     "text" => options.format = DigestFormat::Text,
                     "xml" => options.format = DigestFormat::Xml,

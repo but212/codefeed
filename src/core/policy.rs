@@ -53,25 +53,23 @@ pub(crate) fn is_sensitive_path(path: &str) -> bool {
     {
         return true;
     }
-    if let Some((_, ext)) = file_name.rsplit_once('.') {
-        SENSITIVE_EXT.iter().any(|&s| s.eq_ignore_ascii_case(ext))
-    } else {
-        false
-    }
+    let Some((_, ext)) = file_name.rsplit_once('.') else {
+        return false;
+    };
+    SENSITIVE_EXT.iter().any(|&s| s.eq_ignore_ascii_case(ext))
 }
 
 /// Returns `true` if `path` has a known binary file extension (case-insensitive).
 pub(crate) fn has_binary_extension(path: &str) -> bool {
-    if let Some((_, ext)) = path.rsplit_once('.') {
-        BINARY_EXT.iter().any(|&b| b.eq_ignore_ascii_case(ext))
-    } else {
-        false
-    }
+    let Some((_, ext)) = path.rsplit_once('.') else {
+        return false;
+    };
+    BINARY_EXT.iter().any(|&b| b.eq_ignore_ascii_case(ext))
 }
 
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
 pub(crate) fn is_retryable_status(status_code: u16) -> bool {
-    status_code == 429 || (500..=599).contains(&status_code)
+    matches!(status_code, 429 | 500..=599)
 }
 
 /// Calculates bounded exponential backoff duration with jitter for the given attempt.

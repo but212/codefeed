@@ -28,11 +28,8 @@ pub(crate) fn ingest(source: &Source, options: &Options) -> Result<IngestReport,
         )?,
     };
 
-    let mut estimated_tokens = 0;
-    shell::output::emit(&options.output, |writer| {
-        estimated_tokens =
-            crate::core::digest::render_digest_to_writer(writer, &collection, options.format)?;
-        Ok(())
+    let estimated_tokens = shell::output::emit(&options.output, |writer| {
+        crate::core::digest::render_digest_to_writer(writer, &collection, options.format)
     })?;
 
     Ok(IngestReport {

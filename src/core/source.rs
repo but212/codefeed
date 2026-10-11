@@ -56,21 +56,21 @@ fn parse_github_url(value: &str) -> Result<Source, IngestError> {
     }
 
     let parts: Vec<_> = path.split('/').filter(|part| !part.is_empty()).collect();
-    if parts.len() != 2 {
+    let [owner, repo_segment] = parts.as_slice() else {
         return Err(IngestError::InvalidSource(
             "expected https://github.com/{owner}/{repo}".into(),
         ));
-    }
+    };
 
-    let repo = parts[1].strip_suffix(".git").unwrap_or(parts[1]);
-    if repo.is_empty() || !valid_github_name(parts[0]) || !valid_github_name(repo) {
+    let repo = repo_segment.strip_suffix(".git").unwrap_or(repo_segment);
+    if repo.is_empty() || !valid_github_name(owner) || !valid_github_name(repo) {
         return Err(IngestError::InvalidSource(
             "owner and repository names contain invalid characters".into(),
         ));
     }
 
     Ok(Source::GitHub {
-        owner: parts[0].to_owned(),
+        owner: (*owner).to_owned(),
         repo: repo.to_owned(),
     })
 }

@@ -16,9 +16,10 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// A broken pipe on the stdout target is a normal early close by the consumer
 /// (`rustingest . --output - | head -1`), not an I/O failure: the consumer took
 /// what it asked for, and stdout emission leaves no partial state behind.
-pub(crate) fn emit<F>(target: &OutputTarget, write_fn: F) -> Result<(), IngestError>
+pub(crate) fn emit<R, F>(target: &OutputTarget, write_fn: F) -> Result<R, IngestError>
 where
-    F: FnOnce(&mut dyn io::Write) -> Result<(), IngestError>,
+    R: Default,
+    F: FnOnce(&mut dyn io::Write) -> Result<R, IngestError>,
 {
     match target {
         OutputTarget::File(path) => write_atomic(path, write_fn),
@@ -26,29 +27,39 @@ where
     }
 }
 
-fn write_stdout<F>(write_fn: F) -> Result<(), IngestError>
+fn write_stdout<R, F>(write_fn: F) -> Result<R, IngestError>
 where
-    F: FnOnce(&mut dyn io::Write) -> Result<(), IngestError>,
+    R: Default,
+    F: FnOnce(&mut dyn io::Write) -> Result<R, IngestError>,
 {
     let stdout = io::stdout();
     let mut writer = io::BufWriter::new(stdout.lock());
-    match write_fn(&mut writer).and_then(|()| writer.flush().map_err(IngestError::Io)) {
-        Ok(()) => Ok(()),
-        Err(IngestError::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+    let result = write_fn(&mut writer);
+    match result {
+        Ok(val) => match writer.flush() {
+            Ok(()) => Ok(val),
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(val),
+            Err(error) => Err(IngestError::Io(error)),
+        },
+        Err(IngestError::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe => {
+            Ok(R::default())
+        }
         Err(error) => Err(error),
     }
 }
 
-fn write_atomic<F>(output: &Path, write_fn: F) -> Result<(), IngestError>
+fn write_atomic<R, F>(output: &Path, write_fn: F) -> Result<R, IngestError>
 where
-    F: FnOnce(&mut dyn io::Write) -> Result<(), IngestError>,
+    F: FnOnce(&mut dyn io::Write) -> Result<R, IngestError>,
 {
     let parent = output.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
-    let file_name = output
-        .file_name()
-        .ok_or_else(|| IngestError::InvalidMetadata("output path has no filename".into()))?
-        .to_string_lossy();
+    let Some(raw_name) = output.file_name() else {
+        return Err(IngestError::InvalidMetadata(
+            "output path has no filename".into(),
+        ));
+    };
+    let file_name = raw_name.to_string_lossy();
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -66,20 +77,27 @@ where
             Err(error) => return Err(IngestError::Io(error)),
         }
     };
-    let result = (|| -> Result<(), IngestError> {
+    let result: Result<R, IngestError> = 'atomic: {
         let mut writer = io::BufWriter::new(file);
-        write_fn(&mut writer)?;
-        let file = writer
-            .into_inner()
-            .map_err(|e| IngestError::Io(e.into_error()))?;
-        file.sync_all().map_err(IngestError::Io)?;
-        fs::rename(&temporary, output).map_err(IngestError::Io)?;
-        Ok(())
-    })();
-    if result.is_err() {
+        let value = match write_fn(&mut writer) {
+            Ok(val) => val,
+            Err(err) => break 'atomic Err(err),
+        };
+        let file = match writer.into_inner() {
+            Ok(file) => file,
+            Err(e) => break 'atomic Err(IngestError::Io(e.into_error())),
+        };
+        if let Err(err) = file.sync_all() {
+            break 'atomic Err(IngestError::Io(err));
+        }
+        if let Err(err) = fs::rename(&temporary, output) {
+            break 'atomic Err(IngestError::Io(err));
+        }
+        Ok(value)
+    };
+    result.inspect_err(|_| {
         let _ = fs::remove_file(&temporary);
-    }
-    result
+    })
 }
 
 #[cfg(test)]
@@ -126,7 +144,7 @@ mod tests {
         let root = temp_dir("atomic_closure_failure")?;
         fs::create_dir_all(&root)?;
         let output = root.join("digest.txt");
-        let result = write_atomic(&output, |_w| {
+        let result: Result<(), _> = write_atomic(&output, |_w| {
             Err(IngestError::InvalidMetadata("test failure".into()))
         });
         assert!(result.is_err());

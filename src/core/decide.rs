@@ -107,29 +107,29 @@ impl CandidateBudget {
             },
             None => "<unknown>/",
         };
-        if let Some(count) = self.dir_counts.get_mut(dir_slice) {
-            *count += 1;
-        } else {
-            self.dir_counts.insert(dir_slice.to_owned(), 1);
-        }
+        *self.dir_counts.entry(dir_slice.to_owned()).or_insert(0) += 1;
 
         if self.count > MAX_FILE_COUNT {
-            let mut dirs: Vec<(&String, usize)> =
-                self.dir_counts.iter().map(|(d, &c)| (d, c)).collect();
-            dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-            dirs.truncate(3);
-
-            let mut msg = format!(
-                "repository contains more than {MAX_FILE_COUNT} files\nlargest directories:"
-            );
-            for (dir, count) in dirs {
-                use std::fmt::Write;
-                let _ = write!(msg, "\n  - {dir} ({count} files)");
-            }
-            return Err(IngestError::CandidateLimitExceeded(msg));
+            return Err(IngestError::CandidateLimitExceeded(
+                format_overflow_diagnostic(&self.dir_counts),
+            ));
         }
         Ok(())
     }
+}
+
+fn format_overflow_diagnostic(dir_counts: &std::collections::HashMap<String, usize>) -> String {
+    let mut dirs: Vec<(&String, usize)> = dir_counts.iter().map(|(d, &c)| (d, c)).collect();
+    dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    dirs.truncate(3);
+
+    let mut msg =
+        format!("repository contains more than {MAX_FILE_COUNT} files\nlargest directories:");
+    for (dir, count) in dirs {
+        use std::fmt::Write;
+        let _ = write!(msg, "\n  - {dir} ({count} files)");
+    }
+    msg
 }
 
 /// UTF-8 text predicate: NUL-free bytes only.
