@@ -266,4 +266,3 @@ fn accepts_double_dash_delimiter() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.is_empty());
 }
-
