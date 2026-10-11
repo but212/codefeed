@@ -46,7 +46,7 @@ jobs:
             artifact_name: codefeed
             archive_ext: tar.gz
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-14
             artifact_name: codefeed
             archive_ext: tar.gz
           - target: aarch64-apple-darwin
@@ -96,7 +96,7 @@ jobs:
           path: codefeed-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive_ext }}
           if-no-files-found: error
 
-  publish:
+  publish-github:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
@@ -114,3 +114,21 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+
+  publish-crates-io:
+    name: Publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish
