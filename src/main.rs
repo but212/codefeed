@@ -1,4 +1,4 @@
-//! Command-line binary entry point for rustingest.
+//! Command-line binary entry point for codefeed.
 
 mod core;
 mod shell;

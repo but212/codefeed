@@ -14,7 +14,7 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// bypassing temporary-file creation and filesystem sync.
 ///
 /// A broken pipe on the stdout target is a normal early close by the consumer
-/// (`rustingest . --output - | head -1`), not an I/O failure: the consumer took
+/// (`codefeed . --output - | head -1`), not an I/O failure: the consumer took
 /// what it asked for, and stdout emission leaves no partial state behind.
 pub(crate) fn emit<R, F>(target: &OutputTarget, write_fn: F) -> Result<R, IngestError>
 where

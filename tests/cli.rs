@@ -1,7 +1,7 @@
 use std::process::Command;
 
 fn run(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_rustingest"))
+    Command::new(env!("CARGO_BIN_EXE_codefeed"))
         .args(args)
         .output()
         .expect("CLI process should start")
@@ -20,7 +20,7 @@ fn help_exits_successfully_without_ingesting() {
         assert_eq!(stdout.matches("Usage:").count(), 1, "args: {args:?}");
         assert_eq!(
             stdout.trim(),
-            "Usage: rustingest <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]",
+            "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]",
             "args: {args:?}"
         );
         assert!(output.stderr.is_empty(), "args: {args:?}");
@@ -63,11 +63,11 @@ fn creates_default_output_without_subcommand() -> Result<(), Box<dyn std::error:
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after the Unix epoch")
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("rustingest_cli_default_{suffix}"));
+    let root = std::env::temp_dir().join(format!("codefeed_cli_default_{suffix}"));
     std::fs::create_dir_all(&root).expect("temporary directory should be created");
     std::fs::write(root.join("visible.txt"), "visible").expect("source file should be written");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_rustingest"))
+    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
         .current_dir(&root)
         .arg(".")
         .output()
@@ -87,11 +87,11 @@ fn writes_digest_only_to_stdout_for_dash_output() -> Result<(), Box<dyn std::err
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after the Unix epoch")
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("rustingest_cli_stdout_{suffix}"));
+    let root = std::env::temp_dir().join(format!("codefeed_cli_stdout_{suffix}"));
     std::fs::create_dir_all(&root).expect("temporary directory should be created");
     std::fs::write(root.join("visible.txt"), "visible").expect("source file should be written");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_rustingest"))
+    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
         .current_dir(&root)
         .arg(".")
         .arg("--output")
@@ -122,12 +122,12 @@ fn reports_estimated_tokens_in_file_summary() -> Result<(), Box<dyn std::error::
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after the Unix epoch")
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("rustingest_cli_tokens_{suffix}"));
+    let root = std::env::temp_dir().join(format!("codefeed_cli_tokens_{suffix}"));
     std::fs::create_dir_all(&root).expect("temporary directory should be created");
     std::fs::write(root.join("code.rs"), "pub fn test() -> i32 { 42 }")
         .expect("source file should be written");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_rustingest"))
+    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
         .current_dir(&root)
         .arg(".")
         .output()
@@ -152,12 +152,12 @@ fn outputs_xml_when_format_xml_specified() -> Result<(), Box<dyn std::error::Err
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after the Unix epoch")
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("rustingest_cli_xml_{suffix}"));
+    let root = std::env::temp_dir().join(format!("codefeed_cli_xml_{suffix}"));
     std::fs::create_dir_all(&root).expect("temporary directory should be created");
     std::fs::write(root.join("file.rs"), "fn main() { let x = 1 < 2; }")
         .expect("file should be written");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_rustingest"))
+    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
         .current_dir(&root)
         .arg(".")
         .arg("--output")
@@ -188,7 +188,7 @@ fn help_after_non_utf8_source_exits_successfully() {
     use std::os::unix::ffi::OsStringExt;
 
     let source = OsString::from_vec(b"source-\xff".to_vec());
-    let output = Command::new(env!("CARGO_BIN_EXE_rustingest"))
+    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
         .arg(source)
         .arg("--help")
         .output()
@@ -197,7 +197,7 @@ fn help_after_non_utf8_source_exits_successfully() {
     assert!(output.status.success(), "output: {output:?}");
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "Usage: rustingest <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]"
+        "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]"
     );
     assert!(output.stderr.is_empty(), "output: {output:?}");
 }
@@ -213,13 +213,13 @@ fn accepts_non_utf8_local_source_path() {
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after the Unix epoch")
         .as_nanos();
-    let parent = std::env::temp_dir().join(format!("rustingest_cli_{suffix}"));
+    let parent = std::env::temp_dir().join(format!("codefeed_cli_{suffix}"));
     let source = parent.join(OsString::from_vec(b"source-\xff".to_vec()));
     let output = source.join("digest.txt");
     std::fs::create_dir_all(&source).expect("source directory should be created");
     std::fs::write(source.join("visible.txt"), "visible").expect("source file should be written");
 
-    let result = Command::new(env!("CARGO_BIN_EXE_rustingest"))
+    let result = Command::new(env!("CARGO_BIN_EXE_codefeed"))
         .arg(&source)
         .arg("--output")
         .arg(&output)

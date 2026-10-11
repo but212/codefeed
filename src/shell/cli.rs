@@ -6,7 +6,7 @@ use crate::core::model::{DigestFormat, Options, OutputTarget, Source};
 use crate::core::source::parse_source_os;
 
 const HELP: &str =
-    "Usage: rustingest <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]";
+    "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]";
 
 pub(crate) fn help_text() -> &'static str {
     HELP
@@ -132,18 +132,18 @@ mod tests {
     #[test]
     fn parses_help_action() {
         assert_eq!(
-            parse_cli(["rustingest", "--help"]).unwrap(),
+            parse_cli(["codefeed", "--help"]).unwrap(),
             CliAction::Help
         );
         assert_eq!(
-            parse_cli(["rustingest", ".", "-h"]).unwrap(),
+            parse_cli(["codefeed", ".", "-h"]).unwrap(),
             CliAction::Help
         );
     }
 
     #[test]
     fn parses_run_action() {
-        let action = parse_cli(["rustingest", ".", "--format", "xml", "--output", "-"]).unwrap();
+        let action = parse_cli(["codefeed", ".", "--format", "xml", "--output", "-"]).unwrap();
         match action {
             CliAction::Run { source, options } => {
                 assert!(matches!(source, Source::Local(_)));
@@ -156,6 +156,6 @@ mod tests {
 
     #[test]
     fn returns_error_on_missing_source() {
-        assert!(parse_cli(["rustingest"]).is_err());
+        assert!(parse_cli(["codefeed"]).is_err());
     }
 }

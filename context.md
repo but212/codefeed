@@ -1,4 +1,4 @@
-# Domain Context — rustingest
+# Domain Context — codefeed
 
 ## Purpose
 

@@ -13,7 +13,7 @@ use crate::core::github_tree::{CommitResponse, RepositoryResponse, TreeResponse}
 use crate::core::github_url::{RequestTarget, api_url, raw_url, request_target};
 use crate::core::policy::{MAX_JSON_SIZE, MAX_RETRIES, is_retryable_status, retry_delay};
 
-const GITHUB_USER_AGENT: &str = "rustingest/0.1";
+const GITHUB_USER_AGENT: &str = "codefeed/0.1";
 const GITHUB_TIMEOUT_SECS: u64 = 30;
 
 pub(crate) enum LimitedBody {
