@@ -3,6 +3,13 @@ name = "codefeed"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
+description = "Fast CLI that converts local directories or GitHub repositories into LLM-friendly digests"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/but212/codefeed"
+readme = "README.md"
+keywords = ["llm", "digest", "codebase", "prompt", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = [".github/", "context.md"]
 
 [dependencies]
 ignore = "0.4"

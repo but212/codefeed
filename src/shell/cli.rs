@@ -5,8 +5,7 @@ use crate::core::error::IngestError;
 use crate::core::model::{DigestFormat, Options, OutputTarget, Source};
 use crate::core::source::parse_source_os;
 
-const HELP: &str =
-    "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]";
+const HELP: &str = "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]";
 
 pub(crate) fn help_text() -> &'static str {
     HELP
@@ -131,14 +130,8 @@ mod tests {
 
     #[test]
     fn parses_help_action() {
-        assert_eq!(
-            parse_cli(["codefeed", "--help"]).unwrap(),
-            CliAction::Help
-        );
-        assert_eq!(
-            parse_cli(["codefeed", ".", "-h"]).unwrap(),
-            CliAction::Help
-        );
+        assert_eq!(parse_cli(["codefeed", "--help"]).unwrap(), CliAction::Help);
+        assert_eq!(parse_cli(["codefeed", ".", "-h"]).unwrap(), CliAction::Help);
     }
 
     #[test]
