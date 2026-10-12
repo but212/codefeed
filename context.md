@@ -19,7 +19,7 @@ imperative-shell boundary.
 - `OutputTarget` — digest destination: `File(PathBuf)` or `Stdout`.
 - `DigestFormat` — output serialization format: `Text` or `Xml`.
 - Budgets — `CandidateBudget` (candidate count), `DigestBudget` (rendered
-  bytes and skipped count).
+  bytes and skipped count, composing `ContentMetrics` value object for checked file accounting).
 - Policy — centralised tunables, thresholds, noise lists, sensitive patterns, and extension sets
   (`policy.rs`).
 
@@ -32,6 +32,7 @@ imperative-shell boundary.
 - `skipped` counts candidates rejected for content, size, or encoding. Ignored paths are never counted in `skipped`.
 - Rejects content exceeding `MAX_OUTPUT_SIZE`; overflow content is never emitted.
 - Known binary extensions (`BINARY_EXT`) are classified as `Probe::Missing` before remote download to save bandwidth while preserving candidate and skipped accounting.
+- Diagnostic largest files reporting (`largest_files`) uses bounded Top-5 selection with linear position lookup, avoiding full-collection cloning or $O(N \log N)$ sorting while preserving insertion stability for tie-breakers.
 
 ### Rendering & Formats
 
@@ -39,7 +40,7 @@ imperative-shell boundary.
 - `DigestBudget` accounts tree rendering size via a mathematically proven per-node depth upper bound (`6 * depth + 12 + display_len`), guaranteeing that fast-path budget checks never underestimate rendered output size and strictly preventing breaches of `MAX_OUTPUT_SIZE`. When approaching the threshold, it falls back to exact size calculation.
 - Streaming heuristic token estimation runs over the full digest stream, reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
 - Plain text serialization (`--format text`) preserves all valid UTF-8 file content verbatim (rejecting only NUL bytes) to maintain raw fidelity for LLM prompts; headers and paths are escaped, but file bodies are unmutated (viewing raw digests in interactive terminals may affect emulator state if files contain ANSI escape codes).
-- XML serialization (`--format xml`) structures output into `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`) and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`. Overhead and escaped bytes are accounted for in `DigestBudget`.
+- XML serialization (`--format xml`) structures output into `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`) and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`, unified under `XmlChunks<'a>` streaming iterator across metric measurement, string assembly, and I/O writes. Overhead and escaped bytes are accounted for in `DigestBudget`.
 - File-path ordering is strictly lexicographical and owned solely by `render_digest_to_writer` / `render_digest`. Format rendering consumes `IntoIterator<Item = &FileRecord>` to support streaming and arbitrary iteration pipelines while preserving deterministic path sorting.
 - Local digest headers use root directory basename (`Repository: <basename>`), omitting absolute paths and system prefixes.
 

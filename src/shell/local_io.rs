@@ -453,8 +453,8 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn test_windows_intermediate_junction_escape_rejected(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn test_windows_intermediate_junction_escape_rejected() -> Result<(), Box<dyn std::error::Error>>
+    {
         use std::process::Command;
 
         let root = temp_dir("win_junc_root")?;
@@ -476,7 +476,9 @@ mod tests {
             ])
             .status();
 
-        if let Ok(s) = status && s.success() {
+        if let Ok(s) = status
+            && s.success()
+        {
             let path_via_junction = junction.join("secret.txt");
             let probe = read_local_file(&root, &path_via_junction)?;
             assert!(
@@ -493,8 +495,8 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn test_windows_symlink_escape_rejected_if_supported(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn test_windows_symlink_escape_rejected_if_supported() -> Result<(), Box<dyn std::error::Error>>
+    {
         use std::os::windows::fs::symlink_file;
 
         let root = temp_dir("win_sym_root")?;

@@ -161,11 +161,7 @@ fn walk_candidates(
 
     drop(tx);
 
-    let mut candidates = Vec::with_capacity(crate::core::policy::MAX_FILE_COUNT.min(512));
-    for result in rx {
-        let item = result?;
-        candidates.push(item);
-    }
+    let mut candidates: Vec<LocalCandidate> = rx.into_iter().collect::<Result<_, _>>()?;
 
     CandidateBudget::verify_count(
         candidates.iter().map(|item| match &item.item_path {
@@ -185,16 +181,15 @@ fn walk_candidates(
     Ok(candidates)
 }
 
-fn probe_candidates(
-    root: &Path,
-    candidates: &[LocalCandidate],
-) -> Result<Vec<Probe>, IngestError> {
+fn probe_candidates(root: &Path, candidates: &[LocalCandidate]) -> Result<Vec<Probe>, IngestError> {
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
 
     let next_idx = std::sync::atomic::AtomicUsize::new(0);
-    let worker_count = crate::core::policy::FETCH_WINDOW.min(candidates.len()).max(1);
+    let worker_count = crate::core::policy::FETCH_WINDOW
+        .min(candidates.len())
+        .max(1);
 
     let probes = std::thread::scope(|s| {
         let handles: Vec<_> = (0..worker_count)
@@ -219,7 +214,9 @@ fn probe_candidates(
             .collect();
 
         let mut all_probes: Vec<Option<Result<Probe, IngestError>>> =
-            (0..candidates.len()).map(|_| None).collect();
+            std::iter::repeat_with(|| None)
+                .take(candidates.len())
+                .collect();
         for handle in handles {
             let thread_results = handle.join().expect("reader thread panicked");
             for (idx, res) in thread_results {
@@ -234,7 +231,6 @@ fn probe_candidates(
         .map(|res| res.expect("all probe results populated"))
         .collect()
 }
-
 
 fn local_label(root: &Path) -> String {
     root.file_name()

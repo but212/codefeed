@@ -56,7 +56,11 @@ impl BudgetTrie {
             let is_dir = parts.peek().is_some();
 
             let idx = if let Some(last) = children.last() {
-                let ord = last.name.as_str().cmp(part).then_with(|| last.is_dir.cmp(&is_dir));
+                let ord = last
+                    .name
+                    .as_str()
+                    .cmp(part)
+                    .then_with(|| last.is_dir.cmp(&is_dir));
                 match ord {
                     std::cmp::Ordering::Equal => children.len() - 1,
                     std::cmp::Ordering::Less => {
@@ -164,10 +168,7 @@ impl BudgetTrie {
         total
     }
 
-    pub fn render_to_writer<W: Write + ?Sized>(
-        &self,
-        writer: &mut W,
-    ) -> std::io::Result<()> {
+    pub fn render_to_writer<W: Write + ?Sized>(&self, writer: &mut W) -> std::io::Result<()> {
         Self::render_nodes(writer, &self.children, "")
     }
 

@@ -7,11 +7,7 @@
 pub(crate) fn strip_archive_root(raw_path: &str) -> Option<&str> {
     let normalized = raw_path.trim_matches('/');
     let (_root, rest) = normalized.split_once('/')?;
-    if rest.is_empty() {
-        None
-    } else {
-        Some(rest)
-    }
+    if rest.is_empty() { None } else { Some(rest) }
 }
 
 /// Parses a 40-character commit SHA from PAX global header comment bytes.
@@ -20,7 +16,7 @@ pub(crate) fn strip_archive_root(raw_path: &str) -> Option<&str> {
 /// in the PAX extended header.
 pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(bytes).ok()?;
-    for line in text.lines() {
+    text.lines().find_map(|line| {
         let trimmed = line.trim();
         // PAX line format: "<length> <key>=<value>" or "<key>=<value>"
         let payload = match trimmed.find(' ') {
@@ -29,14 +25,12 @@ pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
             }
             _ => trimmed,
         };
-        if let Some(sha) = payload.strip_prefix("comment=") {
-            let sha = sha.trim();
-            if is_valid_commit_sha(sha) {
-                return Some(sha.to_owned());
-            }
-        }
-    }
-    None
+        payload
+            .strip_prefix("comment=")
+            .map(str::trim)
+            .filter(|sha| is_valid_commit_sha(sha))
+            .map(ToOwned::to_owned)
+    })
 }
 
 fn is_valid_commit_sha(sha: &str) -> bool {

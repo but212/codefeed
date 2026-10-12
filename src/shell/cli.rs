@@ -98,14 +98,22 @@ where
                         options.output = parse_output_target(&val);
                     }
                     "--ref" | "-r" => {
-                        let val = next_val(&mut args, inline_val, "--ref requires a branch, tag, or commit")?;
+                        let val = next_val(
+                            &mut args,
+                            inline_val,
+                            "--ref requires a branch, tag, or commit",
+                        )?;
                         let Some(s) = val.to_str() else {
                             return Err(usage("--ref requires a UTF-8 value"));
                         };
                         options.reference = Some(s.to_owned());
                     }
                     "--format" | "-f" => {
-                        let val = next_val(&mut args, inline_val, "--format requires a format (text, xml)")?;
+                        let val = next_val(
+                            &mut args,
+                            inline_val,
+                            "--format requires a format (text, xml)",
+                        )?;
                         let Some(s) = val.to_str() else {
                             return Err(usage("--format requires a UTF-8 value"));
                         };

@@ -124,11 +124,7 @@ impl CandidateBudget {
             },
             None => "<unknown>/",
         };
-        if let Some(count) = self.dir_counts.get_mut(dir_slice) {
-            *count += 1;
-        } else {
-            self.dir_counts.insert(dir_slice.to_owned(), 1);
-        }
+        *self.dir_counts.entry(dir_slice.to_owned()).or_insert(0) += 1;
 
         if self.count > MAX_FILE_COUNT {
             return Err(IngestError::CandidateLimitExceeded(
