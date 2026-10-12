@@ -11,6 +11,9 @@ const TREE_LAST: &str = "└── ";
 const TREE_VERT: &str = "│   ";
 const TREE_SPACE: &str = "    ";
 
+const TREE_DEPTH_BYTE_FACTOR: u64 = 6;
+const TREE_NODE_BASE_OVERHEAD: u64 = 12;
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BudgetTrieNode {
     pub(crate) name: String,
@@ -107,7 +110,9 @@ impl BudgetTrie {
                     let display_len = node.display().len() as u64;
                     self.display_bytes += display_len;
                     self.node_count += 1;
-                    let node_max_format = depth.saturating_mul(6).saturating_add(12);
+                    let node_max_format = depth
+                        .saturating_mul(TREE_DEPTH_BYTE_FACTOR)
+                        .saturating_add(TREE_NODE_BASE_OVERHEAD);
                     let node_upper = node_max_format.saturating_add(display_len);
                     self.upper_bound_bytes = self.upper_bound_bytes.saturating_add(node_upper);
 
@@ -365,5 +370,11 @@ pub(crate) mod tests {
         assert_eq!(esc_dir.name, "a & b");
         assert_eq!(esc_dir.display.as_deref(), Some("a &amp; b"));
         assert_eq!(esc_dir.display(), "a &amp; b");
+    }
+
+    #[test]
+    fn tree_upper_bound_constants_match_documented_factors() {
+        assert_eq!(TREE_DEPTH_BYTE_FACTOR, 6);
+        assert_eq!(TREE_NODE_BASE_OVERHEAD, 12);
     }
 }

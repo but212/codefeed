@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::io::Write;
 
-use super::DigestBudget;
+use super::FormatFrameMetrics;
 use super::byte_count;
 use super::trie::BudgetTrie;
 use crate::core::error::IngestError;
@@ -19,6 +19,18 @@ const FILE_BLOCK_PREFIX: &str = "===============================================
 const FILE_BLOCK_SUFFIX: &str = "\n==================================================\n\n";
 const NEWLINE: &str = "\n";
 const METADATA_SUFFIX: &str = "\n\n";
+
+const TEXT_FILE_BLOCK_BYTES: u64 = (FILE_BLOCK_PREFIX.len() + FILE_BLOCK_SUFFIX.len()) as u64;
+
+const TEXT_FIXED_FRAME_BYTES: u64 = (REPOSITORY_PREFIX.len()
+    + NEWLINE.len()
+    + FILES_PREFIX.len()
+    + SKIPPED_PREFIX.len()
+    + METADATA_SUFFIX.len()
+    + DIRECTORY_HEADER.len()
+    + FILES_HEADER.len()) as u64;
+
+const TEXT_REVISION_OVERHEAD_BYTES: u64 = (REVISION_PREFIX.len() + NEWLINE.len()) as u64;
 
 pub(crate) fn escape_header(value: &str) -> Cow<'_, str> {
     if !value.contains('\\') && !value.contains('\r') && !value.contains('\n') {
@@ -39,29 +51,18 @@ pub(crate) fn calculate_file_bytes(file: &FileRecord) -> Result<(u64, u64, u64),
     Ok((path_b, content_b, trailing_b))
 }
 
-pub(crate) fn rendered_base_size(budget: &DigestBudget) -> Option<u64> {
-    let count = u64::try_from(budget.content.file_count).ok()?;
-    let mut size = 0_u64;
-    size = size.checked_add(REPOSITORY_PREFIX.len() as u64)?;
-    size = size.checked_add(budget.label_bytes)?;
-    size = size.checked_add(NEWLINE.len() as u64)?;
-    if let Some(rev) = budget.revision_bytes {
-        size = size.checked_add(REVISION_PREFIX.len() as u64)?;
-        size = size.checked_add(rev)?;
-        size = size.checked_add(NEWLINE.len() as u64)?;
+pub(crate) fn frame_metrics() -> FormatFrameMetrics {
+    FormatFrameMetrics {
+        fixed_frame: TEXT_FIXED_FRAME_BYTES,
+        revision_overhead: TEXT_REVISION_OVERHEAD_BYTES,
+        per_file: TEXT_FILE_BLOCK_BYTES,
     }
-    size = size.checked_add(FILES_PREFIX.len() as u64)?;
-    size = size.checked_add(budget.content.file_count.to_string().len() as u64)?;
-    size = size.checked_add(SKIPPED_PREFIX.len() as u64)?;
-    size = size.checked_add(budget.skipped.to_string().len() as u64)?;
-    size = size.checked_add(METADATA_SUFFIX.len() as u64)?;
-    size = size.checked_add(DIRECTORY_HEADER.len() as u64)?;
-    size = size.checked_add(FILES_HEADER.len() as u64)?;
-    let file_block_bytes = FILE_BLOCK_PREFIX.len() + FILE_BLOCK_SUFFIX.len();
-    size = size.checked_add(count.checked_mul(file_block_bytes as u64)?)?;
-    size = size.checked_add(budget.content.path_bytes)?;
-    size = size.checked_add(budget.content.content_bytes)?;
-    size.checked_add(budget.content.trailing_bytes)
+}
+
+pub(crate) fn extra_metadata_bytes(file_count: usize, skipped: usize) -> Option<u64> {
+    let file_digits = file_count.to_string().len() as u64;
+    let skipped_digits = skipped.to_string().len() as u64;
+    file_digits.checked_add(skipped_digits)
 }
 
 pub(crate) fn render<'a, W, I>(
@@ -128,5 +129,23 @@ mod tests {
             escape_header("path\nwith\nnewline"),
             Cow::Owned(_)
         ));
+    }
+
+    #[test]
+    fn text_static_frame_constants_match_individual_prefixes() {
+        let expected_file_block = (FILE_BLOCK_PREFIX.len() + FILE_BLOCK_SUFFIX.len()) as u64;
+        assert_eq!(TEXT_FILE_BLOCK_BYTES, expected_file_block);
+
+        let expected_fixed_frame = (REPOSITORY_PREFIX.len()
+            + NEWLINE.len()
+            + FILES_PREFIX.len()
+            + SKIPPED_PREFIX.len()
+            + METADATA_SUFFIX.len()
+            + DIRECTORY_HEADER.len()
+            + FILES_HEADER.len()) as u64;
+        assert_eq!(TEXT_FIXED_FRAME_BYTES, expected_fixed_frame);
+
+        let expected_rev_overhead = (REVISION_PREFIX.len() + NEWLINE.len()) as u64;
+        assert_eq!(TEXT_REVISION_OVERHEAD_BYTES, expected_rev_overhead);
     }
 }

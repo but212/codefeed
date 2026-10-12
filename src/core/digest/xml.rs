@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::io::Write;
 
-use super::DigestBudget;
+use super::FormatFrameMetrics;
 use super::byte_count;
 use super::trie::BudgetTrie;
 use crate::core::error::IngestError;
@@ -20,6 +20,19 @@ const XML_REPO_END: &str = "</repository>\n";
 const XML_FILE_START: &str = "<file path=\"";
 const XML_FILE_END: &str = "</file>\n";
 const NEWLINE: &str = "\n";
+
+const XML_PER_FILE_TAG_BYTES: u64 =
+    (XML_FILE_START.len() + XML_TAG_CLOSE.len() + XML_FILE_END.len()) as u64;
+
+const XML_FIXED_FRAME_BYTES: u64 = (XML_REPO_START.len()
+    + XML_TAG_CLOSE.len()
+    + XML_DIR_START.len()
+    + XML_DIR_END.len()
+    + XML_FILES_START.len()
+    + XML_FILES_END.len()
+    + XML_REPO_END.len()) as u64;
+
+const XML_REVISION_ATTR_BYTES: u64 = XML_REVISION_ATTR.len() as u64;
 
 const fn make_escape_ascii() -> [Option<&'static str>; 128] {
     let mut table = [None; 128];
@@ -182,26 +195,12 @@ pub(crate) fn calculate_file_bytes(file: &FileRecord) -> Result<(u64, u64, u64),
     Ok((path_b, content_b, trailing_b))
 }
 
-pub(crate) fn rendered_base_size(budget: &DigestBudget) -> Option<u64> {
-    let count = u64::try_from(budget.content.file_count).ok()?;
-    let mut size = 0_u64;
-    size = size.checked_add(XML_REPO_START.len() as u64)?;
-    size = size.checked_add(budget.label_bytes)?;
-    if let Some(rev) = budget.revision_bytes {
-        size = size.checked_add(XML_REVISION_ATTR.len() as u64)?;
-        size = size.checked_add(rev)?;
+pub(crate) fn frame_metrics() -> FormatFrameMetrics {
+    FormatFrameMetrics {
+        fixed_frame: XML_FIXED_FRAME_BYTES,
+        revision_overhead: XML_REVISION_ATTR_BYTES,
+        per_file: XML_PER_FILE_TAG_BYTES,
     }
-    size = size.checked_add(XML_TAG_CLOSE.len() as u64)?;
-    size = size.checked_add(XML_DIR_START.len() as u64)?;
-    size = size.checked_add(XML_DIR_END.len() as u64)?;
-    size = size.checked_add(XML_FILES_START.len() as u64)?;
-    let per_file_tag_bytes = XML_FILE_START.len() + XML_TAG_CLOSE.len() + XML_FILE_END.len();
-    size = size.checked_add(count.checked_mul(per_file_tag_bytes as u64)?)?;
-    size = size.checked_add(budget.content.path_bytes)?;
-    size = size.checked_add(budget.content.content_bytes)?;
-    size = size.checked_add(budget.content.trailing_bytes)?;
-    size = size.checked_add(XML_FILES_END.len() as u64)?;
-    size.checked_add(XML_REPO_END.len() as u64)
 }
 
 pub(crate) fn render<'a, W, I>(
@@ -326,5 +325,22 @@ mod tests {
                 XmlChunk::Escaped("&apos;"),
             ]
         );
+    }
+
+    #[test]
+    fn xml_static_frame_constants_match_individual_tags() {
+        let expected_per_file =
+            (XML_FILE_START.len() + XML_TAG_CLOSE.len() + XML_FILE_END.len()) as u64;
+        assert_eq!(XML_PER_FILE_TAG_BYTES, expected_per_file);
+
+        let expected_fixed_frame = (XML_REPO_START.len()
+            + XML_TAG_CLOSE.len()
+            + XML_DIR_START.len()
+            + XML_DIR_END.len()
+            + XML_FILES_START.len()
+            + XML_FILES_END.len()
+            + XML_REPO_END.len()) as u64;
+        assert_eq!(XML_FIXED_FRAME_BYTES, expected_fixed_frame);
+        assert_eq!(XML_REVISION_ATTR_BYTES, XML_REVISION_ATTR.len() as u64);
     }
 }

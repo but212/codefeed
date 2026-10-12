@@ -11,6 +11,13 @@ use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
 use crate::core::policy::MAX_OUTPUT_SIZE;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FormatFrameMetrics {
+    pub(crate) fixed_frame: u64,
+    pub(crate) revision_overhead: u64,
+    pub(crate) per_file: u64,
+}
+
 impl DigestFormat {
     pub(crate) fn escape_label_or_revision<'a>(self, text: &'a str) -> std::borrow::Cow<'a, str> {
         match self {
@@ -36,11 +43,34 @@ impl DigestFormat {
         }
     }
 
-    pub(crate) fn rendered_base_size(self, budget: &DigestBudget) -> Option<u64> {
+    pub(crate) fn frame_metrics(self) -> FormatFrameMetrics {
         match self {
-            Self::Text => text::rendered_base_size(budget),
-            Self::Xml => xml::rendered_base_size(budget),
+            Self::Text => text::frame_metrics(),
+            Self::Xml => xml::frame_metrics(),
         }
+    }
+
+    pub(crate) fn extra_metadata_bytes(self, budget: &DigestBudget) -> Option<u64> {
+        match self {
+            Self::Text => text::extra_metadata_bytes(budget.content.file_count, budget.skipped),
+            Self::Xml => Some(0),
+        }
+    }
+
+    pub(crate) fn rendered_base_size(self, budget: &DigestBudget) -> Option<u64> {
+        let metrics = self.frame_metrics();
+        let count = u64::try_from(budget.content.file_count).ok()?;
+        let mut size = metrics.fixed_frame;
+        size = size.checked_add(budget.label_bytes)?;
+        if let Some(rev) = budget.revision_bytes {
+            size = size.checked_add(metrics.revision_overhead)?;
+            size = size.checked_add(rev)?;
+        }
+        size = size.checked_add(self.extra_metadata_bytes(budget)?)?;
+        size = size.checked_add(count.checked_mul(metrics.per_file)?)?;
+        size = size.checked_add(budget.content.path_bytes)?;
+        size = size.checked_add(budget.content.content_bytes)?;
+        size.checked_add(budget.content.trailing_bytes)
     }
 
     pub(crate) fn render<'a, W, I>(

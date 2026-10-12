@@ -18,6 +18,7 @@ imperative-shell boundary.
 - `IngestReport` — `output`, `included_files`, `skipped_files`, `estimated_tokens`.
 - `OutputTarget` — digest destination: `File(PathBuf)` or `Stdout`.
 - `DigestFormat` — output serialization format: `Text` or `Xml`.
+- `FormatFrameMetrics` — format frame overhead value object (`fixed_frame`, `revision_overhead`, `per_file`) decoupling serialization specifications from `DigestBudget` accounting.
 - Budgets — `CandidateBudget` (candidate count), `DigestBudget` (rendered
   bytes and skipped count, composing `ContentMetrics` value object for checked file accounting).
 - Policy — centralised tunables, thresholds, noise lists, sensitive patterns, and extension sets
@@ -37,7 +38,8 @@ imperative-shell boundary.
 ### Rendering & Formats
 
 - ASCII hierarchy tree (`├── `, `└── `, `│   `) matches `DigestBudget` byte-for-byte, escaping control codes and XML entities to prevent tree line-break injections.
-- `DigestBudget` accounts tree rendering size via a mathematically proven per-node depth upper bound (`6 * depth + 12 + display_len`), guaranteeing that fast-path budget checks never underestimate rendered output size and strictly preventing breaches of `MAX_OUTPUT_SIZE`. When approaching the threshold, it falls back to exact size calculation.
+- `DigestBudget` accounts tree rendering size via a mathematically proven per-node depth upper bound (`TREE_DEPTH_BYTE_FACTOR * depth + TREE_NODE_BASE_OVERHEAD + display_len` = `6 * depth + 12 + display_len`), guaranteeing that fast-path budget checks never underestimate rendered output size and strictly preventing breaches of `MAX_OUTPUT_SIZE`. When approaching the threshold, it falls back to exact size calculation.
+- Format frame overheads and tag lengths (`XML_FIXED_FRAME_BYTES`, `XML_PER_FILE_TAG_BYTES`, `TEXT_FIXED_FRAME_BYTES`, `TEXT_FILE_BLOCK_BYTES`) are compile-time composite constants unified under `FormatFrameMetrics` in `DigestFormat::rendered_base_size`, eliminating redundant runtime additions and decoupling formatters from `DigestBudget`.
 - Streaming heuristic token estimation runs over the full digest stream, reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
 - Plain text serialization (`--format text`) preserves all valid UTF-8 file content verbatim (rejecting only NUL bytes) to maintain raw fidelity for LLM prompts; headers and paths are escaped, but file bodies are unmutated (viewing raw digests in interactive terminals may affect emulator state if files contain ANSI escape codes).
 - XML serialization (`--format xml`) structures output into `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`) and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`, unified under `XmlChunks<'a>` streaming iterator across metric measurement, string assembly, and I/O writes. Overhead and escaped bytes are accounted for in `DigestBudget`.

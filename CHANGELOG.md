@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Eliminated per-file path string cloning during local directory ingestion via `std::mem::take` on `ItemPath` in `src/shell/local.rs`.
 - Simplified parallel candidate probing by replacing intermediate `Option` slot arrays with `flat_map` joins and index-based sorting in `src/shell/local.rs`.
 - Unified word-boundary flag tracking in `TokenEstimatingWriter` via `std::mem::take` in `src/core/digest/token.rs`.
+- Extracted format frame byte overheads into compile-time composite constants (`*_FIXED_FRAME_BYTES`, `*_PER_FILE_*`) and unified `rendered_base_size` accounting under `FormatFrameMetrics` in `src/core/digest/mod.rs`, decoupling `src/core/digest/text.rs` and `src/core/digest/xml.rs` from `DigestBudget`.
+- Extracted `BudgetTrie` depth upper bound multipliers (`TREE_DEPTH_BYTE_FACTOR = 6`, `TREE_NODE_BASE_OVERHEAD = 12`) as explicit domain constants in `src/core/digest/trie.rs`.
 
 ## [0.2.0]
 
