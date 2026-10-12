@@ -97,17 +97,25 @@ impl PathClassification {
 }
 
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
-pub(crate) fn is_retryable_status(status_code: u16) -> bool {
+pub(crate) const fn is_retryable_status(status_code: u16) -> bool {
     matches!(status_code, 429 | 500..=599)
 }
 
 /// Calculates bounded exponential backoff duration with jitter for the given attempt.
-pub(crate) fn retry_delay(attempt: usize, entropy: u64) -> std::time::Duration {
-    let multiplier = 1_u64.checked_shl(attempt as u32).unwrap_or(u64::MAX);
+pub(crate) const fn retry_delay(attempt: usize, entropy: u64) -> std::time::Duration {
+    let multiplier = match 1_u64.checked_shl(attempt as u32) {
+        Some(m) => m,
+        None => u64::MAX,
+    };
     let exponential = RETRY_INITIAL_DELAY_MS.saturating_mul(multiplier);
     let jitter = entropy % (RETRY_JITTER_MAX_MS + 1);
     let base = exponential.saturating_add(jitter);
-    std::time::Duration::from_millis(base.min(RETRY_MAX_DELAY_MS))
+    let millis = if base < RETRY_MAX_DELAY_MS {
+        base
+    } else {
+        RETRY_MAX_DELAY_MS
+    };
+    std::time::Duration::from_millis(millis)
 }
 
 #[cfg(test)]
@@ -180,6 +188,17 @@ mod tests {
 
         let d10_jitter = retry_delay(10, 50);
         assert_eq!(d10_jitter.as_millis(), 5000);
+    }
+
+    #[test]
+    fn policy_functions_evaluate_in_const_context() {
+        const {
+            assert!(is_retryable_status(429));
+            assert!(is_retryable_status(500));
+            assert!(!is_retryable_status(200));
+            assert!(retry_delay(0, 0).as_millis() == 250);
+            assert!(retry_delay(10, 0).as_millis() == 5000);
+        }
     }
 
     #[test]

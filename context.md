@@ -18,7 +18,7 @@ imperative-shell boundary.
 - `IngestReport` — `output`, `included_files`, `skipped_files`, `estimated_tokens`.
 - `OutputTarget` — digest destination: `File(PathBuf)` or `Stdout`.
 - `DigestFormat` — output serialization format: `Text` or `Xml`.
-- `FormatFrameMetrics` — format frame overhead value object (`fixed_frame`, `revision_overhead`, `per_file`) decoupling serialization specifications from `DigestBudget` accounting.
+- `FormatFrameMetrics` — format frame overhead value object (`fixed_frame`, `revision_overhead`, `per_file`) with associated compile-time constants (`TEXT`, `XML`) decoupling serialization specifications from `DigestBudget` accounting.
 - Budgets — `CandidateBudget` (candidate count), `DigestBudget` (rendered
   bytes and skipped count, composing `ContentMetrics` value object for checked file accounting).
 - Policy — centralised tunables, thresholds, noise lists, sensitive patterns, and extension sets
@@ -39,7 +39,7 @@ imperative-shell boundary.
 
 - ASCII hierarchy tree (`├── `, `└── `, `│   `) matches `DigestBudget` byte-for-byte, escaping control codes and XML entities to prevent tree line-break injections.
 - `DigestBudget` accounts tree rendering size via a mathematically proven per-node depth upper bound (`TREE_DEPTH_BYTE_FACTOR * depth + TREE_NODE_BASE_OVERHEAD + display_len` = `6 * depth + 12 + display_len`), guaranteeing that fast-path budget checks never underestimate rendered output size and strictly preventing breaches of `MAX_OUTPUT_SIZE`. When approaching the threshold, it falls back to exact size calculation.
-- Format frame overheads and tag lengths (`XML_FIXED_FRAME_BYTES`, `XML_PER_FILE_TAG_BYTES`, `TEXT_FIXED_FRAME_BYTES`, `TEXT_FILE_BLOCK_BYTES`) are compile-time composite constants unified under `FormatFrameMetrics` in `DigestFormat::rendered_base_size`, eliminating redundant runtime additions and decoupling formatters from `DigestBudget`.
+- Format frame overheads and tag lengths (`XML_FIXED_FRAME_BYTES`, `XML_PER_FILE_TAG_BYTES`, `TEXT_FIXED_FRAME_BYTES`, `TEXT_FILE_BLOCK_BYTES`) are compile-time composite constants unified under associated constants `FormatFrameMetrics::TEXT` and `FormatFrameMetrics::XML` in `DigestFormat::rendered_base_size`, eliminating runtime wrapper overhead. Text metadata digit overhead (`extra_metadata_bytes`) is computed via pure mathematical `const fn num_digits`, eliminating heap allocations during budget checks.
 - Streaming heuristic token estimation runs over the full digest stream, reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
 - Plain text serialization (`--format text`) preserves all valid UTF-8 file content verbatim (rejecting only NUL bytes) to maintain raw fidelity for LLM prompts; headers and paths are escaped, but file bodies are unmutated (viewing raw digests in interactive terminals may affect emulator state if files contain ANSI escape codes).
 - XML serialization (`--format xml`) structures output into `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`) and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`, unified under `XmlChunks<'a>` streaming iterator across metric measurement, string assembly, and I/O writes. Overhead and escaped bytes are accounted for in `DigestBudget`.
@@ -58,7 +58,7 @@ imperative-shell boundary.
 - Verbatim paths (`\\?\`) on Windows bypass redundant canonicalization syscalls during containment checks (`is_strictly_beneath`), which verifies ancestry component-wise without intermediate heap allocations.
 - Trie insertion is iterative and non-recursive with $O(1)$ fast-path sibling comparison against previously inserted nodes (`find_child`), avoiding stack frame exhaustion on deeply nested directories. `BudgetTrieNode` leverages `Cow<'_, str>` and sparse escaping (`Option<String>`), eliminating redundant heap allocations for unescaped paths.
 - CLI arguments are parsed linearly into options and source without third-party dependencies, supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters.
-- Candidate budget uses `HashMap` for expected $O(N)$ candidate accounting with zero string allocation on existing directory hits, formatting overflow diagnostics deterministically by count descending then directory ascending.
+- Candidate budget uses `HashMap` with `extract_dir_slice` and `get_mut` cached lookups, eliminating redundant `String` key allocations on known directory paths while formatting overflow diagnostics deterministically by count descending then directory ascending.
 - Digest budget is error-terminal: limit breach immediately errors and aborts without internal transactional rollback.
 
 ### Network & GitHub

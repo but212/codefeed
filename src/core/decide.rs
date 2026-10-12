@@ -118,14 +118,12 @@ impl CandidateBudget {
             .count
             .checked_add(1)
             .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
-        let dir_slice = match path {
-            Some(p) => match p.find('/') {
-                Some(idx) => &p[..=idx],
-                None => "<root>/",
-            },
-            None => "<unknown>/",
-        };
-        *self.dir_counts.entry(dir_slice.to_owned()).or_insert(0) += 1;
+        let dir_slice = extract_dir_slice(path);
+        if let Some(count) = self.dir_counts.get_mut(dir_slice) {
+            *count += 1;
+        } else {
+            self.dir_counts.insert(dir_slice.to_owned(), 1);
+        }
 
         if self.count > MAX_FILE_COUNT {
             return Err(IngestError::CandidateLimitExceeded(
@@ -149,6 +147,16 @@ impl CandidateBudget {
             budget.add(path)?;
         }
         Ok(())
+    }
+}
+
+fn extract_dir_slice(path: Option<&str>) -> &str {
+    match path {
+        Some(p) => match p.find('/') {
+            Some(idx) => &p[..=idx],
+            None => "<root>/",
+        },
+        None => "<unknown>/",
     }
 }
 
@@ -412,5 +420,12 @@ mod tests {
     #[test]
     fn item_path_default_is_non_utf8() {
         assert!(matches!(ItemPath::default(), ItemPath::NonUtf8));
+    }
+
+    #[test]
+    fn extracts_dir_slice_from_paths() {
+        assert_eq!(extract_dir_slice(Some("src/core/decide.rs")), "src/");
+        assert_eq!(extract_dir_slice(Some("root_file.txt")), "<root>/");
+        assert_eq!(extract_dir_slice(None), "<unknown>/");
     }
 }

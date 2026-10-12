@@ -195,13 +195,11 @@ pub(crate) fn calculate_file_bytes(file: &FileRecord) -> Result<(u64, u64, u64),
     Ok((path_b, content_b, trailing_b))
 }
 
-pub(crate) fn frame_metrics() -> FormatFrameMetrics {
-    FormatFrameMetrics {
-        fixed_frame: XML_FIXED_FRAME_BYTES,
-        revision_overhead: XML_REVISION_ATTR_BYTES,
-        per_file: XML_PER_FILE_TAG_BYTES,
-    }
-}
+pub(crate) const FRAME_METRICS: FormatFrameMetrics = FormatFrameMetrics {
+    fixed_frame: XML_FIXED_FRAME_BYTES,
+    revision_overhead: XML_REVISION_ATTR_BYTES,
+    per_file: XML_PER_FILE_TAG_BYTES,
+};
 
 pub(crate) fn render<'a, W, I>(
     writer: &mut W,

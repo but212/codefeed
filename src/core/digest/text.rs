@@ -51,17 +51,24 @@ pub(crate) fn calculate_file_bytes(file: &FileRecord) -> Result<(u64, u64, u64),
     Ok((path_b, content_b, trailing_b))
 }
 
-pub(crate) fn frame_metrics() -> FormatFrameMetrics {
-    FormatFrameMetrics {
-        fixed_frame: TEXT_FIXED_FRAME_BYTES,
-        revision_overhead: TEXT_REVISION_OVERHEAD_BYTES,
-        per_file: TEXT_FILE_BLOCK_BYTES,
+pub(crate) const FRAME_METRICS: FormatFrameMetrics = FormatFrameMetrics {
+    fixed_frame: TEXT_FIXED_FRAME_BYTES,
+    revision_overhead: TEXT_REVISION_OVERHEAD_BYTES,
+    per_file: TEXT_FILE_BLOCK_BYTES,
+};
+
+pub(crate) const fn num_digits(mut n: usize) -> u64 {
+    let mut digits = 1;
+    while n >= 10 {
+        digits += 1;
+        n /= 10;
     }
+    digits
 }
 
-pub(crate) fn extra_metadata_bytes(file_count: usize, skipped: usize) -> Option<u64> {
-    let file_digits = file_count.to_string().len() as u64;
-    let skipped_digits = skipped.to_string().len() as u64;
+pub(crate) const fn extra_metadata_bytes(file_count: usize, skipped: usize) -> Option<u64> {
+    let file_digits = num_digits(file_count);
+    let skipped_digits = num_digits(skipped);
     file_digits.checked_add(skipped_digits)
 }
 
@@ -147,5 +154,20 @@ mod tests {
 
         let expected_rev_overhead = (REVISION_PREFIX.len() + NEWLINE.len()) as u64;
         assert_eq!(TEXT_REVISION_OVERHEAD_BYTES, expected_rev_overhead);
+    }
+
+    #[test]
+    fn num_digits_matches_to_string_and_evaluates_in_const() {
+        const {
+            assert!(matches!(extra_metadata_bytes(100, 5), Some(4)));
+        }
+
+        for n in [0, 1, 9, 10, 99, 100, 999, 1000, 1234567, usize::MAX] {
+            assert_eq!(
+                num_digits(n),
+                n.to_string().len() as u64,
+                "digit count mismatch for {n}"
+            );
+        }
     }
 }

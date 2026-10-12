@@ -18,6 +18,11 @@ pub(crate) struct FormatFrameMetrics {
     pub(crate) per_file: u64,
 }
 
+impl FormatFrameMetrics {
+    pub(crate) const TEXT: Self = text::FRAME_METRICS;
+    pub(crate) const XML: Self = xml::FRAME_METRICS;
+}
+
 impl DigestFormat {
     pub(crate) fn escape_label_or_revision<'a>(self, text: &'a str) -> std::borrow::Cow<'a, str> {
         match self {
@@ -26,7 +31,7 @@ impl DigestFormat {
         }
     }
 
-    pub(crate) fn escape_tree_xml(self) -> bool {
+    pub(crate) const fn escape_tree_xml(self) -> bool {
         match self {
             Self::Text => false,
             Self::Xml => true,
@@ -43,10 +48,10 @@ impl DigestFormat {
         }
     }
 
-    pub(crate) fn frame_metrics(self) -> FormatFrameMetrics {
+    pub(crate) const fn frame_metrics(self) -> FormatFrameMetrics {
         match self {
-            Self::Text => text::frame_metrics(),
-            Self::Xml => xml::frame_metrics(),
+            Self::Text => FormatFrameMetrics::TEXT,
+            Self::Xml => FormatFrameMetrics::XML,
         }
     }
 
@@ -287,6 +292,24 @@ mod tests {
     use crate::core::error::IngestError;
     use crate::core::model::FileRecord;
     use crate::core::policy::MAX_OUTPUT_SIZE;
+
+    #[test]
+    fn format_frame_metrics_and_flags_evaluate_in_const() {
+        const {
+            assert!(!DigestFormat::Text.escape_tree_xml());
+            assert!(DigestFormat::Xml.escape_tree_xml());
+            assert!(DigestFormat::Text.frame_metrics().fixed_frame > 0);
+            assert!(DigestFormat::Xml.frame_metrics().fixed_frame > 0);
+            assert!(
+                FormatFrameMetrics::TEXT.fixed_frame
+                    == DigestFormat::Text.frame_metrics().fixed_frame
+            );
+            assert!(
+                FormatFrameMetrics::XML.fixed_frame
+                    == DigestFormat::Xml.frame_metrics().fixed_frame
+            );
+        }
+    }
 
     fn test_trie(files: &[FileRecord], escape_xml: bool) -> BudgetTrie {
         let mut trie = BudgetTrie::new(escape_xml);
