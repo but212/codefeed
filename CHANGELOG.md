@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Fixed `DigestBudget` tree upper bound calculation to mathematically account for depth-dependent indentation overhead ($6d + 12 + \operatorname{len}(\text{display})$), strictly preventing 20 MiB digest budget breaches in deeply nested directory trees.
+- Hardened Windows local file reading against intermediate directory junction/symlink root escapes via `GetFinalPathNameByHandleW` component boundary verification.
+- Fixed `CandidateBudget` directory counting bottleneck by migrating from `Vec` linear scan to `HashMap` with zero-allocation lookups on existing directories, preserving deterministic diagnostic sorting.
+
+### Changed
+
+- Clarified and verified plain text format raw content preservation contract for LLM prompt fidelity, distinguishing it from XML 1.0 control character sanitization.
+- Documented sensitive file filtering as a conventional path/extension filter rather than a content-based secret scanner.
+
 ## [0.1.1]
 
 ### Added
