@@ -98,12 +98,12 @@ Credentials are sent as `Authorization: Bearer <token>` strictly to exact-origin
 - **Exclusions**: Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and conventional sensitive patterns (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `id_rsa*`, `id_ed25519*`, `credentials*`). Note: Sensitive file filtering is a conventional filename/extension filter, not a deep content-based secret scanner. Excluded files consume neither candidate slots nor skipped counts.
 - **Gitignore**: Applies `.gitignore` rules in local sources without Git state. Ignores `.ignore` files.
 - **Traversal**: Traverses local filesystems via `ignore::WalkParallel` with strict deterministic lexicographical sorting. Prevents symlink and intermediate directory junction traversal (`openat2`/`openat` on Unix, native handle canonical path component verification on Windows).
-- **Remote Ingestion**: Streams GitHub repository archives (`/repos/{owner}/{repo}/tarball/{ref}`) in a single HTTP request ($O(1)$) using `flate2` and `tar` directly into the selection pipeline with zero intermediate disk files, eliminating CDN rate limits and per-file connection overhead. Extracts commit revision from the archive `pax_global_header`.
+- **Remote Ingestion**: Streams GitHub repository archives (`/repos/{owner}/{repo}/tarball/{ref}`) in a single HTTP request using `flate2` and `tar` directly into the selection pipeline with zero intermediate disk files, eliminating CDN rate limits and per-file connection overhead. Extracts commit revision from the archive `pax_global_header`.
 - **Limits**:
-  - Max candidate files: 10,000 (accounted in expected $O(N)$ time with zero-allocation lookups; aborts with deterministically sorted largest-directory diagnostics on overflow).
-  - Max file size: 1 MiB per file (files exceeding this are counted as `skipped`).
-  - Max digest size: 20 MiB (strictly enforced via mathematical depth-aware tree upper bound accounting; aborts with largest-file diagnostics on overflow).
-  - Max archive transfer duration: 300 s (`ARCHIVE_MAX_SECS`).
-  - Local reader batch size: 16 threads (`FETCH_WINDOW`).
-- **Network Resilience**: Retries transient transport errors and HTTP 429/5xx up to 3 total attempts with exponential backoff and jitter (capped at 5s). Fails immediately on 4xx client errors.
-- **Central Policy**: Operational constants and patterns reside in `src/core/policy.rs`.
+  - Candidate files: bounded candidate budget with zero-allocation lookups; aborts with deterministically sorted largest-directory diagnostics on overflow.
+  - Per-file size: individual file size cap; files exceeding the limit are counted as `skipped`.
+  - Digest size: strictly enforced total digest cap with depth-aware tree upper bound accounting; aborts with largest-file diagnostics on overflow.
+  - Archive transfer: bounded whole-archive transfer timeout (`ARCHIVE_MAX_SECS`).
+  - Local reader batch size: bounded worker thread pool (`FETCH_WINDOW`).
+- **Network Resilience**: Retries transient transport errors and rate limits (HTTP 429/5xx) with exponential backoff and jitter. Fails immediately on 4xx client errors.
+- **Central Policy**: Operational constants, budgets, and patterns reside in `src/core/policy.rs`.
