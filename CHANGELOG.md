@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Single-request GitHub repository ingestion streaming whole-archive tarballs (`/repos/{owner}/{repo}/tarball/{ref}`) via `flate2` and `tar`.
 - Extraction of exact Git commit SHA from tarball `pax_global_header` without secondary API queries.
 - `ARCHIVE_MAX_SECS` policy limit (300 s) bounding whole-archive transfer time.
+- Direct Unix FFI bindings in `src/shell/sys.rs` replacing `libc`.
 
 ### Changed
 
@@ -19,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- Unused `serde` and `serde_json` dependencies.
+- External `libc` crate dependency on Unix targets.
 - GitHub Git Trees API recursive tree traversal and concurrent blob fetch pipeline.
 - `MAX_JSON_SIZE` policy limit.
 

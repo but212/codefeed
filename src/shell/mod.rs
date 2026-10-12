@@ -11,6 +11,8 @@ pub(crate) mod local_io;
 pub(crate) mod orchestrate;
 pub(crate) mod output;
 pub(crate) mod output_exclusion;
+#[cfg(unix)]
+pub(crate) mod sys;
 
 #[cfg(test)]
 pub(crate) fn temp_dir(label: &str) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {

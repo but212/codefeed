@@ -106,3 +106,4 @@ never depends on shell code; shell code depends on the core in one direction.
   - `shell/github_client.rs`: HTTP transport, body bounding, and token resolution.
   - `shell/github.rs`: streaming archive GitHub collection (`collect_github`).
   - `shell/output.rs`: atomic file writing or standard output stream emission.
+  - `shell/sys.rs`: minimal Unix FFI bindings and POSIX constants for symlink and boundary checks.
