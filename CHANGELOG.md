@@ -5,18 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.2]
 
 ### Fixed
 
-- Fixed `DigestBudget` tree upper bound calculation to mathematically account for depth-dependent indentation overhead ($6d + 12 + \operatorname{len}(\text{display})$), strictly preventing 20 MiB digest budget breaches in deeply nested directory trees.
-- Hardened Windows local file reading against intermediate directory junction/symlink root escapes via `GetFinalPathNameByHandleW` component boundary verification.
-- Fixed `CandidateBudget` directory counting bottleneck by migrating from `Vec` linear scan to `HashMap` with zero-allocation lookups on existing directories, preserving deterministic diagnostic sorting.
+- Fixed `DigestBudget` tree upper bound calculation to account for depth-dependent indentation overhead (`6 * depth + 12 + display.len()`), preventing 20 MiB budget breaches in deeply nested trees.
+- Hardened Windows file reading against junction/symlink root escapes via `GetFinalPathNameByHandleW` boundary checks.
+- Fixed `CandidateBudget` directory counting bottleneck by replacing linear `Vec` scans with zero-allocation `HashMap` lookups, preserving deterministic diagnostic sorting.
 
 ### Changed
 
-- Clarified and verified plain text format raw content preservation contract for LLM prompt fidelity, distinguishing it from XML 1.0 control character sanitization.
-- Documented sensitive file filtering as a conventional path/extension filter rather than a content-based secret scanner.
+- Clarified plain text raw preservation contract for LLM prompt fidelity, distinguishing it from XML 1.0 control character sanitization.
+- Documented sensitive file filtering as conventional path/extension matching rather than content-based secret scanning.
 
 ## [0.1.1]
 
@@ -28,23 +28,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Simplified CLI argument parser to direct linear traversal while retaining all syntax contracts.
-- Refactored `DigestBudget` and `BudgetTrie` to be lean and error-terminal, removing unnecessary transactional rollback tracking.
-- Streamlined GitHub blob fetching with direct scoped worker threads (`std::thread::scope`).
-- Replaced custom SWAR bitwise null scan with safe standard library routines.
-- Hardened intermediate directory symlink checks in Unix I/O and preserved inode-based hard link output exclusion.
+- Simplified CLI argument parser to linear traversal while retaining syntax contracts.
+- Refactored `DigestBudget` and `BudgetTrie` to be error-terminal, removing transactional rollback tracking.
+- Streamlined GitHub blob fetching using scoped worker threads (`std::thread::scope`).
+- Replaced custom SWAR bitwise null scan with standard library routines.
+- Hardened Unix intermediate symlink checks and preserved inode-based hard link exclusion.
 
 ## [0.1.0] - 2026-10-11
 
 ### Added
 
-- Fast CLI converting local directories or GitHub repositories into LLM-friendly digests.
+- CLI converting local directories and GitHub repositories into LLM-friendly digests.
 - Local directory walking with `.gitignore` awareness, hidden file exclusion, and symlink skipping.
-- Remote GitHub repository ingestion via Git trees and concurrent blob downloads without local `git` binary.
+- Remote GitHub ingestion via Git trees and concurrent blob downloads without local `git` binary.
 - Plain text and XML serialization formats (`--format <text|xml>`) with entity escaping and control character sanitization.
 - Flexible output destinations: atomic file writing or stdout streaming (`--output -`).
 - Git revision selection for remote repositories (`--ref <BRANCH|TAG|COMMIT>`).
-- Streaming heuristic token estimation reported in digest and completion summary.
+- Streaming heuristic token estimation in digest output and completion summary.
 - Built-in sensitive file and credential filtering (`.env*`, `*.key`, `*.pem`, `id_rsa*`).
 - Conventional lockfile and noise path exclusion before candidate accounting.
 - Resource budgets enforcing maximum candidate file counts and output sizes.
+
+[Unreleased]: https://github.com/but212/codefeed/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/but212/codefeed/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/but212/codefeed/releases/tag/v0.1.0
