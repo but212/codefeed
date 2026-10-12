@@ -46,7 +46,7 @@ imperative-shell boundary.
 
 ### I/O & Output Target Contracts
 
-- File target writes atomically: temporary file, disk sync, rename.
+- File target writes atomically via RAII guard (`AtomicFile`): temporary file creation, streaming write, disk sync, explicit handle release, atomic rename, and automatic drop cleanup on error or panic.
 - Stdout target writes directly to stdout with no temporary file or filesystem sync.
 - Completion messages emit to stdout for file targets and stderr for stdout targets.
 - Broken downstream pipe (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0.
@@ -108,5 +108,6 @@ never depends on shell code; shell code depends on the core in one direction.
   - `shell/output_exclusion.rs`: output file identity detection and path normalization.
   - `shell/github_client.rs`: HTTP transport, body bounding, and token resolution.
   - `shell/github.rs`: streaming archive GitHub collection (`collect_github`).
-  - `shell/output.rs`: atomic file writing or standard output stream emission.
+  - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`) or standard output stream emission.
+  - `shell/mod.rs`: shell module declarations and scoped test fixture isolation (`TempDirGuard`).
   - `shell/sys.rs`: minimal Unix FFI bindings and POSIX constants for symlink and boundary checks.
