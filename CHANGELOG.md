@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1]
+
+### Added
+
+- Zero-dependency benchmark runner and synthetic microbenchmark suite (`benches/bench.rs`) covering `BudgetTrie`, `render_digest_to_writer`, `TokenEstimatingWriter`, and batch `Selector::decide`.
+- Library target (`src/lib.rs`) exposing core entry points and benchmark facade (`#[doc(hidden)] pub mod __bench`).
+
+### Changed
+
+- Generalized `DigestFormat::render`, `text::render`, and `xml::render` over generic `IntoIterator<Item = &'a FileRecord>`.
+- Optimized `BudgetTrie::insert` with iterative descent, zero-allocation path parsing, and O(1) last-sibling matching.
+- Accelerated XML escaping and metric calculation via byte-level ASCII lookup tables and slice chunk writes in `src/core/digest/xml.rs`.
+- Replaced per-batch thread spawning in local file reading with persistent scoped workers and atomic work stealing in `src/shell/local.rs`.
+- Hardened and optimized Windows root containment checks (`is_strictly_beneath`) by eliminating heap allocations and redundant path canonicalizations in `src/shell/local_io.rs`.
+
 ## [0.2.0]
 
 ### Added
@@ -69,6 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Conventional lockfile and noise path exclusion before candidate accounting.
 - Resource budgets enforcing maximum candidate file counts and output sizes.
 
+[0.2.1]: https://github.com/but212/codefeed/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/but212/codefeed/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/but212/codefeed/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/but212/codefeed/compare/v0.1.0...v0.1.1
