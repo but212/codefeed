@@ -129,13 +129,17 @@ pub(crate) fn rendered_base_size(budget: &DigestBudget) -> Option<u64> {
     size.checked_add(XML_REPO_END.len() as u64)
 }
 
-pub(crate) fn render<W: Write + ?Sized>(
+pub(crate) fn render<'a, W, I>(
     writer: &mut W,
     label: &str,
     revision: Option<&str>,
-    files: &[FileRecord],
+    files: I,
     trie: &BudgetTrie,
-) -> Result<(), IngestError> {
+) -> Result<(), IngestError>
+where
+    W: Write + ?Sized,
+    I: IntoIterator<Item = &'a FileRecord>,
+{
     writer.write_all(XML_REPO_START.as_bytes())?;
     writer.write_all(xml_escape(label).as_bytes())?;
     if let Some(revision) = revision {
@@ -147,7 +151,7 @@ pub(crate) fn render<W: Write + ?Sized>(
     trie.render_to_writer(writer)?;
     writer.write_all(XML_DIR_END.as_bytes())?;
     writer.write_all(XML_FILES_START.as_bytes())?;
-    let mut ordered_files: Vec<_> = files.iter().collect();
+    let mut ordered_files: Vec<_> = files.into_iter().collect();
     ordered_files.sort_by(|left, right| left.path.cmp(&right.path));
     for file in ordered_files {
         writer.write_all(XML_FILE_START.as_bytes())?;

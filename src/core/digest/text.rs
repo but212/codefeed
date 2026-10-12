@@ -64,14 +64,21 @@ pub(crate) fn rendered_base_size(budget: &DigestBudget) -> Option<u64> {
     size.checked_add(budget.trailing_bytes)
 }
 
-pub(crate) fn render<W: Write + ?Sized>(
+pub(crate) fn render<'a, W, I>(
     writer: &mut W,
     label: &str,
     revision: Option<&str>,
-    files: &[FileRecord],
+    files: I,
     skipped: usize,
     trie: &BudgetTrie,
-) -> Result<(), IngestError> {
+) -> Result<(), IngestError>
+where
+    W: Write + ?Sized,
+    I: IntoIterator<Item = &'a FileRecord>,
+{
+    let mut ordered_files: Vec<&FileRecord> = files.into_iter().collect();
+    ordered_files.sort_by(|left, right| left.path.cmp(&right.path));
+
     writer.write_all(REPOSITORY_PREFIX.as_bytes())?;
     writer.write_all(escape_header(label).as_bytes())?;
     writer.write_all(NEWLINE.as_bytes())?;
@@ -81,23 +88,17 @@ pub(crate) fn render<W: Write + ?Sized>(
         writer.write_all(NEWLINE.as_bytes())?;
     }
     writer.write_all(FILES_PREFIX.as_bytes())?;
-    writer.write_all(files.len().to_string().as_bytes())?;
+    writer.write_all(ordered_files.len().to_string().as_bytes())?;
     writer.write_all(SKIPPED_PREFIX.as_bytes())?;
     writer.write_all(skipped.to_string().as_bytes())?;
     writer.write_all(METADATA_SUFFIX.as_bytes())?;
 
-    let mut ordered_files: Vec<_> = files
-        .iter()
-        .map(|file| (escape_header(&file.path), file))
-        .collect();
-    ordered_files.sort_by(|left, right| left.1.path.cmp(&right.1.path));
-
     writer.write_all(DIRECTORY_HEADER.as_bytes())?;
     trie.render_to_writer(writer)?;
     writer.write_all(FILES_HEADER.as_bytes())?;
-    for (escaped_path, file) in ordered_files {
+    for file in ordered_files {
         writer.write_all(FILE_BLOCK_PREFIX.as_bytes())?;
-        writer.write_all(escaped_path.as_bytes())?;
+        writer.write_all(escape_header(&file.path).as_bytes())?;
         writer.write_all(FILE_BLOCK_SUFFIX.as_bytes())?;
         writer.write_all(file.content.as_bytes())?;
         if !file.content.ends_with('\n') {

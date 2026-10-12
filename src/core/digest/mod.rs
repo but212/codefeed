@@ -42,15 +42,19 @@ impl DigestFormat {
         }
     }
 
-    pub(crate) fn render<W: std::io::Write + ?Sized>(
+    pub(crate) fn render<'a, W, I>(
         self,
         writer: &mut W,
         label: &str,
         revision: Option<&str>,
-        files: &[FileRecord],
+        files: I,
         skipped: usize,
         trie: &BudgetTrie,
-    ) -> Result<(), IngestError> {
+    ) -> Result<(), IngestError>
+    where
+        W: std::io::Write + ?Sized,
+        I: IntoIterator<Item = &'a FileRecord>,
+    {
         match self {
             Self::Text => text::render(writer, label, revision, files, skipped, trie),
             Self::Xml => xml::render(writer, label, revision, files, trie),
@@ -333,6 +337,34 @@ FILE: b.txt\n\
 hello\n\
 \n";
         assert_eq!(streamed_str, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn renders_from_arbitrary_iterator() -> Result<(), Box<dyn std::error::Error>> {
+        let files = [
+            FileRecord {
+                path: "b.txt".into(),
+                content: "content_b\n".into(),
+            },
+            FileRecord {
+                path: "excluded.txt".into(),
+                content: "skip_me\n".into(),
+            },
+            FileRecord {
+                path: "a.txt".into(),
+                content: "content_a\n".into(),
+            },
+        ];
+        let trie = test_trie(&files[0..1], false);
+        let mut buf = Vec::new();
+        let filtered_iter = files.iter().filter(|f| f.path != "excluded.txt");
+        DigestFormat::Text.render(&mut buf, "repo", None, filtered_iter, 1, &trie)?;
+        let rendered = std::str::from_utf8(&buf)?;
+        assert!(rendered.contains("Files: 2"));
+        assert!(rendered.contains("FILE: a.txt"));
+        assert!(rendered.contains("FILE: b.txt"));
+        assert!(!rendered.contains("excluded.txt"));
         Ok(())
     }
 

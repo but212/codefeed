@@ -40,7 +40,7 @@ imperative-shell boundary.
 - Streaming heuristic token estimation runs over the full digest stream, reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
 - Plain text serialization (`--format text`) preserves all valid UTF-8 file content verbatim (rejecting only NUL bytes) to maintain raw fidelity for LLM prompts; headers and paths are escaped, but file bodies are unmutated (viewing raw digests in interactive terminals may affect emulator state if files contain ANSI escape codes).
 - XML serialization (`--format xml`) structures output into `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`) and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`. Overhead and escaped bytes are accounted for in `DigestBudget`.
-- File-path ordering is strictly lexicographical and owned solely by `render_digest_to_writer` / `render_digest`.
+- File-path ordering is strictly lexicographical and owned solely by `render_digest_to_writer` / `render_digest`. Format rendering consumes `IntoIterator<Item = &FileRecord>` to support streaming and arbitrary iteration pipelines while preserving deterministic path sorting.
 - Local digest headers use root directory basename (`Repository: <basename>`), omitting absolute paths and system prefixes.
 
 ### I/O & Output Target Contracts
