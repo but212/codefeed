@@ -432,4 +432,74 @@ mod tests {
         fs::remove_dir_all(root_b)?;
         Ok(())
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_intermediate_junction_escape_rejected(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::process::Command;
+
+        let root = temp_dir("win_junc_root")?;
+        let outside = temp_dir("win_junc_outside")?;
+        fs::create_dir_all(&root)?;
+        fs::create_dir_all(&outside)?;
+
+        let secret = outside.join("secret.txt");
+        fs::write(&secret, "confidential")?;
+
+        let junction = root.join("link_to_outside");
+        let status = Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                junction.to_str().unwrap(),
+                outside.to_str().unwrap(),
+            ])
+            .status();
+
+        if let Ok(s) = status && s.success() {
+            let path_via_junction = junction.join("secret.txt");
+            let probe = read_local_file(&root, &path_via_junction)?;
+            assert!(
+                matches!(probe, Probe::Missing),
+                "File accessed through escaping junction must be treated as Probe::Missing"
+            );
+            let _ = fs::remove_dir(&junction);
+        }
+
+        let _ = fs::remove_dir_all(&outside);
+        let _ = fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_symlink_escape_rejected_if_supported(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::symlink_file;
+
+        let root = temp_dir("win_sym_root")?;
+        let outside = temp_dir("win_sym_outside")?;
+        fs::create_dir_all(&root)?;
+        fs::create_dir_all(&outside)?;
+
+        let secret = outside.join("secret.txt");
+        fs::write(&secret, "confidential")?;
+
+        let symlink = root.join("link_to_secret.txt");
+        // If system allows symlink creation (e.g. Developer Mode enabled)
+        if symlink_file(&secret, &symlink).is_ok() {
+            let probe = read_local_file(&root, &symlink)?;
+            assert!(
+                matches!(probe, Probe::Missing),
+                "File accessed through escaping symlink must be treated as Probe::Missing"
+            );
+            let _ = fs::remove_file(&symlink);
+        }
+
+        let _ = fs::remove_dir_all(&outside);
+        let _ = fs::remove_dir_all(&root);
+        Ok(())
+    }
 }
