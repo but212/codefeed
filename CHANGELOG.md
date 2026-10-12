@@ -49,6 +49,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Conventional lockfile and noise path exclusion before candidate accounting.
 - Resource budgets enforcing maximum candidate file counts and output sizes.
 
-[Unreleased]: https://github.com/but212/codefeed/compare/v0.1.1...HEAD
+[0.1.2]: https://github.com/but212/codefeed/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/but212/codefeed/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/but212/codefeed/releases/tag/v0.1.0
