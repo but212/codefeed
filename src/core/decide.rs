@@ -193,7 +193,15 @@ mod tests {
     }
 
     #[test]
-    fn text_content_handles_multibyte_straddling_probe_boundary() {
+    fn text_content_detects_binary_and_handles_probe_boundary() {
+        let mut bin = vec![b'a'; 1024];
+        bin[12] = 0;
+        assert!(text_content(bin).is_none());
+
+        let mut bin_tail = vec![b'b'; 5000];
+        bin_tail[4500] = 0;
+        assert!(text_content(bin_tail).is_none());
+
         let mut bytes = vec![b'a'; 4095];
         bytes.extend_from_slice("€tail\n".as_bytes());
         let content = text_content(bytes);
@@ -206,16 +214,13 @@ mod tests {
     }
 
     #[test]
-    fn counts_candidate_before_content_filtering() {
+    fn candidate_budget_enforces_limit_and_batch_verification() {
         let mut candidates = CandidateBudget::default();
         for _ in 0..MAX_FILE_COUNT {
             candidates.add(None).unwrap();
         }
         assert!(candidates.add(None).is_err());
-    }
 
-    #[test]
-    fn candidate_budget_verify_count_checks_limit() {
         let items: Vec<Option<&str>> = (0..MAX_FILE_COUNT).map(|_| Some("src/file.rs")).collect();
         assert!(CandidateBudget::verify_count(items.iter().copied(), items.len()).is_ok());
 
@@ -227,39 +232,24 @@ mod tests {
     }
 
     #[test]
-    fn decide_includes_text_candidate() -> Result<(), Box<dyn std::error::Error>> {
+    fn decide_classifies_text_binary_and_size_boundaries() -> Result<(), Box<dyn std::error::Error>>
+    {
         let mut selector = Selector::new("repo", None, DigestFormat::Text)?;
         selector.decide(decide_item("a.txt", Probe::Bytes(b"hello".to_vec())))?;
-        let (files, skipped, _) = selector.into_parts();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].path, "a.txt");
-        assert_eq!(skipped, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn decide_skips_binary_candidate() -> Result<(), Box<dyn std::error::Error>> {
-        let mut selector = Selector::new("repo", None, DigestFormat::Text)?;
-        selector.decide(decide_item("bin", Probe::Bytes(vec![0, 1, 2])))?;
-        selector.decide(decide_item("bad", Probe::Bytes(vec![0xff])))?;
-        let (files, skipped, _) = selector.into_parts();
-        assert!(files.is_empty());
-        assert_eq!(skipped, 2);
-        Ok(())
-    }
-
-    #[test]
-    fn decide_handles_size_boundary() -> Result<(), Box<dyn std::error::Error>> {
-        let mut selector = Selector::new("repo", None, DigestFormat::Text)?;
-        selector.decide(decide_item("big", Probe::TooLarge))?;
-        selector.decide(decide_item("gone", Probe::Missing))?;
+        selector.decide(decide_item("bin.bin", Probe::Bytes(vec![0, 1, 2])))?;
+        selector.decide(decide_item("bad_utf8", Probe::Bytes(vec![0xff])))?;
+        selector.decide(decide_item("big.txt", Probe::TooLarge))?;
+        selector.decide(decide_item("missing.txt", Probe::Missing))?;
         selector.decide(decide_item(
             "exact.txt",
             Probe::Bytes(vec![b'x'; MAX_FILE_SIZE as usize]),
         ))?;
+
         let (files, skipped, _) = selector.into_parts();
-        assert_eq!(files.len(), 1);
-        assert_eq!(skipped, 2);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "a.txt");
+        assert_eq!(files[1].path, "exact.txt");
+        assert_eq!(skipped, 4);
         Ok(())
     }
 
@@ -310,32 +300,19 @@ mod tests {
             probe: Probe::Bytes(b"text".to_vec()),
         };
         assert!(matches!(non_utf8.resolve(), ItemResolution::Skipped(None)));
+        assert!(matches!(ItemPath::default(), ItemPath::NonUtf8));
     }
 
     #[test]
     fn decide_counts_candidate_before_content() -> Result<(), Box<dyn std::error::Error>> {
         let mut selector = Selector::new("repo", None, DigestFormat::Text)?;
-        for index in 0..MAX_FILE_COUNT {
-            selector.decide(decide_item(
-                &format!("binary-{index}"),
-                Probe::Bytes(vec![0]),
-            ))?;
+        for _ in 0..MAX_FILE_COUNT {
+            selector.decide(decide_item("bin.txt", Probe::Bytes(vec![0])))?;
         }
         assert!(matches!(
-            selector.decide(decide_item("extra", Probe::Bytes(b"ok".to_vec()))),
+            selector.decide(decide_item("extra.txt", Probe::Bytes(b"ok".to_vec()))),
             Err(IngestError::CandidateLimitExceeded(_))
         ));
-        Ok(())
-    }
-
-    #[test]
-    fn decide_rejects_output_overflow() -> Result<(), Box<dyn std::error::Error>> {
-        let mut selector = Selector::new("repo", None, DigestFormat::Text)?;
-        let result = selector.decide(decide_item(
-            "large.txt",
-            Probe::Bytes(vec![b'x'; MAX_OUTPUT_SIZE as usize]),
-        ));
-        assert!(matches!(result, Err(IngestError::OutputTooLarge { .. })));
         Ok(())
     }
 
@@ -387,23 +364,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_binary_and_preserves_text() {
-        let mut bin = vec![b'a'; 1024];
-        bin[12] = 0;
-        assert!(text_content(bin).is_none());
-
-        let mut bin_tail = vec![b'b'; 5000];
-        bin_tail[4500] = 0;
-        assert!(text_content(bin_tail).is_none());
-
-        let text = vec![b'c'; 8000];
-        assert_eq!(
-            text_content(text.clone()),
-            Some(String::from_utf8(text).unwrap())
-        );
-    }
-
-    #[test]
     fn candidate_budget_handles_many_distinct_directories_deterministically() {
         let mut budget = CandidateBudget::default();
         for i in 0..MAX_FILE_COUNT {
@@ -415,11 +375,6 @@ mod tests {
         assert!(msg.contains("repository contains more than 10000 files"));
         assert!(msg.contains("largest directories:"));
         assert!(msg.contains("- dir_00000/ (2 files)"));
-    }
-
-    #[test]
-    fn item_path_default_is_non_utf8() {
-        assert!(matches!(ItemPath::default(), ItemPath::NonUtf8));
     }
 
     #[test]

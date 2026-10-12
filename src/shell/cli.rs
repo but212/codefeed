@@ -197,15 +197,13 @@ mod tests {
     }
 
     #[test]
-    fn parses_help_action() {
+    fn cli_parses_valid_invocations() {
         assert_eq!(parse_cli(["codefeed", "--help"]).unwrap(), CliAction::Help);
         assert_eq!(parse_cli(["codefeed", ".", "-h"]).unwrap(), CliAction::Help);
-    }
 
-    #[test]
-    fn parses_run_action() {
-        let action = parse_cli(["codefeed", ".", "--format", "xml", "--output", "-"]).unwrap();
-        match action {
+        let run_standard =
+            parse_cli(["codefeed", ".", "--format", "xml", "--output", "-"]).unwrap();
+        match run_standard {
             CliAction::Run { source, options } => {
                 assert!(matches!(source, Source::Local(_)));
                 assert_eq!(options.format, DigestFormat::Xml);
@@ -213,17 +211,9 @@ mod tests {
             }
             CliAction::Help => panic!("expected Run action"),
         }
-    }
 
-    #[test]
-    fn returns_error_on_missing_source() {
-        assert!(parse_cli(["codefeed"]).is_err());
-    }
-
-    #[test]
-    fn parses_order_independent_source_and_short_flags() {
-        let action = parse_cli(["codefeed", "-f", "xml", "-o", "-", "."]).unwrap();
-        match action {
+        let run_short = parse_cli(["codefeed", "-f", "xml", "-o", "-", "."]).unwrap();
+        match run_short {
             CliAction::Run { source, options } => {
                 assert!(matches!(source, Source::Local(_)));
                 assert_eq!(options.format, DigestFormat::Xml);
@@ -231,12 +221,9 @@ mod tests {
             }
             CliAction::Help => panic!("expected Run action"),
         }
-    }
 
-    #[test]
-    fn parses_key_value_syntax() {
-        let action = parse_cli(["codefeed", "--format=xml", "-o=-", "."]).unwrap();
-        match action {
+        let run_eq = parse_cli(["codefeed", "--format=xml", "-o=-", "."]).unwrap();
+        match run_eq {
             CliAction::Run { source, options } => {
                 assert!(matches!(source, Source::Local(_)));
                 assert_eq!(options.format, DigestFormat::Xml);
@@ -244,34 +231,23 @@ mod tests {
             }
             CliAction::Help => panic!("expected Run action"),
         }
-    }
 
-    #[test]
-    fn rejects_multiple_positional_sources() {
-        assert!(parse_cli(["codefeed", "src", "tests"]).is_err());
-    }
-
-    #[test]
-    fn parses_posix_double_dash_delimiter() {
-        let action = parse_cli(["codefeed", "--", "-weird-path"]).unwrap();
-        match action {
+        let run_delimiter = parse_cli(["codefeed", "--", "-weird-path"]).unwrap();
+        match run_delimiter {
             CliAction::Run { source, .. } => {
                 assert_eq!(source, Source::Local(PathBuf::from("-weird-path")));
             }
             CliAction::Help => panic!("expected Run action"),
         }
-    }
 
-    #[test]
-    fn parses_ref_with_github_source() {
-        let action = parse_cli([
+        let run_gh = parse_cli([
             "codefeed",
             "https://github.com/rust-lang/cargo",
             "--ref",
             "main",
         ])
         .unwrap();
-        match action {
+        match run_gh {
             CliAction::Run { source, .. } => {
                 assert_eq!(
                     source,
@@ -287,29 +263,29 @@ mod tests {
     }
 
     #[test]
-    fn rejects_ref_with_local_source() {
-        assert!(parse_cli(["codefeed", ".", "--ref", "main"]).is_err());
-    }
-
-    #[test]
-    fn rejects_empty_ref() {
-        assert!(
-            parse_cli([
+    fn cli_rejects_invalid_invocations() {
+        let invalid_cases: &[&[&str]] = &[
+            &["codefeed"],
+            &["codefeed", "src", "tests"],
+            &["codefeed", ".", "--ref", "main"],
+            &[
                 "codefeed",
                 "https://github.com/rust-lang/cargo",
                 "--ref",
-                ""
-            ])
-            .is_err()
-        );
-        assert!(
-            parse_cli([
+                "",
+            ],
+            &[
                 "codefeed",
                 "https://github.com/rust-lang/cargo",
                 "--ref",
-                "   "
-            ])
-            .is_err()
-        );
+                "   ",
+            ],
+        ];
+        for args in invalid_cases {
+            assert!(
+                parse_cli(args.iter().copied()).is_err(),
+                "expected error for: {args:?}"
+            );
+        }
     }
 }

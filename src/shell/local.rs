@@ -308,72 +308,37 @@ mod tests {
     }
 
     #[test]
-    fn excludes_noise_files_conventionally() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("noise_files")?;
+    fn ingests_local_directory_respects_all_exclusion_policies()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("comprehensive_local_policies")?;
+        fs::create_dir_all(root.join(".git"))?;
+        fs::create_dir_all(root.join("certs"))?;
         fs::create_dir_all(root.join("sub"))?;
-        fs::write(root.join("src.rs"), "fn main() {}")?;
+
+        // 1. Text file: included
+        fs::write(root.join("README.md"), "hello")?;
+
+        // 2. Binary file: skipped (increments skipped count)
+        fs::write(root.join("binary.bin"), [0, 1, 2])?;
+
+        // 3. Noise files: ignored without incrementing skipped
         fs::write(root.join("Cargo.lock"), "[lockfile]")?;
         fs::write(root.join("sub").join("package-lock.json"), "{}")?;
-        let output = root.join("digest.txt");
 
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output.clone()),
-                ..Default::default()
-            },
-        )?;
-        let digest = fs::read_to_string(output)?;
-
-        assert_eq!(report.included_files, 1);
-        assert_eq!(report.skipped_files, 0);
-        assert!(digest.contains("FILE: src.rs"));
-        assert!(!digest.contains("Cargo.lock"));
-        assert!(!digest.contains("package-lock.json"));
-        Ok(())
-    }
-
-    #[test]
-    fn excludes_sensitive_files_without_skipping() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("sensitive_files")?;
-        fs::create_dir_all(root.join("certs"))?;
-        fs::write(root.join("main.rs"), "fn main() {}")?;
+        // 4. Sensitive files: ignored without incrementing skipped
         fs::write(root.join(".env"), "SECRET=true")?;
         fs::write(root.join(".env.production"), "KEY=123")?;
         fs::write(root.join("certs").join("privkey.key"), "PRIVATE")?;
         fs::write(root.join("id_rsa"), "SSH")?;
-        let output = root.join("digest.txt");
 
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output.clone()),
-                ..Default::default()
-            },
-        )?;
-        let digest = fs::read_to_string(output)?;
-
-        assert_eq!(report.included_files, 1);
-        assert_eq!(report.skipped_files, 0);
-        assert!(digest.contains("FILE: main.rs"));
-        assert!(!digest.contains(".env"));
-        assert!(!digest.contains("privkey.key"));
-        assert!(!digest.contains("id_rsa"));
-        Ok(())
-    }
-
-    #[test]
-    fn ingests_local_text_and_skips_binary_and_git_directory()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("local")?;
-        fs::create_dir_all(root.join(".git"))?;
-        fs::write(root.join("README.md"), "hello")?;
-        fs::write(root.join("binary.bin"), [0, 1, 2])?;
+        // 5. Git metadata: ignored
         fs::write(root.join(".git/config"), "secret")?;
+
+        // 6. Gitignore: ignored without git directory
         fs::write(root.join(".gitignore"), "ignored.txt\n")?;
         fs::write(root.join("ignored.txt"), "ignored")?;
-        let output = root.join("digest.txt");
 
+        let output = root.join("digest.txt");
         let report = ingest(
             &Source::Local(root.to_path_buf()),
             &Options {
@@ -382,33 +347,17 @@ mod tests {
             },
         )?;
         let digest = fs::read_to_string(output)?;
+
         assert_eq!(report.included_files, 1);
         assert_eq!(report.skipped_files, 1);
         assert!(digest.contains("FILE: README.md"));
         assert!(!digest.contains("binary.bin"));
+        assert!(!digest.contains("Cargo.lock"));
+        assert!(!digest.contains("package-lock.json"));
+        assert!(!digest.contains(".env"));
+        assert!(!digest.contains("privkey.key"));
+        assert!(!digest.contains("id_rsa"));
         assert!(!digest.contains(".git/config"));
-        assert!(!digest.contains("ignored.txt"));
-        Ok(())
-    }
-
-    #[test]
-    fn applies_gitignore_without_git_directory() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("ignore_without_git")?;
-        fs::write(root.join(".gitignore"), "ignored.txt\n")?;
-        fs::write(root.join("kept.txt"), "kept")?;
-        fs::write(root.join("ignored.txt"), "ignored")?;
-        let output = root.join("digest.txt");
-
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output.clone()),
-                ..Default::default()
-            },
-        )?;
-        let digest = fs::read_to_string(output)?;
-        assert_eq!(report.included_files, 1);
-        assert!(digest.contains("FILE: kept.txt"));
         assert!(!digest.contains("ignored.txt"));
         Ok(())
     }
@@ -503,41 +452,6 @@ mod tests {
                 window[0].path,
                 window[1].path
             );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn parallel_walk_excludes_sensitive_files() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("parallel_sensitive")?;
-        fs::write(root.join(".env"), "SECRET=1")?;
-        fs::write(root.join("id_rsa"), "PRIVATE KEY")?;
-        fs::write(root.join("public.txt"), "public")?;
-
-        let result = collect_local(&root, &OutputTarget::Stdout, DigestFormat::Text)?;
-        let files = result.files;
-        let skipped = result.skipped;
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].path, "public.txt");
-        assert_eq!(
-            skipped, 0,
-            "sensitive files must be excluded without consuming skipped budget"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn parallel_walk_bounds_candidate_memory_early() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("parallel_candidate_bound")?;
-        for idx in 0..10_005 {
-            fs::write(root.join(format!("f_{idx:05}.txt")), "x")?;
-        }
-        let result = collect_local(&root, &OutputTarget::Stdout, DigestFormat::Text);
-        match result {
-            Err(IngestError::CandidateLimitExceeded(msg)) => {
-                assert!(msg.contains("repository contains more than 10000 files"));
-            }
-            other => panic!("expected CandidateLimitExceeded candidate overflow, got {other:?}"),
         }
         Ok(())
     }

@@ -62,28 +62,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn temp_dir_guard_cleans_up_on_drop() -> Result<(), Box<dyn std::error::Error>> {
-        let path = {
+    fn temp_dir_guard_cleans_up_on_drop_and_panic() -> Result<(), Box<dyn std::error::Error>> {
+        // 1. Drop cleanup
+        let drop_path = {
             let guard = temp_dir("test_guard_drop")?;
             assert!(guard.is_dir());
             guard.to_path_buf()
         };
-        assert!(!path.exists(), "directory should be removed on guard drop");
-        Ok(())
-    }
+        assert!(
+            !drop_path.exists(),
+            "directory should be removed on guard drop"
+        );
 
-    #[test]
-    fn temp_dir_guard_cleans_up_on_panic() -> Result<(), Box<dyn std::error::Error>> {
-        let mut captured_path = std::path::PathBuf::new();
+        // 2. Panic cleanup
+        let mut panic_path = std::path::PathBuf::new();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let guard = temp_dir("test_guard_panic").unwrap();
-            captured_path = guard.to_path_buf();
+            panic_path = guard.to_path_buf();
             assert!(guard.is_dir());
             panic!("intentional panic inside test");
         }));
         assert!(result.is_err());
         assert!(
-            !captured_path.exists(),
+            !panic_path.exists(),
             "directory should be removed even on panic"
         );
         Ok(())

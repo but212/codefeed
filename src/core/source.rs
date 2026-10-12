@@ -91,43 +91,46 @@ mod tests {
 
     #[test]
     fn parses_public_github_repository() -> Result<(), Box<dyn std::error::Error>> {
+        let expected = Source::GitHub {
+            owner: "rust-lang".into(),
+            repo: "cargo".into(),
+            reference: None,
+        };
         assert_eq!(
             parse_source("https://github.com/rust-lang/cargo.git")?,
-            Source::GitHub {
-                owner: "rust-lang".into(),
-                repo: "cargo".into(),
-                reference: None,
-            }
+            expected
+        );
+        let expected_repo = Source::GitHub {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            reference: None,
+        };
+        assert_eq!(
+            parse_source("https://github.com:443/owner/repo")?,
+            expected_repo
+        );
+        assert_eq!(
+            parse_source("https://github.com:/owner/repo")?,
+            expected_repo
         );
         Ok(())
     }
 
     #[test]
-    fn rejects_unsupported_repository_url() {
-        assert!(parse_source("git@github.com:owner/repo.git").is_err());
-        assert!(parse_source("https://gitlab.com/owner/repo").is_err());
-        assert!(parse_source("https://github.com/owner/repo/issues").is_err());
-    }
-
-    #[test]
-    fn rejects_dot_path_segments_in_repository_urls() {
-        assert!(parse_source("https://github.com/owner/..").is_err());
-        assert!(parse_source("https://github.com/owner/.").is_err());
-        assert!(parse_source("https://github.com/./repo").is_err());
-        assert!(parse_source("https://github.com/../repo").is_err());
-    }
-
-    #[test]
-    fn rejects_invalid_repository_url_ports() -> Result<(), Box<dyn std::error::Error>> {
-        assert!(parse_source("https://github.com:99999/owner/repo").is_err());
-        assert!(parse_source("https://github.com:abc/owner/repo").is_err());
-        let expected = Source::GitHub {
-            owner: "owner".into(),
-            repo: "repo".into(),
-            reference: None,
-        };
-        assert_eq!(parse_source("https://github.com:443/owner/repo")?, expected);
-        assert_eq!(parse_source("https://github.com:/owner/repo")?, expected);
-        Ok(())
+    fn parse_source_rejects_malformed_urls() {
+        let invalid_cases = [
+            "git@github.com:owner/repo.git",
+            "https://gitlab.com/owner/repo",
+            "https://github.com/owner/repo/issues",
+            "https://github.com/owner/..",
+            "https://github.com/owner/.",
+            "https://github.com/./repo",
+            "https://github.com/../repo",
+            "https://github.com:99999/owner/repo",
+            "https://github.com:abc/owner/repo",
+        ];
+        for url in invalid_cases {
+            assert!(parse_source(url).is_err(), "expected error for: {url}");
+        }
     }
 }

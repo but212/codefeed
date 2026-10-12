@@ -123,109 +123,71 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matches_noise_filenames() {
-        assert!(is_noise_path("Cargo.lock"));
-        assert!(is_noise_path("nested/dir/package-lock.json"));
-        assert!(!is_noise_path("Cargo.toml"));
-    }
-
-    #[test]
-    fn classifies_sensitive_paths() {
-        assert!(is_sensitive_path(".env"));
-        assert!(is_sensitive_path("config/.env.local"));
-        assert!(is_sensitive_path("certs/server.pem"));
-        assert!(is_sensitive_path("certs/privkey.key"));
-        assert!(is_sensitive_path("id_rsa"));
-        assert!(is_sensitive_path(".ssh/id_rsa_deploy"));
-        assert!(is_sensitive_path("id_ed25519"));
-        assert!(is_sensitive_path(".ssh/id_ed25519_backup"));
-        assert!(is_sensitive_path("secrets/credentials.json"));
-        assert!(is_sensitive_path("auth/aws.credentials"));
-        assert!(is_sensitive_path("aws/credentials"));
-        assert!(is_sensitive_path("config/credentials.yaml"));
-        assert!(!is_sensitive_path("src/main.rs"));
-        assert!(!is_sensitive_path("Cargo.toml"));
-    }
-
-    #[test]
-    fn classifies_binary_extensions() {
-        assert!(has_binary_extension("image.PNG"));
-        assert!(has_binary_extension("assets/font.woff2"));
-        assert!(!has_binary_extension("src/main.rs"));
-        assert!(!has_binary_extension("Makefile"));
-    }
-
-    #[test]
     fn classifies_retryable_status_codes() {
-        assert!(is_retryable_status(429));
-        assert!(is_retryable_status(500));
-        assert!(is_retryable_status(502));
-        assert!(is_retryable_status(503));
-        assert!(is_retryable_status(504));
-        assert!(!is_retryable_status(200));
-        assert!(!is_retryable_status(400));
-        assert!(!is_retryable_status(401));
-        assert!(!is_retryable_status(403));
-        assert!(!is_retryable_status(404));
-    }
-
-    #[test]
-    fn calculates_bounded_exponential_backoff() {
-        let d0 = retry_delay(0, 0);
-        let d1 = retry_delay(1, 0);
-        let d2 = retry_delay(2, 0);
-        let d10 = retry_delay(10, 0);
-
-        assert_eq!(d0.as_millis(), 250);
-        assert_eq!(d1.as_millis(), 500);
-        assert_eq!(d2.as_millis(), 1000);
-        assert_eq!(d10.as_millis(), 5000);
-
-        let d_jitter = retry_delay(0, 42);
-        assert_eq!(d_jitter.as_millis(), 292);
-        let d_jitter_max = retry_delay(0, 50);
-        assert_eq!(d_jitter_max.as_millis(), 300);
-
-        let d10_jitter = retry_delay(10, 50);
-        assert_eq!(d10_jitter.as_millis(), 5000);
-    }
-
-    #[test]
-    fn policy_functions_evaluate_in_const_context() {
         const {
             assert!(is_retryable_status(429));
             assert!(is_retryable_status(500));
             assert!(!is_retryable_status(200));
-            assert!(retry_delay(0, 0).as_millis() == 250);
-            assert!(retry_delay(10, 0).as_millis() == 5000);
+        }
+        for code in [429, 500, 502, 503, 504] {
+            assert!(is_retryable_status(code), "code {code} should be retryable");
+        }
+        for code in [200, 400, 401, 403, 404] {
+            assert!(
+                !is_retryable_status(code),
+                "code {code} should not be retryable"
+            );
         }
     }
 
     #[test]
+    fn calculates_bounded_exponential_backoff() {
+        const {
+            assert!(retry_delay(0, 0).as_millis() == 250);
+            assert!(retry_delay(10, 0).as_millis() == 5000);
+        }
+        assert_eq!(retry_delay(0, 0).as_millis(), 250);
+        assert_eq!(retry_delay(1, 0).as_millis(), 500);
+        assert_eq!(retry_delay(2, 0).as_millis(), 1000);
+        assert_eq!(retry_delay(10, 0).as_millis(), 5000);
+
+        assert_eq!(retry_delay(0, 42).as_millis(), 292);
+        assert_eq!(retry_delay(0, 50).as_millis(), 300);
+        assert_eq!(retry_delay(10, 50).as_millis(), 5000);
+    }
+
+    #[test]
     fn classifies_candidate_paths() {
-        assert_eq!(
-            PathClassification::classify(".git/config"),
-            PathClassification::Ignored
-        );
-        assert_eq!(
-            PathClassification::classify("src/.hidden.rs"),
-            PathClassification::Ignored
-        );
-        assert_eq!(
-            PathClassification::classify("Cargo.lock"),
-            PathClassification::Ignored
-        );
-        assert_eq!(
-            PathClassification::classify("id_rsa"),
-            PathClassification::Ignored
-        );
-        assert_eq!(
-            PathClassification::classify("assets/logo.png"),
-            PathClassification::PreclassifiedBinary
-        );
-        assert_eq!(
-            PathClassification::classify("src/main.rs"),
-            PathClassification::NeedsContent
-        );
+        let cases = [
+            ("Cargo.lock", PathClassification::Ignored),
+            ("nested/dir/package-lock.json", PathClassification::Ignored),
+            (".env", PathClassification::Ignored),
+            ("config/.env.local", PathClassification::Ignored),
+            ("certs/server.pem", PathClassification::Ignored),
+            ("certs/privkey.key", PathClassification::Ignored),
+            ("id_rsa", PathClassification::Ignored),
+            (".ssh/id_rsa_deploy", PathClassification::Ignored),
+            ("id_ed25519", PathClassification::Ignored),
+            (".ssh/id_ed25519_backup", PathClassification::Ignored),
+            ("secrets/credentials.json", PathClassification::Ignored),
+            ("auth/aws.credentials", PathClassification::Ignored),
+            ("aws/credentials", PathClassification::Ignored),
+            ("config/credentials.yaml", PathClassification::Ignored),
+            (".git/config", PathClassification::Ignored),
+            ("src/.hidden.rs", PathClassification::Ignored),
+            ("assets/logo.png", PathClassification::PreclassifiedBinary),
+            ("image.PNG", PathClassification::PreclassifiedBinary),
+            ("assets/font.woff2", PathClassification::PreclassifiedBinary),
+            ("src/main.rs", PathClassification::NeedsContent),
+            ("Cargo.toml", PathClassification::NeedsContent),
+            ("Makefile", PathClassification::NeedsContent),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(
+                PathClassification::classify(path),
+                expected,
+                "classification mismatch for {path}"
+            );
+        }
     }
 }

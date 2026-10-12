@@ -349,22 +349,21 @@ mod tests {
     }
 
     #[test]
-    fn bounds_local_file_reads() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("bounded_read")?;
-        let path = root.join("large.txt");
-        fs::write(&path, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
+    fn read_local_file_enforces_size_boundaries() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("size_boundaries")?;
+        let exact_path = root.join("exact.txt");
+        let too_large_path = root.join("large.txt");
+        fs::write(&exact_path, vec![b'x'; MAX_FILE_SIZE as usize])?;
+        fs::write(&too_large_path, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
 
-        assert!(matches!(read_local_file(&root, &path)?, Probe::TooLarge));
-        Ok(())
-    }
-
-    #[test]
-    fn includes_file_at_exact_size_limit() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("exact_size")?;
-        let path = root.join("exact.txt");
-        fs::write(&path, vec![b'x'; MAX_FILE_SIZE as usize])?;
-
-        assert!(matches!(read_local_file(&root, &path)?, Probe::Bytes(_)));
+        assert!(matches!(
+            read_local_file(&root, &exact_path)?,
+            Probe::Bytes(_)
+        ));
+        assert!(matches!(
+            read_local_file(&root, &too_large_path)?,
+            Probe::TooLarge
+        ));
         Ok(())
     }
 
@@ -375,13 +374,6 @@ mod tests {
 
         assert!(matches!(read_local_file(&root, &path)?, Probe::Missing));
         Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn test_linux_openat2_constants() {
-        assert_eq!(RESOLVE_BENEATH, 0x08);
-        assert_eq!(RESOLVE_NO_SYMLINKS, 0x04);
     }
 
     #[cfg(windows)]

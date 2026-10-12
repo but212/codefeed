@@ -571,40 +571,6 @@ z &lt; 10
     }
 
     #[test]
-    fn escapes_tree_node_newlines() -> Result<(), Box<dyn std::error::Error>> {
-        let files = vec![FileRecord {
-            path: "dir\nname/file\rname.txt".into(),
-            content: "content".into(),
-        }];
-        let rendered = render_digest("repo", None, &files, 0)?;
-        assert!(rendered.contains("dir\\nname/"));
-        assert!(rendered.contains("file\\rname.txt"));
-        assert!(!rendered.contains("dir\n"));
-        Ok(())
-    }
-
-    #[test]
-    fn escapes_tree_node_xml_entities() -> Result<(), Box<dyn std::error::Error>> {
-        let files = vec![FileRecord {
-            path: "a & b/c < d.txt".into(),
-            content: "content".into(),
-        }];
-        let collection = CollectionResult {
-            label: "repo".into(),
-            revision: None,
-            files: files.clone(),
-            skipped: 0,
-            trie: test_trie(&files, true),
-        };
-        let mut out = Vec::new();
-        render_digest_to_writer(&mut out, &collection, DigestFormat::Xml)?;
-        let xml_str = std::str::from_utf8(&out)?;
-        assert!(xml_str.contains("a &amp; b/"));
-        assert!(xml_str.contains("c &lt; d.txt"));
-        Ok(())
-    }
-
-    #[test]
     fn skip_enforces_budget_limit_on_digit_growth() {
         let mut budget = DigestBudget::new("repo", None, DigestFormat::Text).unwrap();
         for _ in 0..9 {

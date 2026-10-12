@@ -84,40 +84,45 @@ mod tests {
     }
 
     #[test]
-    fn auth_scope_api_target() {
-        assert_eq!(
-            request_target("https://api.github.com/repos/owner/repo"),
-            RequestTarget::Api
-        );
-        assert_eq!(request_target("https://api.github.com"), RequestTarget::Api);
-    }
-
-    #[test]
-    fn auth_scope_raw_target() {
-        assert_eq!(
-            request_target("https://raw.githubusercontent.com/owner/repo/main/lib.rs"),
-            RequestTarget::Raw
-        );
-        assert_eq!(
-            request_target("https://raw.githubusercontent.com"),
-            RequestTarget::Raw
-        );
-    }
-
-    #[test]
-    fn auth_scope_rejects_host_confusion() {
-        for url in [
-            "https://api.github.com.evil.example/x",
-            "https://api.github.com@evil.example/x",
-            "https://raw.githubusercontent.com.evil.example/x",
-            "https://raw.githubusercontent.com@evil.example/x",
-            "http://127.0.0.1:8080/repos/owner/repo",
-            "https://evil.example/",
-        ] {
+    fn request_target_classifies_origins_correctly() {
+        let cases = [
+            (
+                "https://api.github.com/repos/owner/repo",
+                RequestTarget::Api,
+            ),
+            ("https://api.github.com", RequestTarget::Api),
+            (
+                "https://raw.githubusercontent.com/owner/repo/main/lib.rs",
+                RequestTarget::Raw,
+            ),
+            ("https://raw.githubusercontent.com", RequestTarget::Raw),
+            (
+                "https://api.github.com.evil.example/x",
+                RequestTarget::Other,
+            ),
+            (
+                "https://api.github.com@evil.example/x",
+                RequestTarget::Other,
+            ),
+            (
+                "https://raw.githubusercontent.com.evil.example/x",
+                RequestTarget::Other,
+            ),
+            (
+                "https://raw.githubusercontent.com@evil.example/x",
+                RequestTarget::Other,
+            ),
+            (
+                "http://127.0.0.1:8080/repos/owner/repo",
+                RequestTarget::Other,
+            ),
+            ("https://evil.example/", RequestTarget::Other),
+        ];
+        for (url, expected) in cases {
             assert_eq!(
                 request_target(url),
-                RequestTarget::Other,
-                "non-GitHub origin must not receive credentials: {url}"
+                expected,
+                "unexpected auth scope for: {url}"
             );
         }
     }

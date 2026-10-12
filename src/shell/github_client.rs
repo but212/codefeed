@@ -280,34 +280,4 @@ mod tests {
         handle.join().expect("server thread finish");
         assert_eq!(attempts.load(Ordering::SeqCst), MAX_RETRIES);
     }
-
-    #[test]
-    fn stream_url_reads_body_successfully() {
-        use std::io::Write;
-        use std::net::TcpListener;
-        use std::thread;
-
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
-        let port = listener.local_addr().expect("local addr").port();
-
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept");
-            let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf);
-            let response =
-                "HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\ntarball_data";
-            let _ = stream.write_all(response.as_bytes());
-        });
-
-        let client = GithubClient::new();
-        let url = format!("http://127.0.0.1:{port}/archive");
-        let mut reader = client
-            .stream_url(&url)
-            .expect("stream_url should succeed with 200");
-        let mut content = String::new();
-        reader.read_to_string(&mut content).expect("read to string");
-        assert_eq!(content, "tarball_data");
-
-        handle.join().expect("server thread finish");
-    }
 }

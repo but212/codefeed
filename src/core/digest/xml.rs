@@ -245,42 +245,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn escapes_xml_entities() {
-        assert_eq!(xml_escape("plain text"), "plain text");
-        assert_eq!(xml_escape("a & b < c > d"), "a &amp; b &lt; c &gt; d");
-        assert_eq!(xml_escape("let x = a && b;"), "let x = a &amp;&amp; b;");
-        assert_eq!(
-            xml_escape("<tag attr=\"val\">'hello'</tag>"),
-            "&lt;tag attr=&quot;val&quot;&gt;&apos;hello&apos;&lt;/tag&gt;"
-        );
-    }
-
-    #[test]
-    fn sanitizes_xml_control_characters() {
-        assert_eq!(xml_escape("hello\x0Cworld"), "hello\u{FFFD}world");
-        assert_eq!(xml_escape("valid\t\n\rwhitespace"), "valid\t\n\rwhitespace");
-        assert_eq!(
-            xml_escape("code\u{0001}\u{0008}\u{000B}\u{001F}"),
-            "code\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"
-        );
-    }
-
-    #[test]
-    fn escaped_metrics_and_streaming_match_xml_escape() {
-        let cases = [
-            "",
-            "plain text",
-            "plain text\n",
-            "a & b < c > d",
-            "<tag attr=\"val\">'hello'</tag>\n",
-            "hello\x0Cworld",
-            "code\u{0001}\u{0008}\u{000B}\u{001F}\n",
-            "한글과 이모지 🦀 & 특수문자\n",
-            "끝이 개행이 아닌 &amp",
+    fn xml_escape_and_streaming_consistency() {
+        let cases: &[(&str, &str)] = &[
+            ("", ""),
+            ("plain text", "plain text"),
+            ("plain text\n", "plain text\n"),
+            ("a & b < c > d", "a &amp; b &lt; c &gt; d"),
+            ("let x = a && b;", "let x = a &amp;&amp; b;"),
+            (
+                "<tag attr=\"val\">'hello'</tag>",
+                "&lt;tag attr=&quot;val&quot;&gt;&apos;hello&apos;&lt;/tag&gt;",
+            ),
+            ("hello\x0Cworld", "hello\u{FFFD}world"),
+            ("valid\t\n\rwhitespace", "valid\t\n\rwhitespace"),
+            (
+                "code\u{0001}\u{0008}\u{000B}\u{001F}",
+                "code\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}",
+            ),
+            (
+                "한글과 이모지 🦀 & 특수문자\n",
+                "한글과 이모지 🦀 &amp; 특수문자\n",
+            ),
+            ("끝이 개행이 아닌 &amp", "끝이 개행이 아닌 &amp;amp"),
         ];
 
-        for text in cases {
+        for &(text, expected_escaped) in cases {
             let escaped = xml_escape(text);
+            assert_eq!(
+                escaped.as_ref(),
+                expected_escaped,
+                "escape mismatch for {text:?}"
+            );
+
             let (byte_count, ends_with_nl) = escaped_metrics(text);
             assert_eq!(
                 byte_count,

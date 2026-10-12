@@ -326,27 +326,24 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_tree_display_borrowed_on_clean_input() {
+    fn test_trie_node_display_and_storage_optimization() {
         use std::borrow::Cow;
-        let res_text = tree_display("src", false);
-        assert!(matches!(res_text, Cow::Borrowed("src")));
 
-        let res_xml = tree_display("src", true);
-        assert!(matches!(res_xml, Cow::Borrowed("src")));
-    }
+        // Clean inputs: Borrowed without allocation
+        assert!(matches!(tree_display("src", false), Cow::Borrowed("src")));
+        assert!(matches!(tree_display("src", true), Cow::Borrowed("src")));
 
-    #[test]
-    fn test_tree_display_owned_when_escaping_needed() {
-        use std::borrow::Cow;
-        let res_nl = tree_display("dir\nname", false);
-        assert!(matches!(res_nl, Cow::Owned(ref s) if s == "dir\\nname"));
+        // Escaped inputs: Owned with escaping applied
+        assert!(matches!(
+            tree_display("dir\nname", false),
+            Cow::Owned(ref s) if s == "dir\\nname"
+        ));
+        assert!(matches!(
+            tree_display("a & b", true),
+            Cow::Owned(ref s) if s == "a &amp; b"
+        ));
 
-        let res_xml = tree_display("a & b", true);
-        assert!(matches!(res_xml, Cow::Owned(ref s) if s == "a &amp; b"));
-    }
-
-    #[test]
-    fn test_trie_node_sparse_display_storage() {
+        // Sparse storage in TrieNode: display is None when clean, Some when escaped
         let mut trie = BudgetTrie::new(false);
         trie.insert("clean/dir/file.rs");
         let clean_dir = &trie.children[0];
@@ -354,27 +351,11 @@ pub(crate) mod tests {
         assert!(clean_dir.display.is_none());
         assert_eq!(clean_dir.display(), "clean");
 
-        let sub_dir = &clean_dir.children[0];
-        assert_eq!(sub_dir.name, "dir");
-        assert!(sub_dir.display.is_none());
-        assert_eq!(sub_dir.display(), "dir");
-
-        let file = &sub_dir.children[0];
-        assert_eq!(file.name, "file.rs");
-        assert!(file.display.is_none());
-        assert_eq!(file.display(), "file.rs");
-
         let mut trie_esc = BudgetTrie::new(true);
         trie_esc.insert("a & b/c.rs");
         let esc_dir = &trie_esc.children[0];
         assert_eq!(esc_dir.name, "a & b");
         assert_eq!(esc_dir.display.as_deref(), Some("a &amp; b"));
         assert_eq!(esc_dir.display(), "a &amp; b");
-    }
-
-    #[test]
-    fn tree_upper_bound_constants_match_documented_factors() {
-        assert_eq!(TREE_DEPTH_BYTE_FACTOR, 6);
-        assert_eq!(TREE_NODE_BASE_OVERHEAD, 12);
     }
 }
