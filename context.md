@@ -9,7 +9,7 @@ imperative-shell boundary.
 
 ## Entities and value objects
 
-- `Source` — `Local(PathBuf)` or `GitHub { owner, repo }`.
+- `Source` — `Local(PathBuf)` or `GitHub { owner, repo, reference }`.
 - `Item` — one observed candidate handed to the pure core: `path`
   (`ItemPath::Utf8 | NonUtf8`, implementing `Default` with `NonUtf8` representing an empty/transferred slot) and `probe`
   (`Probe::Bytes | Missing | TooLarge | Ignored`).

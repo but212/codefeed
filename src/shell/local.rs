@@ -250,7 +250,6 @@ mod tests {
             &Source::Local(root.clone()),
             &Options {
                 output: OutputTarget::File(output.clone()),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -276,7 +275,6 @@ mod tests {
             &Source::Local(root.clone()),
             &Options {
                 output: OutputTarget::File(output),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -302,7 +300,6 @@ mod tests {
             &Source::Local(root.clone()),
             &Options {
                 output: OutputTarget::File(output),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -328,7 +325,6 @@ mod tests {
             &Source::Local(root.clone()),
             &Options {
                 output: OutputTarget::File(output.clone()),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -358,7 +354,6 @@ mod tests {
             &Source::Local(root.clone()),
             &Options {
                 output: OutputTarget::File(output.clone()),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -390,7 +385,6 @@ mod tests {
             &Source::Local(root.clone()),
             &Options {
                 output: OutputTarget::File(output.clone()),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -418,7 +412,6 @@ mod tests {
             &Source::Local(root.clone()),
             &Options {
                 output: OutputTarget::File(output.clone()),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -442,7 +435,6 @@ mod tests {
             &Source::Local(root.clone()),
             &Options {
                 output: OutputTarget::File(output.clone()),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -464,7 +456,6 @@ mod tests {
             &Source::Local(root.clone()),
             &Options {
                 output: OutputTarget::File(output.clone()),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -497,7 +488,6 @@ mod tests {
             &Source::Local(root.clone()),
             &Options {
                 output: OutputTarget::File(output),
-                reference: None,
                 ..Default::default()
             },
         )?;
