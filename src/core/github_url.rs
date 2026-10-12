@@ -33,21 +33,13 @@ fn has_origin(url: &str, base: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
-pub(crate) fn api_url(segments: &[&str]) -> String {
+pub(crate) fn tarball_url(owner: &str, repo: &str, reference: Option<&str>) -> String {
     let mut url = String::from(GITHUB_API_BASE_URL);
-    for segment in segments {
+    for segment in ["repos", owner, repo, "tarball"] {
         push_encoded_segment(&mut url, segment);
     }
-    url
-}
-
-pub(crate) fn raw_url(owner: &str, repo: &str, revision: &str, path: &str) -> String {
-    let mut url = String::from(GITHUB_RAW_BASE_URL);
-    for segment in [owner, repo, revision] {
-        push_encoded_segment(&mut url, segment);
-    }
-    for part in path.split('/') {
-        push_encoded_segment(&mut url, part);
+    if let Some(reference) = reference {
+        push_encoded_segment(&mut url, reference);
     }
     url
 }
@@ -92,22 +84,6 @@ mod tests {
     }
 
     #[test]
-    fn builds_github_api_and_raw_urls() {
-        assert_eq!(
-            api_url(&["repos", "rust-lang", "cargo", "commits", "master"]),
-            "https://api.github.com/repos/rust-lang/cargo/commits/master"
-        );
-        assert_eq!(
-            raw_url("rust-lang", "cargo", "abc123", "src/main.rs"),
-            "https://raw.githubusercontent.com/rust-lang/cargo/abc123/src/main.rs"
-        );
-        assert_eq!(
-            raw_url("o", "r", "feature/x", "dir/a b.txt"),
-            "https://raw.githubusercontent.com/o/r/feature%2Fx/dir/a%20b.txt"
-        );
-    }
-
-    #[test]
     fn auth_scope_api_target() {
         assert_eq!(
             request_target("https://api.github.com/repos/owner/repo"),
@@ -144,5 +120,21 @@ mod tests {
                 "non-GitHub origin must not receive credentials: {url}"
             );
         }
+    }
+
+    #[test]
+    fn builds_tarball_urls() {
+        assert_eq!(
+            tarball_url("rust-lang", "cargo", None),
+            "https://api.github.com/repos/rust-lang/cargo/tarball"
+        );
+        assert_eq!(
+            tarball_url("rust-lang", "cargo", Some("main")),
+            "https://api.github.com/repos/rust-lang/cargo/tarball/main"
+        );
+        assert_eq!(
+            tarball_url("owner", "repo", Some("feature/test")),
+            "https://api.github.com/repos/owner/repo/tarball/feature%2Ftest"
+        );
     }
 }

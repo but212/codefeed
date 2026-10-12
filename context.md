@@ -58,7 +58,7 @@ imperative-shell boundary.
 
 ### Network & GitHub
 
-- Scoped threads fetch GitHub blobs concurrently in batches (`FETCH_WINDOW = 16`), feeding items to `Selector::decide` in deterministic lexicographical path order matching local collection.
+- Single HTTP request streams GitHub repository archive (`/repos/{owner}/{repo}/tarball/{ref}`) via `flate2` and `tar`, streaming entries into `Selector::decide` with zero intermediate disk files and fail-fast budget termination. Commit revision is extracted from the archive `pax_global_header`.
 - HTTP credentials (`Authorization: Bearer <token>`) attach strictly to exact-origin GitHub API and raw-content hosts; foreign origins never receive credentials.
 - HTTP transport retries transient transport errors and HTTP 429 / 5xx responses with bounded exponential backoff and jitter up to `MAX_RETRIES` total attempts (1 initial + up to 2 retries). Fails immediately on 4xx client errors (except 429).
 
@@ -69,8 +69,8 @@ imperative-shell boundary.
 | `MAX_FILE_SIZE` | 1 MiB | Maximum individual file size accepted |
 | `MAX_OUTPUT_SIZE` | 20 MiB | Maximum rendered digest size |
 | `MAX_FILE_COUNT` | 10,000 | Maximum candidate files evaluated |
-| `MAX_JSON_SIZE` | 8 MiB | Maximum GitHub API response body |
-| `FETCH_WINDOW` | 16 | Number of concurrent remote download threads |
+| `FETCH_WINDOW` | 16 | Number of concurrent local file reader threads in a batch |
+| `ARCHIVE_MAX_SECS` | 300 s | Maximum duration for whole-archive Tarball transfer |
 | `MAX_RETRIES` | 3 | Maximum total request attempts (1 initial + up to 2 retries) |
 | `RETRY_INITIAL_DELAY_MS` | 250 ms | Base initial delay for exponential backoff |
 | `RETRY_MAX_DELAY_MS` | 5,000 ms | Maximum delay cap for exponential backoff |
@@ -95,7 +95,7 @@ never depends on shell code; shell code depends on the core in one direction.
   - `digest/`: `DigestBudget`, defense-in-depth size check, deterministic
     digest rendering (`render_digest_to_writer`), format implementations (`text.rs`, `xml.rs`), trie representation (`trie.rs`), and token estimation (`token.rs`).
   - `github_url.rs`: URL construction and origin credential scoping.
-  - `github_tree.rs`: GitHub tree DTO parsing and blob verification.
+  - `archive.rs`: Pax header comment extraction and archive root stripping.
 - Imperative shell (`src/shell/`):
   - `shell/cli.rs`: Pure CLI argument parsing, help detection, and `CliAction` generation.
   - `shell/orchestrate.rs`: Pipeline orchestration (`ingest`) coordinating collection, emission, and digest rendering.
@@ -104,5 +104,5 @@ never depends on shell code; shell code depends on the core in one direction.
   - `shell/local_io.rs`: safe, non-following bounded file reads (`read_local_file`).
   - `shell/output_exclusion.rs`: output file identity detection and path normalization.
   - `shell/github_client.rs`: HTTP transport, body bounding, and token resolution.
-  - `shell/github.rs`: windowed parallel GitHub tree download orchestration (`collect_github`).
+  - `shell/github.rs`: streaming archive GitHub collection (`collect_github`).
   - `shell/output.rs`: atomic file writing or standard output stream emission.
