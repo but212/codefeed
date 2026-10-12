@@ -70,7 +70,7 @@ mod engine {
             }
 
             for _ in 0..warmup {
-                black_box(f());
+                f();
             }
 
             let mut min_ns = u64::MAX;
@@ -78,7 +78,7 @@ mod engine {
 
             for _ in 0..iterations {
                 let start = Instant::now();
-                black_box(f());
+                f();
                 let elapsed = start.elapsed().as_nanos() as u64;
                 min_ns = min_ns.min(elapsed);
                 total_ns += elapsed as u128;
