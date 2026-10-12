@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::core::digest::DigestBudget;
 use crate::core::error::IngestError;
 use crate::core::model::{DigestFormat, FileRecord};
@@ -27,6 +29,26 @@ pub(crate) struct Item {
     pub(crate) probe: Probe,
 }
 
+enum ItemResolution {
+    Ignored,
+    Included(FileRecord),
+    Skipped(Option<String>),
+}
+
+impl Item {
+    fn resolve(self) -> ItemResolution {
+        match (self.path, self.probe) {
+            (_, Probe::Ignored) => ItemResolution::Ignored,
+            (ItemPath::Utf8(path), Probe::Bytes(bytes)) => match text_content(bytes) {
+                Some(content) => ItemResolution::Included(FileRecord { path, content }),
+                None => ItemResolution::Skipped(Some(path)),
+            },
+            (ItemPath::Utf8(path), _) => ItemResolution::Skipped(Some(path)),
+            (ItemPath::NonUtf8, _) => ItemResolution::Skipped(None),
+        }
+    }
+}
+
 /// Pure per-item selection and budget accounting. Owns no I/O; the shell feeds
 /// observations and reads the outcome through [`Selector::into_parts`].
 pub(crate) struct Selector {
@@ -49,27 +71,20 @@ impl Selector {
     }
 
     pub(crate) fn decide(&mut self, item: Item) -> Result<(), IngestError> {
-        if let Probe::Ignored = item.probe {
-            return Ok(());
+        match item.resolve() {
+            ItemResolution::Ignored => Ok(()),
+            ItemResolution::Included(file) => {
+                self.candidates.add(Some(file.path.as_str()))?;
+                self.add_file(file)
+            }
+            ItemResolution::Skipped(path) => {
+                self.candidates.add(path.as_deref())?;
+                self.digest.skip()
+            }
         }
-        let path_str = match &item.path {
-            ItemPath::Utf8(p) => Some(p.as_str()),
-            ItemPath::NonUtf8 => None,
-        };
-        self.candidates.add(path_str)?;
-        let ItemPath::Utf8(path) = item.path else {
-            self.digest.skip()?;
-            return Ok(());
-        };
-        let Probe::Bytes(bytes) = item.probe else {
-            self.digest.skip()?;
-            return Ok(());
-        };
-        let Some(content) = text_content(bytes) else {
-            self.digest.skip()?;
-            return Ok(());
-        };
-        let file = FileRecord { path, content };
+    }
+
+    fn add_file(&mut self, file: FileRecord) -> Result<(), IngestError> {
         if let Err(err) = self.digest.add(&file) {
             if matches!(err, IngestError::OutputTooLarge { .. }) {
                 return Err(IngestError::OutputTooLarge {
@@ -93,7 +108,7 @@ impl Selector {
 #[derive(Default)]
 pub(crate) struct CandidateBudget {
     count: usize,
-    dir_counts: Vec<(String, usize)>,
+    dir_counts: HashMap<String, usize>,
 }
 
 impl CandidateBudget {
@@ -109,14 +124,10 @@ impl CandidateBudget {
             },
             None => "<unknown>/",
         };
-        if let Some((_, count)) = self
-            .dir_counts
-            .iter_mut()
-            .find(|(d, _)| d.as_str() == dir_slice)
-        {
+        if let Some(count) = self.dir_counts.get_mut(dir_slice) {
             *count += 1;
         } else {
-            self.dir_counts.push((dir_slice.to_owned(), 1));
+            self.dir_counts.insert(dir_slice.to_owned(), 1);
         }
 
         if self.count > MAX_FILE_COUNT {
@@ -144,7 +155,7 @@ impl CandidateBudget {
     }
 }
 
-fn format_overflow_diagnostic(dir_counts: &[(String, usize)]) -> String {
+fn format_overflow_diagnostic(dir_counts: &HashMap<String, usize>) -> String {
     let mut dirs: Vec<(&str, usize)> = dir_counts.iter().map(|(d, c)| (d.as_str(), *c)).collect();
     dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     dirs.truncate(3);
@@ -263,6 +274,42 @@ mod tests {
     }
 
     #[test]
+    fn item_resolve_classifies_all_variants() {
+        let ignored = Item {
+            path: ItemPath::Utf8("ignored.txt".into()),
+            probe: Probe::Ignored,
+        };
+        assert!(matches!(ignored.resolve(), ItemResolution::Ignored));
+
+        let included = Item {
+            path: ItemPath::Utf8("included.txt".into()),
+            probe: Probe::Bytes(b"hello".to_vec()),
+        };
+        match included.resolve() {
+            ItemResolution::Included(file) => {
+                assert_eq!(file.path, "included.txt");
+                assert_eq!(file.content, "hello");
+            }
+            _ => panic!("expected Included"),
+        }
+
+        let binary = Item {
+            path: ItemPath::Utf8("binary.bin".into()),
+            probe: Probe::Bytes(vec![0, 1, 2]),
+        };
+        match binary.resolve() {
+            ItemResolution::Skipped(Some(path)) => assert_eq!(path, "binary.bin"),
+            _ => panic!("expected Skipped(Some)"),
+        }
+
+        let non_utf8 = Item {
+            path: ItemPath::NonUtf8,
+            probe: Probe::Bytes(b"text".to_vec()),
+        };
+        assert!(matches!(non_utf8.resolve(), ItemResolution::Skipped(None)));
+    }
+
+    #[test]
     fn decide_counts_candidate_before_content() -> Result<(), Box<dyn std::error::Error>> {
         let mut selector = Selector::new("repo", None, DigestFormat::Text)?;
         for index in 0..MAX_FILE_COUNT {
@@ -351,5 +398,19 @@ mod tests {
             text_content(text.clone()),
             Some(String::from_utf8(text).unwrap())
         );
+    }
+
+    #[test]
+    fn candidate_budget_handles_many_distinct_directories_deterministically() {
+        let mut budget = CandidateBudget::default();
+        for i in 0..MAX_FILE_COUNT {
+            let path = format!("dir_{i:05}/file.rs");
+            budget.add(Some(&path)).unwrap();
+        }
+        let err = budget.add(Some("dir_00000/extra.rs")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("repository contains more than 10000 files"));
+        assert!(msg.contains("largest directories:"));
+        assert!(msg.contains("- dir_00000/ (2 files)"));
     }
 }

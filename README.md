@@ -79,7 +79,8 @@ cargo build --release
 
 - **File output (`--output <PATH>`)**: Writes to a temporary file, syncs to disk, and atomically renames. Emits `<PATH> (<N> files, <N> skipped, ~<N> tokens)` to stdout. Preserves existing files on failure.
 - **Stream output (`--output -`)**: Writes raw digest to stdout; emits the completion summary to stderr.
-- **Pipe termination**: Downstream pipe closure (`BrokenPipe` / `EPIPE`) exits with status 0.
+- **Format fidelity**: Plain text (`--format text`) preserves valid UTF-8 file content verbatim for LLM prompt fidelity (rejecting only NUL bytes). Note that raw digests containing ANSI escape sequences in source files are preserved as-is and may affect terminal emulators if viewed directly without piping or a pager. XML format (`--format xml`) sanitizes disallowed XML control characters to `\u{FFFD}`.
+- **Pipe termination**: Downstream pipe closure (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0.
 - **Errors**: Invalid CLI arguments and ingest errors print to stderr and exit non-zero.
 
 ## Authentication
@@ -94,14 +95,14 @@ Credentials are sent as `Authorization: Bearer <token>` strictly to `https://api
 ## Filtering and Budgets
 
 - **Hierarchy**: Renders directory structure as an ASCII tree (`├── `, `└── `, `│   `).
-- **Exclusions**: Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and sensitive patterns (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `id_rsa*`, `id_ed25519*`, `credentials*`). Excluded files consume neither candidate slots nor skipped counts.
+- **Exclusions**: Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and conventional sensitive patterns (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `id_rsa*`, `id_ed25519*`, `credentials*`). Note: Sensitive file filtering is a conventional filename/extension filter, not a deep content-based secret scanner. Excluded files consume neither candidate slots nor skipped counts.
 - **Gitignore**: Applies `.gitignore` rules in local sources without Git state. Ignores `.ignore` files.
-- **Traversal**: Traverses local filesystems via `ignore::WalkParallel` with strict deterministic lexicographical sorting.
+- **Traversal**: Traverses local filesystems via `ignore::WalkParallel` with strict deterministic lexicographical sorting. Prevents symlink and intermediate directory junction traversal (`openat2`/`openat` on Unix, native handle canonical path component verification on Windows).
 - **Remote Fetch**: Fetches GitHub blobs concurrently in batches of 16 (`FETCH_WINDOW`) via scoped OS threads, pre-filtering binary extensions before download.
 - **Limits**:
-  - Max candidate files: 10,000 (aborts with largest-directory diagnostics on overflow).
+  - Max candidate files: 10,000 (accounted in expected $O(N)$ time with zero-allocation lookups; aborts with deterministically sorted largest-directory diagnostics on overflow).
   - Max file size: 1 MiB per file (files exceeding this are counted as `skipped`).
-  - Max digest size: 20 MiB (aborts with largest-file diagnostics on overflow).
+  - Max digest size: 20 MiB (strictly enforced via mathematical depth-aware tree upper bound accounting; aborts with largest-file diagnostics on overflow).
   - Max GitHub API JSON body: 8 MiB (rejects truncated responses).
 - **Network Resilience**: Retries transient transport errors and HTTP 429/5xx up to 3 total attempts with exponential backoff and jitter (capped at 5s). Fails immediately on 4xx client errors.
 - **Central Policy**: Operational constants and patterns reside in `src/core/policy.rs`.

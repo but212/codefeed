@@ -26,31 +26,38 @@ imperative-shell boundary.
 ## Invariants
 
 ### Filtering & Accounting
-- Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and sensitive files (`.env*`, `*.key`/`*.pem`, `*.p12`/`*.pkcs12`, `id_rsa*`/`id_ed25519*`, `credentials*`) before candidate accounting. They are neither candidates nor `skipped`.
+
+- Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and conventional sensitive files by filename/extension (`.env*`, `*.key`/`*.pem`, `*.p12`/`*.pkcs12`, `id_rsa*`/`id_ed25519*`, `credentials*`) before candidate accounting (conventional pattern filter, not a content-based secret scanner). They are neither candidates nor `skipped`.
 - Consumes candidate slots before evaluating content, size, or encoding.
 - `skipped` counts candidates rejected for content, size, or encoding. Ignored paths are never counted in `skipped`.
 - Rejects content exceeding `MAX_OUTPUT_SIZE`; overflow content is never emitted.
 - Known binary extensions (`BINARY_EXT`) are classified as `Probe::Missing` before remote download to save bandwidth while preserving candidate and skipped accounting.
 
 ### Rendering & Formats
+
 - ASCII hierarchy tree (`├── `, `└── `, `│   `) matches `DigestBudget` byte-for-byte, escaping control codes and XML entities to prevent tree line-break injections.
+- `DigestBudget` accounts tree rendering size via a mathematically proven per-node depth upper bound ($6d + 12 + \operatorname{len}(\text{display})$ per node), guaranteeing that fast-path budget checks never underestimate rendered output size and strictly preventing breaches of `MAX_OUTPUT_SIZE`. When approaching the threshold, it falls back to exact size calculation.
 - Streaming heuristic token estimation runs over the full digest stream, reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
+- Plain text serialization (`--format text`) preserves all valid UTF-8 file content verbatim (rejecting only NUL bytes) to maintain raw fidelity for LLM prompts; headers and paths are escaped, but file bodies are unmutated (viewing raw digests in interactive terminals may affect emulator state if files contain ANSI escape codes).
 - XML serialization (`--format xml`) structures output into `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`) and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`. Overhead and escaped bytes are accounted for in `DigestBudget`.
 - File-path ordering is strictly lexicographical and owned solely by `render_digest_to_writer` / `render_digest`.
 - Local digest headers use root directory basename (`Repository: <basename>`), omitting absolute paths and system prefixes.
 
 ### I/O & Output Target Contracts
+
 - File target writes atomically: temporary file, disk sync, rename.
 - Stdout target writes directly to stdout with no temporary file or filesystem sync.
 - Completion messages emit to stdout for file targets and stderr for stdout targets.
 - Broken downstream pipe (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0.
 - Local walk excludes the output file by identity (case-insensitively on Windows and macOS). Stdout target normalizes and excludes nothing.
-- Local file reads never follow symlinks or block on special files (`O_NOFOLLOW` / `O_NONBLOCK`). Intermediate directory symlinks are prevented via `openat2` (Linux) or component-wise `openat` verification. Missing files are treated as `Probe::Missing` without aborting.
+- Local file reads never follow symlinks or block on special files (`O_NOFOLLOW` / `O_NONBLOCK`). Intermediate directory symlinks and junctions are prevented via `openat2` (Linux), component-wise `openat` verification (Unix), or `GetFinalPathNameByHandleW` handle canonical component verification against `canonical_root` (Windows). Missing files and verified root escapes are treated as `Probe::Missing` without aborting; generic permission denied and FFI errors fail closed with `IngestError::Io`.
 - Local walk uses multi-threaded `ignore::WalkParallel` with strict deterministic lexicographical sorting before `Selector` consumption.
 - CLI arguments are parsed linearly into options and source without third-party dependencies, supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters.
+- Candidate budget uses `HashMap` for expected $O(N)$ candidate accounting with zero string allocation on existing directory hits, formatting overflow diagnostics deterministically by count descending then directory ascending.
 - Digest budget is error-terminal: limit breach immediately errors and aborts without internal transactional rollback.
 
 ### Network & GitHub
+
 - Scoped threads fetch GitHub blobs concurrently in batches (`FETCH_WINDOW = 16`), feeding items to `Selector::decide` in deterministic lexicographical path order matching local collection.
 - HTTP credentials (`Authorization: Bearer <token>`) attach strictly to exact-origin GitHub API and raw-content hosts; foreign origins never receive credentials.
 - HTTP transport retries transient transport errors and HTTP 429 / 5xx responses with bounded exponential backoff and jitter up to `MAX_RETRIES` total attempts (1 initial + up to 2 retries). Fails immediately on 4xx client errors (except 429).

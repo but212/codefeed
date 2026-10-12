@@ -24,14 +24,13 @@ use crate::core::error::IngestError;
 use crate::core::policy::MAX_FILE_SIZE;
 
 pub(crate) fn read_local_file(root: &Path, path: &Path) -> Result<Probe, IngestError> {
-    let file = match open_local_file(root, path) {
-        Ok(file) => file,
-        Err(error) if is_symlink_open_error(&error) => return Ok(Probe::Missing),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Probe::Missing),
-        #[cfg(unix)]
-        Err(error) if error.raw_os_error() == Some(libc::ENXIO) => return Ok(Probe::Missing),
-        Err(error) => return Err(error.into()),
+    let Some(file) = open_local_file(root, path)? else {
+        return Ok(Probe::Missing);
     };
+    read_bounded_content(file).map_err(Into::into)
+}
+
+fn read_bounded_content(file: fs::File) -> io::Result<Probe> {
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Ok(Probe::Missing);
@@ -41,8 +40,8 @@ pub(crate) fn read_local_file(root: &Path, path: &Path) -> Result<Probe, IngestE
     }
 
     let mut bytes = Vec::new();
-    file.take(MAX_FILE_SIZE.saturating_add(1))
-        .read_to_end(&mut bytes)?;
+    let mut handle = file.take(MAX_FILE_SIZE.saturating_add(1));
+    handle.read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_FILE_SIZE {
         return Ok(Probe::TooLarge);
     }
@@ -63,11 +62,15 @@ const RESOLVE_BENEATH: u64 = 0x08;
 const RESOLVE_NO_SYMLINKS: u64 = 0x04;
 
 #[cfg(unix)]
-fn open_local_file(root: &Path, path: &Path) -> io::Result<fs::File> {
+fn open_local_file(root: &Path, path: &Path) -> io::Result<Option<fs::File>> {
     let relative = path
         .strip_prefix(root)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
-    let directory = open_directory(root)?;
+    let directory = match open_directory(root) {
+        Ok(d) => d,
+        Err(err) if is_missing_or_unsupported(&err) => return Ok(None),
+        Err(err) => return Err(err),
+    };
 
     #[cfg(target_os = "linux")]
     {
@@ -94,9 +97,12 @@ fn open_local_file(root: &Path, path: &Path) -> io::Result<fs::File> {
             };
             if fd >= 0 {
                 let opened = unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) };
-                return Ok(fs::File::from(opened));
+                return Ok(Some(fs::File::from(opened)));
             }
             let err = io::Error::last_os_error();
+            if is_missing_or_unsupported(&err) {
+                return Ok(None);
+            }
             match err.raw_os_error() {
                 Some(libc::ENOSYS) | Some(libc::EPERM) => {
                     OPENAT2_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -107,7 +113,11 @@ fn open_local_file(root: &Path, path: &Path) -> io::Result<fs::File> {
         }
     }
 
-    open_local_file_components(directory, relative)
+    match open_local_file_components(directory, relative) {
+        Ok(file) => Ok(Some(file)),
+        Err(err) if is_missing_or_unsupported(&err) => Ok(None),
+        Err(err) => Err(err),
+    }
 }
 
 #[cfg(unix)]
@@ -156,26 +166,118 @@ fn open_directory(path: &Path) -> io::Result<OwnedFd> {
 }
 
 #[cfg(windows)]
-fn open_local_file(_root: &Path, path: &Path) -> io::Result<fs::File> {
+fn open_local_file(root: &Path, path: &Path) -> io::Result<Option<fs::File>> {
     let mut options = OpenOptions::new();
     options.read(true);
     options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-    options.open(path)
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    if !verify_beneath_root(root, &file)? {
+        return Ok(None);
+    }
+    Ok(Some(file))
+}
+
+#[cfg(windows)]
+fn verify_beneath_root(root: &Path, file: &fs::File) -> io::Result<bool> {
+    use std::os::windows::io::AsRawHandle;
+
+    let canonical_root = fs::canonicalize(root)?;
+    let canonical_file = get_final_path_from_handle(file.as_raw_handle())?;
+
+    Ok(is_strictly_beneath(&canonical_root, &canonical_file))
+}
+
+#[cfg(windows)]
+fn get_final_path_from_handle(
+    handle: std::os::windows::io::RawHandle,
+) -> io::Result<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+
+    unsafe extern "system" {
+        fn GetFinalPathNameByHandleW(
+            h_file: *mut std::ffi::c_void,
+            lpsz_file_path: *mut u16,
+            cch_file_path: u32,
+            dw_flags: u32,
+        ) -> u32;
+    }
+
+    let mut buf = vec![0u16; 1024];
+    loop {
+        let res = unsafe {
+            GetFinalPathNameByHandleW(
+                handle,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                0, // FILE_NAME_NORMALIZED (0) | VOLUME_NAME_DOS (0)
+            )
+        };
+        if res == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if (res as usize) < buf.len() {
+            let os_string = std::ffi::OsString::from_wide(&buf[..res as usize]);
+            return Ok(std::path::PathBuf::from(os_string));
+        }
+        buf.resize(res as usize, 0);
+    }
+}
+
+#[cfg(windows)]
+fn is_strictly_beneath(root: &Path, file: &Path) -> bool {
+    use std::path::Component;
+
+    let root_comps: Vec<_> = root.components().collect();
+    let file_comps: Vec<_> = file.components().collect();
+
+    if file_comps.len() <= root_comps.len() {
+        return false;
+    }
+
+    for (r, f) in root_comps.iter().zip(file_comps.iter()) {
+        match (r, f) {
+            (Component::Prefix(p1), Component::Prefix(p2)) => {
+                if !p1
+                    .as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&p2.as_os_str().to_string_lossy())
+                {
+                    return false;
+                }
+            }
+            (Component::RootDir, Component::RootDir) => {}
+            (Component::Normal(n1), Component::Normal(n2)) => {
+                if !n1
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&n2.to_string_lossy())
+                {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
 }
 
 #[cfg(not(any(unix, windows)))]
-fn open_local_file(_root: &Path, path: &Path) -> io::Result<fs::File> {
-    OpenOptions::new().read(true).open(path)
+fn open_local_file(_root: &Path, path: &Path) -> io::Result<Option<fs::File>> {
+    match OpenOptions::new().read(true).open(path) {
+        Ok(file) => Ok(Some(file)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
 }
 
 #[cfg(unix)]
-fn is_symlink_open_error(error: &io::Error) -> bool {
-    error.raw_os_error() == Some(libc::ELOOP)
-}
-
-#[cfg(not(unix))]
-fn is_symlink_open_error(_: &io::Error) -> bool {
-    false
+fn is_missing_or_unsupported(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound
+        || error.raw_os_error() == Some(libc::ELOOP)
+        || error.raw_os_error() == Some(libc::ENXIO)
 }
 
 #[cfg(test)]
@@ -272,5 +374,62 @@ mod tests {
     fn test_linux_openat2_constants() {
         assert_eq!(RESOLVE_BENEATH, 0x08);
         assert_eq!(RESOLVE_NO_SYMLINKS, 0x04);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_is_strictly_beneath_boundaries() {
+        let root = Path::new(r"\\?\C:\project\repo");
+        assert!(is_strictly_beneath(
+            root,
+            Path::new(r"\\?\C:\project\repo\file.txt")
+        ));
+        assert!(is_strictly_beneath(
+            root,
+            Path::new(r"\\?\c:\PROJECT\REPO\sub\file.txt")
+        ));
+        assert!(!is_strictly_beneath(
+            root,
+            Path::new(r"\\?\C:\project\repo-evil\file.txt")
+        ));
+        assert!(!is_strictly_beneath(
+            root,
+            Path::new(r"\\?\C:\project\repo")
+        ));
+        assert!(!is_strictly_beneath(
+            root,
+            Path::new(r"\\?\C:\other\file.txt")
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_read_local_file_rejects_escaping_file() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root_a = temp_dir("win_root_a")?;
+        let root_b = temp_dir("win_root_b")?;
+        fs::create_dir_all(&root_a)?;
+        fs::create_dir_all(&root_b)?;
+
+        let inside = root_a.join("inside.txt");
+        let outside = root_b.join("outside.txt");
+        fs::write(&inside, "inside content")?;
+        fs::write(&outside, "outside content")?;
+
+        // File inside root succeeds
+        assert!(matches!(
+            read_local_file(&root_a, &inside)?,
+            Probe::Bytes(_)
+        ));
+
+        // File outside root is detected as root escape and excluded as Missing
+        assert!(matches!(
+            read_local_file(&root_a, &outside)?,
+            Probe::Missing
+        ));
+
+        fs::remove_dir_all(root_a)?;
+        fs::remove_dir_all(root_b)?;
+        Ok(())
     }
 }

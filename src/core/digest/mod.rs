@@ -152,10 +152,7 @@ impl DigestBudget {
             .ok_or_else(|| IngestError::OutputTooLarge {
                 largest_files: Vec::new(),
             })?;
-        let conservative_tree_upper = self
-            .trie
-            .display_bytes
-            .saturating_add((self.trie.node_count as u64).saturating_mul(200));
+        let conservative_tree_upper = self.trie.upper_bound_bytes;
         if base_size.saturating_add(conservative_tree_upper) <= MAX_OUTPUT_SIZE {
             return Ok(());
         }
@@ -488,8 +485,6 @@ z &lt; 10
         Ok(())
     }
 
-
-
     #[test]
     fn skip_enforces_budget_limit_on_digit_growth() {
         let mut budget = DigestBudget::new("repo", None, DigestFormat::Text).unwrap();
@@ -507,5 +502,61 @@ z &lt; 10
         assert_eq!(budget.rendered_size(), Some(MAX_OUTPUT_SIZE));
 
         assert!(budget.skip().is_err());
+    }
+
+    #[test]
+    fn deep_tree_enforces_output_size_limit() {
+        let deep_path = trie::tests::deep_test_path(1800);
+
+        let mut budget = DigestBudget::new("repo", None, DigestFormat::Text).unwrap();
+        let large_content_len = (MAX_OUTPUT_SIZE - 2 * 1024 * 1024) as usize;
+        let file = FileRecord {
+            path: deep_path,
+            content: "a".repeat(large_content_len),
+        };
+        let result = budget.add(&file);
+        assert!(
+            matches!(result, Err(IngestError::OutputTooLarge { .. })),
+            "Expected OutputTooLarge due to actual tree size exceeding budget, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn control_character_policy_preserves_raw_text_and_sanitizes_xml()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let raw_ansi = "\x1b[31mRed Alert\x1b[0m\tTabbed\r\nNewline";
+        let files = vec![FileRecord {
+            path: "ansi.txt".into(),
+            content: raw_ansi.into(),
+        }];
+
+        // 1. Plain text format preserves all UTF-8 bytes verbatim for LLM fidelity
+        let text_rendered = render_digest("repo", None, &files, 0)?;
+        assert!(
+            text_rendered.contains(raw_ansi),
+            "Text format must preserve raw ANSI/control characters for LLM fidelity"
+        );
+
+        // 2. XML format sanitizes disallowed XML 1.0 control characters (e.g. \x1b -> \u{FFFD})
+        let collection = CollectionResult {
+            label: "repo".into(),
+            revision: None,
+            files: files.clone(),
+            skipped: 0,
+            trie: test_trie(&files, true),
+        };
+        let mut xml_out = Vec::new();
+        render_digest_to_writer(&mut xml_out, &collection, DigestFormat::Xml)?;
+        let xml_str = std::str::from_utf8(&xml_out)?;
+        assert!(
+            !xml_str.contains("\x1b"),
+            "XML format must not emit raw ASCII ESC"
+        );
+        assert!(
+            xml_str.contains("\u{FFFD}[31mRed Alert\u{FFFD}[0m\tTabbed\r\nNewline"),
+            "XML format must sanitize ESC to replacement char while preserving valid whitespace"
+        );
+
+        Ok(())
     }
 }

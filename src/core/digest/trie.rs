@@ -23,6 +23,7 @@ pub(crate) struct BudgetTrie {
     pub(crate) escape_xml: bool,
     pub(crate) node_count: usize,
     pub(crate) display_bytes: u64,
+    pub(crate) upper_bound_bytes: u64,
     pub(crate) children: Vec<BudgetTrieNode>,
 }
 
@@ -41,6 +42,7 @@ impl BudgetTrie {
             escape_xml,
             node_count: 0,
             display_bytes: 0,
+            upper_bound_bytes: 0,
             children: Vec::new(),
         }
     }
@@ -56,6 +58,8 @@ impl BudgetTrie {
             self.escape_xml,
             &mut self.node_count,
             &mut self.display_bytes,
+            &mut self.upper_bound_bytes,
+            0,
         );
     }
 
@@ -65,6 +69,8 @@ impl BudgetTrie {
         escape_xml: bool,
         node_count: &mut usize,
         display_bytes: &mut u64,
+        upper_bound_bytes: &mut u64,
+        depth: u64,
     ) {
         if parts.is_empty() {
             return;
@@ -81,8 +87,17 @@ impl BudgetTrie {
             Ok(idx) => idx,
             Err(idx) => {
                 let display = tree_display(part, escape_xml);
-                *display_bytes += display.len() as u64;
+                let display_len = display.len() as u64;
+                *display_bytes += display_len;
                 *node_count += 1;
+                // Maximum prefix cost: depth * 6 (each ancestor contributes up to 6 bytes: '│   ').
+                // Branch connector: 10 bytes ('├── ' or '└── ').
+                // Node terminator: 2 bytes ('/' + '\n') for dir or 1 byte ('\n') for file.
+                // Maximum total formatted line cost for this node: 6 * depth + 12 + display.len().
+                let node_max_format = depth.saturating_mul(6).saturating_add(12);
+                let node_upper = node_max_format.saturating_add(display_len);
+                *upper_bound_bytes = upper_bound_bytes.saturating_add(node_upper);
+
                 children.insert(
                     idx,
                     BudgetTrieNode {
@@ -103,6 +118,8 @@ impl BudgetTrie {
                 escape_xml,
                 node_count,
                 display_bytes,
+                upper_bound_bytes,
+                depth.saturating_add(1),
             );
         }
     }
@@ -175,7 +192,7 @@ impl BudgetTrie {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -257,5 +274,51 @@ mod tests {
         assert!(s.contains("a &amp; b/"));
         assert!(s.contains("c &lt; d.txt"));
         Ok(())
+    }
+
+    #[test]
+    fn trie_upper_bound_bytes_is_always_upper_bound() {
+        // 1. Shallow and branching structures
+        let cases = vec![
+            vec!["a.txt"],
+            vec!["a.txt", "b.txt", "c/d.txt", "c/e/f.txt"],
+            vec!["x & y/z < w.txt", "x & y/a/b.txt"],
+        ];
+        for escape_xml in [false, true] {
+            for paths in &cases {
+                let mut trie = BudgetTrie::new(escape_xml);
+                for p in paths {
+                    trie.insert(p);
+                }
+                assert!(
+                    trie.calculate_size() <= trie.upper_bound_bytes,
+                    "calculate_size ({}) must be <= upper_bound_bytes ({})",
+                    trie.calculate_size(),
+                    trie.upper_bound_bytes
+                );
+            }
+
+            // 2. Deep nested tree (1,800 depth)
+            let deep_path = deep_test_path(1800);
+
+            let mut deep_trie = BudgetTrie::new(escape_xml);
+            deep_trie.insert(&deep_path);
+            let calc = deep_trie.calculate_size();
+            let upper = deep_trie.upper_bound_bytes;
+            assert!(
+                calc <= upper,
+                "deep tree calculate_size ({calc}) must be <= upper_bound_bytes ({upper}) (escape_xml: {escape_xml})"
+            );
+        }
+    }
+
+    pub(crate) fn deep_test_path(depth: usize) -> String {
+        let mut path = String::new();
+        for i in 0..depth {
+            use std::fmt::Write;
+            let _ = write!(path, "d{i}/");
+        }
+        path.push_str("leaf.txt");
+        path
     }
 }
