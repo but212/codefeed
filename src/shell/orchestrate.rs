@@ -4,7 +4,7 @@ use crate::core::error::IngestError;
 use crate::core::model::{IngestReport, Options, Source};
 use crate::shell;
 
-pub(crate) fn ingest(source: &Source, options: &Options) -> Result<IngestReport, IngestError> {
+pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, IngestError> {
     if options
         .reference
         .as_ref()

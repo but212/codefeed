@@ -1,15 +1,9 @@
 //! Command-line binary entry point for codefeed.
 
-mod core;
-mod shell;
-
 use std::env::args_os;
 use std::process;
 
-use crate::core::model::OutputTarget;
-use crate::shell::cli::{CliAction, help_text, parse_cli};
-
-pub(crate) use shell::orchestrate::ingest;
+use codefeed::{CliAction, OutputTarget, help_text, ingest, parse_cli};
 
 fn main() {
     let action = parse_cli(args_os()).unwrap_or_else(|error| {

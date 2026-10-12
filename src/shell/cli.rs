@@ -7,12 +7,12 @@ use crate::core::source::parse_source_os;
 
 const HELP: &str = "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]";
 
-pub(crate) fn help_text() -> &'static str {
+pub fn help_text() -> &'static str {
     HELP
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum CliAction {
+pub enum CliAction {
     Help,
     Run { source: Source, options: Options },
 }
@@ -60,7 +60,7 @@ fn next_val<I: Iterator<Item = OsString>>(
     Ok(next_arg)
 }
 
-pub(crate) fn parse_cli<I, T>(args: I) -> Result<CliAction, IngestError>
+pub fn parse_cli<I, T>(args: I) -> Result<CliAction, IngestError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,

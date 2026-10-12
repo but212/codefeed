@@ -3,8 +3,8 @@ mod token;
 mod trie;
 mod xml;
 
-pub(crate) use token::TokenEstimatingWriter;
-pub(crate) use trie::BudgetTrie;
+pub use token::TokenEstimatingWriter;
+pub use trie::BudgetTrie;
 
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
@@ -196,7 +196,7 @@ pub(crate) fn byte_count(value: &str) -> Result<u64, IngestError> {
     })
 }
 
-pub(crate) fn render_digest_to_writer<W: std::io::Write + ?Sized>(
+pub fn render_digest_to_writer<W: std::io::Write + ?Sized>(
     writer: &mut W,
     collection: &CollectionResult,
     format: DigestFormat,

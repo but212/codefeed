@@ -19,7 +19,7 @@ pub(crate) struct BudgetTrieNode {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct BudgetTrie {
+pub struct BudgetTrie {
     pub(crate) escape_xml: bool,
     pub(crate) node_count: usize,
     pub(crate) display_bytes: u64,
@@ -37,7 +37,7 @@ fn tree_display(name: &str, escape_xml: bool) -> String {
 }
 
 impl BudgetTrie {
-    pub(crate) fn new(escape_xml: bool) -> Self {
+    pub fn new(escape_xml: bool) -> Self {
         Self {
             escape_xml,
             node_count: 0,
@@ -47,7 +47,7 @@ impl BudgetTrie {
         }
     }
 
-    pub(crate) fn insert(&mut self, path: &str) {
+    pub fn insert(&mut self, path: &str) {
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         if parts.is_empty() {
             return;
