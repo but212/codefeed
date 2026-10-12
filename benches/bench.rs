@@ -10,9 +10,9 @@ use std::io::Write;
 use std::time::Instant;
 
 use codefeed::__bench::{
-    collect_local, escaped_metrics, render_digest_to_writer, text_content, write_xml_escaped,
-    xml_escape, BudgetTrie, CollectionResult, DigestFormat, FileRecord, Item, ItemPath,
-    OutputTarget, Probe, Selector, TokenEstimatingWriter,
+    BudgetTrie, CollectionResult, DigestFormat, FileRecord, Item, ItemPath, OutputTarget, Probe,
+    Selector, TokenEstimatingWriter, collect_local, escaped_metrics, render_digest_to_writer,
+    text_content, write_xml_escaped, xml_escape,
 };
 
 pub struct VoidWriter;
@@ -399,39 +399,21 @@ mod suites {
         let payload = chunk.repeat(repeats);
         let payload_bytes = payload.len() as u64;
 
-        runner.bench(
-            "xml_escape_100k",
-            10,
-            50,
-            Some(payload_bytes),
-            || {
-                let escaped = xml_escape(&payload);
-                black_box(escaped);
-            },
-        );
+        runner.bench("xml_escape_100k", 10, 50, Some(payload_bytes), || {
+            let escaped = xml_escape(&payload);
+            black_box(escaped);
+        });
 
-        runner.bench(
-            "xml_metrics_100k",
-            10,
-            50,
-            Some(payload_bytes),
-            || {
-                let (len, nl) = escaped_metrics(&payload);
-                black_box((len, nl));
-            },
-        );
+        runner.bench("xml_metrics_100k", 10, 50, Some(payload_bytes), || {
+            let (len, nl) = escaped_metrics(&payload);
+            black_box((len, nl));
+        });
 
-        runner.bench(
-            "xml_stream_write_100k",
-            10,
-            50,
-            Some(payload_bytes),
-            || {
-                let mut writer = VoidWriter;
-                let nl = write_xml_escaped(&mut writer, &payload).expect("write xml");
-                black_box(nl);
-            },
-        );
+        runner.bench("xml_stream_write_100k", 10, 50, Some(payload_bytes), || {
+            let mut writer = VoidWriter;
+            let nl = write_xml_escaped(&mut writer, &payload).expect("write xml");
+            black_box(nl);
+        });
     }
 
     fn bench_token_estimation(runner: &mut Runner) {
@@ -521,32 +503,20 @@ mod suites {
         let ascii_bytes = ascii_chunk.repeat(repeats).into_bytes();
         let ascii_len = ascii_bytes.len() as u64;
 
-        runner.bench(
-            "text_content_ascii_100k",
-            10,
-            50,
-            Some(ascii_len),
-            || {
-                let res = text_content(ascii_bytes.clone());
-                black_box(res);
-            },
-        );
+        runner.bench("text_content_ascii_100k", 10, 50, Some(ascii_len), || {
+            let res = text_content(ascii_bytes.clone());
+            black_box(res);
+        });
 
         let mixed_chunk = "// 한글 주석과 UTF-8 문자열: 『데이터 검증 테스트』 🚀\n";
         let mixed_repeats = (100_000 / mixed_chunk.len()).max(1);
         let mixed_bytes = mixed_chunk.repeat(mixed_repeats).into_bytes();
         let mixed_len = mixed_bytes.len() as u64;
 
-        runner.bench(
-            "text_content_mixed_100k",
-            10,
-            50,
-            Some(mixed_len),
-            || {
-                let res = text_content(mixed_bytes.clone());
-                black_box(res);
-            },
-        );
+        runner.bench("text_content_mixed_100k", 10, 50, Some(mixed_len), || {
+            let res = text_content(mixed_bytes.clone());
+            black_box(res);
+        });
     }
 
     fn bench_local_collect(runner: &mut Runner) {

@@ -11,6 +11,8 @@ pub enum Source {
         owner: String,
         /// Repository name.
         repo: String,
+        /// Optional GitHub branch, tag, or commit SHA.
+        reference: Option<String>,
     },
 }
 
@@ -34,13 +36,11 @@ pub enum DigestFormat {
     Xml,
 }
 
-/// Ingestion options controlling destination, remote revision, and serialization format.
+/// Ingestion options controlling destination and serialization format.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     /// Target destination for the rendered digest. Defaults to `digest.txt`.
     pub output: OutputTarget,
-    /// Optional GitHub branch, tag, or commit SHA. Invalid for local sources.
-    pub reference: Option<String>,
     /// Serialization format for the digest. Defaults to plain text.
     pub format: DigestFormat,
 }
@@ -49,7 +49,6 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             output: OutputTarget::File(PathBuf::from("digest.txt")),
-            reference: None,
             format: DigestFormat::Text,
         }
     }

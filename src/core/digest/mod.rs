@@ -63,6 +63,54 @@ impl DigestFormat {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ContentMetrics {
+    pub(crate) file_count: usize,
+    pub(crate) path_bytes: u64,
+    pub(crate) content_bytes: u64,
+    pub(crate) trailing_bytes: u64,
+}
+
+impl ContentMetrics {
+    pub(crate) fn checked_add_file(
+        &self,
+        path_b: u64,
+        content_b: u64,
+        trailing_b: u64,
+    ) -> Result<Self, IngestError> {
+        let file_count = self
+            .file_count
+            .checked_add(1)
+            .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
+
+        let path_bytes =
+            self.path_bytes
+                .checked_add(path_b)
+                .ok_or_else(|| IngestError::OutputTooLarge {
+                    largest_files: Vec::new(),
+                })?;
+
+        let content_bytes = self.content_bytes.checked_add(content_b).ok_or_else(|| {
+            IngestError::OutputTooLarge {
+                largest_files: Vec::new(),
+            }
+        })?;
+
+        let trailing_bytes = self.trailing_bytes.checked_add(trailing_b).ok_or_else(|| {
+            IngestError::OutputTooLarge {
+                largest_files: Vec::new(),
+            }
+        })?;
+
+        Ok(Self {
+            file_count,
+            path_bytes,
+            content_bytes,
+            trailing_bytes,
+        })
+    }
+}
+
 /// Accounting budget for digest size. Once any operation returns an `Err`,
 /// the budget enters a terminal error state and must not be used further.
 #[derive(Debug, Clone)]
@@ -70,11 +118,8 @@ pub(crate) struct DigestBudget {
     pub(crate) format: DigestFormat,
     pub(crate) label_bytes: u64,
     pub(crate) revision_bytes: Option<u64>,
-    pub(crate) file_count: usize,
+    pub(crate) content: ContentMetrics,
     pub(crate) skipped: usize,
-    pub(crate) path_bytes: u64,
-    pub(crate) content_bytes: u64,
-    pub(crate) trailing_bytes: u64,
     pub(crate) trie: BudgetTrie,
 }
 
@@ -93,46 +138,20 @@ impl DigestBudget {
             format,
             label_bytes,
             revision_bytes,
-            file_count: 0,
+            content: ContentMetrics::default(),
             skipped: 0,
-            path_bytes: 0,
-            content_bytes: 0,
-            trailing_bytes: 0,
             trie: BudgetTrie::new(format.escape_tree_xml()),
         })
     }
 
     pub(crate) fn add(&mut self, file: &FileRecord) -> Result<(), IngestError> {
         let (path_b, content_b, trailing_b) = self.format.calculate_file_bytes(file)?;
-
-        let new_file_count = self
-            .file_count
-            .checked_add(1)
-            .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
-
-        let new_path_bytes =
-            self.path_bytes
-                .checked_add(path_b)
-                .ok_or_else(|| IngestError::OutputTooLarge {
-                    largest_files: Vec::new(),
-                })?;
-        let new_content_bytes = self.content_bytes.checked_add(content_b).ok_or_else(|| {
-            IngestError::OutputTooLarge {
-                largest_files: Vec::new(),
-            }
-        })?;
-        let new_trailing_bytes = self.trailing_bytes.checked_add(trailing_b).ok_or_else(|| {
-            IngestError::OutputTooLarge {
-                largest_files: Vec::new(),
-            }
-        })?;
+        let new_content = self
+            .content
+            .checked_add_file(path_b, content_b, trailing_b)?;
 
         self.trie.insert(&file.path);
-
-        self.file_count = new_file_count;
-        self.path_bytes = new_path_bytes;
-        self.content_bytes = new_content_bytes;
-        self.trailing_bytes = new_trailing_bytes;
+        self.content = new_content;
 
         self.ensure_fits()?;
 
@@ -186,13 +205,27 @@ impl DigestBudget {
 pub(crate) fn largest_files<'a>(
     files: impl IntoIterator<Item = &'a FileRecord>,
 ) -> Vec<(String, usize)> {
-    let mut entries: Vec<(String, usize)> = files
-        .into_iter()
-        .map(|f| (f.path.clone(), f.content.len()))
-        .collect();
-    entries.sort_by_key(|b| std::cmp::Reverse(b.1));
-    entries.truncate(5);
-    entries
+    let mut top: Vec<(&'a str, usize)> = Vec::with_capacity(6);
+
+    for file in files {
+        let size = file.content.len();
+        if top.len() == 5 && size <= top.last().unwrap().1 {
+            continue;
+        }
+
+        let idx = top
+            .iter()
+            .position(|probe| probe.1 < size)
+            .unwrap_or(top.len());
+        if idx < 5 {
+            top.insert(idx, (file.path.as_str(), size));
+            top.truncate(5);
+        }
+    }
+
+    top.into_iter()
+        .map(|(path, size)| (path.to_string(), size))
+        .collect()
 }
 
 pub(crate) fn byte_count(value: &str) -> Result<u64, IngestError> {
@@ -531,7 +564,7 @@ z &lt; 10
             })
             .unwrap();
         let current = budget.rendered_size().unwrap();
-        budget.content_bytes += MAX_OUTPUT_SIZE - current;
+        budget.content.content_bytes += MAX_OUTPUT_SIZE - current;
         assert_eq!(budget.rendered_size(), Some(MAX_OUTPUT_SIZE));
 
         assert!(budget.skip().is_err());
@@ -591,5 +624,69 @@ z &lt; 10
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn largest_files_selects_top_five_with_stability() {
+        let files = vec![
+            FileRecord {
+                path: "f1.txt".into(),
+                content: "1".into(),
+            },
+            FileRecord {
+                path: "f2.txt".into(),
+                content: "22".into(),
+            },
+            FileRecord {
+                path: "f3.txt".into(),
+                content: "333".into(),
+            },
+            FileRecord {
+                path: "f4.txt".into(),
+                content: "4444".into(),
+            },
+            FileRecord {
+                path: "f5_a.txt".into(),
+                content: "55555".into(),
+            },
+            FileRecord {
+                path: "f5_b.txt".into(),
+                content: "55555".into(),
+            },
+            FileRecord {
+                path: "f6.txt".into(),
+                content: "666666".into(),
+            },
+        ];
+        let result = largest_files(&files);
+        assert_eq!(result.len(), 5);
+        assert_eq!(result[0], ("f6.txt".into(), 6));
+        assert_eq!(result[1], ("f5_a.txt".into(), 5));
+        assert_eq!(result[2], ("f5_b.txt".into(), 5));
+        assert_eq!(result[3], ("f4.txt".into(), 4));
+        assert_eq!(result[4], ("f3.txt".into(), 3));
+    }
+
+    #[test]
+    fn content_metrics_checked_add_file_accumulates_and_detects_overflow() {
+        let metrics = ContentMetrics::default();
+        let next = metrics.checked_add_file(10, 100, 1).unwrap();
+        assert_eq!(
+            next,
+            ContentMetrics {
+                file_count: 1,
+                path_bytes: 10,
+                content_bytes: 100,
+                trailing_bytes: 1,
+            }
+        );
+
+        let max_content = ContentMetrics {
+            file_count: 1,
+            path_bytes: 0,
+            content_bytes: u64::MAX,
+            trailing_bytes: 0,
+        };
+        assert!(max_content.checked_add_file(0, 1, 0).is_err());
     }
 }

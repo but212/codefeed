@@ -5,9 +5,9 @@
 #![cfg(unix)]
 #![allow(non_upper_case_globals, non_camel_case_types)]
 
-pub use std::ffi::{c_char, c_int};
 #[cfg(target_os = "linux")]
 pub use std::ffi::c_long;
+pub use std::ffi::{c_char, c_int};
 
 pub const O_RDONLY: c_int = 0;
 

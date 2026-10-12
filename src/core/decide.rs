@@ -7,9 +7,10 @@ use crate::core::policy::MAX_FILE_COUNT;
 
 /// Path text as observed by the imperative shell. Non-UTF-8 paths are still
 /// candidates and must be counted, then skipped.
-#[derive(Clone)]
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub enum ItemPath {
     Utf8(String),
+    #[default]
     NonUtf8,
 }
 
@@ -124,11 +125,7 @@ impl CandidateBudget {
             },
             None => "<unknown>/",
         };
-        if let Some(count) = self.dir_counts.get_mut(dir_slice) {
-            *count += 1;
-        } else {
-            self.dir_counts.insert(dir_slice.to_owned(), 1);
-        }
+        *self.dir_counts.entry(dir_slice.to_owned()).or_insert(0) += 1;
 
         if self.count > MAX_FILE_COUNT {
             return Err(IngestError::CandidateLimitExceeded(
@@ -410,5 +407,10 @@ mod tests {
         assert!(msg.contains("repository contains more than 10000 files"));
         assert!(msg.contains("largest directories:"));
         assert!(msg.contains("- dir_00000/ (2 files)"));
+    }
+
+    #[test]
+    fn item_path_default_is_non_utf8() {
+        assert!(matches!(ItemPath::default(), ItemPath::NonUtf8));
     }
 }

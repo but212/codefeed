@@ -50,56 +50,96 @@ where
     }
 }
 
+struct AtomicFile<'a> {
+    target: &'a Path,
+    temporary: Option<std::path::PathBuf>,
+    writer: Option<io::BufWriter<fs::File>>,
+}
+
+impl<'a> AtomicFile<'a> {
+    fn create(target: &'a Path) -> Result<Self, IngestError> {
+        let parent = target.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+        let Some(raw_name) = target.file_name() else {
+            return Err(IngestError::InvalidMetadata(
+                "output path has no filename".into(),
+            ));
+        };
+        let file_name = raw_name.to_string_lossy();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let (temporary, file) = loop {
+            let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let temporary = parent.join(format!(".{file_name}.{timestamp}.{counter}.tmp"));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+            {
+                Ok(file) => break (temporary, file),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(IngestError::Io(error)),
+            }
+        };
+
+        Ok(Self {
+            target,
+            temporary: Some(temporary),
+            writer: Some(io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, file)),
+        })
+    }
+
+    fn commit(mut self) -> Result<(), IngestError> {
+        if let Some(writer) = self.writer.take() {
+            let file = writer
+                .into_inner()
+                .map_err(|e| IngestError::Io(e.into_error()))?;
+            file.sync_all()?;
+            drop(file);
+        }
+
+        let temp_path = self.temporary.as_ref().expect("temporary path exists");
+        fs::rename(temp_path, self.target)?;
+        self.temporary = None;
+        Ok(())
+    }
+}
+
+impl io::Write for AtomicFile<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match &mut self.writer {
+            Some(w) => w.write(buf),
+            None => Err(io::Error::other("file already committed")),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match &mut self.writer {
+            Some(w) => w.flush(),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for AtomicFile<'_> {
+    fn drop(&mut self) {
+        drop(self.writer.take());
+        if let Some(temp_path) = self.temporary.take() {
+            let _ = fs::remove_file(temp_path);
+        }
+    }
+}
+
 fn write_atomic<R, F>(output: &Path, write_fn: F) -> Result<R, IngestError>
 where
     F: FnOnce(&mut dyn io::Write) -> Result<R, IngestError>,
 {
-    let parent = output.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)?;
-    let Some(raw_name) = output.file_name() else {
-        return Err(IngestError::InvalidMetadata(
-            "output path has no filename".into(),
-        ));
-    };
-    let file_name = raw_name.to_string_lossy();
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let (temporary, file) = loop {
-        let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let temporary = parent.join(format!(".{file_name}.{timestamp}.{counter}.tmp"));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-        {
-            Ok(file) => break (temporary, file),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(IngestError::Io(error)),
-        }
-    };
-    let result: Result<R, IngestError> = 'atomic: {
-        let mut writer = io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, file);
-        let value = match write_fn(&mut writer) {
-            Ok(val) => val,
-            Err(err) => break 'atomic Err(err),
-        };
-        let file = match writer.into_inner() {
-            Ok(file) => file,
-            Err(e) => break 'atomic Err(IngestError::Io(e.into_error())),
-        };
-        if let Err(err) = file.sync_all() {
-            break 'atomic Err(IngestError::Io(err));
-        }
-        if let Err(err) = fs::rename(&temporary, output) {
-            break 'atomic Err(IngestError::Io(err));
-        }
-        Ok(value)
-    };
-    result.inspect_err(|_| {
-        let _ = fs::remove_file(&temporary);
-    })
+    let mut file = AtomicFile::create(output)?;
+    let value = write_fn(&mut file)?;
+    file.commit()?;
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -110,7 +150,6 @@ mod tests {
     #[test]
     fn atomic_write_ignores_stale_temporary_file() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("atomic")?;
-        fs::create_dir_all(&root)?;
         let output = root.join("digest.txt");
         fs::write(root.join(".digest.txt.123.tmp"), "stale")?;
         write_atomic(&output, |w| {
@@ -122,21 +161,18 @@ mod tests {
             fs::read_to_string(root.join(".digest.txt.123.tmp"))?,
             "stale"
         );
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
     #[test]
     fn preserves_previous_output_on_atomic_failure() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("atomic_failure")?;
-        fs::create_dir_all(&root)?;
         let result = write_atomic(&root, |w| {
             w.write_all(b"new")?;
             Ok(())
         });
         assert!(result.is_err());
         assert!(root.is_dir());
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -144,7 +180,6 @@ mod tests {
     fn streaming_atomic_write_cleans_up_on_closure_error() -> Result<(), Box<dyn std::error::Error>>
     {
         let root = temp_dir("atomic_closure_failure")?;
-        fs::create_dir_all(&root)?;
         let output = root.join("digest.txt");
         let result: Result<(), _> = write_atomic(&output, |_w| {
             Err(IngestError::InvalidMetadata("test failure".into()))
@@ -159,7 +194,27 @@ mod tests {
             temp_files, 0,
             "temporary file should be cleaned up on error"
         );
-        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn atomic_write_cleans_up_on_panic() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("atomic_panic_failure")?;
+        let output = root.join("digest.txt");
+        let result = std::panic::catch_unwind(|| {
+            let _ = write_atomic::<(), _>(&output, |_w| {
+                panic!("intentional panic during streaming write");
+            });
+        });
+        assert!(result.is_err(), "closure should have panicked");
+        let temp_files = fs::read_dir(&root)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".digest.txt."))
+            .count();
+        assert_eq!(
+            temp_files, 0,
+            "temporary file should be cleaned up on panic unwinding"
+        );
         Ok(())
     }
 }

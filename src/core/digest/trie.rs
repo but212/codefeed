@@ -1,5 +1,6 @@
 //! In-memory directory tree representation and deterministic ASCII tree rendering.
 
+use std::borrow::Cow;
 use std::io::Write;
 
 use super::text::escape_header;
@@ -13,9 +14,29 @@ const TREE_SPACE: &str = "    ";
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BudgetTrieNode {
     pub(crate) name: String,
-    pub(crate) display: String,
+    pub(crate) display: Option<String>,
     pub(crate) is_dir: bool,
     pub(crate) children: Vec<BudgetTrieNode>,
+}
+
+impl BudgetTrieNode {
+    pub(crate) fn new(part: &str, is_dir: bool, escape_xml: bool) -> Self {
+        let display = match tree_display(part, escape_xml) {
+            Cow::Borrowed(_) => None,
+            Cow::Owned(s) => Some(s),
+        };
+        Self {
+            name: part.to_string(),
+            display,
+            is_dir,
+            children: Vec::new(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn display(&self) -> &str {
+        self.display.as_deref().unwrap_or(&self.name)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -27,12 +48,36 @@ pub struct BudgetTrie {
     pub(crate) children: Vec<BudgetTrieNode>,
 }
 
-fn tree_display(name: &str, escape_xml: bool) -> String {
+fn tree_display<'a>(name: &'a str, escape_xml: bool) -> Cow<'a, str> {
     let escaped = escape_header(name);
     if escape_xml {
-        xml_escape(&escaped).into_owned()
+        match escaped {
+            Cow::Borrowed(b) => xml_escape(b),
+            Cow::Owned(ref o) => Cow::Owned(xml_escape(o).into_owned()),
+        }
     } else {
-        escaped.into_owned()
+        escaped
+    }
+}
+
+fn find_child(children: &[BudgetTrieNode], part: &str, is_dir: bool) -> Result<usize, usize> {
+    let Some(last) = children.last() else {
+        return Err(0);
+    };
+    let ord = last
+        .name
+        .as_str()
+        .cmp(part)
+        .then_with(|| last.is_dir.cmp(&is_dir));
+    match ord {
+        std::cmp::Ordering::Equal => Ok(children.len() - 1),
+        std::cmp::Ordering::Less => Err(children.len()),
+        std::cmp::Ordering::Greater => children.binary_search_by(|c| {
+            c.name
+                .as_str()
+                .cmp(part)
+                .then_with(|| c.is_dir.cmp(&is_dir))
+        }),
     }
 }
 
@@ -55,76 +100,20 @@ impl BudgetTrie {
         while let Some(part) = parts.next() {
             let is_dir = parts.peek().is_some();
 
-            let idx = if let Some(last) = children.last() {
-                let ord = last.name.as_str().cmp(part).then_with(|| last.is_dir.cmp(&is_dir));
-                match ord {
-                    std::cmp::Ordering::Equal => children.len() - 1,
-                    std::cmp::Ordering::Less => {
-                        let display = tree_display(part, self.escape_xml);
-                        let display_len = display.len() as u64;
-                        self.display_bytes += display_len;
-                        self.node_count += 1;
-                        let node_max_format = depth.saturating_mul(6).saturating_add(12);
-                        let node_upper = node_max_format.saturating_add(display_len);
-                        self.upper_bound_bytes = self.upper_bound_bytes.saturating_add(node_upper);
+            let idx = match find_child(children, part, is_dir) {
+                Ok(idx) => idx,
+                Err(insert_idx) => {
+                    let node = BudgetTrieNode::new(part, is_dir, self.escape_xml);
+                    let display_len = node.display().len() as u64;
+                    self.display_bytes += display_len;
+                    self.node_count += 1;
+                    let node_max_format = depth.saturating_mul(6).saturating_add(12);
+                    let node_upper = node_max_format.saturating_add(display_len);
+                    self.upper_bound_bytes = self.upper_bound_bytes.saturating_add(node_upper);
 
-                        let idx = children.len();
-                        children.push(BudgetTrieNode {
-                            name: part.to_string(),
-                            display,
-                            is_dir,
-                            children: Vec::new(),
-                        });
-                        idx
-                    }
-                    std::cmp::Ordering::Greater => {
-                        match children.binary_search_by(|c| {
-                            c.name
-                                .as_str()
-                                .cmp(part)
-                                .then_with(|| c.is_dir.cmp(&is_dir))
-                        }) {
-                            Ok(idx) => idx,
-                            Err(idx) => {
-                                let display = tree_display(part, self.escape_xml);
-                                let display_len = display.len() as u64;
-                                self.display_bytes += display_len;
-                                self.node_count += 1;
-                                let node_max_format = depth.saturating_mul(6).saturating_add(12);
-                                let node_upper = node_max_format.saturating_add(display_len);
-                                self.upper_bound_bytes =
-                                    self.upper_bound_bytes.saturating_add(node_upper);
-
-                                children.insert(
-                                    idx,
-                                    BudgetTrieNode {
-                                        name: part.to_string(),
-                                        display,
-                                        is_dir,
-                                        children: Vec::new(),
-                                    },
-                                );
-                                idx
-                            }
-                        }
-                    }
+                    children.insert(insert_idx, node);
+                    insert_idx
                 }
-            } else {
-                let display = tree_display(part, self.escape_xml);
-                let display_len = display.len() as u64;
-                self.display_bytes += display_len;
-                self.node_count += 1;
-                let node_max_format = depth.saturating_mul(6).saturating_add(12);
-                let node_upper = node_max_format.saturating_add(display_len);
-                self.upper_bound_bytes = self.upper_bound_bytes.saturating_add(node_upper);
-
-                children.push(BudgetTrieNode {
-                    name: part.to_string(),
-                    display,
-                    is_dir,
-                    children: Vec::new(),
-                });
-                0
             };
 
             if is_dir {
@@ -146,7 +135,7 @@ impl BudgetTrie {
         for (idx, node) in nodes.iter().enumerate() {
             let is_last = idx + 1 == count;
             total += prefix_len + 10;
-            total += node.display.len() as u64;
+            total += node.display().len() as u64;
             if node.is_dir {
                 total += 2;
             } else {
@@ -164,10 +153,7 @@ impl BudgetTrie {
         total
     }
 
-    pub fn render_to_writer<W: Write + ?Sized>(
-        &self,
-        writer: &mut W,
-    ) -> std::io::Result<()> {
+    pub fn render_to_writer<W: Write + ?Sized>(&self, writer: &mut W) -> std::io::Result<()> {
         Self::render_nodes(writer, &self.children, "")
     }
 
@@ -185,7 +171,7 @@ impl BudgetTrie {
             } else {
                 writer.write_all(TREE_BRANCH.as_bytes())?;
             }
-            writer.write_all(node.display.as_bytes())?;
+            writer.write_all(node.display().as_bytes())?;
             if node.is_dir {
                 writer.write_all(b"/")?;
             }
@@ -332,5 +318,52 @@ pub(crate) mod tests {
         }
         path.push_str("leaf.txt");
         path
+    }
+
+    #[test]
+    fn test_tree_display_borrowed_on_clean_input() {
+        use std::borrow::Cow;
+        let res_text = tree_display("src", false);
+        assert!(matches!(res_text, Cow::Borrowed("src")));
+
+        let res_xml = tree_display("src", true);
+        assert!(matches!(res_xml, Cow::Borrowed("src")));
+    }
+
+    #[test]
+    fn test_tree_display_owned_when_escaping_needed() {
+        use std::borrow::Cow;
+        let res_nl = tree_display("dir\nname", false);
+        assert!(matches!(res_nl, Cow::Owned(ref s) if s == "dir\\nname"));
+
+        let res_xml = tree_display("a & b", true);
+        assert!(matches!(res_xml, Cow::Owned(ref s) if s == "a &amp; b"));
+    }
+
+    #[test]
+    fn test_trie_node_sparse_display_storage() {
+        let mut trie = BudgetTrie::new(false);
+        trie.insert("clean/dir/file.rs");
+        let clean_dir = &trie.children[0];
+        assert_eq!(clean_dir.name, "clean");
+        assert!(clean_dir.display.is_none());
+        assert_eq!(clean_dir.display(), "clean");
+
+        let sub_dir = &clean_dir.children[0];
+        assert_eq!(sub_dir.name, "dir");
+        assert!(sub_dir.display.is_none());
+        assert_eq!(sub_dir.display(), "dir");
+
+        let file = &sub_dir.children[0];
+        assert_eq!(file.name, "file.rs");
+        assert!(file.display.is_none());
+        assert_eq!(file.display(), "file.rs");
+
+        let mut trie_esc = BudgetTrie::new(true);
+        trie_esc.insert("a & b/c.rs");
+        let esc_dir = &trie_esc.children[0];
+        assert_eq!(esc_dir.name, "a & b");
+        assert_eq!(esc_dir.display.as_deref(), Some("a &amp; b"));
+        assert_eq!(esc_dir.display(), "a &amp; b");
     }
 }

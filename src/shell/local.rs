@@ -31,14 +31,14 @@ pub fn collect_local(
         OutputTarget::Stdout => None,
     };
     let label = local_label(&canonical_root);
-    let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
+    let mut candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
     let mut selector = Selector::new(&label, None, format)?;
 
-    for window in candidates.chunks(crate::core::policy::FETCH_WINDOW) {
+    for window in candidates.chunks_mut(crate::core::policy::FETCH_WINDOW) {
         let probes = probe_candidates(&canonical_root, window)?;
-        for (candidate, probe) in window.iter().zip(probes) {
+        for (candidate, probe) in window.iter_mut().zip(probes) {
             selector.decide(Item {
-                path: candidate.item_path.clone(),
+                path: std::mem::take(&mut candidate.item_path),
                 probe,
             })?;
         }
@@ -161,11 +161,7 @@ fn walk_candidates(
 
     drop(tx);
 
-    let mut candidates = Vec::with_capacity(crate::core::policy::MAX_FILE_COUNT.min(512));
-    for result in rx {
-        let item = result?;
-        candidates.push(item);
-    }
+    let mut candidates: Vec<LocalCandidate> = rx.into_iter().collect::<Result<_, _>>()?;
 
     CandidateBudget::verify_count(
         candidates.iter().map(|item| match &item.item_path {
@@ -185,18 +181,17 @@ fn walk_candidates(
     Ok(candidates)
 }
 
-fn probe_candidates(
-    root: &Path,
-    candidates: &[LocalCandidate],
-) -> Result<Vec<Probe>, IngestError> {
+fn probe_candidates(root: &Path, candidates: &[LocalCandidate]) -> Result<Vec<Probe>, IngestError> {
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
 
     let next_idx = std::sync::atomic::AtomicUsize::new(0);
-    let worker_count = crate::core::policy::FETCH_WINDOW.min(candidates.len()).max(1);
+    let worker_count = crate::core::policy::FETCH_WINDOW
+        .min(candidates.len())
+        .max(1);
 
-    let probes = std::thread::scope(|s| {
+    std::thread::scope(|s| {
         let handles: Vec<_> = (0..worker_count)
             .map(|_| {
                 s.spawn(|| {
@@ -218,23 +213,14 @@ fn probe_candidates(
             })
             .collect();
 
-        let mut all_probes: Vec<Option<Result<Probe, IngestError>>> =
-            (0..candidates.len()).map(|_| None).collect();
-        for handle in handles {
-            let thread_results = handle.join().expect("reader thread panicked");
-            for (idx, res) in thread_results {
-                all_probes[idx] = Some(res);
-            }
-        }
-        all_probes
-    });
-
-    probes
-        .into_iter()
-        .map(|res| res.expect("all probe results populated"))
-        .collect()
+        let mut results: Vec<_> = handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("reader thread panicked"))
+            .collect();
+        results.sort_unstable_by_key(|(idx, _)| *idx);
+        results.into_iter().map(|(_, res)| res).collect()
+    })
 }
-
 
 fn local_label(root: &Path) -> String {
     root.file_name()
@@ -261,10 +247,9 @@ mod tests {
         let output = root.join("digest.txt");
 
         let report = ingest(
-            &Source::Local(root.clone()),
+            &Source::Local(root.to_path_buf()),
             &Options {
                 output: OutputTarget::File(output.clone()),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -273,7 +258,6 @@ mod tests {
         assert_eq!(report.included_files, 2);
         assert!(digest.contains("FILE: a\\\\b.txt"));
         assert!(digest.contains("FILE: a/b.txt"));
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -281,16 +265,14 @@ mod tests {
     fn excludes_output_through_nonexistent_parent_alias() -> Result<(), Box<dyn std::error::Error>>
     {
         let root = temp_dir("output_alias")?;
-        fs::create_dir_all(&root)?;
         fs::write(root.join("source.txt"), "source")?;
         fs::write(root.join("digest.txt"), "previous output")?;
         let output = root.join("missing").join("..").join("digest.txt");
 
         let report = ingest(
-            &Source::Local(root.clone()),
+            &Source::Local(root.to_path_buf()),
             &Options {
                 output: OutputTarget::File(output),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -299,7 +281,6 @@ mod tests {
         assert_eq!(report.included_files, 1);
         assert!(!digest.contains("previous output"));
         assert!(digest.contains("FILE: source.txt"));
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -307,16 +288,14 @@ mod tests {
     #[test]
     fn excludes_output_case_insensitively() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("output_case")?;
-        fs::create_dir_all(&root)?;
         fs::write(root.join("source.txt"), "source")?;
         fs::write(root.join("digest.txt"), "previous output")?;
         let output = root.join("DIGEST.TXT");
 
         let report = ingest(
-            &Source::Local(root.clone()),
+            &Source::Local(root.to_path_buf()),
             &Options {
                 output: OutputTarget::File(output),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -325,7 +304,6 @@ mod tests {
         assert_eq!(report.included_files, 1);
         assert!(!digest.contains("previous output"));
         assert!(digest.contains("FILE: source.txt"));
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -339,10 +317,9 @@ mod tests {
         let output = root.join("digest.txt");
 
         let report = ingest(
-            &Source::Local(root.clone()),
+            &Source::Local(root.to_path_buf()),
             &Options {
                 output: OutputTarget::File(output.clone()),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -353,7 +330,6 @@ mod tests {
         assert!(digest.contains("FILE: src.rs"));
         assert!(!digest.contains("Cargo.lock"));
         assert!(!digest.contains("package-lock.json"));
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -369,10 +345,9 @@ mod tests {
         let output = root.join("digest.txt");
 
         let report = ingest(
-            &Source::Local(root.clone()),
+            &Source::Local(root.to_path_buf()),
             &Options {
                 output: OutputTarget::File(output.clone()),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -384,7 +359,6 @@ mod tests {
         assert!(!digest.contains(".env"));
         assert!(!digest.contains("privkey.key"));
         assert!(!digest.contains("id_rsa"));
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -401,10 +375,9 @@ mod tests {
         let output = root.join("digest.txt");
 
         let report = ingest(
-            &Source::Local(root.clone()),
+            &Source::Local(root.to_path_buf()),
             &Options {
                 output: OutputTarget::File(output.clone()),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -415,24 +388,21 @@ mod tests {
         assert!(!digest.contains("binary.bin"));
         assert!(!digest.contains(".git/config"));
         assert!(!digest.contains("ignored.txt"));
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
     #[test]
     fn applies_gitignore_without_git_directory() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("ignore_without_git")?;
-        fs::create_dir_all(&root)?;
         fs::write(root.join(".gitignore"), "ignored.txt\n")?;
         fs::write(root.join("kept.txt"), "kept")?;
         fs::write(root.join("ignored.txt"), "ignored")?;
         let output = root.join("digest.txt");
 
         let report = ingest(
-            &Source::Local(root.clone()),
+            &Source::Local(root.to_path_buf()),
             &Options {
                 output: OutputTarget::File(output.clone()),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -440,23 +410,20 @@ mod tests {
         assert_eq!(report.included_files, 1);
         assert!(digest.contains("FILE: kept.txt"));
         assert!(!digest.contains("ignored.txt"));
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
     #[test]
     fn does_not_apply_dot_ignore_files() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("dot_ignore")?;
-        fs::create_dir_all(&root)?;
         fs::write(root.join(".ignore"), "important.txt\n")?;
         fs::write(root.join("important.txt"), "important")?;
         let output = root.join("digest.txt");
 
         let report = ingest(
-            &Source::Local(root.clone()),
+            &Source::Local(root.to_path_buf()),
             &Options {
                 output: OutputTarget::File(output.clone()),
-                reference: None,
                 ..Default::default()
             },
         )?;
@@ -464,28 +431,24 @@ mod tests {
 
         assert_eq!(report.included_files, 1);
         assert!(digest.contains("FILE: important.txt"));
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
     #[test]
     fn label_uses_directory_basename() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("custom_repo_name")?;
-        fs::create_dir_all(&root)?;
         fs::write(root.join("file.txt"), "hello")?;
         let output = root.join("digest.txt");
         let _ = ingest(
-            &Source::Local(root.clone()),
+            &Source::Local(root.to_path_buf()),
             &Options {
                 output: OutputTarget::File(output.clone()),
-                reference: None,
                 ..Default::default()
             },
         )?;
         let digest = fs::read_to_string(&output)?;
         let expected_basename = root.file_name().unwrap().to_str().unwrap();
         assert!(digest.starts_with(&format!("Repository: {expected_basename}\n")));
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -503,21 +466,18 @@ mod tests {
         use std::os::unix::ffi::OsStringExt;
 
         let root = temp_dir("invalid_paths")?;
-        fs::create_dir_all(&root)?;
         fs::write(root.join(OsString::from_vec(b"a\x80".to_vec())), "a")?;
         fs::write(root.join(OsString::from_vec(b"b\x81".to_vec())), "b")?;
         let output = root.join("digest.txt");
         let report = ingest(
-            &Source::Local(root.clone()),
+            &Source::Local(root.to_path_buf()),
             &Options {
                 output: OutputTarget::File(output),
-                reference: None,
                 ..Default::default()
             },
         )?;
         assert_eq!(report.included_files, 0);
         assert_eq!(report.skipped_files, 2);
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -544,14 +504,12 @@ mod tests {
                 window[1].path
             );
         }
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
     #[test]
     fn parallel_walk_excludes_sensitive_files() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("parallel_sensitive")?;
-        fs::create_dir_all(&root)?;
         fs::write(root.join(".env"), "SECRET=1")?;
         fs::write(root.join("id_rsa"), "PRIVATE KEY")?;
         fs::write(root.join("public.txt"), "public")?;
@@ -565,14 +523,12 @@ mod tests {
             skipped, 0,
             "sensitive files must be excluded without consuming skipped budget"
         );
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
     #[test]
     fn parallel_walk_bounds_candidate_memory_early() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("parallel_candidate_bound")?;
-        fs::create_dir_all(&root)?;
         for idx in 0..10_005 {
             fs::write(root.join(format!("f_{idx:05}.txt")), "x")?;
         }
@@ -583,7 +539,6 @@ mod tests {
             }
             other => panic!("expected CandidateLimitExceeded candidate overflow, got {other:?}"),
         }
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 }

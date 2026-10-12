@@ -61,90 +61,115 @@ fn xml_special(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XmlChunk<'a> {
+    Raw(&'a str),
+    Escaped(&'static str),
+}
+
+impl<'a> XmlChunk<'a> {
+    #[inline]
+    pub fn as_str(&self) -> &'a str {
+        match *self {
+            XmlChunk::Raw(s) => s,
+            XmlChunk::Escaped(s) => s,
+        }
+    }
+
+    #[inline]
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.as_str().as_bytes()
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.as_str().len()
+    }
+
+    #[inline]
+    pub fn ends_with_nl(&self) -> bool {
+        match *self {
+            XmlChunk::Raw(s) => s.as_bytes().last() == Some(&b'\n'),
+            XmlChunk::Escaped(s) => s.ends_with('\n'),
+        }
+    }
+}
+
+pub struct XmlChunks<'a> {
+    value: &'a str,
+    bytes: &'a [u8],
+    cursor: usize,
+}
+
+impl<'a> XmlChunks<'a> {
+    #[inline]
+    pub fn new(value: &'a str) -> Self {
+        Self {
+            value,
+            bytes: value.as_bytes(),
+            cursor: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for XmlChunks<'a> {
+    type Item = XmlChunk<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.cursor >= self.bytes.len() {
+            return None;
+        }
+
+        let start = self.cursor;
+        while self.cursor < self.bytes.len() {
+            if let Some((consumed, esc)) = xml_special(self.bytes, self.cursor) {
+                if self.cursor > start {
+                    let raw = &self.value[start..self.cursor];
+                    return Some(XmlChunk::Raw(raw));
+                }
+                self.cursor += consumed;
+                return Some(XmlChunk::Escaped(esc));
+            }
+            self.cursor += 1;
+        }
+
+        Some(XmlChunk::Raw(&self.value[start..]))
+    }
+}
+
 pub fn xml_escape(value: &str) -> Cow<'_, str> {
     let bytes = value.as_bytes();
-    let mut needs_escape = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        if let Some((_len, _)) = xml_special(bytes, i) {
-            needs_escape = true;
-            break;
-        }
-        i += 1;
-    }
+    let needs_escape = (0..bytes.len()).any(|i| xml_special(bytes, i).is_some());
 
     if !needs_escape {
         return Cow::Borrowed(value);
     }
 
     let mut result = String::with_capacity(value.len() + 16);
-    let mut start = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        if let Some((len, esc)) = xml_special(bytes, i) {
-            if i > start {
-                result.push_str(&value[start..i]);
-            }
-            result.push_str(esc);
-            start = i + len;
-            i += len;
-        } else {
-            i += 1;
-        }
-    }
-    if start < bytes.len() {
-        result.push_str(&value[start..]);
+    for chunk in XmlChunks::new(value) {
+        result.push_str(chunk.as_str());
     }
     Cow::Owned(result)
 }
 
 pub fn escaped_metrics(value: &str) -> (u64, bool) {
-    let bytes = value.as_bytes();
     let mut len: u64 = 0;
     let mut ends_with_nl = false;
-    let mut i = 0;
 
-    while i < bytes.len() {
-        if let Some((consumed, esc)) = xml_special(bytes, i) {
-            len += esc.len() as u64;
-            ends_with_nl = esc.ends_with('\n');
-            i += consumed;
-        } else {
-            len += 1;
-            ends_with_nl = bytes[i] == b'\n';
-            i += 1;
-        }
+    for chunk in XmlChunks::new(value) {
+        len += chunk.len() as u64;
+        ends_with_nl = chunk.ends_with_nl();
     }
 
     (len, ends_with_nl)
 }
 
-pub fn write_xml_escaped<W: Write + ?Sized>(
-    writer: &mut W,
-    value: &str,
-) -> std::io::Result<bool> {
-    let bytes = value.as_bytes();
-    let mut start = 0;
-    let mut i = 0;
+pub fn write_xml_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<bool> {
     let mut ends_with_nl = false;
 
-    while i < bytes.len() {
-        if let Some((consumed, esc)) = xml_special(bytes, i) {
-            if i > start {
-                writer.write_all(&bytes[start..i])?;
-            }
-            writer.write_all(esc.as_bytes())?;
-            start = i + consumed;
-            i += consumed;
-            ends_with_nl = esc.ends_with('\n');
-        } else {
-            ends_with_nl = bytes[i] == b'\n';
-            i += 1;
-        }
-    }
-
-    if start < bytes.len() {
-        writer.write_all(&bytes[start..])?;
+    for chunk in XmlChunks::new(value) {
+        writer.write_all(chunk.as_bytes())?;
+        ends_with_nl = chunk.ends_with_nl();
     }
 
     Ok(ends_with_nl)
@@ -158,7 +183,7 @@ pub(crate) fn calculate_file_bytes(file: &FileRecord) -> Result<(u64, u64, u64),
 }
 
 pub(crate) fn rendered_base_size(budget: &DigestBudget) -> Option<u64> {
-    let count = u64::try_from(budget.file_count).ok()?;
+    let count = u64::try_from(budget.content.file_count).ok()?;
     let mut size = 0_u64;
     size = size.checked_add(XML_REPO_START.len() as u64)?;
     size = size.checked_add(budget.label_bytes)?;
@@ -172,9 +197,9 @@ pub(crate) fn rendered_base_size(budget: &DigestBudget) -> Option<u64> {
     size = size.checked_add(XML_FILES_START.len() as u64)?;
     let per_file_tag_bytes = XML_FILE_START.len() + XML_TAG_CLOSE.len() + XML_FILE_END.len();
     size = size.checked_add(count.checked_mul(per_file_tag_bytes as u64)?)?;
-    size = size.checked_add(budget.path_bytes)?;
-    size = size.checked_add(budget.content_bytes)?;
-    size = size.checked_add(budget.trailing_bytes)?;
+    size = size.checked_add(budget.content.path_bytes)?;
+    size = size.checked_add(budget.content.content_bytes)?;
+    size = size.checked_add(budget.content.trailing_bytes)?;
     size = size.checked_add(XML_FILES_END.len() as u64)?;
     size.checked_add(XML_REPO_END.len() as u64)
 }
@@ -280,5 +305,26 @@ mod tests {
             );
             assert_eq!(stream_ends_with_nl, ends_with_nl);
         }
+    }
+
+    #[test]
+    fn xml_chunks_iterator_yields_expected_sequence() {
+        let input = "hello <world> & 'test'";
+        let chunks: Vec<_> = XmlChunks::new(input).collect();
+        assert_eq!(
+            chunks,
+            vec![
+                XmlChunk::Raw("hello "),
+                XmlChunk::Escaped("&lt;"),
+                XmlChunk::Raw("world"),
+                XmlChunk::Escaped("&gt;"),
+                XmlChunk::Raw(" "),
+                XmlChunk::Escaped("&amp;"),
+                XmlChunk::Raw(" "),
+                XmlChunk::Escaped("&apos;"),
+                XmlChunk::Raw("test"),
+                XmlChunk::Escaped("&apos;"),
+            ]
+        );
     }
 }

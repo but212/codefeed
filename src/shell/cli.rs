@@ -69,6 +69,7 @@ where
     let _program = args.next(); // skip binary name
 
     let mut source_slot: Option<OsString> = None;
+    let mut parsed_reference: Option<String> = None;
     let mut options = Options::default();
     let mut after_delimiter = false;
 
@@ -98,14 +99,22 @@ where
                         options.output = parse_output_target(&val);
                     }
                     "--ref" | "-r" => {
-                        let val = next_val(&mut args, inline_val, "--ref requires a branch, tag, or commit")?;
+                        let val = next_val(
+                            &mut args,
+                            inline_val,
+                            "--ref requires a branch, tag, or commit",
+                        )?;
                         let Some(s) = val.to_str() else {
                             return Err(usage("--ref requires a UTF-8 value"));
                         };
-                        options.reference = Some(s.to_owned());
+                        parsed_reference = Some(s.to_owned());
                     }
                     "--format" | "-f" => {
-                        let val = next_val(&mut args, inline_val, "--format requires a format (text, xml)")?;
+                        let val = next_val(
+                            &mut args,
+                            inline_val,
+                            "--format requires a format (text, xml)",
+                        )?;
                         let Some(s) = val.to_str() else {
                             return Err(usage("--format requires a UTF-8 value"));
                         };
@@ -134,10 +143,34 @@ where
         source_slot = Some(arg);
     }
 
+    if parsed_reference
+        .as_ref()
+        .is_some_and(|r| r.trim().is_empty())
+    {
+        return Err(IngestError::InvalidSource("--ref cannot be empty".into()));
+    }
+
     let Some(source_value) = source_slot else {
         return Err(usage("missing source"));
     };
-    let source = parse_source_os(&source_value)?;
+    let mut source = parse_source_os(&source_value)?;
+
+    if let Some(reference) = parsed_reference {
+        match &mut source {
+            Source::GitHub {
+                reference: ref_slot,
+                ..
+            } => {
+                *ref_slot = Some(reference);
+            }
+            Source::Local(_) => {
+                return Err(IngestError::InvalidSource(
+                    "--ref is only valid for GitHub sources".into(),
+                ));
+            }
+        }
+    }
+
     Ok(CliAction::Run { source, options })
 }
 
@@ -227,5 +260,56 @@ mod tests {
             }
             CliAction::Help => panic!("expected Run action"),
         }
+    }
+
+    #[test]
+    fn parses_ref_with_github_source() {
+        let action = parse_cli([
+            "codefeed",
+            "https://github.com/rust-lang/cargo",
+            "--ref",
+            "main",
+        ])
+        .unwrap();
+        match action {
+            CliAction::Run { source, .. } => {
+                assert_eq!(
+                    source,
+                    Source::GitHub {
+                        owner: "rust-lang".into(),
+                        repo: "cargo".into(),
+                        reference: Some("main".into()),
+                    }
+                );
+            }
+            CliAction::Help => panic!("expected Run action"),
+        }
+    }
+
+    #[test]
+    fn rejects_ref_with_local_source() {
+        assert!(parse_cli(["codefeed", ".", "--ref", "main"]).is_err());
+    }
+
+    #[test]
+    fn rejects_empty_ref() {
+        assert!(
+            parse_cli([
+                "codefeed",
+                "https://github.com/rust-lang/cargo",
+                "--ref",
+                ""
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_cli([
+                "codefeed",
+                "https://github.com/rust-lang/cargo",
+                "--ref",
+                "   "
+            ])
+            .is_err()
+        );
     }
 }

@@ -306,14 +306,12 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let root = temp_dir("symlink")?;
-        fs::create_dir_all(&root)?;
         let target = root.join("outside.txt");
         let link = root.join("link.txt");
         fs::write(&target, "outside")?;
         symlink(&target, &link)?;
 
         assert!(matches!(read_local_file(&root, &link)?, Probe::Missing));
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -327,7 +325,6 @@ mod tests {
         use std::time::Duration;
 
         let root = temp_dir("fifo")?;
-        fs::create_dir_all(&root)?;
         let path = root.join("candidate");
         let c_path = CString::new(path.as_os_str().as_bytes())?;
         assert_eq!(
@@ -337,7 +334,7 @@ mod tests {
 
         let (sender, receiver) = mpsc::channel();
         let thread_path = path.clone();
-        let thread_root = root.clone();
+        let thread_root = root.to_path_buf();
         let worker = thread::spawn(move || {
             let result = read_local_file(&thread_root, &thread_path);
             sender.send(result).expect("result receiver should exist");
@@ -348,42 +345,35 @@ mod tests {
 
         assert!(matches!(result, Probe::Missing));
         worker.join().expect("file reader thread should finish");
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
     #[test]
     fn bounds_local_file_reads() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("bounded_read")?;
-        fs::create_dir_all(&root)?;
         let path = root.join("large.txt");
         fs::write(&path, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
 
         assert!(matches!(read_local_file(&root, &path)?, Probe::TooLarge));
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
     #[test]
     fn includes_file_at_exact_size_limit() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("exact_size")?;
-        fs::create_dir_all(&root)?;
         let path = root.join("exact.txt");
         fs::write(&path, vec![b'x'; MAX_FILE_SIZE as usize])?;
 
         assert!(matches!(read_local_file(&root, &path)?, Probe::Bytes(_)));
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
     #[test]
     fn handles_unlinked_file_as_missing() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("missing_file")?;
-        fs::create_dir_all(&root)?;
         let path = root.join("nonexistent.txt");
 
         assert!(matches!(read_local_file(&root, &path)?, Probe::Missing));
-        fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -426,8 +416,6 @@ mod tests {
     {
         let root_a = temp_dir("win_root_a")?;
         let root_b = temp_dir("win_root_b")?;
-        fs::create_dir_all(&root_a)?;
-        fs::create_dir_all(&root_b)?;
 
         let inside = root_a.join("inside.txt");
         let outside = root_b.join("outside.txt");
@@ -446,21 +434,17 @@ mod tests {
             Probe::Missing
         ));
 
-        fs::remove_dir_all(root_a)?;
-        fs::remove_dir_all(root_b)?;
         Ok(())
     }
 
     #[cfg(windows)]
     #[test]
-    fn test_windows_intermediate_junction_escape_rejected(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn test_windows_intermediate_junction_escape_rejected() -> Result<(), Box<dyn std::error::Error>>
+    {
         use std::process::Command;
 
         let root = temp_dir("win_junc_root")?;
         let outside = temp_dir("win_junc_outside")?;
-        fs::create_dir_all(&root)?;
-        fs::create_dir_all(&outside)?;
 
         let secret = outside.join("secret.txt");
         fs::write(&secret, "confidential")?;
@@ -476,7 +460,9 @@ mod tests {
             ])
             .status();
 
-        if let Ok(s) = status && s.success() {
+        if let Ok(s) = status
+            && s.success()
+        {
             let path_via_junction = junction.join("secret.txt");
             let probe = read_local_file(&root, &path_via_junction)?;
             assert!(
@@ -486,21 +472,17 @@ mod tests {
             let _ = fs::remove_dir(&junction);
         }
 
-        let _ = fs::remove_dir_all(&outside);
-        let _ = fs::remove_dir_all(&root);
         Ok(())
     }
 
     #[cfg(windows)]
     #[test]
-    fn test_windows_symlink_escape_rejected_if_supported(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn test_windows_symlink_escape_rejected_if_supported() -> Result<(), Box<dyn std::error::Error>>
+    {
         use std::os::windows::fs::symlink_file;
 
         let root = temp_dir("win_sym_root")?;
         let outside = temp_dir("win_sym_outside")?;
-        fs::create_dir_all(&root)?;
-        fs::create_dir_all(&outside)?;
 
         let secret = outside.join("secret.txt");
         fs::write(&secret, "confidential")?;
@@ -516,8 +498,6 @@ mod tests {
             let _ = fs::remove_file(&symlink);
         }
 
-        let _ = fs::remove_dir_all(&outside);
-        let _ = fs::remove_dir_all(&root);
         Ok(())
     }
 }

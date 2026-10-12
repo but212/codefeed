@@ -9,7 +9,7 @@ use crate::core::archive::{parse_pax_comment, strip_archive_root};
 use crate::core::decide::{Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat};
-use crate::core::policy::{PathClassification, MAX_FILE_SIZE};
+use crate::core::policy::{MAX_FILE_SIZE, PathClassification};
 
 use super::github_client::GithubClient;
 
@@ -174,8 +174,8 @@ fn probe_tar_entry<R: Read>(entry: &mut tar::Entry<R>) -> Result<ArchiveEntryOut
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
     use tar::Builder;
 
     fn create_mock_tarball(entries: &[(&str, &[u8], EntryType)]) -> Vec<u8> {

@@ -40,7 +40,7 @@ pub(crate) fn calculate_file_bytes(file: &FileRecord) -> Result<(u64, u64, u64),
 }
 
 pub(crate) fn rendered_base_size(budget: &DigestBudget) -> Option<u64> {
-    let count = u64::try_from(budget.file_count).ok()?;
+    let count = u64::try_from(budget.content.file_count).ok()?;
     let mut size = 0_u64;
     size = size.checked_add(REPOSITORY_PREFIX.len() as u64)?;
     size = size.checked_add(budget.label_bytes)?;
@@ -51,7 +51,7 @@ pub(crate) fn rendered_base_size(budget: &DigestBudget) -> Option<u64> {
         size = size.checked_add(NEWLINE.len() as u64)?;
     }
     size = size.checked_add(FILES_PREFIX.len() as u64)?;
-    size = size.checked_add(budget.file_count.to_string().len() as u64)?;
+    size = size.checked_add(budget.content.file_count.to_string().len() as u64)?;
     size = size.checked_add(SKIPPED_PREFIX.len() as u64)?;
     size = size.checked_add(budget.skipped.to_string().len() as u64)?;
     size = size.checked_add(METADATA_SUFFIX.len() as u64)?;
@@ -59,9 +59,9 @@ pub(crate) fn rendered_base_size(budget: &DigestBudget) -> Option<u64> {
     size = size.checked_add(FILES_HEADER.len() as u64)?;
     let file_block_bytes = FILE_BLOCK_PREFIX.len() + FILE_BLOCK_SUFFIX.len();
     size = size.checked_add(count.checked_mul(file_block_bytes as u64)?)?;
-    size = size.checked_add(budget.path_bytes)?;
-    size = size.checked_add(budget.content_bytes)?;
-    size.checked_add(budget.trailing_bytes)
+    size = size.checked_add(budget.content.path_bytes)?;
+    size = size.checked_add(budget.content.content_bytes)?;
+    size.checked_add(budget.content.trailing_bytes)
 }
 
 pub(crate) fn render<'a, W, I>(

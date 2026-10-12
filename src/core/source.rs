@@ -72,6 +72,7 @@ fn parse_github_url(value: &str) -> Result<Source, IngestError> {
     Ok(Source::GitHub {
         owner: (*owner).to_owned(),
         repo: repo.to_owned(),
+        reference: None,
     })
 }
 
@@ -95,6 +96,7 @@ mod tests {
             Source::GitHub {
                 owner: "rust-lang".into(),
                 repo: "cargo".into(),
+                reference: None,
             }
         );
         Ok(())
@@ -122,6 +124,7 @@ mod tests {
         let expected = Source::GitHub {
             owner: "owner".into(),
             repo: "repo".into(),
+            reference: None,
         };
         assert_eq!(parse_source("https://github.com:443/owner/repo")?, expected);
         assert_eq!(parse_source("https://github.com:/owner/repo")?, expected);
