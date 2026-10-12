@@ -6,10 +6,10 @@ pub const MAX_FILE_SIZE: u64 = 1024 * 1024;
 pub const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
 /// Maximum candidate files evaluated before candidate budget overflows (10,000 files).
 pub const MAX_FILE_COUNT: usize = 10_000;
-/// Maximum GitHub API JSON response body size (8 MiB in bytes).
-pub const MAX_JSON_SIZE: u64 = 8 * 1024 * 1024;
-/// Number of concurrent remote download worker threads.
+/// Number of concurrent local file reader threads in a batch.
 pub const FETCH_WINDOW: usize = 16;
+/// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
+pub const ARCHIVE_MAX_SECS: u64 = 300;
 
 /// Conventional lockfiles excluded before candidate budget accounting.
 pub const NOISE: &[&str] = &[

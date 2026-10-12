@@ -1,25 +1,18 @@
-//! GitHub HTTP transport with bounded response bodies.
+//! GitHub HTTP transport with streaming response bodies.
 
 use std::io::Read;
 use std::time::Duration;
 
-use serde::de::DeserializeOwned;
 use ureq::Agent;
 use ureq::http::StatusCode;
 use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::core::error::IngestError;
-use crate::core::github_tree::{CommitResponse, RepositoryResponse, TreeResponse};
-use crate::core::github_url::{RequestTarget, api_url, raw_url, request_target};
-use crate::core::policy::{MAX_JSON_SIZE, MAX_RETRIES, is_retryable_status, retry_delay};
+use crate::core::github_url::{RequestTarget, request_target, tarball_url};
+use crate::core::policy::{ARCHIVE_MAX_SECS, MAX_RETRIES, is_retryable_status, retry_delay};
 
 const GITHUB_USER_AGENT: &str = "codefeed/0.1";
 const GITHUB_TIMEOUT_SECS: u64 = 30;
-
-pub(crate) enum LimitedBody {
-    Complete(Vec<u8>),
-    Exceeded,
-}
 
 pub(crate) struct GithubClient {
     agent: Agent,
@@ -33,7 +26,8 @@ impl GithubClient {
             .build();
         let config = Agent::config_builder()
             .user_agent(GITHUB_USER_AGENT)
-            .timeout_global(Some(Duration::from_secs(GITHUB_TIMEOUT_SECS)))
+            .timeout_recv_response(Some(Duration::from_secs(GITHUB_TIMEOUT_SECS)))
+            .timeout_recv_body(Some(Duration::from_secs(ARCHIVE_MAX_SECS)))
             .http_status_as_error(false)
             .tls_config(tls)
             .build();
@@ -46,58 +40,17 @@ impl GithubClient {
         }
     }
 
-    pub(crate) fn repository(
+    pub(crate) fn tarball_stream(
         &self,
         owner: &str,
         repo: &str,
-    ) -> Result<RepositoryResponse, IngestError> {
-        self.json(&api_url(&["repos", owner, repo]))
+        reference: Option<&str>,
+    ) -> Result<Box<dyn Read + Send>, IngestError> {
+        let url = tarball_url(owner, repo, reference);
+        self.stream_url(&url)
     }
 
-    pub(crate) fn commit_sha(
-        &self,
-        owner: &str,
-        repo: &str,
-        reference: &str,
-    ) -> Result<String, IngestError> {
-        let url = api_url(&["repos", owner, repo, "commits", reference]);
-        let commit: CommitResponse = self.json(&url)?;
-        if commit.sha.is_empty() {
-            return Err(IngestError::InvalidMetadata(
-                "GitHub returned an empty commit SHA".into(),
-            ));
-        }
-        Ok(commit.sha)
-    }
-
-    pub(crate) fn tree(
-        &self,
-        owner: &str,
-        repo: &str,
-        revision: &str,
-    ) -> Result<TreeResponse, IngestError> {
-        let mut url = api_url(&["repos", owner, repo, "git", "trees", revision]);
-        url.push_str("?recursive=1");
-        self.json(&url)
-    }
-
-    pub(crate) fn raw_file(
-        &self,
-        owner: &str,
-        repo: &str,
-        revision: &str,
-        path: &str,
-        limit: u64,
-    ) -> Result<LimitedBody, IngestError> {
-        let url = raw_url(owner, repo, revision, path);
-        let (status, body) = self.response(&url, limit)?;
-        if !status.is_success() {
-            return Err(api_error(status, body));
-        }
-        Ok(body)
-    }
-
-    fn response(&self, url: &str, limit: u64) -> Result<(StatusCode, LimitedBody), IngestError> {
+    pub(crate) fn stream_url(&self, url: &str) -> Result<Box<dyn Read + Send>, IngestError> {
         let mut attempt = 0;
         loop {
             let mut request = self.agent.get(url);
@@ -133,38 +86,23 @@ impl GithubClient {
                 continue;
             }
 
-            let body = read_response(response.into_body(), limit)?;
-            return Ok((status, body));
-        }
-    }
+            if !status.is_success() {
+                let mut body_bytes = Vec::new();
+                let _ = response
+                    .into_body()
+                    .into_reader()
+                    .take(4096)
+                    .read_to_end(&mut body_bytes);
+                return Err(api_error(status, &body_bytes));
+            }
 
-    fn json<T: DeserializeOwned>(&self, url: &str) -> Result<T, IngestError> {
-        let (status, body) = self.response(url, MAX_JSON_SIZE)?;
-        if !status.is_success() {
-            return Err(api_error(status, body));
+            return Ok(Box::new(response.into_body().into_reader()));
         }
-        let LimitedBody::Complete(body) = body else {
-            return Err(IngestError::Api(format!(
-                "GitHub API response exceeds the {MAX_JSON_SIZE} byte limit"
-            )));
-        };
-        serde_json::from_slice(&body).map_err(|error| IngestError::Api(error.to_string()))
     }
 }
 
-fn classify_body(bytes: Vec<u8>, limit: u64) -> LimitedBody {
-    if bytes.len() as u64 > limit {
-        LimitedBody::Exceeded
-    } else {
-        LimitedBody::Complete(bytes)
-    }
-}
-
-fn api_error(status: StatusCode, body: LimitedBody) -> IngestError {
-    let detail = match body {
-        LimitedBody::Complete(body) => String::from_utf8_lossy(&body).replace('\n', " "),
-        LimitedBody::Exceeded => "response body exceeds the limit".into(),
-    };
+fn api_error(status: StatusCode, body_bytes: &[u8]) -> IngestError {
+    let detail = String::from_utf8_lossy(body_bytes).replace('\n', " ");
     if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::FORBIDDEN {
         IngestError::Api(format!(
             "HTTP {status}: {detail} (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
@@ -172,15 +110,6 @@ fn api_error(status: StatusCode, body: LimitedBody) -> IngestError {
     } else {
         IngestError::Api(format!("HTTP {status}: {detail}"))
     }
-}
-
-fn read_response(body: ureq::Body, limit: u64) -> Result<LimitedBody, IngestError> {
-    let mut bytes = Vec::new();
-    body.into_reader()
-        .take(limit.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| IngestError::Http(error.to_string()))?;
-    Ok(classify_body(bytes, limit))
 }
 
 fn resolve_token_with<F>(mut lookup: F) -> Option<String>
@@ -211,18 +140,6 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::env::VarError;
-
-    #[test]
-    fn distinguishes_complete_and_oversized_bodies() {
-        assert!(matches!(
-            classify_body(vec![0; 8], 8),
-            LimitedBody::Complete(body) if body.len() == 8
-        ));
-        assert!(matches!(
-            classify_body(vec![0; 9], 8),
-            LimitedBody::Exceeded
-        ));
-    }
 
     #[test]
     fn resolves_token_with_correct_precedence_and_trimming() {
@@ -256,22 +173,13 @@ mod tests {
 
     #[test]
     fn api_error_suggests_token_on_rate_limit_and_forbidden() {
-        let err_429 = api_error(
-            StatusCode::TOO_MANY_REQUESTS,
-            LimitedBody::Complete(b"rate limit".to_vec()),
-        );
+        let err_429 = api_error(StatusCode::TOO_MANY_REQUESTS, b"rate limit");
         assert!(err_429.to_string().contains("GITHUB_TOKEN"));
 
-        let err_403 = api_error(
-            StatusCode::FORBIDDEN,
-            LimitedBody::Complete(b"forbidden".to_vec()),
-        );
+        let err_403 = api_error(StatusCode::FORBIDDEN, b"forbidden");
         assert!(err_403.to_string().contains("GITHUB_TOKEN"));
 
-        let err_404 = api_error(
-            StatusCode::NOT_FOUND,
-            LimitedBody::Complete(b"not found".to_vec()),
-        );
+        let err_404 = api_error(StatusCode::NOT_FOUND, b"not found");
         assert!(!err_404.to_string().contains("GITHUB_TOKEN"));
     }
 
@@ -300,11 +208,12 @@ mod tests {
 
         let client = GithubClient::new();
         let url = format!("http://127.0.0.1:{port}/test");
-        let (status, body) = client
-            .response(&url, 1024)
-            .expect("response should succeed on retry");
-        assert_eq!(status, StatusCode::OK);
-        assert!(matches!(body, LimitedBody::Complete(b) if b == b"success"));
+        let mut reader = client
+            .stream_url(&url)
+            .expect("stream_url should succeed on retry");
+        let mut body = String::new();
+        reader.read_to_string(&mut body).expect("read body");
+        assert_eq!(body, "success");
 
         handle.join().expect("server thread finish");
     }
@@ -329,10 +238,10 @@ mod tests {
 
         let client = GithubClient::new();
         let url = format!("http://127.0.0.1:{port}/test");
-        let (status, _) = client
-            .response(&url, 1024)
-            .expect("response should return without retry");
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        let Err(err) = client.stream_url(&url) else {
+            panic!("expected error");
+        };
+        assert!(err.to_string().contains("404"));
 
         handle.join().expect("server thread finish");
     }
@@ -363,13 +272,42 @@ mod tests {
 
         let client = GithubClient::new();
         let url = format!("http://127.0.0.1:{port}/test");
-        let (status, body) = client
-            .response(&url, 1024)
-            .expect("response should return final 503");
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert!(matches!(body, LimitedBody::Complete(b) if b == b"unavailable"));
+        let Err(err) = client.stream_url(&url) else {
+            panic!("expected error");
+        };
+        assert!(err.to_string().contains("503"));
 
         handle.join().expect("server thread finish");
         assert_eq!(attempts.load(Ordering::SeqCst), MAX_RETRIES);
+    }
+
+    #[test]
+    fn stream_url_reads_body_successfully() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let response =
+                "HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\ntarball_data";
+            let _ = stream.write_all(response.as_bytes());
+        });
+
+        let client = GithubClient::new();
+        let url = format!("http://127.0.0.1:{port}/archive");
+        let mut reader = client
+            .stream_url(&url)
+            .expect("stream_url should succeed with 200");
+        let mut content = String::new();
+        reader.read_to_string(&mut content).expect("read to string");
+        assert_eq!(content, "tarball_data");
+
+        handle.join().expect("server thread finish");
     }
 }

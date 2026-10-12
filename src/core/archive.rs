@@ -1,0 +1,85 @@
+//! Archive parsing pure utilities: Pax header comment extraction and root stripping.
+
+/// Strips the top-level directory prefix from an archive entry path.
+///
+/// GitHub tarballs wrap all entries in a root directory `{owner}-{repo}-{hash}/`.
+/// Returns `None` for the root directory itself or empty paths.
+pub(crate) fn strip_archive_root(raw_path: &str) -> Option<&str> {
+    let normalized = raw_path.trim_matches('/');
+    let (_root, rest) = normalized.split_once('/')?;
+    if rest.is_empty() {
+        None
+    } else {
+        Some(rest)
+    }
+}
+
+/// Parses a 40-character commit SHA from PAX global header comment bytes.
+///
+/// `git archive` embeds `comment = <commit_sha>` or `comment=<commit_sha>`
+/// in the PAX extended header.
+pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        // PAX line format: "<length> <key>=<value>" or "<key>=<value>"
+        let payload = match trimmed.find(' ') {
+            Some(space_idx) if trimmed[..space_idx].chars().all(|c| c.is_ascii_digit()) => {
+                &trimmed[space_idx + 1..]
+            }
+            _ => trimmed,
+        };
+        if let Some(sha) = payload.strip_prefix("comment=") {
+            let sha = sha.trim();
+            if is_valid_commit_sha(sha) {
+                return Some(sha.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn is_valid_commit_sha(sha: &str) -> bool {
+    (sha.len() == 40 || sha.len() == 64) && sha.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_archive_root_correctly() {
+        assert_eq!(
+            strip_archive_root("but212-codefeed-c1863c8/src/main.rs"),
+            Some("src/main.rs")
+        );
+        assert_eq!(
+            strip_archive_root("repo-root/deep/nested/file.txt"),
+            Some("deep/nested/file.txt")
+        );
+        assert_eq!(strip_archive_root("but212-codefeed-c1863c8/"), None);
+        assert_eq!(strip_archive_root("but212-codefeed-c1863c8"), None);
+        assert_eq!(strip_archive_root(""), None);
+    }
+
+    #[test]
+    fn parses_git_archive_pax_comment() {
+        let pax_header = b"52 comment=c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n";
+        assert_eq!(
+            parse_pax_comment(pax_header),
+            Some("c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950".into())
+        );
+
+        let direct_comment = b"comment=c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n";
+        assert_eq!(
+            parse_pax_comment(direct_comment),
+            Some("c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950".into())
+        );
+
+        let invalid = b"52 comment=not-a-sha\n";
+        assert_eq!(parse_pax_comment(invalid), None);
+
+        let empty = b"";
+        assert_eq!(parse_pax_comment(empty), None);
+    }
+}
