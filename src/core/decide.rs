@@ -170,11 +170,9 @@ fn format_overflow_diagnostic(dir_counts: &HashMap<String, usize>) -> String {
 }
 
 /// UTF-8 text predicate: NUL-free bytes only.
-fn text_content(bytes: Vec<u8>) -> Option<String> {
-    if bytes.contains(&0) {
-        return None;
-    }
-    String::from_utf8(bytes).ok()
+pub fn text_content(bytes: Vec<u8>) -> Option<String> {
+    let s = String::from_utf8(bytes).ok()?;
+    (!s.as_bytes().contains(&0)).then_some(s)
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ mod xml;
 
 pub use token::TokenEstimatingWriter;
 pub use trie::BudgetTrie;
+pub use xml::{escaped_metrics, write_xml_escaped, xml_escape};
 
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, FileRecord};

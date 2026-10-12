@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ignore::{WalkBuilder, WalkState};
 
@@ -13,30 +13,66 @@ use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
 use crate::core::policy::PathClassification;
 
-pub(crate) fn collect_local(
+#[derive(Clone)]
+struct LocalCandidate {
+    path: PathBuf,
+    item_path: ItemPath,
+    probe: Option<Probe>,
+}
+
+pub fn collect_local(
     root: &Path,
     output: &OutputTarget,
     format: DigestFormat,
 ) -> Result<CollectionResult, IngestError> {
+    let canonical_root = validate_root(root)?;
+    let output_filter = match output {
+        OutputTarget::File(path) => Some(OutputFilter::new(path)?),
+        OutputTarget::Stdout => None,
+    };
+    let label = local_label(&canonical_root);
+    let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
+    let mut selector = Selector::new(&label, None, format)?;
+
+    for window in candidates.chunks(crate::core::policy::FETCH_WINDOW) {
+        let probes = probe_candidates(&canonical_root, window)?;
+        for (candidate, probe) in window.iter().zip(probes) {
+            selector.decide(Item {
+                path: candidate.item_path.clone(),
+                probe,
+            })?;
+        }
+    }
+
+    let (files, skipped, trie) = selector.into_parts();
+
+    Ok(CollectionResult {
+        label,
+        revision: None,
+        files,
+        skipped,
+        trie,
+    })
+}
+
+fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
     let root_display = root.display();
-    let root = fs::canonicalize(root)
+    let canonical = fs::canonicalize(root)
         .map_err(|error| IngestError::InvalidSource(format!("{root_display} ({error})")))?;
-    if !root.is_dir() {
-        let display = root.display();
+    if !canonical.is_dir() {
+        let display = canonical.display();
         return Err(IngestError::InvalidSource(format!(
             "{display} is not a directory"
         )));
     }
-    // Standard output has no filesystem path, so there is nothing to exclude
-    // from the walk.
-    let output_filter = match output {
-        OutputTarget::File(path) => Some(std::sync::Arc::new(OutputFilter::new(path)?)),
-        OutputTarget::Stdout => None,
-    };
-    let label = local_label(&root);
-    let mut selector = Selector::new(&label, None, format)?;
+    Ok(canonical)
+}
 
-    let walker = WalkBuilder::new(&root)
+fn walk_candidates(
+    root: &Path,
+    output_filter: Option<&OutputFilter>,
+) -> Result<Vec<LocalCandidate>, IngestError> {
+    let walker = WalkBuilder::new(root)
         .hidden(true)
         .ignore(false)
         .git_ignore(true)
@@ -48,12 +84,13 @@ pub(crate) fn collect_local(
         .build_parallel();
 
     let (tx, rx) = std::sync::mpsc::channel();
-    let root_clone = root.clone();
+    let root_clone = root.to_path_buf();
+    let filter_arc = output_filter.cloned().map(std::sync::Arc::new);
     let candidate_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     walker.run(|| {
         let tx = tx.clone();
-        let output_filter = output_filter.clone();
+        let output_filter = filter_arc.clone();
         let root = root_clone.clone();
         let candidate_counter = candidate_counter.clone();
         Box::new(move |entry| {
@@ -113,7 +150,11 @@ pub(crate) fn collect_local(
                 return WalkState::Quit;
             }
 
-            let _ = tx.send(Ok((entry_path.to_path_buf(), item_path, probe)));
+            let _ = tx.send(Ok(LocalCandidate {
+                path: entry_path.to_path_buf(),
+                item_path,
+                probe,
+            }));
             WalkState::Continue
         })
     });
@@ -127,55 +168,73 @@ pub(crate) fn collect_local(
     }
 
     CandidateBudget::verify_count(
-        candidates.iter().map(|item| match &item.1 {
+        candidates.iter().map(|item| match &item.item_path {
             ItemPath::Utf8(p) => Some(p.as_str()),
             ItemPath::NonUtf8 => None,
         }),
         candidates.len(),
     )?;
 
-    candidates.sort_by(|a, b| match (&a.1, &b.1) {
+    candidates.sort_by(|a, b| match (&a.item_path, &b.item_path) {
         (ItemPath::Utf8(left), ItemPath::Utf8(right)) => left.cmp(right),
         (ItemPath::Utf8(_), ItemPath::NonUtf8) => std::cmp::Ordering::Less,
         (ItemPath::NonUtf8, ItemPath::Utf8(_)) => std::cmp::Ordering::Greater,
-        (ItemPath::NonUtf8, ItemPath::NonUtf8) => a.0.cmp(&b.0),
+        (ItemPath::NonUtf8, ItemPath::NonUtf8) => a.path.cmp(&b.path),
     });
 
-    for chunk in candidates.chunks(crate::core::policy::FETCH_WINDOW) {
-        let probes = std::thread::scope(|s| {
-            let handles: Vec<_> = chunk
-                .iter()
-                .map(|(entry_path, _, probe_opt)| {
-                    let root = &root;
-                    s.spawn(move || match probe_opt {
-                        Some(probe) => Ok(probe.clone()),
-                        None => read_local_file(root, entry_path),
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| h.join().expect("reader thread panicked"))
-                .collect::<Vec<Result<Probe, IngestError>>>()
-        });
+    Ok(candidates)
+}
 
-        for ((_, item_path, _), probe_res) in chunk.iter().zip(probes) {
-            selector.decide(Item {
-                path: item_path.clone(),
-                probe: probe_res?,
-            })?;
-        }
+fn probe_candidates(
+    root: &Path,
+    candidates: &[LocalCandidate],
+) -> Result<Vec<Probe>, IngestError> {
+    if candidates.is_empty() {
+        return Ok(Vec::new());
     }
 
-    let (files, skipped, trie) = selector.into_parts();
-    Ok(CollectionResult {
-        label,
-        revision: None,
-        files,
-        skipped,
-        trie,
-    })
+    let next_idx = std::sync::atomic::AtomicUsize::new(0);
+    let worker_count = crate::core::policy::FETCH_WINDOW.min(candidates.len()).max(1);
+
+    let probes = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..worker_count)
+            .map(|_| {
+                s.spawn(|| {
+                    let mut local_results = Vec::new();
+                    loop {
+                        let idx = next_idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if idx >= candidates.len() {
+                            break;
+                        }
+                        let candidate = &candidates[idx];
+                        let res = match &candidate.probe {
+                            Some(probe) => Ok(probe.clone()),
+                            None => read_local_file(root, &candidate.path),
+                        };
+                        local_results.push((idx, res));
+                    }
+                    local_results
+                })
+            })
+            .collect();
+
+        let mut all_probes: Vec<Option<Result<Probe, IngestError>>> =
+            (0..candidates.len()).map(|_| None).collect();
+        for handle in handles {
+            let thread_results = handle.join().expect("reader thread panicked");
+            for (idx, res) in thread_results {
+                all_probes[idx] = Some(res);
+            }
+        }
+        all_probes
+    });
+
+    probes
+        .into_iter()
+        .map(|res| res.expect("all probe results populated"))
+        .collect()
 }
+
 
 fn local_label(root: &Path) -> String {
     root.file_name()

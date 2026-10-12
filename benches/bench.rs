@@ -10,9 +10,20 @@ use std::io::Write;
 use std::time::Instant;
 
 use codefeed::__bench::{
-    render_digest_to_writer, BudgetTrie, CollectionResult, DigestFormat, FileRecord, Item,
-    ItemPath, Probe, Selector, TokenEstimatingWriter,
+    collect_local, escaped_metrics, render_digest_to_writer, text_content, write_xml_escaped,
+    xml_escape, BudgetTrie, CollectionResult, DigestFormat, FileRecord, Item, ItemPath,
+    OutputTarget, Probe, Selector, TokenEstimatingWriter,
 };
+
+pub struct VoidWriter;
+impl Write for VoidWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 mod engine {
     use super::*;
@@ -169,6 +180,45 @@ mod fixture {
             trie,
         }
     }
+
+    pub struct TempDirGuard(pub std::path::PathBuf);
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    pub fn setup_temp_hierarchy(file_count: usize) -> (TempDirGuard, std::path::PathBuf) {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("codefeed_bench_io_{timestamp}"));
+        std::fs::create_dir_all(&path).expect("create temp bench dir");
+
+        let content = b"pub fn sample() -> i32 { 42 }\n";
+        let dirs_count = 10.min(file_count);
+        let subs_count = 10.min(file_count / dirs_count.max(1)).max(1);
+        let files_per_sub = (file_count / (dirs_count * subs_count)).max(1);
+
+        let mut created = 0;
+        'outer: for d in 0..dirs_count {
+            for s in 0..subs_count {
+                let dir_path = path.join(format!("dir_{d:02}")).join(format!("sub_{s:02}"));
+                std::fs::create_dir_all(&dir_path).expect("create sub dir");
+                for f in 0..files_per_sub {
+                    let file_path = dir_path.join(format!("file_{f:02}.rs"));
+                    std::fs::write(&file_path, content).expect("write file");
+                    created += 1;
+                    if created >= file_count {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+
+        (TempDirGuard(path.clone()), path)
+    }
 }
 
 mod format {
@@ -231,9 +281,13 @@ mod suites {
 
     pub fn run_all(runner: &mut Runner) {
         bench_trie(runner);
+        bench_trie_render(runner);
         bench_rendering(runner);
+        bench_xml_primitives(runner);
         bench_token_estimation(runner);
+        bench_text_content(runner);
         bench_selector_decide(runner);
+        bench_local_collect(runner);
     }
 
     fn bench_trie(runner: &mut Runner) {
@@ -272,6 +326,45 @@ mod suites {
         }
     }
 
+    fn bench_trie_render(runner: &mut Runner) {
+        let flat_paths: Vec<String> = (0..1_000).map(|i| format!("src/file_{i:05}.rs")).collect();
+        let mut flat_trie = BudgetTrie::new(false);
+        for p in &flat_paths {
+            flat_trie.insert(p);
+        }
+
+        runner.bench("trie_render_flat_1000", 20, 50, None, || {
+            let mut writer = VoidWriter;
+            flat_trie
+                .render_to_writer(&mut writer)
+                .expect("render trie");
+            black_box(&mut writer);
+        });
+
+        let deep_paths: Vec<String> = (0..1_000)
+            .map(|i| {
+                let mut p = String::new();
+                for d in 0..8 {
+                    p.push_str(&format!("level_{d}/"));
+                }
+                p.push_str(&format!("node_{i:05}.rs"));
+                p
+            })
+            .collect();
+        let mut deep_trie = BudgetTrie::new(false);
+        for p in &deep_paths {
+            deep_trie.insert(p);
+        }
+
+        runner.bench("trie_render_deep_1000", 20, 50, None, || {
+            let mut writer = VoidWriter;
+            deep_trie
+                .render_to_writer(&mut writer)
+                .expect("render trie");
+            black_box(&mut writer);
+        });
+    }
+
     fn bench_rendering(runner: &mut Runner) {
         let cases = [
             ("render_text_1000", DigestFormat::Text, false),
@@ -300,17 +393,48 @@ mod suites {
         }
     }
 
-    fn bench_token_estimation(runner: &mut Runner) {
-        struct VoidWriter;
-        impl Write for VoidWriter {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
+    fn bench_xml_primitives(runner: &mut Runner) {
+        let chunk = "if (a < b && c > d) { let s = \"'quotes' & <tags>\"; }\n";
+        let repeats = (100_000 / chunk.len()).max(1);
+        let payload = chunk.repeat(repeats);
+        let payload_bytes = payload.len() as u64;
 
+        runner.bench(
+            "xml_escape_100k",
+            10,
+            50,
+            Some(payload_bytes),
+            || {
+                let escaped = xml_escape(&payload);
+                black_box(escaped);
+            },
+        );
+
+        runner.bench(
+            "xml_metrics_100k",
+            10,
+            50,
+            Some(payload_bytes),
+            || {
+                let (len, nl) = escaped_metrics(&payload);
+                black_box((len, nl));
+            },
+        );
+
+        runner.bench(
+            "xml_stream_write_100k",
+            10,
+            50,
+            Some(payload_bytes),
+            || {
+                let mut writer = VoidWriter;
+                let nl = write_xml_escaped(&mut writer, &payload).expect("write xml");
+                black_box(nl);
+            },
+        );
+    }
+
+    fn bench_token_estimation(runner: &mut Runner) {
         let configs = [
             ("token_estimate_ascii_2mb", true, 2 * 1024 * 1024),
             ("token_estimate_mixed_2mb", false, 2 * 1024 * 1024),
@@ -388,6 +512,55 @@ mod suites {
             }
             let (files, skipped, _) = selector.into_parts();
             black_box((files.len(), skipped));
+        });
+    }
+
+    fn bench_text_content(runner: &mut Runner) {
+        let ascii_chunk = "pub fn process_data(val: u64) -> u64 { val * 42 + 7 }\n";
+        let repeats = (100_000 / ascii_chunk.len()).max(1);
+        let ascii_bytes = ascii_chunk.repeat(repeats).into_bytes();
+        let ascii_len = ascii_bytes.len() as u64;
+
+        runner.bench(
+            "text_content_ascii_100k",
+            10,
+            50,
+            Some(ascii_len),
+            || {
+                let res = text_content(ascii_bytes.clone());
+                black_box(res);
+            },
+        );
+
+        let mixed_chunk = "// 한글 주석과 UTF-8 문자열: 『데이터 검증 테스트』 🚀\n";
+        let mixed_repeats = (100_000 / mixed_chunk.len()).max(1);
+        let mixed_bytes = mixed_chunk.repeat(mixed_repeats).into_bytes();
+        let mixed_len = mixed_bytes.len() as u64;
+
+        runner.bench(
+            "text_content_mixed_100k",
+            10,
+            50,
+            Some(mixed_len),
+            || {
+                let res = text_content(mixed_bytes.clone());
+                black_box(res);
+            },
+        );
+    }
+
+    fn bench_local_collect(runner: &mut Runner) {
+        let name = "local_collect_hierarchical_1000";
+        if !runner.should_run(name) {
+            return;
+        }
+
+        let (_guard, temp_root) = setup_temp_hierarchy(1_000);
+
+        runner.bench(name, 2, 10, None, || {
+            let res = collect_local(&temp_root, &OutputTarget::Stdout, DigestFormat::Text)
+                .expect("collect_local should succeed");
+            black_box(res.files.len());
         });
     }
 }

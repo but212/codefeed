@@ -21,75 +21,125 @@ const XML_FILE_START: &str = "<file path=\"";
 const XML_FILE_END: &str = "</file>\n";
 const NEWLINE: &str = "\n";
 
-#[inline]
-fn escape_char(ch: char) -> Option<&'static str> {
-    match ch {
-        '&' => Some("&amp;"),
-        '<' => Some("&lt;"),
-        '>' => Some("&gt;"),
-        '"' => Some("&quot;"),
-        '\'' => Some("&apos;"),
-        '\u{0001}'..='\u{0008}'
-        | '\u{000B}'
-        | '\u{000C}'
-        | '\u{000E}'..='\u{001F}'
-        | '\u{FFFE}'
-        | '\u{FFFF}' => Some("\u{FFFD}"),
-        _ => None,
+const fn make_escape_ascii() -> [Option<&'static str>; 128] {
+    let mut table = [None; 128];
+    table[b'&' as usize] = Some("&amp;");
+    table[b'<' as usize] = Some("&lt;");
+    table[b'>' as usize] = Some("&gt;");
+    table[b'"' as usize] = Some("&quot;");
+    table[b'\'' as usize] = Some("&apos;");
+    let mut i = 1;
+    while i <= 8 {
+        table[i] = Some("\u{FFFD}");
+        i += 1;
+    }
+    table[0x0B] = Some("\u{FFFD}");
+    table[0x0C] = Some("\u{FFFD}");
+    let mut j = 0x0E;
+    while j <= 0x1F {
+        table[j] = Some("\u{FFFD}");
+        j += 1;
+    }
+    table
+}
+
+const ESCAPE_ASCII: [Option<&'static str>; 128] = make_escape_ascii();
+
+#[inline(always)]
+fn xml_special(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
+    let b = bytes[i];
+    if b < 128 {
+        ESCAPE_ASCII[b as usize].map(|esc| (1, esc))
+    } else if b == 0xEF
+        && i + 2 < bytes.len()
+        && bytes[i + 1] == 0xBF
+        && (bytes[i + 2] == 0xBE || bytes[i + 2] == 0xBF)
+    {
+        Some((3, "\u{FFFD}"))
+    } else {
+        None
     }
 }
 
-pub(crate) fn xml_escape(value: &str) -> Cow<'_, str> {
-    if !value.chars().any(|ch| escape_char(ch).is_some()) {
+pub fn xml_escape(value: &str) -> Cow<'_, str> {
+    let bytes = value.as_bytes();
+    let mut needs_escape = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some((_len, _)) = xml_special(bytes, i) {
+            needs_escape = true;
+            break;
+        }
+        i += 1;
+    }
+
+    if !needs_escape {
         return Cow::Borrowed(value);
     }
 
     let mut result = String::with_capacity(value.len() + 16);
-    for ch in value.chars() {
-        if let Some(escaped) = escape_char(ch) {
-            result.push_str(escaped);
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some((len, esc)) = xml_special(bytes, i) {
+            if i > start {
+                result.push_str(&value[start..i]);
+            }
+            result.push_str(esc);
+            start = i + len;
+            i += len;
         } else {
-            result.push(ch);
+            i += 1;
         }
+    }
+    if start < bytes.len() {
+        result.push_str(&value[start..]);
     }
     Cow::Owned(result)
 }
 
-pub(crate) fn escaped_metrics(value: &str) -> (u64, bool) {
+pub fn escaped_metrics(value: &str) -> (u64, bool) {
+    let bytes = value.as_bytes();
     let mut len: u64 = 0;
-    let mut last_char = None;
+    let mut ends_with_nl = false;
+    let mut i = 0;
 
-    for ch in value.chars() {
-        if let Some(escaped) = escape_char(ch) {
-            len += escaped.len() as u64;
-            last_char = escaped.chars().last();
+    while i < bytes.len() {
+        if let Some((consumed, esc)) = xml_special(bytes, i) {
+            len += esc.len() as u64;
+            ends_with_nl = esc.ends_with('\n');
+            i += consumed;
         } else {
-            len += ch.len_utf8() as u64;
-            last_char = Some(ch);
+            len += 1;
+            ends_with_nl = bytes[i] == b'\n';
+            i += 1;
         }
     }
 
-    (len, last_char == Some('\n'))
+    (len, ends_with_nl)
 }
 
-pub(crate) fn write_xml_escaped<W: Write + ?Sized>(
+pub fn write_xml_escaped<W: Write + ?Sized>(
     writer: &mut W,
     value: &str,
 ) -> std::io::Result<bool> {
-    let mut last_char = None;
-    let mut start = 0;
-
     let bytes = value.as_bytes();
-    for (idx, ch) in value.char_indices() {
-        if let Some(escaped) = escape_char(ch) {
-            if idx > start {
-                writer.write_all(&bytes[start..idx])?;
+    let mut start = 0;
+    let mut i = 0;
+    let mut ends_with_nl = false;
+
+    while i < bytes.len() {
+        if let Some((consumed, esc)) = xml_special(bytes, i) {
+            if i > start {
+                writer.write_all(&bytes[start..i])?;
             }
-            writer.write_all(escaped.as_bytes())?;
-            start = idx + ch.len_utf8();
-            last_char = escaped.chars().last();
+            writer.write_all(esc.as_bytes())?;
+            start = i + consumed;
+            i += consumed;
+            ends_with_nl = esc.ends_with('\n');
         } else {
-            last_char = Some(ch);
+            ends_with_nl = bytes[i] == b'\n';
+            i += 1;
         }
     }
 
@@ -97,7 +147,7 @@ pub(crate) fn write_xml_escaped<W: Write + ?Sized>(
         writer.write_all(&bytes[start..])?;
     }
 
-    Ok(last_char == Some('\n'))
+    Ok(ends_with_nl)
 }
 
 pub(crate) fn calculate_file_bytes(file: &FileRecord) -> Result<(u64, u64, u64), IngestError> {
