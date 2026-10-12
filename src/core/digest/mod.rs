@@ -213,7 +213,10 @@ pub(crate) fn largest_files<'a>(
             continue;
         }
 
-        let idx = top.iter().position(|probe| probe.1 < size).unwrap_or(top.len());
+        let idx = top
+            .iter()
+            .position(|probe| probe.1 < size)
+            .unwrap_or(top.len());
         if idx < 5 {
             top.insert(idx, (file.path.as_str(), size));
             top.truncate(5);

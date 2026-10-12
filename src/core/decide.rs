@@ -7,9 +7,10 @@ use crate::core::policy::MAX_FILE_COUNT;
 
 /// Path text as observed by the imperative shell. Non-UTF-8 paths are still
 /// candidates and must be counted, then skipped.
-#[derive(Clone)]
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub enum ItemPath {
     Utf8(String),
+    #[default]
     NonUtf8,
 }
 
@@ -406,5 +407,10 @@ mod tests {
         assert!(msg.contains("repository contains more than 10000 files"));
         assert!(msg.contains("largest directories:"));
         assert!(msg.contains("- dir_00000/ (2 files)"));
+    }
+
+    #[test]
+    fn item_path_default_is_non_utf8() {
+        assert!(matches!(ItemPath::default(), ItemPath::NonUtf8));
     }
 }

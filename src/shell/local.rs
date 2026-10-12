@@ -31,14 +31,14 @@ pub fn collect_local(
         OutputTarget::Stdout => None,
     };
     let label = local_label(&canonical_root);
-    let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
+    let mut candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
     let mut selector = Selector::new(&label, None, format)?;
 
-    for window in candidates.chunks(crate::core::policy::FETCH_WINDOW) {
+    for window in candidates.chunks_mut(crate::core::policy::FETCH_WINDOW) {
         let probes = probe_candidates(&canonical_root, window)?;
-        for (candidate, probe) in window.iter().zip(probes) {
+        for (candidate, probe) in window.iter_mut().zip(probes) {
             selector.decide(Item {
-                path: candidate.item_path.clone(),
+                path: std::mem::take(&mut candidate.item_path),
                 probe,
             })?;
         }
@@ -191,7 +191,7 @@ fn probe_candidates(root: &Path, candidates: &[LocalCandidate]) -> Result<Vec<Pr
         .min(candidates.len())
         .max(1);
 
-    let probes = std::thread::scope(|s| {
+    std::thread::scope(|s| {
         let handles: Vec<_> = (0..worker_count)
             .map(|_| {
                 s.spawn(|| {
@@ -213,23 +213,13 @@ fn probe_candidates(root: &Path, candidates: &[LocalCandidate]) -> Result<Vec<Pr
             })
             .collect();
 
-        let mut all_probes: Vec<Option<Result<Probe, IngestError>>> =
-            std::iter::repeat_with(|| None)
-                .take(candidates.len())
-                .collect();
-        for handle in handles {
-            let thread_results = handle.join().expect("reader thread panicked");
-            for (idx, res) in thread_results {
-                all_probes[idx] = Some(res);
-            }
-        }
-        all_probes
-    });
-
-    probes
-        .into_iter()
-        .map(|res| res.expect("all probe results populated"))
-        .collect()
+        let mut results: Vec<_> = handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("reader thread panicked"))
+            .collect();
+        results.sort_unstable_by_key(|(idx, _)| *idx);
+        results.into_iter().map(|(_, res)| res).collect()
+    })
 }
 
 fn local_label(root: &Path) -> String {

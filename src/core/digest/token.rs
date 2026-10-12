@@ -45,9 +45,8 @@ impl<'a, W: Write + ?Sized> TokenEstimatingWriter<'a, W> {
                 self.word_len = 0;
             }
         } else {
-            if self.in_word {
+            if std::mem::take(&mut self.in_word) {
                 self.tokens += 1;
-                self.in_word = false;
                 self.word_len = 0;
             }
             if !ch.is_ascii_whitespace() {
@@ -173,5 +172,12 @@ mod tests {
         }
         let actual2 = estimator2.finish();
         assert_eq!(actual2, expected);
+    }
+
+    #[test]
+    fn word_boundary_transitions_reset_in_word_flag() {
+        let text = "word1 word2...word3\nword4";
+        let tokens = estimate_tokens(text);
+        assert!(tokens >= 5);
     }
 }

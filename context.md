@@ -11,7 +11,7 @@ imperative-shell boundary.
 
 - `Source` — `Local(PathBuf)` or `GitHub { owner, repo }`.
 - `Item` — one observed candidate handed to the pure core: `path`
-  (`ItemPath::Utf8 | NonUtf8`) and `probe`
+  (`ItemPath::Utf8 | NonUtf8`, implementing `Default` with `NonUtf8` representing an empty/transferred slot) and `probe`
   (`Probe::Bytes | Missing | TooLarge | Ignored`).
 - `FileRecord` — digest entry: `path`, `content`.
 - `CollectionResult` — uniform collection record: `label`, optional `revision`, `files`, `skipped`, `trie`.
@@ -52,7 +52,7 @@ imperative-shell boundary.
 - Broken downstream pipe (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0.
 - Local walk excludes the output file by identity (case-insensitively on Windows and macOS). Stdout target normalizes and excludes nothing.
 - Local file reads never follow symlinks or block on special files (`O_NOFOLLOW` / `O_NONBLOCK`). Intermediate directory symlinks and junctions are prevented via `openat2` (Linux), component-wise `openat` verification (Unix), or `GetFinalPathNameByHandleW` handle canonical component verification against `canonical_root` (Windows). Missing files and verified root escapes are treated as `Probe::Missing` without aborting; generic permission denied and FFI errors fail closed with `IngestError::Io`.
-- Local walk uses multi-threaded `ignore::WalkParallel` with strict deterministic lexicographical sorting before `Selector` consumption. Probing and budget evaluation execute in chunks of `FETCH_WINDOW`, utilizing a persistent thread pool within `std::thread::scope` with work-stealing atomic indices per window so in-flight memory remains bounded and early budget errors preempt subsequent I/O.
+- Local walk uses multi-threaded `ignore::WalkParallel` with strict deterministic lexicographical sorting before `Selector` consumption. Probing and budget evaluation execute in chunks of `FETCH_WINDOW`, utilizing a scoped worker pool within `std::thread::scope` with work-stealing atomic indices per window, flat-mapped thread joins, and index sorting. Path ownership is transferred in-place via `std::mem::take` to eliminate redundant string cloning so in-flight memory remains bounded and early budget errors preempt subsequent I/O.
 - Verbatim paths (`\\?\`) on Windows bypass redundant canonicalization syscalls during containment checks (`is_strictly_beneath`), which verifies ancestry component-wise without intermediate heap allocations.
 - Trie insertion is iterative and non-recursive with $O(1)$ fast-path sibling comparison against previously inserted nodes, avoiding stack frame exhaustion on deeply nested directories.
 - CLI arguments are parsed linearly into options and source without third-party dependencies, supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters.

@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Accelerated XML escaping and metric calculation via byte-level ASCII lookup tables and slice chunk writes in `src/core/digest/xml.rs`.
 - Replaced per-batch thread spawning in local file reading with persistent scoped workers and atomic work stealing in `src/shell/local.rs`.
 - Hardened and optimized Windows root containment checks (`is_strictly_beneath`) by eliminating heap allocations and redundant path canonicalizations in `src/shell/local_io.rs`.
+- Eliminated per-file path string cloning during local directory ingestion via `std::mem::take` on `ItemPath` in `src/shell/local.rs`.
+- Simplified parallel candidate probing by replacing intermediate `Option` slot arrays with `flat_map` joins and index-based sorting in `src/shell/local.rs`.
+- Unified word-boundary flag tracking in `TokenEstimatingWriter` via `std::mem::take` in `src/core/digest/token.rs`.
 
 ## [0.2.0]
 
