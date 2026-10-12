@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-pub(crate) struct TokenEstimatingWriter<'a, W: Write + ?Sized> {
+pub struct TokenEstimatingWriter<'a, W: Write + ?Sized> {
     inner: &'a mut W,
     tokens: usize,
     in_word: bool,
@@ -12,7 +12,7 @@ pub(crate) struct TokenEstimatingWriter<'a, W: Write + ?Sized> {
 }
 
 impl<'a, W: Write + ?Sized> TokenEstimatingWriter<'a, W> {
-    pub(crate) fn new(inner: &'a mut W) -> Self {
+    pub fn new(inner: &'a mut W) -> Self {
         Self {
             inner,
             tokens: 0,
@@ -23,7 +23,7 @@ impl<'a, W: Write + ?Sized> TokenEstimatingWriter<'a, W> {
         }
     }
 
-    pub(crate) fn finish(mut self) -> usize {
+    pub fn finish(mut self) -> usize {
         if self.pending_len > 0 {
             self.tokens += 2;
         }

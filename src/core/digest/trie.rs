@@ -19,7 +19,7 @@ pub(crate) struct BudgetTrieNode {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct BudgetTrie {
+pub struct BudgetTrie {
     pub(crate) escape_xml: bool,
     pub(crate) node_count: usize,
     pub(crate) display_bytes: u64,
@@ -37,7 +37,7 @@ fn tree_display(name: &str, escape_xml: bool) -> String {
 }
 
 impl BudgetTrie {
-    pub(crate) fn new(escape_xml: bool) -> Self {
+    pub fn new(escape_xml: bool) -> Self {
         Self {
             escape_xml,
             node_count: 0,
@@ -47,80 +47,92 @@ impl BudgetTrie {
         }
     }
 
-    pub(crate) fn insert(&mut self, path: &str) {
-        let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        if parts.is_empty() {
-            return;
-        }
-        Self::insert_into(
-            &mut self.children,
-            &parts,
-            self.escape_xml,
-            &mut self.node_count,
-            &mut self.display_bytes,
-            &mut self.upper_bound_bytes,
-            0,
-        );
-    }
+    pub fn insert(&mut self, path: &str) {
+        let mut children = &mut self.children;
+        let mut depth = 0_u64;
+        let mut parts = path.split('/').filter(|s| !s.is_empty()).peekable();
 
-    fn insert_into(
-        children: &mut Vec<BudgetTrieNode>,
-        parts: &[&str],
-        escape_xml: bool,
-        node_count: &mut usize,
-        display_bytes: &mut u64,
-        upper_bound_bytes: &mut u64,
-        depth: u64,
-    ) {
-        if parts.is_empty() {
-            return;
-        }
-        let part = parts[0];
-        let is_dir = parts.len() > 1;
+        while let Some(part) = parts.next() {
+            let is_dir = parts.peek().is_some();
 
-        let idx = match children.binary_search_by(|c| {
-            c.name
-                .as_str()
-                .cmp(part)
-                .then_with(|| c.is_dir.cmp(&is_dir))
-        }) {
-            Ok(idx) => idx,
-            Err(idx) => {
-                let display = tree_display(part, escape_xml);
+            let idx = if let Some(last) = children.last() {
+                let ord = last.name.as_str().cmp(part).then_with(|| last.is_dir.cmp(&is_dir));
+                match ord {
+                    std::cmp::Ordering::Equal => children.len() - 1,
+                    std::cmp::Ordering::Less => {
+                        let display = tree_display(part, self.escape_xml);
+                        let display_len = display.len() as u64;
+                        self.display_bytes += display_len;
+                        self.node_count += 1;
+                        let node_max_format = depth.saturating_mul(6).saturating_add(12);
+                        let node_upper = node_max_format.saturating_add(display_len);
+                        self.upper_bound_bytes = self.upper_bound_bytes.saturating_add(node_upper);
+
+                        let idx = children.len();
+                        children.push(BudgetTrieNode {
+                            name: part.to_string(),
+                            display,
+                            is_dir,
+                            children: Vec::new(),
+                        });
+                        idx
+                    }
+                    std::cmp::Ordering::Greater => {
+                        match children.binary_search_by(|c| {
+                            c.name
+                                .as_str()
+                                .cmp(part)
+                                .then_with(|| c.is_dir.cmp(&is_dir))
+                        }) {
+                            Ok(idx) => idx,
+                            Err(idx) => {
+                                let display = tree_display(part, self.escape_xml);
+                                let display_len = display.len() as u64;
+                                self.display_bytes += display_len;
+                                self.node_count += 1;
+                                let node_max_format = depth.saturating_mul(6).saturating_add(12);
+                                let node_upper = node_max_format.saturating_add(display_len);
+                                self.upper_bound_bytes =
+                                    self.upper_bound_bytes.saturating_add(node_upper);
+
+                                children.insert(
+                                    idx,
+                                    BudgetTrieNode {
+                                        name: part.to_string(),
+                                        display,
+                                        is_dir,
+                                        children: Vec::new(),
+                                    },
+                                );
+                                idx
+                            }
+                        }
+                    }
+                }
+            } else {
+                let display = tree_display(part, self.escape_xml);
                 let display_len = display.len() as u64;
-                *display_bytes += display_len;
-                *node_count += 1;
-                // Maximum prefix cost: depth * 6 (each ancestor contributes up to 6 bytes: '│   ').
-                // Branch connector: 10 bytes ('├── ' or '└── ').
-                // Node terminator: 2 bytes ('/' + '\n') for dir or 1 byte ('\n') for file.
-                // Maximum total formatted line cost for this node: 6 * depth + 12 + display.len().
+                self.display_bytes += display_len;
+                self.node_count += 1;
                 let node_max_format = depth.saturating_mul(6).saturating_add(12);
                 let node_upper = node_max_format.saturating_add(display_len);
-                *upper_bound_bytes = upper_bound_bytes.saturating_add(node_upper);
+                self.upper_bound_bytes = self.upper_bound_bytes.saturating_add(node_upper);
 
-                children.insert(
-                    idx,
-                    BudgetTrieNode {
-                        name: part.to_string(),
-                        display,
-                        is_dir,
-                        children: Vec::new(),
-                    },
-                );
-                idx
+                children.push(BudgetTrieNode {
+                    name: part.to_string(),
+                    display,
+                    is_dir,
+                    children: Vec::new(),
+                });
+                0
+            };
+
+            if is_dir {
+                children = &mut children[idx].children;
+                depth = depth.saturating_add(1);
+            } else {
+                break;
             }
-        };
-
-        if is_dir {
-            Self::insert_into(
-                &mut children[idx].children,
-                &parts[1..],
-                escape_xml,
-                node_count,
-                display_bytes,
-                upper_bound_bytes,
-                depth.saturating_add(1),
-            );
         }
     }
 
@@ -152,7 +164,7 @@ impl BudgetTrie {
         total
     }
 
-    pub(crate) fn render_to_writer<W: Write + ?Sized>(
+    pub fn render_to_writer<W: Write + ?Sized>(
         &self,
         writer: &mut W,
     ) -> std::io::Result<()> {

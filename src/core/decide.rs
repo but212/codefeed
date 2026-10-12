@@ -8,7 +8,7 @@ use crate::core::policy::MAX_FILE_COUNT;
 /// Path text as observed by the imperative shell. Non-UTF-8 paths are still
 /// candidates and must be counted, then skipped.
 #[derive(Clone)]
-pub(crate) enum ItemPath {
+pub enum ItemPath {
     Utf8(String),
     NonUtf8,
 }
@@ -17,16 +17,16 @@ pub(crate) enum ItemPath {
 /// and `Missing` carry no content. `TooLarge` and `Missing` still consume a
 /// candidate slot; `Ignored` is excluded before candidate accounting.
 #[derive(Clone)]
-pub(crate) enum Probe {
+pub enum Probe {
     Bytes(Vec<u8>),
     Missing,
     TooLarge,
     Ignored,
 }
 
-pub(crate) struct Item {
-    pub(crate) path: ItemPath,
-    pub(crate) probe: Probe,
+pub struct Item {
+    pub path: ItemPath,
+    pub probe: Probe,
 }
 
 enum ItemResolution {
@@ -51,14 +51,14 @@ impl Item {
 
 /// Pure per-item selection and budget accounting. Owns no I/O; the shell feeds
 /// observations and reads the outcome through [`Selector::into_parts`].
-pub(crate) struct Selector {
+pub struct Selector {
     files: Vec<FileRecord>,
     candidates: CandidateBudget,
     digest: DigestBudget,
 }
 
 impl Selector {
-    pub(crate) fn new(
+    pub fn new(
         label: &str,
         revision: Option<&str>,
         format: DigestFormat,
@@ -70,7 +70,7 @@ impl Selector {
         })
     }
 
-    pub(crate) fn decide(&mut self, item: Item) -> Result<(), IngestError> {
+    pub fn decide(&mut self, item: Item) -> Result<(), IngestError> {
         match item.resolve() {
             ItemResolution::Ignored => Ok(()),
             ItemResolution::Included(file) => {
@@ -99,7 +99,7 @@ impl Selector {
         Ok(())
     }
 
-    pub(crate) fn into_parts(self) -> (Vec<FileRecord>, usize, crate::core::digest::BudgetTrie) {
+    pub fn into_parts(self) -> (Vec<FileRecord>, usize, crate::core::digest::BudgetTrie) {
         (self.files, self.digest.skipped(), self.digest.trie)
     }
 }
@@ -170,11 +170,9 @@ fn format_overflow_diagnostic(dir_counts: &HashMap<String, usize>) -> String {
 }
 
 /// UTF-8 text predicate: NUL-free bytes only.
-fn text_content(bytes: Vec<u8>) -> Option<String> {
-    if bytes.contains(&0) {
-        return None;
-    }
-    String::from_utf8(bytes).ok()
+pub fn text_content(bytes: Vec<u8>) -> Option<String> {
+    let s = String::from_utf8(bytes).ok()?;
+    (!s.as_bytes().contains(&0)).then_some(s)
 }
 
 #[cfg(test)]

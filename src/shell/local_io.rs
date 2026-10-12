@@ -186,10 +186,26 @@ fn open_local_file(root: &Path, path: &Path) -> io::Result<Option<fs::File>> {
 fn verify_beneath_root(root: &Path, file: &fs::File) -> io::Result<bool> {
     use std::os::windows::io::AsRawHandle;
 
-    let canonical_root = fs::canonicalize(root)?;
     let canonical_file = get_final_path_from_handle(file.as_raw_handle())?;
+    if is_verbatim_path(root) {
+        Ok(is_strictly_beneath(root, &canonical_file))
+    } else {
+        let canonical_root = fs::canonicalize(root)?;
+        Ok(is_strictly_beneath(&canonical_root, &canonical_file))
+    }
+}
 
-    Ok(is_strictly_beneath(&canonical_root, &canonical_file))
+#[cfg(windows)]
+fn is_verbatim_path(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    matches!(
+        path.components().next(),
+        Some(Component::Prefix(p))
+            if matches!(
+                p.kind(),
+                Prefix::Verbatim(_) | Prefix::VerbatimDisk(_) | Prefix::VerbatimUNC(_, _)
+            )
+    )
 }
 
 #[cfg(windows)]
@@ -232,16 +248,12 @@ fn get_final_path_from_handle(
 fn is_strictly_beneath(root: &Path, file: &Path) -> bool {
     use std::path::Component;
 
-    let root_comps: Vec<_> = root.components().collect();
-    let file_comps: Vec<_> = file.components().collect();
+    let mut root_comps = root.components();
+    let mut file_comps = file.components();
 
-    if file_comps.len() <= root_comps.len() {
-        return false;
-    }
-
-    for (r, f) in root_comps.iter().zip(file_comps.iter()) {
-        match (r, f) {
-            (Component::Prefix(p1), Component::Prefix(p2)) => {
+    loop {
+        match (root_comps.next(), file_comps.next()) {
+            (Some(Component::Prefix(p1)), Some(Component::Prefix(p2))) => {
                 if !p1
                     .as_os_str()
                     .to_string_lossy()
@@ -250,8 +262,8 @@ fn is_strictly_beneath(root: &Path, file: &Path) -> bool {
                     return false;
                 }
             }
-            (Component::RootDir, Component::RootDir) => {}
-            (Component::Normal(n1), Component::Normal(n2)) => {
+            (Some(Component::RootDir), Some(Component::RootDir)) => {}
+            (Some(Component::Normal(n1)), Some(Component::Normal(n2))) => {
                 if !n1
                     .to_string_lossy()
                     .eq_ignore_ascii_case(&n2.to_string_lossy())
@@ -259,10 +271,12 @@ fn is_strictly_beneath(root: &Path, file: &Path) -> bool {
                     return false;
                 }
             }
+            (None, Some(_)) => {
+                return true;
+            }
             _ => return false,
         }
     }
-    true
 }
 
 #[cfg(not(any(unix, windows)))]

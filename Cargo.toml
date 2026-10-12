@@ -17,3 +17,14 @@ ureq = { version = "3", default-features = false, features = ["rustls", "platfor
 flate2 = "1.0"
 tar = "0.4"
 
+[lib]
+path = "src/lib.rs"
+bench = false
+
+[[bin]]
+name = "codefeed"
+bench = false
+
+[[bench]]
+name = "bench"
+harness = false
