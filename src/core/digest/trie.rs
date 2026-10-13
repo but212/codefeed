@@ -159,13 +159,12 @@ impl BudgetTrie {
             let is_last = idx + 1 == total;
             let node = &self.nodes[node_idx as usize];
 
+            const SUFFIXES: [&[u8]; 2] = [b"\n", b"/\n"];
+
             writer.write_all(prefix.as_bytes())?;
             writer.write_all(BRANCH_STRS[is_last as usize])?;
             writer.write_all(node.display().as_bytes())?;
-            if node.is_dir {
-                writer.write_all(b"/")?;
-            }
-            writer.write_all(b"\n")?;
+            writer.write_all(SUFFIXES[node.is_dir as usize])?;
 
             if !node.children.is_empty() {
                 let prev_len = prefix.len();

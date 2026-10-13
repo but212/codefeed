@@ -9,6 +9,32 @@ use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
 use crate::core::policy::MAX_OUTPUT_SIZE;
 
+const FLAG_WORD: u8 = 1 << 0; // [0-9a-zA-Z_]
+const FLAG_WS: u8 = 1 << 1; // whitespace
+const FLAG_NL: u8 = 1 << 2; // \n
+
+const CHAR_FLAGS: [u8; 256] = {
+    let mut t = [0u8; 256];
+    let mut b = 0usize;
+    while b < 256 {
+        let is_num = b >= b'0' as usize && b <= b'9' as usize;
+        let is_upper = b >= b'A' as usize && b <= b'Z' as usize;
+        let is_lower = b >= b'a' as usize && b <= b'z' as usize;
+        let is_under = b == b'_' as usize;
+        if is_num || is_upper || is_lower || is_under {
+            t[b] |= FLAG_WORD;
+        }
+        if b == b' ' as usize || b == b'\t' as usize || b == b'\r' as usize || b == 0x0C {
+            t[b] |= FLAG_WS;
+        }
+        if b == b'\n' as usize {
+            t[b] |= FLAG_WS | FLAG_NL;
+        }
+        b += 1;
+    }
+    t
+};
+
 impl DigestFormat {
     pub(crate) const fn escape_tree_xml(self) -> bool {
         match self {
@@ -122,46 +148,47 @@ impl TokenEstimator {
         Self::default()
     }
 
-    pub fn process_char(&mut self, ch: char) {
+    #[inline(always)]
+    pub fn process_byte(&mut self, b: u8) {
         self.saw_input = true;
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            self.in_word = true;
-            self.word_len += 1;
-            let full_word = (self.word_len >= 4) as usize;
-            self.tokens += full_word;
-            self.word_len *= 1 - full_word;
-        } else {
-            let was_in_word = std::mem::take(&mut self.in_word) as usize;
-            self.tokens += was_in_word;
-            self.word_len = 0;
+        let flags = CHAR_FLAGS[b as usize];
 
-            let is_ws = ch.is_ascii_whitespace();
-            let is_nl = (ch == '\n') as usize;
-            let non_ws_weight = (!is_ws) as usize * (1 + (!ch.is_ascii()) as usize);
-            self.tokens += non_ws_weight + is_nl;
+        let is_word = (flags & FLAG_WORD) as usize; // 0 or 1
+        let is_ws = ((flags & FLAG_WS) >> 1) as usize; // 0 or 1
+        let is_nl = ((flags & FLAG_NL) >> 2) as usize; // 0 or 1
+
+        let prev_in_word = self.in_word as usize;
+        self.in_word = is_word != 0;
+
+        let next_word_len = (self.word_len + 1) * is_word;
+        let full_word = (next_word_len >= 4) as usize;
+        self.word_len = next_word_len * (1 - full_word);
+
+        let is_cont = ((b & 0xC0) == 0x80) as usize;
+        let is_lead = 1 - is_cont;
+        let is_non_ascii_lead = ((b >= 0x80) as usize) & is_lead;
+
+        let non_ws_weight = (1 - is_ws) * (is_lead + is_non_ascii_lead);
+        let non_word_tokens = (1 - is_word) * (prev_in_word + non_ws_weight + is_nl);
+
+        self.tokens += full_word + non_word_tokens;
+    }
+
+    #[inline]
+    pub fn process_bytes(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.process_byte(b);
         }
     }
 
     pub fn process_str(&mut self, text: &str) {
-        for ch in text.chars() {
-            self.process_char(ch);
-        }
-    }
-
-    pub fn add_fallback_tokens(&mut self, count: usize) {
-        self.saw_input = true;
-        self.tokens += count;
+        self.process_bytes(text.as_bytes());
     }
 
     pub fn finish(mut self) -> usize {
-        if self.in_word {
-            self.tokens += 1;
-        }
-        if self.tokens == 0 && !self.saw_input {
-            0
-        } else {
-            self.tokens.max(1)
-        }
+        self.tokens += self.in_word as usize;
+        let non_empty = (self.tokens > 0) | self.saw_input;
+        self.tokens.max(non_empty as usize)
     }
 }
 
@@ -175,8 +202,6 @@ struct BoundedEstimatingWriter<'a, W: std::io::Write + ?Sized> {
     inner: &'a mut W,
     written: u64,
     estimator: TokenEstimator,
-    pending: [u8; 4],
-    pending_len: usize,
     overflowed: bool,
 }
 
@@ -186,16 +211,11 @@ impl<'a, W: std::io::Write + ?Sized> BoundedEstimatingWriter<'a, W> {
             inner,
             written: 0,
             estimator: TokenEstimator::new(),
-            pending: [0; 4],
-            pending_len: 0,
             overflowed: false,
         }
     }
 
-    fn finish(mut self) -> usize {
-        if self.pending_len > 0 {
-            self.estimator.add_fallback_tokens(2);
-        }
+    fn finish(self) -> usize {
         self.estimator.finish()
     }
 }
@@ -210,44 +230,7 @@ impl<W: std::io::Write + ?Sized> std::io::Write for BoundedEstimatingWriter<'_, 
 
         self.inner.write_all(buf)?;
         self.written = new_written;
-
-        let mut input = buf;
-        if self.pending_len > 0 {
-            while !input.is_empty() && self.pending_len < 4 {
-                self.pending[self.pending_len] = input[0];
-                self.pending_len += 1;
-                input = &input[1..];
-                if let Ok(s) = std::str::from_utf8(&self.pending[..self.pending_len]) {
-                    let ch = s.chars().next().expect("valid utf8 has at least one char");
-                    self.pending_len = 0;
-                    self.estimator.process_char(ch);
-                    break;
-                }
-            }
-        }
-
-        if !input.is_empty() {
-            match std::str::from_utf8(input) {
-                Ok(text) => {
-                    self.estimator.process_str(text);
-                }
-                Err(e) => {
-                    let valid_len = e.valid_up_to();
-                    if valid_len > 0 {
-                        let valid_str = match std::str::from_utf8(&input[..valid_len]) {
-                            Ok(s) => s,
-                            Err(_) => unreachable!(),
-                        };
-                        self.estimator.process_str(valid_str);
-                    }
-                    if e.error_len().is_none() {
-                        let remaining = &input[valid_len..];
-                        self.pending[..remaining.len()].copy_from_slice(remaining);
-                        self.pending_len = remaining.len();
-                    }
-                }
-            }
-        }
+        self.estimator.process_bytes(buf);
 
         Ok(buf.len())
     }
@@ -601,5 +584,62 @@ z &lt; 10
         assert!(estimate_tokens("fn main() {\n    println!(\"Hello, world!\");\n}\n") >= 8);
         assert!(estimate_tokens("한글 텍스트 테스트") >= 4);
         assert!(estimate_tokens("word1 word2...word3\nword4") >= 5);
+    }
+
+    #[test]
+    fn test_token_estimator_matches_char_oracle() {
+        fn char_oracle(text: &str) -> usize {
+            let mut tokens = 0;
+            let mut in_word = false;
+            let mut word_len = 0;
+            let mut saw_input = false;
+
+            for ch in text.chars() {
+                saw_input = true;
+                if ch.is_ascii_alphanumeric() || ch == '_' {
+                    in_word = true;
+                    word_len += 1;
+                    let full_word = (word_len >= 4) as usize;
+                    tokens += full_word;
+                    word_len *= 1 - full_word;
+                } else {
+                    let was_in_word = std::mem::take(&mut in_word) as usize;
+                    tokens += was_in_word;
+                    word_len = 0;
+
+                    let is_ws = ch.is_ascii_whitespace();
+                    let is_nl = (ch == '\n') as usize;
+                    let non_ws_weight = (!is_ws) as usize * (1 + (!ch.is_ascii()) as usize);
+                    tokens += non_ws_weight + is_nl;
+                }
+            }
+
+            tokens += in_word as usize;
+            let non_empty = (tokens > 0) | saw_input;
+            tokens.max(non_empty as usize)
+        }
+
+        let samples = [
+            "",
+            "hello",
+            "let mut x = 123;",
+            "fn main() {\n    println!(\"Hello, world!\");\n}\n",
+            "한",
+            "🚀",
+            "한글 텍스트 테스트",
+            "word1 word2...word3\nword4",
+            "Special: 🚀 emoji and \t\r\n symbols! 👍",
+            "Cyrillic: Привет мир",
+            "Accents: café, naïve, façade",
+        ];
+
+        for sample in samples {
+            let oracle = char_oracle(sample);
+            let estimated = estimate_tokens(sample);
+            assert_eq!(
+                estimated, oracle,
+                "token estimation mismatch for sample {sample:?}"
+            );
+        }
     }
 }

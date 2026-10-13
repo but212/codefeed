@@ -43,20 +43,50 @@ const fn make_escape_table() -> [Option<&'static str>; 256] {
 
 const ESCAPE_TABLE: [Option<&'static str>; 256] = make_escape_table();
 
+const SPECIAL_BITSET: [u64; 4] = {
+    let mut mask = [0u64; 4];
+    let mut i = 1;
+    while i <= 8 {
+        mask[0] |= 1 << i;
+        i += 1;
+    }
+    mask[0] |= (1 << 0x0B) | (1 << 0x0C);
+    let mut j = 0x0E;
+    while j <= 0x1F {
+        mask[0] |= 1 << j;
+        j += 1;
+    }
+    mask[b'&' as usize / 64] |= 1 << (b'&' as usize % 64);
+    mask[b'<' as usize / 64] |= 1 << (b'<' as usize % 64);
+    mask[b'>' as usize / 64] |= 1 << (b'>' as usize % 64);
+    mask[b'"' as usize / 64] |= 1 << (b'"' as usize % 64);
+    mask[b'\'' as usize / 64] |= 1 << (b'\'' as usize % 64);
+    mask[0xEF / 64] |= 1 << (0xEF % 64);
+    mask
+};
+
+#[inline(always)]
+fn is_special_byte(b: u8) -> bool {
+    let word = SPECIAL_BITSET[(b >> 6) as usize];
+    (word & (1u64 << (b & 63))) != 0
+}
+
 #[inline(always)]
 fn xml_special(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     let b = bytes[i];
+
     if let Some(esc) = ESCAPE_TABLE[b as usize] {
-        Some((1, esc))
-    } else if b == 0xEF
-        && i + 2 < bytes.len()
-        && bytes[i + 1] == 0xBF
-        && (bytes[i + 2] == 0xBE || bytes[i + 2] == 0xBF)
-    {
-        Some((3, "\u{FFFD}"))
-    } else {
-        None
+        return Some((1, esc));
     }
+
+    if b == 0xEF && i + 2 < bytes.len() {
+        let tail = ((bytes[i + 1] as u32) << 8) | (bytes[i + 2] as u32);
+        if (tail & !1) == 0xBFBE {
+            return Some((3, "\u{FFFD}"));
+        }
+    }
+
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,10 +150,11 @@ impl<'a> Iterator for XmlChunks<'a> {
 
         let start = self.cursor;
         while self.cursor < self.bytes.len() {
-            if let Some((consumed, esc)) = xml_special(self.bytes, self.cursor) {
+            if is_special_byte(self.bytes[self.cursor])
+                && let Some((consumed, esc)) = xml_special(self.bytes, self.cursor)
+            {
                 if self.cursor > start {
-                    let raw = &self.value[start..self.cursor];
-                    return Some(XmlChunk::Raw(raw));
+                    return Some(XmlChunk::Raw(&self.value[start..self.cursor]));
                 }
                 self.cursor += consumed;
                 return Some(XmlChunk::Escaped(esc));
@@ -131,13 +162,21 @@ impl<'a> Iterator for XmlChunks<'a> {
             self.cursor += 1;
         }
 
-        Some(XmlChunk::Raw(&self.value[start..]))
+        if self.cursor > start {
+            Some(XmlChunk::Raw(&self.value[start..]))
+        } else {
+            None
+        }
     }
 }
 
 pub fn xml_escape(value: &str) -> Cow<'_, str> {
     let bytes = value.as_bytes();
-    let needs_escape = (0..bytes.len()).any(|i| xml_special(bytes, i).is_some());
+
+    let needs_escape = bytes
+        .iter()
+        .enumerate()
+        .any(|(i, &b)| is_special_byte(b) && xml_special(bytes, i).is_some());
 
     if !needs_escape {
         return Cow::Borrowed(value);
@@ -287,6 +326,29 @@ mod tests {
                 XmlChunk::Raw("test"),
                 XmlChunk::Escaped("&apos;"),
             ]
+        );
+    }
+
+    #[test]
+    fn test_xml_chunks_handles_non_escaping_ef_lead_bytes() {
+        let input = "prefix \u{FFFD} & <\u{FEFF}> middle \u{FF01} suffix";
+        let chunks: Vec<_> = XmlChunks::new(input).collect();
+        assert_eq!(
+            chunks,
+            vec![
+                XmlChunk::Raw("prefix \u{FFFD} "),
+                XmlChunk::Escaped("&amp;"),
+                XmlChunk::Raw(" "),
+                XmlChunk::Escaped("&lt;"),
+                XmlChunk::Raw("\u{FEFF}"),
+                XmlChunk::Escaped("&gt;"),
+                XmlChunk::Raw(" middle \u{FF01} suffix"),
+            ]
+        );
+        let escaped = xml_escape(input);
+        assert_eq!(
+            escaped.as_ref(),
+            "prefix \u{FFFD} &amp; &lt;\u{FEFF}&gt; middle \u{FF01} suffix"
         );
     }
 }

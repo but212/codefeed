@@ -107,21 +107,27 @@ impl PathClassification {
 }
 
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
+#[inline]
 pub(crate) const fn is_retryable_status(status_code: u16) -> bool {
-    matches!(status_code, 429 | 500..=599)
+    (status_code == 429) | (status_code.wrapping_sub(500) <= 99)
 }
 
 /// Calculates bounded exponential backoff duration with jitter for the given attempt.
+#[inline]
 pub(crate) const fn retry_delay(attempt: usize, entropy: u64) -> std::time::Duration {
-    let multiplier = match 1_u64.checked_shl(attempt as u32) {
-        Some(m) => m,
-        None => u64::MAX,
-    };
+    let shift = if attempt < 63 { attempt as u32 } else { 63 };
+    let multiplier = 1_u64 << shift;
+
     let exponential = RETRY_INITIAL_DELAY_MS.saturating_mul(multiplier);
     let jitter = entropy % (RETRY_JITTER_MAX_MS + 1);
     let base = exponential.saturating_add(jitter);
-    let diff = base.saturating_sub(RETRY_MAX_DELAY_MS);
-    let millis = base - diff;
+
+    let millis = if base < RETRY_MAX_DELAY_MS {
+        base
+    } else {
+        RETRY_MAX_DELAY_MS
+    };
+
     std::time::Duration::from_millis(millis)
 }
 
