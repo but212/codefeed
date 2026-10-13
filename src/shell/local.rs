@@ -8,7 +8,7 @@ use ignore::WalkBuilder;
 
 use super::local_io::read_local_file;
 use super::output_exclusion::OutputFilter;
-use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe, Selector};
+use crate::core::decide::{Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
 use crate::core::policy::{MAX_FILE_COUNT, PathClassification};
@@ -112,14 +112,6 @@ fn walk_candidates(
         }
     }
 
-    CandidateBudget::verify_count(
-        candidates.iter().map(|item| match &item.item_path {
-            ItemPath::Utf8(p) => Some(p.as_str()),
-            ItemPath::NonUtf8 => None,
-        }),
-        candidates.len(),
-    )?;
-
     candidates.sort_unstable_by(|a, b| match (&a.item_path, &b.item_path) {
         (ItemPath::Utf8(left), ItemPath::Utf8(right)) => left.cmp(right),
         (ItemPath::Utf8(_), ItemPath::NonUtf8) => std::cmp::Ordering::Less,
@@ -131,27 +123,10 @@ fn walk_candidates(
 }
 
 fn normalize_relative_path(relative: &Path) -> ItemPath {
-    let mut parts = relative.components().peekable();
-    let Some(first) = parts.next() else {
-        return ItemPath::Utf8(String::new());
-    };
-    let Some(first_str) = first.as_os_str().to_str() else {
-        return ItemPath::NonUtf8;
-    };
-    if parts.peek().is_none() {
-        return ItemPath::Utf8(first_str.to_owned());
+    match relative.to_str() {
+        Some(s) => ItemPath::Utf8(s.replace('\\', "/")),
+        None => ItemPath::NonUtf8,
     }
-
-    let mut buf = String::with_capacity(relative.as_os_str().len());
-    buf.push_str(first_str);
-    for part in parts {
-        let Some(s) = part.as_os_str().to_str() else {
-            return ItemPath::NonUtf8;
-        };
-        buf.push('/');
-        buf.push_str(s);
-    }
-    ItemPath::Utf8(buf)
 }
 
 fn local_label(root: &Path) -> String {

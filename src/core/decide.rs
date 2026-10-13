@@ -139,19 +139,6 @@ impl CandidateBudget {
         }
         Ok(())
     }
-
-    /// Validates that total candidates do not exceed `MAX_FILE_COUNT`.
-    /// When exceeded, returns `CandidateLimitExceeded` with diagnostic details.
-    pub(crate) fn verify_count<'a>(
-        paths: impl IntoIterator<Item = Option<&'a str>>,
-        count: usize,
-    ) -> Result<(), IngestError> {
-        if count <= MAX_FILE_COUNT {
-            return Ok(());
-        }
-        let mut budget = Self::default();
-        paths.into_iter().try_for_each(|path| budget.add(path))
-    }
 }
 
 fn extract_dir_slice(path: Option<&str>) -> &str {
@@ -219,21 +206,12 @@ mod tests {
     }
 
     #[test]
-    fn candidate_budget_enforces_limit_and_batch_verification() {
+    fn candidate_budget_enforces_limit() {
         let mut candidates = CandidateBudget::default();
         for _ in 0..MAX_FILE_COUNT {
             candidates.add(None).unwrap();
         }
         assert!(candidates.add(None).is_err());
-
-        let items: Vec<Option<&str>> = (0..MAX_FILE_COUNT).map(|_| Some("src/file.rs")).collect();
-        assert!(CandidateBudget::verify_count(items.iter().copied(), items.len()).is_ok());
-
-        let overflowing: Vec<Option<&str>> =
-            (0..=MAX_FILE_COUNT).map(|_| Some("src/file.rs")).collect();
-        assert!(
-            CandidateBudget::verify_count(overflowing.iter().copied(), overflowing.len()).is_err()
-        );
     }
 
     #[test]

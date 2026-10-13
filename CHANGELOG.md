@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Refactored `BudgetTrie` in `src/core/digest/trie.rs` into a contiguous flat node arena (`Vec<BudgetTrieNode>`) with indexed child tracking (`Vec<usize>`), eliminating recursive heap pointer chasing and improving CPU prefetching locality.
+- Consolidated duplicated root and parent child insertion logic in `BudgetTrie::insert` into `get_or_insert_child`.
+- Streamlined relative path normalization in `src/shell/local.rs` using standard UTF-8 string conversion and slash replacement.
+- Extracted OS-dependent filename case comparison in `src/shell/output_exclusion.rs` into `names_match` helper.
 - Accelerated digest sorting in `src/core/digest/text.rs` and `src/core/digest/xml.rs` using key-projected `Vec<(&str, &FileRecord)>` sorting, removing double heap indirection in comparator loops.
 - Replaced manual 16-hex byte percent-encoding loop in `src/core/github_url.rs` with `percent_encoding::utf8_percent_encode`.
 - Accelerated `text_content` in `src/core/decide.rs` by checking NUL (`\0`) bytes via `memchr::memchr` before UTF-8 decoding.
@@ -26,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- Removed redundant batch candidate pre-verification `CandidateBudget::verify_count` in `src/core/decide.rs` and `src/shell/local.rs` in favor of single-pass streaming budget enforcement in `Selector::decide`.
 - Removed `Selector::into_parts` across `src/core/decide.rs`, shell collectors, and benchmarks in favor of `Selector::finish`.
 
 ## [0.2.2]

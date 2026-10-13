@@ -101,38 +101,44 @@ impl BudgetTrie {
 
         while let Some(part) = parts.next() {
             let is_dir = parts.peek().is_some();
-            let matched_node_idx = match current_node_idx {
-                None => match find_child_idx(&self.nodes, &self.root_children, part, is_dir) {
-                    Ok(slot) => self.root_children[slot],
-                    Err(insert_pos) => {
-                        let new_node_idx = self.nodes.len();
-                        self.nodes
-                            .push(BudgetTrieNode::new(part, is_dir, self.escape_xml));
-                        self.root_children.insert(insert_pos, new_node_idx);
-                        new_node_idx
-                    }
-                },
-                Some(parent_idx) => {
-                    let parent = &self.nodes[parent_idx];
-                    match find_child_idx(&self.nodes, &parent.children, part, is_dir) {
-                        Ok(slot) => self.nodes[parent_idx].children[slot],
-                        Err(insert_pos) => {
-                            let new_node_idx = self.nodes.len();
-                            self.nodes
-                                .push(BudgetTrieNode::new(part, is_dir, self.escape_xml));
-                            self.nodes[parent_idx]
-                                .children
-                                .insert(insert_pos, new_node_idx);
-                            new_node_idx
-                        }
-                    }
-                }
-            };
+            let matched_node_idx = self.get_or_insert_child(current_node_idx, part, is_dir);
 
             if is_dir {
                 current_node_idx = Some(matched_node_idx);
             } else {
                 break;
+            }
+        }
+    }
+
+    fn get_or_insert_child(
+        &mut self,
+        parent_idx: Option<usize>,
+        part: &str,
+        is_dir: bool,
+    ) -> usize {
+        match parent_idx {
+            None => match find_child_idx(&self.nodes, &self.root_children, part, is_dir) {
+                Ok(slot) => self.root_children[slot],
+                Err(insert_pos) => {
+                    let new_node_idx = self.nodes.len();
+                    self.nodes
+                        .push(BudgetTrieNode::new(part, is_dir, self.escape_xml));
+                    self.root_children.insert(insert_pos, new_node_idx);
+                    new_node_idx
+                }
+            },
+            Some(p_idx) => {
+                match find_child_idx(&self.nodes, &self.nodes[p_idx].children, part, is_dir) {
+                    Ok(slot) => self.nodes[p_idx].children[slot],
+                    Err(insert_pos) => {
+                        let new_node_idx = self.nodes.len();
+                        self.nodes
+                            .push(BudgetTrieNode::new(part, is_dir, self.escape_xml));
+                        self.nodes[p_idx].children.insert(insert_pos, new_node_idx);
+                        new_node_idx
+                    }
+                }
             }
         }
     }
