@@ -235,9 +235,9 @@ where
     writer.write_all(XML_FILES_START.as_bytes())?;
     for (_, file) in ordered_files {
         writer.write_all(XML_FILE_START.as_bytes())?;
-        writer.write_all(xml_escape(&file.path).as_bytes())?;
+        writer.write_all(xml_escape(file.path).as_bytes())?;
         writer.write_all(XML_TAG_CLOSE.as_bytes())?;
-        let ends_with_nl = write_xml_escaped(writer, &file.content)?;
+        let ends_with_nl = write_xml_escaped(writer, file.content)?;
         if !ends_with_nl {
             writer.write_all(NEWLINE.as_bytes())?;
         }

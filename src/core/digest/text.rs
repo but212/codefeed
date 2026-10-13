@@ -82,7 +82,7 @@ where
         const TAIL: [&[u8]; 2] = [b"\n", b"\n\n"];
         let needs_extra_nl = (!file.content.ends_with('\n')) as usize;
         writer.write_all(FILE_BLOCK_PREFIX.as_bytes())?;
-        writer.write_all(escape_header(&file.path).as_bytes())?;
+        writer.write_all(escape_header(file.path).as_bytes())?;
         writer.write_all(FILE_BLOCK_SUFFIX.as_bytes())?;
         writer.write_all(file.content.as_bytes())?;
         writer.write_all(TAIL[needs_extra_nl])?;

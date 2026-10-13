@@ -171,7 +171,7 @@ impl FileStorage {
     }
 
     /// Iterator yielding borrowed [`FileRecord`] views over the arena.
-    pub fn iter(&self) -> impl Iterator<Item = FileRecord<'_>> + ExactSizeIterator {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = FileRecord<'_>> {
         self.spans.iter().map(move |&span| self.get(span))
     }
 }

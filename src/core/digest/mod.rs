@@ -307,12 +307,12 @@ mod tests {
     fn renders_files_in_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
         let files = vec![
             FileRecord {
-                path: "z.txt".into(),
-                content: "z".into(),
+                path: "z.txt",
+                content: "z",
             },
             FileRecord {
-                path: "a.txt".into(),
-                content: "a".into(),
+                path: "a.txt",
+                content: "a",
             },
         ];
         let digest = render_digest("repo", Some("abc"), &files, 1)?;
