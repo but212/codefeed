@@ -205,14 +205,6 @@ impl<'a> FromIterator<&'a FileRecord<'a>> for FileStorage {
     }
 }
 
-impl<'a> IntoIterator for &'a FileStorage {
-    type Item = FileRecord<'a>;
-    type IntoIter = Box<dyn Iterator<Item = FileRecord<'a>> + 'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        Box::new(self.iter())
-    }
-}
 
 /// Zero-copy borrowed view into a file record stored within [`FileStorage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

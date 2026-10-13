@@ -132,7 +132,8 @@ fn probe_tar_entry<R: Read>(entry: &mut tar::Entry<R>) -> Result<ArchiveEntryOut
         }));
     }
 
-    let mut bytes = Vec::with_capacity(header_size.min(MAX_FILE_SIZE) as usize);
+    let initial_cap = (header_size as usize).min(8 * 1024);
+    let mut bytes = Vec::with_capacity(initial_cap);
     entry
         .take(MAX_FILE_SIZE.saturating_add(1))
         .read_to_end(&mut bytes)
