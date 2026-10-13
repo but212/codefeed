@@ -95,15 +95,11 @@ fn walk_candidates(
         let probe = match &item_path {
             ItemPath::NonUtf8 => Some(Probe::Missing),
             ItemPath::Utf8(path) => match PathClassification::classify(path) {
-                PathClassification::Ignored => Some(Probe::Ignored),
+                PathClassification::Ignored => continue,
                 PathClassification::PreclassifiedBinary => Some(Probe::Missing),
                 PathClassification::NeedsContent => None,
             },
         };
-
-        if matches!(probe, Some(Probe::Ignored)) {
-            continue;
-        }
 
         candidates.push(LocalCandidate {
             path: entry_path.to_path_buf(),

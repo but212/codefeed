@@ -19,6 +19,9 @@ pub const NOISE: &[&str] = &[
 ];
 
 /// Known sensitive file extensions (case-insensitive) excluded prior to reading or download.
+///
+/// Note: `credentials` is matched as an extension here (`*.credentials`, e.g., `aws.credentials`),
+/// and is also matched as a filename prefix in [`is_sensitive_path`] (`credentials*`, e.g., `credentials.json`).
 pub const SENSITIVE_EXT: &[&str] = &["pem", "key", "p12", "pkcs12", "credentials"];
 
 /// Known binary file extensions filtered prior to remote download.
@@ -48,6 +51,9 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
 }
 
 /// Returns `true` if `path` matches conventional sensitive files (.env, keys, credentials).
+///
+/// Matches filename prefixes (`.env*`, `id_rsa*`, `id_ed25519*`, `credentials*`)
+/// and extensions in [`SENSITIVE_EXT`] (`*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.credentials`).
 pub(crate) fn is_sensitive_path(path: &str) -> bool {
     let file_name = path.rsplit('/').next().unwrap_or(path);
     if starts_with_ignore_ascii_case(file_name, ".env")

@@ -11,9 +11,9 @@ imperative-shell boundary.
 
 - `Source` — `Local(PathBuf)` or `GitHub { owner, repo, reference }`.
 - `RunConfig` — execution configuration unifying `source`, `output`, and `format`.
-- `Item` — one observed candidate handed to the pure core: `path`
+- `Item` — one observed entry handed to the pure core: `path`
   (`ItemPath::Utf8 | NonUtf8`) and `probe`
-  (`Probe::Bytes | Missing | TooLarge | Ignored`).
+  (`Probe::Bytes | Missing | TooLarge | Ignored`). Shell collectors filter ignored paths pre-candidate (`PathClassification::Ignored`), while pure core supports `Probe::Ignored` as a no-op variant.
 - `FileRecord` — digest entry: `path`, `content`.
 - `CollectionResult` — uniform collection record: `label`, optional `revision`, `files`, `skipped`, `trie`, `format`.
 - `IngestReport` — `output`, `included_files`, `skipped_files`, `estimated_tokens`.
@@ -27,7 +27,7 @@ imperative-shell boundary.
 
 ### Filtering & Accounting
 
-- Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and conventional sensitive files by case-insensitive filename/extension (`.env*`, `*.key`/`*.pem`, `*.p12`/`*.pkcs12`, `id_rsa*`/`id_ed25519*`, `credentials*`) before candidate accounting (conventional pattern filter, not a content-based secret scanner). They are neither candidates nor `skipped`.
+- Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and conventional sensitive files by case-insensitive filename prefix (`.env*`, `id_rsa*`, `id_ed25519*`, `credentials*`) and extension (`*.key`/`*.pem`, `*.p12`/`*.pkcs12`, `*.credentials`) before candidate accounting (conventional pattern filter, not a content-based secret scanner). They are neither candidates nor `skipped`.
 - Consumes candidate slots before evaluating content, size, or encoding.
 - `skipped` counts candidates rejected for content, size, or encoding. Ignored paths are never counted in `skipped`.
 - Rejects content exceeding `MAX_OUTPUT_SIZE`; overflow content is never emitted.
@@ -78,7 +78,7 @@ imperative-shell boundary.
 | `RETRY_INITIAL_DELAY_MS` | 250 ms | Base initial delay for exponential backoff |
 | `RETRY_MAX_DELAY_MS` | 5,000 ms | Maximum delay cap for exponential backoff |
 | `NOISE` | lockfiles | Conventional lockfiles excluded before candidate budget |
-| `SENSITIVE_EXT` | 5 extensions | Key, cert, credential extensions excluded before candidate budget |
+| `SENSITIVE_EXT` | 5 extensions | Key, cert, and credential extensions (`*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.credentials`) excluded before candidate budget (note: `credentials*` is also matched as filename prefix) |
 | `BINARY_EXT` | 11 extensions | Known binary file extensions filtered pre-download |
 
 ## Functional core / imperative shell boundary
