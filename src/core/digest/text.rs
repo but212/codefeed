@@ -19,7 +19,7 @@ const NEWLINE: &str = "\n";
 const METADATA_SUFFIX: &str = "\n\n";
 
 pub(crate) fn escape_header(value: &str) -> Cow<'_, str> {
-    if !value.bytes().any(|b| matches!(b, b'\\' | b'\r' | b'\n')) {
+    if memchr::memchr3(b'\\', b'\r', b'\n', value.as_bytes()).is_none() {
         return Cow::Borrowed(value);
     }
     let mut out = String::with_capacity(value.len() + 8);

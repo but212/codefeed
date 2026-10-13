@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Replaced manual 16-hex byte percent-encoding loop in `src/core/github_url.rs` with `percent_encoding::utf8_percent_encode`.
 - Accelerated `text_content` in `src/core/decide.rs` by checking NUL (`\0`) bytes via `memchr::memchr` before UTF-8 decoding.
+- Accelerated header escaping (`escape_header`) in `src/core/digest/text.rs` by scanning target escape bytes (`\`, `\r`, `\n`) via `memchr::memchr3`.
+- Buffered streaming GitHub tarball HTTP response bodies through a 64 KiB `BufReader` in `src/shell/github_client.rs` before decompression.
+- Consolidated duplicated HTTP transport error and status retry logic in `src/shell/github_client.rs` into a unified helper.
 
 ### Removed
 

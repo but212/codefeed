@@ -173,7 +173,6 @@ pub fn write_xml_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std:
     Ok(ends_with_nl)
 }
 
-
 pub(crate) fn render<'a, W, I>(
     writer: &mut W,
     label: &str,
