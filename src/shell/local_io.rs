@@ -263,14 +263,25 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn does_not_block_when_candidate_becomes_fifo() -> Result<(), Box<dyn std::error::Error>> {
-        use rustix::fs::{CWD, FileType, Mode, mknodat};
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
         use std::sync::mpsc;
         use std::thread;
         use std::time::Duration;
 
+        #[cfg(target_os = "linux")]
+        type ModeT = u32;
+        #[cfg(target_os = "macos")]
+        type ModeT = u16;
+
+        unsafe extern "C" {
+            fn mkfifo(pathname: *const std::ffi::c_char, mode: ModeT) -> std::ffi::c_int;
+        }
+
         let root = temp_dir("fifo")?;
         let path = root.join("candidate");
-        mknodat(CWD, &path, FileType::Fifo, Mode::from_raw_mode(0o600), 0)?;
+        let c_path = CString::new(path.as_os_str().as_bytes())?;
+        assert_eq!(unsafe { mkfifo(c_path.as_ptr(), 0o600 as ModeT) }, 0);
 
         let (sender, receiver) = mpsc::channel();
         let thread_path = path.clone();
