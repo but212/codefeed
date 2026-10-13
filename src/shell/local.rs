@@ -132,10 +132,7 @@ fn walk_candidates(
         impl Drop for BatchFlusher<'_> {
             fn drop(&mut self) {
                 if !self.batch.is_empty() {
-                    self.target
-                        .lock()
-                        .unwrap()
-                        .append(&mut self.batch);
+                    self.target.lock().unwrap().append(&mut self.batch);
                 }
             }
         }
@@ -208,11 +205,7 @@ fn walk_candidates(
             });
 
             if flusher.batch.len() >= 128 {
-                flusher
-                    .target
-                    .lock()
-                    .unwrap()
-                    .append(&mut flusher.batch);
+                flusher.target.lock().unwrap().append(&mut flusher.batch);
             }
 
             WalkState::Continue

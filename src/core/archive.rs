@@ -17,8 +17,7 @@ pub(crate) fn strip_archive_root(raw_path: &str) -> Option<&str> {
 pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(bytes).ok()?;
     text.lines().find_map(|line| {
-        let trimmed = line.trim();
-        // PAX line format: "<length> <key>=<value>" or "<key>=<value>"
+        let trimmed = line.trim_ascii();
         let payload = match trimmed.find(' ') {
             Some(space_idx) if trimmed[..space_idx].chars().all(|c| c.is_ascii_digit()) => {
                 &trimmed[space_idx + 1..]
@@ -27,7 +26,7 @@ pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
         };
         payload
             .strip_prefix("comment=")
-            .map(str::trim)
+            .map(|s| s.trim_ascii())
             .filter(|sha| is_valid_commit_sha(sha))
             .map(ToOwned::to_owned)
     })
