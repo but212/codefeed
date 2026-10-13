@@ -123,10 +123,27 @@ fn walk_candidates(
 }
 
 fn normalize_relative_path(relative: &Path) -> ItemPath {
-    match relative.to_str() {
-        Some(s) => ItemPath::Utf8(s.replace('\\', "/")),
-        None => ItemPath::NonUtf8,
+    let mut parts = relative.components().peekable();
+    let Some(first) = parts.next() else {
+        return ItemPath::Utf8(String::new());
+    };
+    let Some(first_str) = first.as_os_str().to_str() else {
+        return ItemPath::NonUtf8;
+    };
+    if parts.peek().is_none() {
+        return ItemPath::Utf8(first_str.to_owned());
     }
+
+    let mut buf = String::with_capacity(relative.as_os_str().len());
+    buf.push_str(first_str);
+    for part in parts {
+        let Some(s) = part.as_os_str().to_str() else {
+            return ItemPath::NonUtf8;
+        };
+        buf.push('/');
+        buf.push_str(s);
+    }
+    ItemPath::Utf8(buf)
 }
 
 fn local_label(root: &Path) -> String {

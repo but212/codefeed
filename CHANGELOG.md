@@ -16,7 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Refactored `BudgetTrie` in `src/core/digest/trie.rs` into a contiguous flat node arena (`Vec<BudgetTrieNode>`) with `u32` indexed child tracking (`Vec<u32>`) and `Box<str>` node labels, reducing arena memory footprint on 64-bit platforms and eliminating recursive heap pointer chasing.
 - Consolidated duplicated root and parent child insertion logic in `BudgetTrie::insert` into `get_or_insert_child`.
-- Streamlined relative path normalization in `src/shell/local.rs` using standard UTF-8 string conversion and slash replacement.
 - Extracted OS-dependent filename case comparison in `src/shell/output_exclusion.rs` into `names_match` helper.
 - Centralized deterministic digest file sorting in `DigestFormat::render` (`src/core/digest/mod.rs`), passing key-projected `(&str, &FileRecord)` slices to `text::render` and `xml::render` to eliminate duplicate sorting and redundant allocations.
 - Replaced external crate `percent-encoding` in `src/core/github_url.rs` with a pure `std` RFC 3986 Unreserved validator and `%XX` hex encoder.
