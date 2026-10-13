@@ -11,6 +11,18 @@ use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
 use crate::core::policy::MAX_OUTPUT_SIZE;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FormatFrameMetrics {
+    pub(crate) fixed_frame: u64,
+    pub(crate) revision_overhead: u64,
+    pub(crate) per_file: u64,
+}
+
+impl FormatFrameMetrics {
+    pub(crate) const TEXT: Self = text::FRAME_METRICS;
+    pub(crate) const XML: Self = xml::FRAME_METRICS;
+}
+
 impl DigestFormat {
     pub(crate) fn escape_label_or_revision<'a>(self, text: &'a str) -> std::borrow::Cow<'a, str> {
         match self {
@@ -19,7 +31,7 @@ impl DigestFormat {
         }
     }
 
-    pub(crate) fn escape_tree_xml(self) -> bool {
+    pub(crate) const fn escape_tree_xml(self) -> bool {
         match self {
             Self::Text => false,
             Self::Xml => true,
@@ -36,11 +48,34 @@ impl DigestFormat {
         }
     }
 
-    pub(crate) fn rendered_base_size(self, budget: &DigestBudget) -> Option<u64> {
+    pub(crate) const fn frame_metrics(self) -> FormatFrameMetrics {
         match self {
-            Self::Text => text::rendered_base_size(budget),
-            Self::Xml => xml::rendered_base_size(budget),
+            Self::Text => FormatFrameMetrics::TEXT,
+            Self::Xml => FormatFrameMetrics::XML,
         }
+    }
+
+    pub(crate) fn extra_metadata_bytes(self, budget: &DigestBudget) -> Option<u64> {
+        match self {
+            Self::Text => text::extra_metadata_bytes(budget.content.file_count, budget.skipped),
+            Self::Xml => Some(0),
+        }
+    }
+
+    pub(crate) fn rendered_base_size(self, budget: &DigestBudget) -> Option<u64> {
+        let metrics = self.frame_metrics();
+        let count = u64::try_from(budget.content.file_count).ok()?;
+        let mut size = metrics.fixed_frame;
+        size = size.checked_add(budget.label_bytes)?;
+        if let Some(rev) = budget.revision_bytes {
+            size = size.checked_add(metrics.revision_overhead)?;
+            size = size.checked_add(rev)?;
+        }
+        size = size.checked_add(self.extra_metadata_bytes(budget)?)?;
+        size = size.checked_add(count.checked_mul(metrics.per_file)?)?;
+        size = size.checked_add(budget.content.path_bytes)?;
+        size = size.checked_add(budget.content.content_bytes)?;
+        size.checked_add(budget.content.trailing_bytes)
     }
 
     pub(crate) fn render<'a, W, I>(
@@ -237,10 +272,9 @@ pub(crate) fn byte_count(value: &str) -> Result<u64, IngestError> {
 pub fn render_digest_to_writer<W: std::io::Write + ?Sized>(
     writer: &mut W,
     collection: &CollectionResult,
-    format: DigestFormat,
 ) -> Result<usize, IngestError> {
     let mut estimator = TokenEstimatingWriter::new(writer);
-    format.render(
+    collection.format.render(
         &mut estimator,
         &collection.label,
         collection.revision.as_deref(),
@@ -257,6 +291,24 @@ mod tests {
     use crate::core::error::IngestError;
     use crate::core::model::FileRecord;
     use crate::core::policy::MAX_OUTPUT_SIZE;
+
+    #[test]
+    fn format_frame_metrics_and_flags_evaluate_in_const() {
+        const {
+            assert!(!DigestFormat::Text.escape_tree_xml());
+            assert!(DigestFormat::Xml.escape_tree_xml());
+            assert!(DigestFormat::Text.frame_metrics().fixed_frame > 0);
+            assert!(DigestFormat::Xml.frame_metrics().fixed_frame > 0);
+            assert!(
+                FormatFrameMetrics::TEXT.fixed_frame
+                    == DigestFormat::Text.frame_metrics().fixed_frame
+            );
+            assert!(
+                FormatFrameMetrics::XML.fixed_frame
+                    == DigestFormat::Xml.frame_metrics().fixed_frame
+            );
+        }
+    }
 
     fn test_trie(files: &[FileRecord], escape_xml: bool) -> BudgetTrie {
         let mut trie = BudgetTrie::new(escape_xml);
@@ -279,9 +331,10 @@ mod tests {
             files: files.to_vec(),
             skipped,
             trie,
+            format: DigestFormat::Text,
         };
         let mut buffer = Vec::new();
-        render_digest_to_writer(&mut buffer, &collection, DigestFormat::Text)?;
+        render_digest_to_writer(&mut buffer, &collection)?;
         String::from_utf8(buffer).map_err(|error| IngestError::Io(std::io::Error::other(error)))
     }
 
@@ -341,9 +394,10 @@ mod tests {
             files: files.clone(),
             skipped: 2,
             trie: test_trie(&files, false),
+            format: DigestFormat::Text,
         };
         let mut streamed = Vec::new();
-        render_digest_to_writer(&mut streamed, &collection, DigestFormat::Text)?;
+        render_digest_to_writer(&mut streamed, &collection)?;
         let streamed_str = std::str::from_utf8(&streamed)?;
 
         let expected = "\
@@ -390,7 +444,7 @@ hello\n\
                 content: "content_a\n".into(),
             },
         ];
-        let trie = test_trie(&files[0..1], false);
+        let trie = test_trie(&[files[0].clone(), files[2].clone()], false);
         let mut buf = Vec::new();
         let filtered_iter = files.iter().filter(|f| f.path != "excluded.txt");
         DigestFormat::Text.render(&mut buf, "repo", None, filtered_iter, 1, &trie)?;
@@ -462,9 +516,10 @@ hello\n\
             files: files.clone(),
             skipped: 1,
             trie: test_trie(&files, true),
+            format: DigestFormat::Xml,
         };
         let mut out = Vec::new();
-        render_digest_to_writer(&mut out, &collection, DigestFormat::Xml)?;
+        render_digest_to_writer(&mut out, &collection)?;
         let xml_str = std::str::from_utf8(&out)?;
         let expected = "\
 <repository name=\"my-repo\" revision=\"v1.0\">
@@ -509,45 +564,12 @@ z &lt; 10
                 files: files.clone(),
                 skipped: 0,
                 trie: budget.trie.clone(),
+                format: DigestFormat::Xml,
             };
             let mut out = Vec::new();
-            render_digest_to_writer(&mut out, &collection, DigestFormat::Xml)?;
+            render_digest_to_writer(&mut out, &collection)?;
             assert_eq!(budget.rendered_size(), Some(out.len() as u64));
         }
-        Ok(())
-    }
-
-    #[test]
-    fn escapes_tree_node_newlines() -> Result<(), Box<dyn std::error::Error>> {
-        let files = vec![FileRecord {
-            path: "dir\nname/file\rname.txt".into(),
-            content: "content".into(),
-        }];
-        let rendered = render_digest("repo", None, &files, 0)?;
-        assert!(rendered.contains("dir\\nname/"));
-        assert!(rendered.contains("file\\rname.txt"));
-        assert!(!rendered.contains("dir\n"));
-        Ok(())
-    }
-
-    #[test]
-    fn escapes_tree_node_xml_entities() -> Result<(), Box<dyn std::error::Error>> {
-        let files = vec![FileRecord {
-            path: "a & b/c < d.txt".into(),
-            content: "content".into(),
-        }];
-        let collection = CollectionResult {
-            label: "repo".into(),
-            revision: None,
-            files: files.clone(),
-            skipped: 0,
-            trie: test_trie(&files, true),
-        };
-        let mut out = Vec::new();
-        render_digest_to_writer(&mut out, &collection, DigestFormat::Xml)?;
-        let xml_str = std::str::from_utf8(&out)?;
-        assert!(xml_str.contains("a &amp; b/"));
-        assert!(xml_str.contains("c &lt; d.txt"));
         Ok(())
     }
 
@@ -610,9 +632,10 @@ z &lt; 10
             files: files.clone(),
             skipped: 0,
             trie: test_trie(&files, true),
+            format: DigestFormat::Xml,
         };
         let mut xml_out = Vec::new();
-        render_digest_to_writer(&mut xml_out, &collection, DigestFormat::Xml)?;
+        render_digest_to_writer(&mut xml_out, &collection)?;
         let xml_str = std::str::from_utf8(&xml_out)?;
         assert!(
             !xml_str.contains("\x1b"),

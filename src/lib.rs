@@ -3,7 +3,7 @@
 pub(crate) mod core;
 pub(crate) mod shell;
 
-pub use core::model::OutputTarget;
+pub use core::model::{OutputTarget, RunConfig};
 pub use shell::cli::{CliAction, help_text, parse_cli};
 pub use shell::orchestrate::ingest;
 

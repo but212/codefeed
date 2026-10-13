@@ -177,42 +177,39 @@ mod tests {
     }
 
     #[test]
-    fn streaming_atomic_write_cleans_up_on_closure_error() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = temp_dir("atomic_closure_failure")?;
+    fn atomic_write_cleans_up_temporary_file_on_error_and_panic()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("atomic_cleanup")?;
         let output = root.join("digest.txt");
-        let result: Result<(), _> = write_atomic(&output, |_w| {
+
+        // 1. Cleanup on closure error
+        let err_result: Result<(), _> = write_atomic(&output, |_w| {
             Err(IngestError::InvalidMetadata("test failure".into()))
         });
-        assert!(result.is_err());
+        assert!(err_result.is_err());
         assert!(!output.exists());
-        let temp_files = fs::read_dir(&root)?
+        let temp_count_after_err = fs::read_dir(&root)?
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().starts_with(".digest.txt."))
             .count();
         assert_eq!(
-            temp_files, 0,
+            temp_count_after_err, 0,
             "temporary file should be cleaned up on error"
         );
-        Ok(())
-    }
 
-    #[test]
-    fn atomic_write_cleans_up_on_panic() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("atomic_panic_failure")?;
-        let output = root.join("digest.txt");
-        let result = std::panic::catch_unwind(|| {
+        // 2. Cleanup on panic
+        let panic_result = std::panic::catch_unwind(|| {
             let _ = write_atomic::<(), _>(&output, |_w| {
                 panic!("intentional panic during streaming write");
             });
         });
-        assert!(result.is_err(), "closure should have panicked");
-        let temp_files = fs::read_dir(&root)?
+        assert!(panic_result.is_err(), "closure should have panicked");
+        let temp_count_after_panic = fs::read_dir(&root)?
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().starts_with(".digest.txt."))
             .count();
         assert_eq!(
-            temp_files, 0,
+            temp_count_after_panic, 0,
             "temporary file should be cleaned up on panic unwinding"
         );
         Ok(())

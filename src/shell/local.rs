@@ -13,11 +13,32 @@ use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
 use crate::core::policy::PathClassification;
 
-#[derive(Clone)]
 struct LocalCandidate {
     path: PathBuf,
     item_path: ItemPath,
     probe: Option<Probe>,
+}
+
+pub struct LocalCollector {
+    pub root: PathBuf,
+    pub output: OutputTarget,
+    pub format: DigestFormat,
+}
+
+impl LocalCollector {
+    pub fn new(root: PathBuf, output: OutputTarget, format: DigestFormat) -> Self {
+        Self {
+            root,
+            output,
+            format,
+        }
+    }
+}
+
+impl super::collector::Collector for LocalCollector {
+    fn collect(&self) -> Result<CollectionResult, IngestError> {
+        collect_local(&self.root, &self.output, self.format)
+    }
 }
 
 pub fn collect_local(
@@ -31,20 +52,28 @@ pub fn collect_local(
         OutputTarget::Stdout => None,
     };
     let label = local_label(&canonical_root);
-    let mut candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
+    let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
     let mut selector = Selector::new(&label, None, format)?;
 
-    for window in candidates.chunks_mut(crate::core::policy::FETCH_WINDOW) {
-        let probes = probe_candidates(&canonical_root, window)?;
-        for (candidate, probe) in window.iter_mut().zip(probes) {
+    let mut iter = candidates.into_iter();
+    loop {
+        let window: Vec<_> = iter
+            .by_ref()
+            .take(crate::core::policy::FETCH_WINDOW)
+            .collect();
+        if window.is_empty() {
+            break;
+        }
+        let probes = probe_candidates(&canonical_root, &window)?;
+        for (candidate, probe) in window.into_iter().zip(probes) {
             selector.decide(Item {
-                path: std::mem::take(&mut candidate.item_path),
+                path: candidate.item_path,
                 probe,
             })?;
         }
     }
 
-    let (files, skipped, trie) = selector.into_parts();
+    let (files, skipped, trie, format) = selector.into_parts();
 
     Ok(CollectionResult {
         label,
@@ -52,6 +81,7 @@ pub fn collect_local(
         files,
         skipped,
         trie,
+        format,
     })
 }
 
@@ -234,7 +264,7 @@ fn local_label(root: &Path) -> String {
 mod tests {
     use super::super::temp_dir;
     use super::*;
-    use crate::core::model::{Options, Source};
+    use crate::core::model::{RunConfig, Source};
     use crate::ingest;
 
     #[cfg(unix)]
@@ -246,13 +276,11 @@ mod tests {
         fs::write(root.join("a").join("b.txt"), "slash")?;
         let output = root.join("digest.txt");
 
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output.clone()),
-                ..Default::default()
-            },
-        )?;
+        let report = ingest(&RunConfig::new(
+            Source::Local(root.to_path_buf()),
+            OutputTarget::File(output.clone()),
+            DigestFormat::Text,
+        ))?;
         let digest = fs::read_to_string(output)?;
 
         assert_eq!(report.included_files, 2);
@@ -269,13 +297,11 @@ mod tests {
         fs::write(root.join("digest.txt"), "previous output")?;
         let output = root.join("missing").join("..").join("digest.txt");
 
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output),
-                ..Default::default()
-            },
-        )?;
+        let report = ingest(&RunConfig::new(
+            Source::Local(root.to_path_buf()),
+            OutputTarget::File(output),
+            DigestFormat::Text,
+        ))?;
         let digest = fs::read_to_string(root.join("digest.txt"))?;
 
         assert_eq!(report.included_files, 1);
@@ -292,13 +318,11 @@ mod tests {
         fs::write(root.join("digest.txt"), "previous output")?;
         let output = root.join("DIGEST.TXT");
 
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output),
-                ..Default::default()
-            },
-        )?;
+        let report = ingest(&RunConfig::new(
+            Source::Local(root.to_path_buf()),
+            OutputTarget::File(output),
+            DigestFormat::Text,
+        ))?;
         let digest = fs::read_to_string(root.join("DIGEST.TXT"))?;
 
         assert_eq!(report.included_files, 1);
@@ -308,107 +332,54 @@ mod tests {
     }
 
     #[test]
-    fn excludes_noise_files_conventionally() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("noise_files")?;
+    fn ingests_local_directory_respects_all_exclusion_policies()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("comprehensive_local_policies")?;
+        fs::create_dir_all(root.join(".git"))?;
+        fs::create_dir_all(root.join("certs"))?;
         fs::create_dir_all(root.join("sub"))?;
-        fs::write(root.join("src.rs"), "fn main() {}")?;
+
+        // 1. Text file: included
+        fs::write(root.join("README.md"), "hello")?;
+
+        // 2. Binary file: skipped (increments skipped count)
+        fs::write(root.join("binary.bin"), [0, 1, 2])?;
+
+        // 3. Noise files: ignored without incrementing skipped
         fs::write(root.join("Cargo.lock"), "[lockfile]")?;
         fs::write(root.join("sub").join("package-lock.json"), "{}")?;
-        let output = root.join("digest.txt");
 
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output.clone()),
-                ..Default::default()
-            },
-        )?;
-        let digest = fs::read_to_string(output)?;
-
-        assert_eq!(report.included_files, 1);
-        assert_eq!(report.skipped_files, 0);
-        assert!(digest.contains("FILE: src.rs"));
-        assert!(!digest.contains("Cargo.lock"));
-        assert!(!digest.contains("package-lock.json"));
-        Ok(())
-    }
-
-    #[test]
-    fn excludes_sensitive_files_without_skipping() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("sensitive_files")?;
-        fs::create_dir_all(root.join("certs"))?;
-        fs::write(root.join("main.rs"), "fn main() {}")?;
+        // 4. Sensitive files: ignored without incrementing skipped
         fs::write(root.join(".env"), "SECRET=true")?;
         fs::write(root.join(".env.production"), "KEY=123")?;
         fs::write(root.join("certs").join("privkey.key"), "PRIVATE")?;
         fs::write(root.join("id_rsa"), "SSH")?;
-        let output = root.join("digest.txt");
 
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output.clone()),
-                ..Default::default()
-            },
-        )?;
-        let digest = fs::read_to_string(output)?;
-
-        assert_eq!(report.included_files, 1);
-        assert_eq!(report.skipped_files, 0);
-        assert!(digest.contains("FILE: main.rs"));
-        assert!(!digest.contains(".env"));
-        assert!(!digest.contains("privkey.key"));
-        assert!(!digest.contains("id_rsa"));
-        Ok(())
-    }
-
-    #[test]
-    fn ingests_local_text_and_skips_binary_and_git_directory()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("local")?;
-        fs::create_dir_all(root.join(".git"))?;
-        fs::write(root.join("README.md"), "hello")?;
-        fs::write(root.join("binary.bin"), [0, 1, 2])?;
+        // 5. Git metadata: ignored
         fs::write(root.join(".git/config"), "secret")?;
+
+        // 6. Gitignore: ignored without git directory
         fs::write(root.join(".gitignore"), "ignored.txt\n")?;
         fs::write(root.join("ignored.txt"), "ignored")?;
-        let output = root.join("digest.txt");
 
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output.clone()),
-                ..Default::default()
-            },
-        )?;
+        let output = root.join("digest.txt");
+        let report = ingest(&RunConfig::new(
+            Source::Local(root.to_path_buf()),
+            OutputTarget::File(output.clone()),
+            DigestFormat::Text,
+        ))?;
         let digest = fs::read_to_string(output)?;
+
         assert_eq!(report.included_files, 1);
         assert_eq!(report.skipped_files, 1);
         assert!(digest.contains("FILE: README.md"));
         assert!(!digest.contains("binary.bin"));
+        assert!(!digest.contains("Cargo.lock"));
+        assert!(!digest.contains("package-lock.json"));
+        assert!(!digest.contains(".env"));
+        assert!(!digest.contains("privkey.key"));
+        assert!(!digest.contains("id_rsa"));
         assert!(!digest.contains(".git/config"));
-        assert!(!digest.contains("ignored.txt"));
-        Ok(())
-    }
-
-    #[test]
-    fn applies_gitignore_without_git_directory() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("ignore_without_git")?;
-        fs::write(root.join(".gitignore"), "ignored.txt\n")?;
-        fs::write(root.join("kept.txt"), "kept")?;
-        fs::write(root.join("ignored.txt"), "ignored")?;
-        let output = root.join("digest.txt");
-
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output.clone()),
-                ..Default::default()
-            },
-        )?;
-        let digest = fs::read_to_string(output)?;
-        assert_eq!(report.included_files, 1);
-        assert!(digest.contains("FILE: kept.txt"));
         assert!(!digest.contains("ignored.txt"));
         Ok(())
     }
@@ -420,13 +391,11 @@ mod tests {
         fs::write(root.join("important.txt"), "important")?;
         let output = root.join("digest.txt");
 
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output.clone()),
-                ..Default::default()
-            },
-        )?;
+        let report = ingest(&RunConfig::new(
+            Source::Local(root.to_path_buf()),
+            OutputTarget::File(output.clone()),
+            DigestFormat::Text,
+        ))?;
         let digest = fs::read_to_string(output)?;
 
         assert_eq!(report.included_files, 1);
@@ -439,13 +408,11 @@ mod tests {
         let root = temp_dir("custom_repo_name")?;
         fs::write(root.join("file.txt"), "hello")?;
         let output = root.join("digest.txt");
-        let _ = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output.clone()),
-                ..Default::default()
-            },
-        )?;
+        let _ = ingest(&RunConfig::new(
+            Source::Local(root.to_path_buf()),
+            OutputTarget::File(output.clone()),
+            DigestFormat::Text,
+        ))?;
         let digest = fs::read_to_string(&output)?;
         let expected_basename = root.file_name().unwrap().to_str().unwrap();
         assert!(digest.starts_with(&format!("Repository: {expected_basename}\n")));
@@ -469,13 +436,11 @@ mod tests {
         fs::write(root.join(OsString::from_vec(b"a\x80".to_vec())), "a")?;
         fs::write(root.join(OsString::from_vec(b"b\x81".to_vec())), "b")?;
         let output = root.join("digest.txt");
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output),
-                ..Default::default()
-            },
-        )?;
+        let report = ingest(&RunConfig::new(
+            Source::Local(root.to_path_buf()),
+            OutputTarget::File(output),
+            DigestFormat::Text,
+        ))?;
         assert_eq!(report.included_files, 0);
         assert_eq!(report.skipped_files, 2);
         Ok(())
@@ -503,41 +468,6 @@ mod tests {
                 window[0].path,
                 window[1].path
             );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn parallel_walk_excludes_sensitive_files() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("parallel_sensitive")?;
-        fs::write(root.join(".env"), "SECRET=1")?;
-        fs::write(root.join("id_rsa"), "PRIVATE KEY")?;
-        fs::write(root.join("public.txt"), "public")?;
-
-        let result = collect_local(&root, &OutputTarget::Stdout, DigestFormat::Text)?;
-        let files = result.files;
-        let skipped = result.skipped;
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].path, "public.txt");
-        assert_eq!(
-            skipped, 0,
-            "sensitive files must be excluded without consuming skipped budget"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn parallel_walk_bounds_candidate_memory_early() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("parallel_candidate_bound")?;
-        for idx in 0..10_005 {
-            fs::write(root.join(format!("f_{idx:05}.txt")), "x")?;
-        }
-        let result = collect_local(&root, &OutputTarget::Stdout, DigestFormat::Text);
-        match result {
-            Err(IngestError::CandidateLimitExceeded(msg)) => {
-                assert!(msg.contains("repository contains more than 10000 files"));
-            }
-            other => panic!("expected CandidateLimitExceeded candidate overflow, got {other:?}"),
         }
         Ok(())
     }

@@ -13,6 +13,40 @@ use crate::core::policy::{MAX_FILE_SIZE, PathClassification};
 
 use super::github_client::GithubClient;
 
+pub struct GitHubCollector {
+    pub owner: String,
+    pub repo: String,
+    pub reference: Option<String>,
+    pub format: DigestFormat,
+}
+
+impl GitHubCollector {
+    pub fn new(
+        owner: String,
+        repo: String,
+        reference: Option<String>,
+        format: DigestFormat,
+    ) -> Self {
+        Self {
+            owner,
+            repo,
+            reference,
+            format,
+        }
+    }
+}
+
+impl super::collector::Collector for GitHubCollector {
+    fn collect(&self) -> Result<CollectionResult, IngestError> {
+        collect_github(
+            &self.owner,
+            &self.repo,
+            self.reference.as_deref(),
+            self.format,
+        )
+    }
+}
+
 pub(crate) fn collect_github(
     owner: &str,
     repo: &str,
@@ -78,13 +112,14 @@ pub(crate) fn collect_from_archive<R: Read>(
         None => Selector::new(&label, final_revision.as_deref(), format)?,
     };
 
-    let (files, skipped, trie) = selector.into_parts();
+    let (files, skipped, trie, format) = selector.into_parts();
     Ok(CollectionResult {
         label,
         revision: final_revision,
         files,
         skipped,
         trie,
+        format,
     })
 }
 

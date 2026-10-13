@@ -2,25 +2,21 @@
 //! used to scope credentials and API-only headers.
 
 const GITHUB_API_BASE_URL: &str = "https://api.github.com";
-const GITHUB_RAW_BASE_URL: &str = "https://raw.githubusercontent.com";
 
 /// Origin of a request URL: which headers and credentials the shell may attach.
 ///
-/// `Other` covers every non-GitHub origin and host-confusion lookalikes
+/// `Other` covers every non-API origin and host-confusion lookalikes
 /// (`https://api.github.com.evil.example/...`, `https://api.github.com@evil.example/...`);
 /// those requests must never carry `Authorization`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RequestTarget {
     Api,
-    Raw,
     Other,
 }
 
 pub(crate) fn request_target(url: &str) -> RequestTarget {
     if has_origin(url, GITHUB_API_BASE_URL) {
         RequestTarget::Api
-    } else if has_origin(url, GITHUB_RAW_BASE_URL) {
-        RequestTarget::Raw
     } else {
         RequestTarget::Other
     }
@@ -84,40 +80,45 @@ mod tests {
     }
 
     #[test]
-    fn auth_scope_api_target() {
-        assert_eq!(
-            request_target("https://api.github.com/repos/owner/repo"),
-            RequestTarget::Api
-        );
-        assert_eq!(request_target("https://api.github.com"), RequestTarget::Api);
-    }
-
-    #[test]
-    fn auth_scope_raw_target() {
-        assert_eq!(
-            request_target("https://raw.githubusercontent.com/owner/repo/main/lib.rs"),
-            RequestTarget::Raw
-        );
-        assert_eq!(
-            request_target("https://raw.githubusercontent.com"),
-            RequestTarget::Raw
-        );
-    }
-
-    #[test]
-    fn auth_scope_rejects_host_confusion() {
-        for url in [
-            "https://api.github.com.evil.example/x",
-            "https://api.github.com@evil.example/x",
-            "https://raw.githubusercontent.com.evil.example/x",
-            "https://raw.githubusercontent.com@evil.example/x",
-            "http://127.0.0.1:8080/repos/owner/repo",
-            "https://evil.example/",
-        ] {
+    fn request_target_classifies_origins_correctly() {
+        let cases = [
+            (
+                "https://api.github.com/repos/owner/repo",
+                RequestTarget::Api,
+            ),
+            ("https://api.github.com", RequestTarget::Api),
+            (
+                "https://raw.githubusercontent.com/owner/repo/main/lib.rs",
+                RequestTarget::Other,
+            ),
+            ("https://raw.githubusercontent.com", RequestTarget::Other),
+            (
+                "https://api.github.com.evil.example/x",
+                RequestTarget::Other,
+            ),
+            (
+                "https://api.github.com@evil.example/x",
+                RequestTarget::Other,
+            ),
+            (
+                "https://raw.githubusercontent.com.evil.example/x",
+                RequestTarget::Other,
+            ),
+            (
+                "https://raw.githubusercontent.com@evil.example/x",
+                RequestTarget::Other,
+            ),
+            (
+                "http://127.0.0.1:8080/repos/owner/repo",
+                RequestTarget::Other,
+            ),
+            ("https://evil.example/", RequestTarget::Other),
+        ];
+        for (url, expected) in cases {
             assert_eq!(
                 request_target(url),
-                RequestTarget::Other,
-                "non-GitHub origin must not receive credentials: {url}"
+                expected,
+                "unexpected auth scope for: {url}"
             );
         }
     }

@@ -79,7 +79,7 @@ cargo build --release
 
 - **File output (`--output <PATH>`)**: Writes to a temporary file, syncs to disk, and atomically renames. Emits `<PATH> (<N> files, <N> skipped, ~<N> tokens)` to stdout. Preserves existing files on failure.
 - **Stream output (`--output -`)**: Writes raw digest to stdout; emits the completion summary to stderr.
-- **Format fidelity**: Plain text (`--format text`) preserves valid UTF-8 file content verbatim for LLM prompt fidelity (rejecting only NUL bytes). Note that raw digests containing ANSI escape sequences in source files are preserved as-is and may affect terminal emulators if viewed directly without piping or a pager. XML format (`--format xml`) sanitizes disallowed XML control characters to `\u{FFFD}`.
+- **Format fidelity**: Plain text (`--format text`) preserves valid UTF-8 file content verbatim (rejecting NUL bytes); ANSI sequences in source files are preserved as-is. XML (`--format xml`) sanitizes disallowed XML control characters to `\u{FFFD}`.
 - **Pipe termination**: Downstream pipe closure (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0.
 - **Errors**: Invalid CLI arguments and ingest errors print to stderr and exit non-zero.
 
@@ -90,20 +90,20 @@ Public GitHub repositories require no credentials. For private repositories or h
 - `GITHUB_TOKEN` — Checked first.
 - `GH_TOKEN` — Fallback if `GITHUB_TOKEN` is unset or empty.
 
-Credentials are sent as `Authorization: Bearer <token>` strictly to exact-origin `https://api.github.com`. Foreign hosts (including archive redirect targets) never receive authorization headers.
+Credentials are sent as `Authorization: Bearer <token>` strictly to exact-origin `https://api.github.com`. Redirects to foreign hosts never receive authorization headers.
 
 ## Filtering and Budgets
 
 - **Hierarchy**: Renders directory structure as an ASCII tree (`├── `, `└── `, `│   `).
-- **Exclusions**: Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and conventional sensitive patterns (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `id_rsa*`, `id_ed25519*`, `credentials*`). Note: Sensitive file filtering is a conventional filename/extension filter, not a deep content-based secret scanner. Excluded files consume neither candidate slots nor skipped counts.
+- **Exclusions**: Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and case-insensitive sensitive patterns (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `id_rsa*`, `id_ed25519*`, `credentials*`). Sensitive filtering matches path conventions, not deep content. Excluded files consume neither candidate slots nor skipped counts.
 - **Gitignore**: Applies `.gitignore` rules in local sources without Git state. Ignores `.ignore` files.
-- **Traversal**: Traverses local filesystems via `ignore::WalkParallel` with strict deterministic lexicographical sorting. Prevents symlink and intermediate directory junction traversal (`openat2`/`openat` on Unix, native handle canonical path component verification on Windows).
-- **Remote Ingestion**: Streams GitHub repository archives (`/repos/{owner}/{repo}/tarball/{ref}`) in a single HTTP request using `flate2` and `tar` directly into the selection pipeline with zero intermediate disk files, eliminating CDN rate limits and per-file connection overhead. Extracts commit revision from the archive `pax_global_header`.
+- **Traversal**: Traverses local filesystems via `ignore::WalkParallel` with deterministic sorting. Prevents symlink and junction traversal (`openat2`/`openat` on Unix, handle canonical path verification on Windows).
+- **Remote Ingestion**: Streams GitHub repository archives (`/repos/{owner}/{repo}/tarball/{ref}`) in a single HTTP request via `flate2` and `tar` directly into the selection pipeline with zero intermediate disk files. Extracts commit SHA from `pax_global_header`.
 - **Limits**:
-  - Candidate files: bounded candidate budget with zero-allocation lookups; aborts with deterministically sorted largest-directory diagnostics on overflow.
-  - Per-file size: individual file size cap; files exceeding the limit are counted as `skipped`.
+  - Candidate files: bounded candidate budget; aborts on overflow with deterministically sorted largest-directory diagnostics from observed candidates at termination.
+  - Per-file size: individual file cap (`MAX_FILE_SIZE`); exceeding files increment `skipped`.
   - Digest size: strictly enforced total digest cap with depth-aware tree upper bound accounting; aborts with largest-file diagnostics on overflow.
   - Archive transfer: bounded whole-archive transfer timeout (`ARCHIVE_MAX_SECS`).
-  - Local reader batch size: bounded worker thread pool (`FETCH_WINDOW`).
-- **Network Resilience**: Retries transient transport errors and rate limits (HTTP 429/5xx) with exponential backoff and jitter. Fails immediately on 4xx client errors.
+  - Local reader batch size: bounded worker pool (`FETCH_WINDOW`).
+- **Network Resilience**: Retries transient transport errors (`Io`, `Timeout`, `ConnectionFailed`) and HTTP 429/5xx with exponential backoff and jitter up to 3 total attempts. Fails immediately on non-transient transport errors and 4xx client errors.
 - **Central Policy**: Operational constants, budgets, and patterns reside in `src/core/policy.rs`.

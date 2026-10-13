@@ -11,6 +11,9 @@ const TREE_LAST: &str = "└── ";
 const TREE_VERT: &str = "│   ";
 const TREE_SPACE: &str = "    ";
 
+const TREE_DEPTH_BYTE_FACTOR: u64 = 6;
+const TREE_NODE_BASE_OVERHEAD: u64 = 12;
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BudgetTrieNode {
     pub(crate) name: String,
@@ -42,8 +45,6 @@ impl BudgetTrieNode {
 #[derive(Debug, Clone, Default)]
 pub struct BudgetTrie {
     pub(crate) escape_xml: bool,
-    pub(crate) node_count: usize,
-    pub(crate) display_bytes: u64,
     pub(crate) upper_bound_bytes: u64,
     pub(crate) children: Vec<BudgetTrieNode>,
 }
@@ -85,8 +86,6 @@ impl BudgetTrie {
     pub fn new(escape_xml: bool) -> Self {
         Self {
             escape_xml,
-            node_count: 0,
-            display_bytes: 0,
             upper_bound_bytes: 0,
             children: Vec::new(),
         }
@@ -105,9 +104,9 @@ impl BudgetTrie {
                 Err(insert_idx) => {
                     let node = BudgetTrieNode::new(part, is_dir, self.escape_xml);
                     let display_len = node.display().len() as u64;
-                    self.display_bytes += display_len;
-                    self.node_count += 1;
-                    let node_max_format = depth.saturating_mul(6).saturating_add(12);
+                    let node_max_format = depth
+                        .saturating_mul(TREE_DEPTH_BYTE_FACTOR)
+                        .saturating_add(TREE_NODE_BASE_OVERHEAD);
                     let node_upper = node_max_format.saturating_add(display_len);
                     self.upper_bound_bytes = self.upper_bound_bytes.saturating_add(node_upper);
 
@@ -321,43 +320,30 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_tree_display_borrowed_on_clean_input() {
+    fn test_trie_node_display_and_storage_optimization() {
         use std::borrow::Cow;
-        let res_text = tree_display("src", false);
-        assert!(matches!(res_text, Cow::Borrowed("src")));
 
-        let res_xml = tree_display("src", true);
-        assert!(matches!(res_xml, Cow::Borrowed("src")));
-    }
+        // Clean inputs: Borrowed without allocation
+        assert!(matches!(tree_display("src", false), Cow::Borrowed("src")));
+        assert!(matches!(tree_display("src", true), Cow::Borrowed("src")));
 
-    #[test]
-    fn test_tree_display_owned_when_escaping_needed() {
-        use std::borrow::Cow;
-        let res_nl = tree_display("dir\nname", false);
-        assert!(matches!(res_nl, Cow::Owned(ref s) if s == "dir\\nname"));
+        // Escaped inputs: Owned with escaping applied
+        assert!(matches!(
+            tree_display("dir\nname", false),
+            Cow::Owned(ref s) if s == "dir\\nname"
+        ));
+        assert!(matches!(
+            tree_display("a & b", true),
+            Cow::Owned(ref s) if s == "a &amp; b"
+        ));
 
-        let res_xml = tree_display("a & b", true);
-        assert!(matches!(res_xml, Cow::Owned(ref s) if s == "a &amp; b"));
-    }
-
-    #[test]
-    fn test_trie_node_sparse_display_storage() {
+        // Sparse storage in TrieNode: display is None when clean, Some when escaped
         let mut trie = BudgetTrie::new(false);
         trie.insert("clean/dir/file.rs");
         let clean_dir = &trie.children[0];
         assert_eq!(clean_dir.name, "clean");
         assert!(clean_dir.display.is_none());
         assert_eq!(clean_dir.display(), "clean");
-
-        let sub_dir = &clean_dir.children[0];
-        assert_eq!(sub_dir.name, "dir");
-        assert!(sub_dir.display.is_none());
-        assert_eq!(sub_dir.display(), "dir");
-
-        let file = &sub_dir.children[0];
-        assert_eq!(file.name, "file.rs");
-        assert!(file.display.is_none());
-        assert_eq!(file.display(), "file.rs");
 
         let mut trie_esc = BudgetTrie::new(true);
         trie_esc.insert("a & b/c.rs");

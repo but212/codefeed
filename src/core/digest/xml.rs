@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::io::Write;
 
-use super::DigestBudget;
+use super::FormatFrameMetrics;
 use super::byte_count;
 use super::trie::BudgetTrie;
 use crate::core::error::IngestError;
@@ -20,6 +20,19 @@ const XML_REPO_END: &str = "</repository>\n";
 const XML_FILE_START: &str = "<file path=\"";
 const XML_FILE_END: &str = "</file>\n";
 const NEWLINE: &str = "\n";
+
+const XML_PER_FILE_TAG_BYTES: u64 =
+    (XML_FILE_START.len() + XML_TAG_CLOSE.len() + XML_FILE_END.len()) as u64;
+
+const XML_FIXED_FRAME_BYTES: u64 = (XML_REPO_START.len()
+    + XML_TAG_CLOSE.len()
+    + XML_DIR_START.len()
+    + XML_DIR_END.len()
+    + XML_FILES_START.len()
+    + XML_FILES_END.len()
+    + XML_REPO_END.len()) as u64;
+
+const XML_REVISION_ATTR_BYTES: u64 = XML_REVISION_ATTR.len() as u64;
 
 const fn make_escape_ascii() -> [Option<&'static str>; 128] {
     let mut table = [None; 128];
@@ -182,27 +195,11 @@ pub(crate) fn calculate_file_bytes(file: &FileRecord) -> Result<(u64, u64, u64),
     Ok((path_b, content_b, trailing_b))
 }
 
-pub(crate) fn rendered_base_size(budget: &DigestBudget) -> Option<u64> {
-    let count = u64::try_from(budget.content.file_count).ok()?;
-    let mut size = 0_u64;
-    size = size.checked_add(XML_REPO_START.len() as u64)?;
-    size = size.checked_add(budget.label_bytes)?;
-    if let Some(rev) = budget.revision_bytes {
-        size = size.checked_add(XML_REVISION_ATTR.len() as u64)?;
-        size = size.checked_add(rev)?;
-    }
-    size = size.checked_add(XML_TAG_CLOSE.len() as u64)?;
-    size = size.checked_add(XML_DIR_START.len() as u64)?;
-    size = size.checked_add(XML_DIR_END.len() as u64)?;
-    size = size.checked_add(XML_FILES_START.len() as u64)?;
-    let per_file_tag_bytes = XML_FILE_START.len() + XML_TAG_CLOSE.len() + XML_FILE_END.len();
-    size = size.checked_add(count.checked_mul(per_file_tag_bytes as u64)?)?;
-    size = size.checked_add(budget.content.path_bytes)?;
-    size = size.checked_add(budget.content.content_bytes)?;
-    size = size.checked_add(budget.content.trailing_bytes)?;
-    size = size.checked_add(XML_FILES_END.len() as u64)?;
-    size.checked_add(XML_REPO_END.len() as u64)
-}
+pub(crate) const FRAME_METRICS: FormatFrameMetrics = FormatFrameMetrics {
+    fixed_frame: XML_FIXED_FRAME_BYTES,
+    revision_overhead: XML_REVISION_ATTR_BYTES,
+    per_file: XML_PER_FILE_TAG_BYTES,
+};
 
 pub(crate) fn render<'a, W, I>(
     writer: &mut W,
@@ -248,42 +245,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn escapes_xml_entities() {
-        assert_eq!(xml_escape("plain text"), "plain text");
-        assert_eq!(xml_escape("a & b < c > d"), "a &amp; b &lt; c &gt; d");
-        assert_eq!(xml_escape("let x = a && b;"), "let x = a &amp;&amp; b;");
-        assert_eq!(
-            xml_escape("<tag attr=\"val\">'hello'</tag>"),
-            "&lt;tag attr=&quot;val&quot;&gt;&apos;hello&apos;&lt;/tag&gt;"
-        );
-    }
-
-    #[test]
-    fn sanitizes_xml_control_characters() {
-        assert_eq!(xml_escape("hello\x0Cworld"), "hello\u{FFFD}world");
-        assert_eq!(xml_escape("valid\t\n\rwhitespace"), "valid\t\n\rwhitespace");
-        assert_eq!(
-            xml_escape("code\u{0001}\u{0008}\u{000B}\u{001F}"),
-            "code\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"
-        );
-    }
-
-    #[test]
-    fn escaped_metrics_and_streaming_match_xml_escape() {
-        let cases = [
-            "",
-            "plain text",
-            "plain text\n",
-            "a & b < c > d",
-            "<tag attr=\"val\">'hello'</tag>\n",
-            "hello\x0Cworld",
-            "code\u{0001}\u{0008}\u{000B}\u{001F}\n",
-            "한글과 이모지 🦀 & 특수문자\n",
-            "끝이 개행이 아닌 &amp",
+    fn xml_escape_and_streaming_consistency() {
+        let cases: &[(&str, &str)] = &[
+            ("", ""),
+            ("plain text", "plain text"),
+            ("plain text\n", "plain text\n"),
+            ("a & b < c > d", "a &amp; b &lt; c &gt; d"),
+            ("let x = a && b;", "let x = a &amp;&amp; b;"),
+            (
+                "<tag attr=\"val\">'hello'</tag>",
+                "&lt;tag attr=&quot;val&quot;&gt;&apos;hello&apos;&lt;/tag&gt;",
+            ),
+            ("hello\x0Cworld", "hello\u{FFFD}world"),
+            ("valid\t\n\rwhitespace", "valid\t\n\rwhitespace"),
+            (
+                "code\u{0001}\u{0008}\u{000B}\u{001F}",
+                "code\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}",
+            ),
+            (
+                "한글과 이모지 🦀 & 특수문자\n",
+                "한글과 이모지 🦀 &amp; 특수문자\n",
+            ),
+            ("끝이 개행이 아닌 &amp", "끝이 개행이 아닌 &amp;amp"),
         ];
 
-        for text in cases {
+        for &(text, expected_escaped) in cases {
             let escaped = xml_escape(text);
+            assert_eq!(
+                escaped.as_ref(),
+                expected_escaped,
+                "escape mismatch for {text:?}"
+            );
+
             let (byte_count, ends_with_nl) = escaped_metrics(text);
             assert_eq!(
                 byte_count,
@@ -326,5 +319,22 @@ mod tests {
                 XmlChunk::Escaped("&apos;"),
             ]
         );
+    }
+
+    #[test]
+    fn xml_static_frame_constants_match_individual_tags() {
+        let expected_per_file =
+            (XML_FILE_START.len() + XML_TAG_CLOSE.len() + XML_FILE_END.len()) as u64;
+        assert_eq!(XML_PER_FILE_TAG_BYTES, expected_per_file);
+
+        let expected_fixed_frame = (XML_REPO_START.len()
+            + XML_TAG_CLOSE.len()
+            + XML_DIR_START.len()
+            + XML_DIR_END.len()
+            + XML_FILES_START.len()
+            + XML_FILES_END.len()
+            + XML_REPO_END.len()) as u64;
+        assert_eq!(XML_FIXED_FRAME_BYTES, expected_fixed_frame);
+        assert_eq!(XML_REVISION_ATTR_BYTES, XML_REVISION_ATTR.len() as u64);
     }
 }
