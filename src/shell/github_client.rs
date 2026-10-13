@@ -1,6 +1,6 @@
 //! GitHub HTTP transport with streaming response bodies.
 
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::time::Duration;
 
 use ureq::Agent;
@@ -63,13 +63,26 @@ impl GithubClient {
                 request = request.header("X-Github-Api-Version", "2022-11-28");
             }
 
+            let retry = |attempt: &mut usize,
+                         reason: &dyn std::fmt::Display|
+             -> std::time::Duration {
+                *attempt += 1;
+                let delay = retry_delay(*attempt - 1, current_entropy());
+                eprintln!(
+                    "warning: {reason} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
+                );
+                std::thread::sleep(delay);
+                delay
+            };
+
             let response = match request.call() {
                 Ok(resp) => resp,
                 Err(error) => {
                     if is_retryable_transport_error(&error) && attempt + 1 < MAX_RETRIES {
-                        attempt += 1;
-                        let delay = retry_delay(attempt - 1, current_entropy());
-                        std::thread::sleep(delay);
+                        retry(
+                            &mut attempt,
+                            &format_args!("GitHub transport error: {error}"),
+                        );
                         continue;
                     }
                     return Err(IngestError::Http(error.to_string()));
@@ -78,9 +91,7 @@ impl GithubClient {
 
             let status = response.status();
             if is_retryable_status(status.as_u16()) && attempt + 1 < MAX_RETRIES {
-                attempt += 1;
-                let delay = retry_delay(attempt - 1, current_entropy());
-                std::thread::sleep(delay);
+                retry(&mut attempt, &format_args!("GitHub HTTP status {status}"));
                 continue;
             }
 
@@ -94,7 +105,10 @@ impl GithubClient {
                 return Err(api_error(status, &body_bytes));
             }
 
-            return Ok(Box::new(response.into_body().into_reader()));
+            return Ok(Box::new(BufReader::with_capacity(
+                64 * 1024,
+                response.into_body().into_reader(),
+            )));
         }
     }
 }

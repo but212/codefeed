@@ -19,7 +19,11 @@ const NEWLINE: &str = "\n";
 const METADATA_SUFFIX: &str = "\n\n";
 
 pub(crate) fn escape_header(value: &str) -> Cow<'_, str> {
-    if !value.bytes().any(|b| matches!(b, b'\\' | b'\r' | b'\n')) {
+    if !value
+        .as_bytes()
+        .iter()
+        .any(|&b| matches!(b, b'\\' | b'\r' | b'\n'))
+    {
         return Cow::Borrowed(value);
     }
     let mut out = String::with_capacity(value.len() + 8);
@@ -34,21 +38,17 @@ pub(crate) fn escape_header(value: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-pub(crate) fn render<'a, W, I>(
+pub(crate) fn render<W>(
     writer: &mut W,
     label: &str,
     revision: Option<&str>,
-    files: I,
+    ordered_files: &[(&str, &FileRecord)],
     skipped: usize,
     trie: &BudgetTrie,
 ) -> Result<(), IngestError>
 where
     W: Write + ?Sized,
-    I: IntoIterator<Item = &'a FileRecord>,
 {
-    let mut ordered_files: Vec<&FileRecord> = files.into_iter().collect();
-    ordered_files.sort_unstable_by(|left, right| left.path.cmp(&right.path));
-
     writer.write_all(REPOSITORY_PREFIX.as_bytes())?;
     writer.write_all(escape_header(label).as_bytes())?;
     writer.write_all(NEWLINE.as_bytes())?;
@@ -66,7 +66,7 @@ where
     trie.render_to_writer(writer)?;
     writer.write_all(FILES_HEADER.as_bytes())?;
 
-    for file in ordered_files {
+    for (_, file) in ordered_files {
         writer.write_all(FILE_BLOCK_PREFIX.as_bytes())?;
         writer.write_all(escape_header(&file.path).as_bytes())?;
         writer.write_all(FILE_BLOCK_SUFFIX.as_bytes())?;

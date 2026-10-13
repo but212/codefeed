@@ -11,9 +11,9 @@ imperative-shell boundary.
 
 - `Source` — `Local(PathBuf)` or `GitHub { owner, repo, reference }`.
 - `RunConfig` — execution configuration unifying `source`, `output`, and `format`.
-- `Item` — one observed candidate handed to the pure core: `path`
+- `Item` — one observed entry handed to the pure core: `path`
   (`ItemPath::Utf8 | NonUtf8`) and `probe`
-  (`Probe::Bytes | Missing | TooLarge | Ignored`).
+  (`Probe::Bytes | Missing | TooLarge | Ignored`). Shell collectors filter ignored paths pre-candidate (`PathClassification::Ignored`), while pure core supports `Probe::Ignored` as a no-op variant.
 - `FileRecord` — digest entry: `path`, `content`.
 - `CollectionResult` — uniform collection record: `label`, optional `revision`, `files`, `skipped`, `trie`, `format`.
 - `IngestReport` — `output`, `included_files`, `skipped_files`, `estimated_tokens`.
@@ -27,7 +27,7 @@ imperative-shell boundary.
 
 ### Filtering & Accounting
 
-- Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and conventional sensitive files by case-insensitive filename/extension (`.env*`, `*.key`/`*.pem`, `*.p12`/`*.pkcs12`, `id_rsa*`/`id_ed25519*`, `credentials*`) before candidate accounting (conventional pattern filter, not a content-based secret scanner). They are neither candidates nor `skipped`.
+- Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and conventional sensitive files by case-insensitive filename prefix (`.env*`, `id_rsa*`, `id_ed25519*`, `credentials*`) and extension (`*.key`/`*.pem`, `*.p12`/`*.pkcs12`, `*.credentials`) before candidate accounting (conventional pattern filter, not a content-based secret scanner). They are neither candidates nor `skipped`.
 - Consumes candidate slots before evaluating content, size, or encoding.
 - `skipped` counts candidates rejected for content, size, or encoding. Ignored paths are never counted in `skipped`.
 - Rejects content exceeding `MAX_OUTPUT_SIZE`; overflow content is never emitted.
@@ -37,10 +37,10 @@ imperative-shell boundary.
 ### Rendering & Formats
 
 - ASCII hierarchy tree (`├── `, `└── `, `│   `) renders deterministic directory structure, escaping control codes and XML entities to prevent tree line-break injections.
-- Heuristic token estimation runs via pure function `estimate_tokens(&str)`, reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
+- Heuristic token estimation runs via state machine `TokenEstimator`, exposed through pure function `estimate_tokens(&str)` and `BoundedEstimatingWriter`, reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
 - Plain text serialization (`--format text`) preserves all valid UTF-8 file content verbatim (rejecting only NUL bytes) to maintain raw fidelity for LLM prompts; headers and paths are escaped, but file bodies are unmutated (viewing raw digests in interactive terminals may affect emulator state if files contain ANSI escape codes).
 - XML serialization (`--format xml`) structures output into `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`) and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`.
-- File-path ordering is strictly lexicographical and owned solely by `render_digest_to_writer` / `render_digest`. Format rendering consumes `IntoIterator<Item = &FileRecord>` to support streaming and arbitrary iteration pipelines while preserving deterministic path sorting.
+- File-path ordering is strictly lexicographical and owned solely by `DigestFormat::render`, sorted once into key-projected `(&str, &FileRecord)` slices to eliminate double heap indirection. Format sub-renderers (`text::render`, `xml::render`) consume the ordered slice directly without re-sorting or re-allocating.
 - Local digest headers use root directory basename (`Repository: <basename>`), omitting absolute paths and system prefixes.
 
 ### I/O & Output Target Contracts
@@ -55,14 +55,14 @@ imperative-shell boundary.
   2. Bounded, containment-checked file reads via `local_io::read_local_file` (`openat2(RESOLVE_BENEATH)` / non-blocking Win32 handles) feed observations into `Selector`.
 - Digest cap (`MAX_OUTPUT_SIZE`) is strictly enforced on bytes actually written to the output stream via `BoundedEstimatingWriter`, preventing framing/metadata overflow.
 - Token count is estimated on the same writer stream pass over rendered bytes.
-- Trie insertion is iterative with fast-path sibling comparison (`find_child`), avoiding stack frame exhaustion on deeply nested directories.
+- `BudgetTrie` stores nodes in a flat continuous arena (`Vec<BudgetTrieNode>`) with indexed child tracking (`Vec<u32>`) and compact `Box<str>` labels; insertion uses iterative descent with fast-path sibling comparison (`find_child_idx`), avoiding stack exhaustion and recursive heap pointer chasing.
 - CLI arguments are parsed linearly into options and source without third-party dependencies, supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters.
 - Candidate budget uses `HashMap` with `extract_dir_slice`, formatting overflow diagnostics from observed candidates at termination sorted deterministically by count descending then directory ascending.
 - Digest budget is error-terminal: limit breach immediately errors and aborts without internal transactional rollback.
 
 ### Network & GitHub
 
-- Single HTTP request streams GitHub repository archive (`/repos/{owner}/{repo}/tarball/{ref}`) via `flate2` and `tar`, streaming entries into `Selector::decide` with zero intermediate disk files and fail-fast budget termination. Commit revision is extracted from the archive `pax_global_header`.
+- Single HTTP request streams GitHub repository archive (`/repos/{owner}/{repo}/tarball/{ref}`) via `flate2` and `tar` over a 64 KiB `BufReader` buffered stream, streaming entries into `Selector::decide` with zero intermediate disk files and fail-fast budget termination. Commit revision is extracted from the archive `pax_global_header`.
 - HTTP credentials (`Authorization: Bearer <token>`) attach strictly to exact-origin GitHub API (`https://api.github.com`); foreign origins never receive credentials.
 - HTTP transport retries transient transport errors (`Io`, `Timeout`, `ConnectionFailed`) and HTTP 429 / 5xx responses with bounded exponential backoff and jitter up to `MAX_RETRIES` total attempts (1 initial + up to 2 retries). Fails immediately on non-transient transport errors and 4xx client errors (except 429).
 
@@ -78,7 +78,7 @@ imperative-shell boundary.
 | `RETRY_INITIAL_DELAY_MS` | 250 ms | Base initial delay for exponential backoff |
 | `RETRY_MAX_DELAY_MS` | 5,000 ms | Maximum delay cap for exponential backoff |
 | `NOISE` | lockfiles | Conventional lockfiles excluded before candidate budget |
-| `SENSITIVE_EXT` | 5 extensions | Key, cert, credential extensions excluded before candidate budget |
+| `SENSITIVE_EXT` | 5 extensions | Key, cert, and credential extensions (`*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.credentials`) excluded before candidate budget (note: `credentials*` is also matched as filename prefix) |
 | `BINARY_EXT` | 11 extensions | Known binary file extensions filtered pre-download |
 
 ## Functional core / imperative shell boundary
@@ -93,11 +93,11 @@ never depends on shell code; shell code depends on the core in one direction.
   - `model.rs`: domain value types (`Source`, `FileRecord`, `CollectionResult`,
     `IngestReport`, `RunConfig`, `Options`, `OutputTarget`, `DigestFormat`).
   - `error.rs`: domain error enum `IngestError` with structured diagnostic payload.
-  - `decide.rs`: `Selector::decide`, `CandidateBudget`, item evaluation, and
+  - `decide.rs`: `Selector::decide`, `Selector::finish`, `CandidateBudget`, item evaluation via `slice::contains`, and
     candidate overflow diagnostics.
   - `digest/`: `DigestBudget`, size check, deterministic
-    digest rendering (`render_digest_to_writer`), format implementations (`text.rs`, `xml.rs`), trie representation (`trie.rs`), and token estimation (`estimate_tokens`).
-  - `github_url.rs`: URL construction and origin credential scoping.
+    digest rendering (`render_digest_to_writer`), format implementations (`text.rs`, `xml.rs`), trie representation (`trie.rs`), and token estimation (`TokenEstimator`, `estimate_tokens`).
+  - `github_url.rs`: Pure `std` URL construction with RFC 3986 percent-encoding and origin credential scoping.
   - `archive.rs`: Pax header comment extraction and archive root stripping.
 - Imperative shell (`src/shell/`):
   - `shell/cli.rs`: Pure CLI argument parsing, help detection, and `CliAction` generation.
@@ -106,7 +106,7 @@ never depends on shell code; shell code depends on the core in one direction.
   - `shell/local.rs`: 2-step linear filesystem walking and collection (`collect_local`).
   - `shell/local_io.rs`: TOCTOU-resistant file opening and root containment enforcement (`openat2` / Win32 handle resolution).
   - `shell/output_exclusion.rs`: Output file identity tracking (`OutputFilter`) using device and inode checks.
-  - `shell/github_client.rs`: HTTP transport, body bounding, and token resolution.
+  - `shell/github_client.rs`: HTTP transport, retry logging via `log`, body bounding, and token resolution.
   - `shell/github.rs`: streaming archive GitHub collection (`collect_github`).
   - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`) or standard output stream emission.
   - `shell/mod.rs`: shell module declarations and scoped test fixture isolation (`TempDirGuard`).

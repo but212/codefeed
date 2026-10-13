@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Unified token estimation state machine `TokenEstimator` in `src/core/digest/mod.rs`, shared by `estimate_tokens` and `BoundedEstimatingWriter`.
+- Encapsulated collection completion in `Selector::finish` in `src/core/decide.rs`, constructing `CollectionResult` directly.
+
+### Changed
+
+- Refactored `BudgetTrie` in `src/core/digest/trie.rs` into a contiguous flat node arena (`Vec<BudgetTrieNode>`) with `u32` indexed child tracking (`Vec<u32>`) and `Box<str>` node labels, reducing arena memory footprint on 64-bit platforms and eliminating recursive heap pointer chasing.
+- Consolidated duplicated root and parent child insertion logic in `BudgetTrie::insert` into `get_or_insert_child`.
+- Extracted OS-dependent filename case comparison in `src/shell/output_exclusion.rs` into `names_match` helper.
+- Centralized deterministic digest file sorting in `DigestFormat::render` (`src/core/digest/mod.rs`), passing key-projected `(&str, &FileRecord)` slices to `text::render` and `xml::render` to eliminate duplicate sorting and redundant allocations.
+- Replaced external crate `percent-encoding` in `src/core/github_url.rs` with a pure `std` RFC 3986 Unreserved validator and `%XX` hex encoder.
+- Replaced external crate `memchr` in `src/core/decide.rs` with `slice::contains(&0)` and in `src/core/digest/text.rs` with `std` pattern matching.
+- Replaced external crate `log` in `src/shell/github_client.rs` with `eprintln!` diagnostics.
+- Buffered streaming GitHub tarball HTTP response bodies through a 64 KiB `BufReader` in `src/shell/github_client.rs` before decompression.
+- Consolidated duplicated HTTP transport error and status retry logic in `src/shell/github_client.rs` into a unified helper.
+
+### Removed
+
+- Removed external dependencies `percent-encoding`, `memchr`, and `log` from `Cargo.toml`.
+- Removed redundant batch candidate pre-verification `CandidateBudget::verify_count` in `src/core/decide.rs` and `src/shell/local.rs` in favor of single-pass streaming budget enforcement in `Selector::decide`.
+- Removed `Selector::into_parts` across `src/core/decide.rs`, shell collectors, and benchmarks in favor of `Selector::finish`.
+
 ## [0.2.2]
 
 ### Added
@@ -137,6 +162,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Conventional lockfile and noise path exclusion before candidate accounting.
 - Resource budgets enforcing maximum candidate file counts and output sizes.
 
+[Unreleased]: https://github.com/but212/codefeed/compare/v0.2.2...HEAD
 [0.2.2]: https://github.com/but212/codefeed/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/but212/codefeed/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/but212/codefeed/compare/v0.1.2...v0.2.0

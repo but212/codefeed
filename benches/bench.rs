@@ -491,8 +491,8 @@ mod suites {
             for item in items {
                 let _ = selector.decide(item);
             }
-            let (files, skipped, _, _) = selector.into_parts();
-            black_box((files.len(), skipped));
+            let res = selector.finish("bench".into(), None);
+            black_box((res.files.len(), res.skipped));
         });
     }
 

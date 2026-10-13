@@ -30,9 +30,13 @@ impl DigestFormat {
         W: std::io::Write + ?Sized,
         I: IntoIterator<Item = &'a FileRecord>,
     {
+        let mut ordered_files: Vec<(&str, &FileRecord)> =
+            files.into_iter().map(|f| (f.path.as_str(), f)).collect();
+        ordered_files.sort_unstable_by_key(|(path, _)| *path);
+
         match self {
-            Self::Text => text::render(writer, label, revision, files, skipped, trie),
-            Self::Xml => xml::render(writer, label, revision, files, trie),
+            Self::Text => text::render(writer, label, revision, &ordered_files, skipped, trie),
+            Self::Xml => xml::render(writer, label, revision, &ordered_files, trie),
         }
     }
 }
@@ -104,84 +108,22 @@ pub(crate) fn largest_files<'a>(
         .collect()
 }
 
-pub fn estimate_tokens(text: &str) -> usize {
-    let mut tokens = 0;
-    let mut in_word = false;
-    let mut word_len = 0;
-
-    for ch in text.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            in_word = true;
-            word_len += 1;
-            if word_len >= 4 {
-                tokens += 1;
-                word_len = 0;
-            }
-        } else {
-            if std::mem::take(&mut in_word) {
-                tokens += 1;
-                word_len = 0;
-            }
-            if !ch.is_ascii_whitespace() {
-                if ch.is_ascii() {
-                    tokens += 1;
-                } else {
-                    tokens += 2;
-                }
-            } else if ch == '\n' {
-                tokens += 1;
-            }
-        }
-    }
-    if in_word {
-        tokens += 1;
-    }
-    if tokens == 0 && text.is_empty() {
-        0
-    } else {
-        tokens.max(1)
-    }
-}
-
-struct BoundedEstimatingWriter<'a, W: std::io::Write + ?Sized> {
-    inner: &'a mut W,
-    written: u64,
+/// State machine tracking token count heuristics across character streams.
+#[derive(Default, Debug, Clone)]
+pub struct TokenEstimator {
     tokens: usize,
     in_word: bool,
     word_len: usize,
-    pending: [u8; 4],
-    pending_len: usize,
-    overflowed: bool,
+    saw_input: bool,
 }
 
-impl<'a, W: std::io::Write + ?Sized> BoundedEstimatingWriter<'a, W> {
-    fn new(inner: &'a mut W) -> Self {
-        Self {
-            inner,
-            written: 0,
-            tokens: 0,
-            in_word: false,
-            word_len: 0,
-            pending: [0; 4],
-            pending_len: 0,
-            overflowed: false,
-        }
+impl TokenEstimator {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    fn finish(mut self) -> usize {
-        if self.pending_len > 0 {
-            self.tokens += 2;
-        }
-        if self.tokens == 0 && !self.in_word {
-            return 0;
-        }
-        if self.in_word {
-            self.tokens += 1;
-        }
-        self.tokens.max(1)
-    }
-
-    fn process_char(&mut self, ch: char) {
+    pub fn process_char(&mut self, ch: char) {
+        self.saw_input = true;
         if ch.is_ascii_alphanumeric() || ch == '_' {
             self.in_word = true;
             self.word_len += 1;
@@ -205,6 +147,63 @@ impl<'a, W: std::io::Write + ?Sized> BoundedEstimatingWriter<'a, W> {
             }
         }
     }
+
+    pub fn process_str(&mut self, text: &str) {
+        for ch in text.chars() {
+            self.process_char(ch);
+        }
+    }
+
+    pub fn add_fallback_tokens(&mut self, count: usize) {
+        self.saw_input = true;
+        self.tokens += count;
+    }
+
+    pub fn finish(mut self) -> usize {
+        if self.in_word {
+            self.tokens += 1;
+        }
+        if self.tokens == 0 && !self.saw_input {
+            0
+        } else {
+            self.tokens.max(1)
+        }
+    }
+}
+
+pub fn estimate_tokens(text: &str) -> usize {
+    let mut estimator = TokenEstimator::new();
+    estimator.process_str(text);
+    estimator.finish()
+}
+
+struct BoundedEstimatingWriter<'a, W: std::io::Write + ?Sized> {
+    inner: &'a mut W,
+    written: u64,
+    estimator: TokenEstimator,
+    pending: [u8; 4],
+    pending_len: usize,
+    overflowed: bool,
+}
+
+impl<'a, W: std::io::Write + ?Sized> BoundedEstimatingWriter<'a, W> {
+    fn new(inner: &'a mut W) -> Self {
+        Self {
+            inner,
+            written: 0,
+            estimator: TokenEstimator::new(),
+            pending: [0; 4],
+            pending_len: 0,
+            overflowed: false,
+        }
+    }
+
+    fn finish(mut self) -> usize {
+        if self.pending_len > 0 {
+            self.estimator.add_fallback_tokens(2);
+        }
+        self.estimator.finish()
+    }
 }
 
 impl<W: std::io::Write + ?Sized> std::io::Write for BoundedEstimatingWriter<'_, W> {
@@ -227,7 +226,7 @@ impl<W: std::io::Write + ?Sized> std::io::Write for BoundedEstimatingWriter<'_, 
                 if let Ok(s) = std::str::from_utf8(&self.pending[..self.pending_len]) {
                     let ch = s.chars().next().expect("valid utf8 has at least one char");
                     self.pending_len = 0;
-                    self.process_char(ch);
+                    self.estimator.process_char(ch);
                     break;
                 }
             }
@@ -236,9 +235,7 @@ impl<W: std::io::Write + ?Sized> std::io::Write for BoundedEstimatingWriter<'_, 
         if !input.is_empty() {
             match std::str::from_utf8(input) {
                 Ok(text) => {
-                    for ch in text.chars() {
-                        self.process_char(ch);
-                    }
+                    self.estimator.process_str(text);
                 }
                 Err(e) => {
                     let valid_len = e.valid_up_to();
@@ -247,9 +244,7 @@ impl<W: std::io::Write + ?Sized> std::io::Write for BoundedEstimatingWriter<'_, 
                             Ok(s) => s,
                             Err(_) => unreachable!(),
                         };
-                        for ch in valid_str.chars() {
-                            self.process_char(ch);
-                        }
+                        self.estimator.process_str(valid_str);
                     }
                     if e.error_len().is_none() {
                         let remaining = &input[valid_len..];

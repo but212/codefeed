@@ -173,17 +173,15 @@ pub fn write_xml_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std:
     Ok(ends_with_nl)
 }
 
-
-pub(crate) fn render<'a, W, I>(
+pub(crate) fn render<W>(
     writer: &mut W,
     label: &str,
     revision: Option<&str>,
-    files: I,
+    ordered_files: &[(&str, &FileRecord)],
     trie: &BudgetTrie,
 ) -> Result<(), IngestError>
 where
     W: Write + ?Sized,
-    I: IntoIterator<Item = &'a FileRecord>,
 {
     writer.write_all(XML_REPO_START.as_bytes())?;
     writer.write_all(xml_escape(label).as_bytes())?;
@@ -196,9 +194,7 @@ where
     trie.render_to_writer(writer)?;
     writer.write_all(XML_DIR_END.as_bytes())?;
     writer.write_all(XML_FILES_START.as_bytes())?;
-    let mut ordered_files: Vec<_> = files.into_iter().collect();
-    ordered_files.sort_unstable_by(|left, right| left.path.cmp(&right.path));
-    for file in ordered_files {
+    for (_, file) in ordered_files {
         writer.write_all(XML_FILE_START.as_bytes())?;
         writer.write_all(xml_escape(&file.path).as_bytes())?;
         writer.write_all(XML_TAG_CLOSE.as_bytes())?;

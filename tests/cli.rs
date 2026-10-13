@@ -20,7 +20,7 @@ fn help_exits_successfully_without_ingesting() {
         assert_eq!(stdout.matches("Usage:").count(), 1, "args: {args:?}");
         assert_eq!(
             stdout.trim(),
-            "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]",
+            "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]",
             "args: {args:?}"
         );
         assert!(output.stderr.is_empty(), "args: {args:?}");
@@ -197,7 +197,7 @@ fn help_after_non_utf8_source_exits_successfully() {
     assert!(output.status.success(), "output: {output:?}");
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]"
+        "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]"
     );
     assert!(output.stderr.is_empty(), "output: {output:?}");
 }

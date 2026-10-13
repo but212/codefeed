@@ -69,25 +69,7 @@ impl OutputFilter {
             return false;
         };
 
-        // Fast-path: O(1) in-memory filename comparison eliminates filesystem calls for 99.9% of files.
-        #[cfg(any(windows, target_os = "macos"))]
-        let name_matches = if name.is_ascii() && self.target_name.is_ascii() {
-            name.to_string_lossy()
-                .eq_ignore_ascii_case(&self.target_name.to_string_lossy())
-        } else {
-            name.to_string_lossy()
-                .chars()
-                .flat_map(char::to_lowercase)
-                .eq(self
-                    .target_name
-                    .to_string_lossy()
-                    .chars()
-                    .flat_map(char::to_lowercase))
-        };
-        #[cfg(not(any(windows, target_os = "macos")))]
-        let name_matches = name == self.target_name;
-
-        if !name_matches {
+        if !names_match(name, &self.target_name) {
             return false;
         }
 
@@ -103,6 +85,31 @@ impl OutputFilter {
         }
 
         false
+    }
+}
+
+#[inline]
+fn names_match(candidate: &std::ffi::OsStr, target: &std::ffi::OsStr) -> bool {
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        if candidate.is_ascii() && target.is_ascii() {
+            candidate
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&target.to_string_lossy())
+        } else {
+            candidate
+                .to_string_lossy()
+                .chars()
+                .flat_map(char::to_lowercase)
+                .eq(target
+                    .to_string_lossy()
+                    .chars()
+                    .flat_map(char::to_lowercase))
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        candidate == target
     }
 }
 

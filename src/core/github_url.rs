@@ -40,29 +40,39 @@ pub(crate) fn tarball_url(owner: &str, repo: &str, reference: Option<&str>) -> S
     url
 }
 
-fn push_encoded_segment(url: &mut String, segment: &str) {
-    url.push('/');
-    append_encoded_segment(url, segment);
+#[inline]
+const fn is_unreserved(b: u8) -> bool {
+    matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~')
 }
 
-fn append_encoded_segment(url: &mut String, segment: &str) {
+fn push_encoded_segment(url: &mut String, segment: &str) {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    for byte in segment.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            url.push(byte as char);
+    url.push('/');
+    for &b in segment.as_bytes() {
+        if is_unreserved(b) {
+            url.push(b as char);
         } else {
             url.push('%');
-            url.push(HEX[(byte >> 4) as usize] as char);
-            url.push(HEX[(byte & 0x0f) as usize] as char);
+            url.push(HEX[(b >> 4) as usize] as char);
+            url.push(HEX[(b & 0xF) as usize] as char);
         }
     }
 }
 
 #[cfg(test)]
 fn encode_path_segment(segment: &str) -> String {
-    let mut encoded = String::with_capacity(segment.len());
-    append_encoded_segment(&mut encoded, segment);
-    encoded
+    let mut out = String::with_capacity(segment.len());
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for &b in segment.as_bytes() {
+        if is_unreserved(b) {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0xF) as usize] as char);
+        }
+    }
+    out
 }
 
 #[cfg(test)]

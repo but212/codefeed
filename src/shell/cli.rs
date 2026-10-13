@@ -5,7 +5,8 @@ use crate::core::error::IngestError;
 use crate::core::model::{DigestFormat, Options, OutputTarget, RunConfig, Source};
 use crate::core::source::parse_source_os;
 
-const HELP: &str = "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]";
+const HELP: &str =
+    "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]";
 
 pub fn help_text() -> &'static str {
     HELP

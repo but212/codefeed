@@ -64,15 +64,7 @@ pub(crate) fn collect_from_archive<R: Read>(
     }
 
     let final_revision = parsed_revision.or_else(|| reference.map(str::to_string));
-    let (files, skipped, trie, format) = selector.into_parts();
-    Ok(CollectionResult {
-        label,
-        revision: final_revision,
-        files,
-        skipped,
-        trie,
-        format,
-    })
+    Ok(selector.finish(label, final_revision))
 }
 
 fn probe_tar_entry<R: Read>(entry: &mut tar::Entry<R>) -> Result<ArchiveEntryOutcome, IngestError> {

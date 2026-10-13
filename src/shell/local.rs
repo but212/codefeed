@@ -8,7 +8,7 @@ use ignore::WalkBuilder;
 
 use super::local_io::read_local_file;
 use super::output_exclusion::OutputFilter;
-use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe, Selector};
+use crate::core::decide::{Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
 use crate::core::policy::{MAX_FILE_COUNT, PathClassification};
@@ -44,16 +44,7 @@ pub fn collect_local(
         })?;
     }
 
-    let (files, skipped, trie, format) = selector.into_parts();
-
-    Ok(CollectionResult {
-        label,
-        revision: None,
-        files,
-        skipped,
-        trie,
-        format,
-    })
+    Ok(selector.finish(label, None))
 }
 
 fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
@@ -104,15 +95,11 @@ fn walk_candidates(
         let probe = match &item_path {
             ItemPath::NonUtf8 => Some(Probe::Missing),
             ItemPath::Utf8(path) => match PathClassification::classify(path) {
-                PathClassification::Ignored => Some(Probe::Ignored),
+                PathClassification::Ignored => continue,
                 PathClassification::PreclassifiedBinary => Some(Probe::Missing),
                 PathClassification::NeedsContent => None,
             },
         };
-
-        if matches!(probe, Some(Probe::Ignored)) {
-            continue;
-        }
 
         candidates.push(LocalCandidate {
             path: entry_path.to_path_buf(),
@@ -124,14 +111,6 @@ fn walk_candidates(
             break;
         }
     }
-
-    CandidateBudget::verify_count(
-        candidates.iter().map(|item| match &item.item_path {
-            ItemPath::Utf8(p) => Some(p.as_str()),
-            ItemPath::NonUtf8 => None,
-        }),
-        candidates.len(),
-    )?;
 
     candidates.sort_unstable_by(|a, b| match (&a.item_path, &b.item_path) {
         (ItemPath::Utf8(left), ItemPath::Utf8(right)) => left.cmp(right),
