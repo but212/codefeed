@@ -127,24 +127,18 @@ impl TokenEstimator {
         if ch.is_ascii_alphanumeric() || ch == '_' {
             self.in_word = true;
             self.word_len += 1;
-            if self.word_len >= 4 {
-                self.tokens += 1;
-                self.word_len = 0;
-            }
+            let full_word = (self.word_len >= 4) as usize;
+            self.tokens += full_word;
+            self.word_len *= 1 - full_word;
         } else {
-            if std::mem::take(&mut self.in_word) {
-                self.tokens += 1;
-                self.word_len = 0;
-            }
-            if !ch.is_ascii_whitespace() {
-                if ch.is_ascii() {
-                    self.tokens += 1;
-                } else {
-                    self.tokens += 2;
-                }
-            } else if ch == '\n' {
-                self.tokens += 1;
-            }
+            let was_in_word = std::mem::take(&mut self.in_word) as usize;
+            self.tokens += was_in_word;
+            self.word_len = 0;
+
+            let is_ws = ch.is_ascii_whitespace();
+            let is_nl = (ch == '\n') as usize;
+            let non_ws_weight = (!is_ws) as usize * (1 + (!ch.is_ascii()) as usize);
+            self.tokens += non_ws_weight + is_nl;
         }
     }
 

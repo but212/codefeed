@@ -68,7 +68,9 @@ fn find_child_idx(
         return Err(0);
     };
     let last = &nodes[last_idx as usize];
-    let ord = (*last.name).cmp(part).then_with(|| last.is_dir.cmp(&is_dir));
+    let ord = (*last.name)
+        .cmp(part)
+        .then_with(|| last.is_dir.cmp(&is_dir));
     match ord {
         std::cmp::Ordering::Equal => Ok(children.len() - 1),
         std::cmp::Ordering::Less => Err(children.len()),
@@ -104,13 +106,9 @@ impl BudgetTrie {
         }
     }
 
-    fn get_or_insert_child(
-        &mut self,
-        parent_idx: Option<u32>,
-        part: &str,
-        is_dir: bool,
-    ) -> u32 {
-        let new_node_idx = u32::try_from(self.nodes.len()).expect("trie node count exceeds u32::MAX");
+    fn get_or_insert_child(&mut self, parent_idx: Option<u32>, part: &str, is_dir: bool) -> u32 {
+        let new_node_idx =
+            u32::try_from(self.nodes.len()).expect("trie node count exceeds u32::MAX");
         match parent_idx {
             None => match find_child_idx(&self.nodes, &self.root_children, part, is_dir) {
                 Ok(slot) => self.root_children[slot],
@@ -122,12 +120,19 @@ impl BudgetTrie {
                 }
             },
             Some(p_idx) => {
-                match find_child_idx(&self.nodes, &self.nodes[p_idx as usize].children, part, is_dir) {
+                match find_child_idx(
+                    &self.nodes,
+                    &self.nodes[p_idx as usize].children,
+                    part,
+                    is_dir,
+                ) {
                     Ok(slot) => self.nodes[p_idx as usize].children[slot],
                     Err(insert_pos) => {
                         self.nodes
                             .push(BudgetTrieNode::new(part, is_dir, self.escape_xml));
-                        self.nodes[p_idx as usize].children.insert(insert_pos, new_node_idx);
+                        self.nodes[p_idx as usize]
+                            .children
+                            .insert(insert_pos, new_node_idx);
                         new_node_idx
                     }
                 }
@@ -147,16 +152,15 @@ impl BudgetTrie {
         prefix: &mut String,
     ) -> std::io::Result<()> {
         let total = child_indices.len();
+        const BRANCH_STRS: [&[u8]; 2] = [TREE_BRANCH.as_bytes(), TREE_LAST.as_bytes()];
+        const PREFIX_STRS: [&str; 2] = [TREE_VERT, TREE_SPACE];
+
         for (idx, &node_idx) in child_indices.iter().enumerate() {
             let is_last = idx + 1 == total;
             let node = &self.nodes[node_idx as usize];
 
             writer.write_all(prefix.as_bytes())?;
-            if is_last {
-                writer.write_all(TREE_LAST.as_bytes())?;
-            } else {
-                writer.write_all(TREE_BRANCH.as_bytes())?;
-            }
+            writer.write_all(BRANCH_STRS[is_last as usize])?;
             writer.write_all(node.display().as_bytes())?;
             if node.is_dir {
                 writer.write_all(b"/")?;
@@ -165,7 +169,7 @@ impl BudgetTrie {
 
             if !node.children.is_empty() {
                 let prev_len = prefix.len();
-                prefix.push_str(if is_last { TREE_SPACE } else { TREE_VERT });
+                prefix.push_str(PREFIX_STRS[is_last as usize]);
                 self.render_node_indices(writer, &node.children, prefix)?;
                 prefix.truncate(prev_len);
             }

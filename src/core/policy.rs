@@ -120,11 +120,8 @@ pub(crate) const fn retry_delay(attempt: usize, entropy: u64) -> std::time::Dura
     let exponential = RETRY_INITIAL_DELAY_MS.saturating_mul(multiplier);
     let jitter = entropy % (RETRY_JITTER_MAX_MS + 1);
     let base = exponential.saturating_add(jitter);
-    let millis = if base < RETRY_MAX_DELAY_MS {
-        base
-    } else {
-        RETRY_MAX_DELAY_MS
-    };
+    let diff = base.saturating_sub(RETRY_MAX_DELAY_MS);
+    let millis = base - diff;
     std::time::Duration::from_millis(millis)
 }
 

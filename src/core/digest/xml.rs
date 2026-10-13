@@ -19,8 +19,8 @@ const XML_FILE_START: &str = "<file path=\"";
 const XML_FILE_END: &str = "</file>\n";
 const NEWLINE: &str = "\n";
 
-const fn make_escape_ascii() -> [Option<&'static str>; 128] {
-    let mut table = [None; 128];
+const fn make_escape_table() -> [Option<&'static str>; 256] {
+    let mut table = [None; 256];
     table[b'&' as usize] = Some("&amp;");
     table[b'<' as usize] = Some("&lt;");
     table[b'>' as usize] = Some("&gt;");
@@ -41,13 +41,13 @@ const fn make_escape_ascii() -> [Option<&'static str>; 128] {
     table
 }
 
-const ESCAPE_ASCII: [Option<&'static str>; 128] = make_escape_ascii();
+const ESCAPE_TABLE: [Option<&'static str>; 256] = make_escape_table();
 
 #[inline(always)]
 fn xml_special(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     let b = bytes[i];
-    if b < 128 {
-        ESCAPE_ASCII[b as usize].map(|esc| (1, esc))
+    if let Some(esc) = ESCAPE_TABLE[b as usize] {
+        Some((1, esc))
     } else if b == 0xEF
         && i + 2 < bytes.len()
         && bytes[i + 1] == 0xBF

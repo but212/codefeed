@@ -18,23 +18,35 @@ const FILE_BLOCK_SUFFIX: &str = "\n=============================================
 const NEWLINE: &str = "\n";
 const METADATA_SUFFIX: &str = "\n\n";
 
+const fn make_header_escape_table() -> [Option<&'static str>; 256] {
+    let mut table = [None; 256];
+    table[b'\\' as usize] = Some("\\\\");
+    table[b'\r' as usize] = Some("\\r");
+    table[b'\n' as usize] = Some("\\n");
+    table
+}
+
+const HEADER_ESCAPE_TABLE: [Option<&'static str>; 256] = make_header_escape_table();
+
 pub(crate) fn escape_header(value: &str) -> Cow<'_, str> {
-    if !value
-        .as_bytes()
+    let bytes = value.as_bytes();
+    if !bytes
         .iter()
-        .any(|&b| matches!(b, b'\\' | b'\r' | b'\n'))
+        .any(|&b| HEADER_ESCAPE_TABLE[b as usize].is_some())
     {
         return Cow::Borrowed(value);
     }
+
     let mut out = String::with_capacity(value.len() + 8);
-    for b in value.bytes() {
-        match b {
-            b'\\' => out.push_str("\\\\"),
-            b'\r' => out.push_str("\\r"),
-            b'\n' => out.push_str("\\n"),
-            _ => out.push(b as char),
+    let mut last = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        if let Some(escaped) = HEADER_ESCAPE_TABLE[b as usize] {
+            out.push_str(&value[last..i]);
+            out.push_str(escaped);
+            last = i + 1;
         }
     }
+    out.push_str(&value[last..]);
     Cow::Owned(out)
 }
 
