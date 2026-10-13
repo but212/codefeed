@@ -30,9 +30,13 @@ impl DigestFormat {
         W: std::io::Write + ?Sized,
         I: IntoIterator<Item = &'a FileRecord>,
     {
+        let mut ordered_files: Vec<(&str, &FileRecord)> =
+            files.into_iter().map(|f| (f.path.as_str(), f)).collect();
+        ordered_files.sort_unstable_by_key(|(path, _)| *path);
+
         match self {
-            Self::Text => text::render(writer, label, revision, files, skipped, trie),
-            Self::Xml => xml::render(writer, label, revision, files, trie),
+            Self::Text => text::render(writer, label, revision, &ordered_files, skipped, trie),
+            Self::Xml => xml::render(writer, label, revision, &ordered_files, trie),
         }
     }
 }

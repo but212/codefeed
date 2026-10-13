@@ -166,7 +166,7 @@ fn format_overflow_diagnostic(dir_counts: &HashMap<String, usize>) -> String {
 
 /// UTF-8 text predicate: NUL-free bytes only.
 pub fn text_content(bytes: Vec<u8>) -> Option<String> {
-    if memchr::memchr(0, &bytes).is_some() {
+    if bytes.contains(&0) {
         return None;
     }
     String::from_utf8(bytes).ok()

@@ -9,26 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Promoted `percent-encoding`, `memchr`, and `log` from `Cargo.lock` to explicit direct dependencies in `Cargo.toml`.
 - Unified token estimation state machine `TokenEstimator` in `src/core/digest/mod.rs`, shared by `estimate_tokens` and `BoundedEstimatingWriter`.
 - Encapsulated collection completion in `Selector::finish` in `src/core/decide.rs`, constructing `CollectionResult` directly.
-- Instrumented transient transport error and retryable HTTP status logging in `src/shell/github_client.rs` via `log::warn!`.
 
 ### Changed
 
-- Refactored `BudgetTrie` in `src/core/digest/trie.rs` into a contiguous flat node arena (`Vec<BudgetTrieNode>`) with indexed child tracking (`Vec<usize>`), eliminating recursive heap pointer chasing and improving CPU prefetching locality.
+- Refactored `BudgetTrie` in `src/core/digest/trie.rs` into a contiguous flat node arena (`Vec<BudgetTrieNode>`) with `u32` indexed child tracking (`Vec<u32>`) and `Box<str>` node labels, reducing arena memory footprint on 64-bit platforms and eliminating recursive heap pointer chasing.
 - Consolidated duplicated root and parent child insertion logic in `BudgetTrie::insert` into `get_or_insert_child`.
 - Streamlined relative path normalization in `src/shell/local.rs` using standard UTF-8 string conversion and slash replacement.
 - Extracted OS-dependent filename case comparison in `src/shell/output_exclusion.rs` into `names_match` helper.
-- Accelerated digest sorting in `src/core/digest/text.rs` and `src/core/digest/xml.rs` using key-projected `Vec<(&str, &FileRecord)>` sorting, removing double heap indirection in comparator loops.
-- Replaced manual 16-hex byte percent-encoding loop in `src/core/github_url.rs` with `percent_encoding::utf8_percent_encode`.
-- Accelerated `text_content` in `src/core/decide.rs` by checking NUL (`\0`) bytes via `memchr::memchr` before UTF-8 decoding.
-- Accelerated header escaping (`escape_header`) in `src/core/digest/text.rs` by scanning target escape bytes (`\`, `\r`, `\n`) via `memchr::memchr3`.
+- Centralized deterministic digest file sorting in `DigestFormat::render` (`src/core/digest/mod.rs`), passing key-projected `(&str, &FileRecord)` slices to `text::render` and `xml::render` to eliminate duplicate sorting and redundant allocations.
+- Replaced external crate `percent-encoding` in `src/core/github_url.rs` with a pure `std` RFC 3986 Unreserved validator and `%XX` hex encoder.
+- Replaced external crate `memchr` in `src/core/decide.rs` with `slice::contains(&0)` and in `src/core/digest/text.rs` with `std` pattern matching.
+- Replaced external crate `log` in `src/shell/github_client.rs` with `eprintln!` diagnostics.
 - Buffered streaming GitHub tarball HTTP response bodies through a 64 KiB `BufReader` in `src/shell/github_client.rs` before decompression.
 - Consolidated duplicated HTTP transport error and status retry logic in `src/shell/github_client.rs` into a unified helper.
 
 ### Removed
 
+- Removed external dependencies `percent-encoding`, `memchr`, and `log` from `Cargo.toml`.
 - Removed redundant batch candidate pre-verification `CandidateBudget::verify_count` in `src/core/decide.rs` and `src/shell/local.rs` in favor of single-pass streaming budget enforcement in `Selector::decide`.
 - Removed `Selector::into_parts` across `src/core/decide.rs`, shell collectors, and benchmarks in favor of `Selector::finish`.
 

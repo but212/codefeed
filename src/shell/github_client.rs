@@ -68,8 +68,8 @@ impl GithubClient {
              -> std::time::Duration {
                 *attempt += 1;
                 let delay = retry_delay(*attempt - 1, current_entropy());
-                log::warn!(
-                    "{reason} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
+                eprintln!(
+                    "warning: {reason} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
                 );
                 std::thread::sleep(delay);
                 delay

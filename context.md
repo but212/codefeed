@@ -40,7 +40,7 @@ imperative-shell boundary.
 - Heuristic token estimation runs via state machine `TokenEstimator`, exposed through pure function `estimate_tokens(&str)` and `BoundedEstimatingWriter`, reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
 - Plain text serialization (`--format text`) preserves all valid UTF-8 file content verbatim (rejecting only NUL bytes) to maintain raw fidelity for LLM prompts; headers and paths are escaped, but file bodies are unmutated (viewing raw digests in interactive terminals may affect emulator state if files contain ANSI escape codes).
 - XML serialization (`--format xml`) structures output into `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`) and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`.
-- File-path ordering is strictly lexicographical and owned solely by `render_digest_to_writer` / `render_digest`, sorted via key-projected `(&str, &FileRecord)` slices to eliminate double heap indirection. Format rendering consumes `IntoIterator<Item = &FileRecord>` to support streaming and arbitrary iteration pipelines while preserving deterministic path sorting.
+- File-path ordering is strictly lexicographical and owned solely by `DigestFormat::render`, sorted once into key-projected `(&str, &FileRecord)` slices to eliminate double heap indirection. Format sub-renderers (`text::render`, `xml::render`) consume the ordered slice directly without re-sorting or re-allocating.
 - Local digest headers use root directory basename (`Repository: <basename>`), omitting absolute paths and system prefixes.
 
 ### I/O & Output Target Contracts
@@ -55,7 +55,7 @@ imperative-shell boundary.
   2. Bounded, containment-checked file reads via `local_io::read_local_file` (`openat2(RESOLVE_BENEATH)` / non-blocking Win32 handles) feed observations into `Selector`.
 - Digest cap (`MAX_OUTPUT_SIZE`) is strictly enforced on bytes actually written to the output stream via `BoundedEstimatingWriter`, preventing framing/metadata overflow.
 - Token count is estimated on the same writer stream pass over rendered bytes.
-- `BudgetTrie` stores nodes in a flat continuous arena (`Vec<BudgetTrieNode>`) with indexed child tracking (`Vec<usize>`); insertion uses iterative descent with fast-path sibling comparison (`find_child_idx`), avoiding stack exhaustion and recursive heap pointer chasing.
+- `BudgetTrie` stores nodes in a flat continuous arena (`Vec<BudgetTrieNode>`) with indexed child tracking (`Vec<u32>`) and compact `Box<str>` labels; insertion uses iterative descent with fast-path sibling comparison (`find_child_idx`), avoiding stack exhaustion and recursive heap pointer chasing.
 - CLI arguments are parsed linearly into options and source without third-party dependencies, supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters.
 - Candidate budget uses `HashMap` with `extract_dir_slice`, formatting overflow diagnostics from observed candidates at termination sorted deterministically by count descending then directory ascending.
 - Digest budget is error-terminal: limit breach immediately errors and aborts without internal transactional rollback.
@@ -93,11 +93,11 @@ never depends on shell code; shell code depends on the core in one direction.
   - `model.rs`: domain value types (`Source`, `FileRecord`, `CollectionResult`,
     `IngestReport`, `RunConfig`, `Options`, `OutputTarget`, `DigestFormat`).
   - `error.rs`: domain error enum `IngestError` with structured diagnostic payload.
-  - `decide.rs`: `Selector::decide`, `Selector::finish`, `CandidateBudget`, item evaluation via `memchr`, and
+  - `decide.rs`: `Selector::decide`, `Selector::finish`, `CandidateBudget`, item evaluation via `slice::contains`, and
     candidate overflow diagnostics.
   - `digest/`: `DigestBudget`, size check, deterministic
     digest rendering (`render_digest_to_writer`), format implementations (`text.rs`, `xml.rs`), trie representation (`trie.rs`), and token estimation (`TokenEstimator`, `estimate_tokens`).
-  - `github_url.rs`: URL construction via `percent-encoding` and origin credential scoping.
+  - `github_url.rs`: Pure `std` URL construction with RFC 3986 percent-encoding and origin credential scoping.
   - `archive.rs`: Pax header comment extraction and archive root stripping.
 - Imperative shell (`src/shell/`):
   - `shell/cli.rs`: Pure CLI argument parsing, help detection, and `CliAction` generation.

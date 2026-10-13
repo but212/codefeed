@@ -67,9 +67,6 @@ version = "0.2.2"
 dependencies = [
  "flate2",
  "ignore",
- "log",
- "memchr",
- "percent-encoding",
  "rustix",
  "tar",
  "ureq",

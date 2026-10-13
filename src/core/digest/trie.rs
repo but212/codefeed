@@ -13,20 +13,20 @@ const TREE_SPACE: &str = "    ";
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BudgetTrieNode {
-    pub(crate) name: String,
-    pub(crate) display: Option<String>,
+    pub(crate) name: Box<str>,
+    pub(crate) display: Option<Box<str>>,
     pub(crate) is_dir: bool,
-    pub(crate) children: Vec<usize>,
+    pub(crate) children: Vec<u32>,
 }
 
 impl BudgetTrieNode {
     pub(crate) fn new(part: &str, is_dir: bool, escape_xml: bool) -> Self {
         let display = match tree_display(part, escape_xml) {
             Cow::Borrowed(_) => None,
-            Cow::Owned(s) => Some(s),
+            Cow::Owned(s) => Some(s.into_boxed_str()),
         };
         Self {
-            name: part.to_string(),
+            name: part.into(),
             display,
             is_dir,
             children: Vec::new(),
@@ -43,7 +43,7 @@ impl BudgetTrieNode {
 pub struct BudgetTrie {
     pub(crate) escape_xml: bool,
     pub(crate) nodes: Vec<BudgetTrieNode>,
-    pub(crate) root_children: Vec<usize>,
+    pub(crate) root_children: Vec<u32>,
 }
 
 fn tree_display<'a>(name: &'a str, escape_xml: bool) -> Cow<'a, str> {
@@ -60,28 +60,21 @@ fn tree_display<'a>(name: &'a str, escape_xml: bool) -> Cow<'a, str> {
 
 fn find_child_idx(
     nodes: &[BudgetTrieNode],
-    children: &[usize],
+    children: &[u32],
     part: &str,
     is_dir: bool,
 ) -> Result<usize, usize> {
     let Some(&last_idx) = children.last() else {
         return Err(0);
     };
-    let last = &nodes[last_idx];
-    let ord = last
-        .name
-        .as_str()
-        .cmp(part)
-        .then_with(|| last.is_dir.cmp(&is_dir));
+    let last = &nodes[last_idx as usize];
+    let ord = (*last.name).cmp(part).then_with(|| last.is_dir.cmp(&is_dir));
     match ord {
         std::cmp::Ordering::Equal => Ok(children.len() - 1),
         std::cmp::Ordering::Less => Err(children.len()),
         std::cmp::Ordering::Greater => children.binary_search_by(|&c_idx| {
-            let c = &nodes[c_idx];
-            c.name
-                .as_str()
-                .cmp(part)
-                .then_with(|| c.is_dir.cmp(&is_dir))
+            let c = &nodes[c_idx as usize];
+            (*c.name).cmp(part).then_with(|| c.is_dir.cmp(&is_dir))
         }),
     }
 }
@@ -97,7 +90,7 @@ impl BudgetTrie {
 
     pub fn insert(&mut self, path: &str) {
         let mut parts = path.split('/').filter(|s| !s.is_empty()).peekable();
-        let mut current_node_idx: Option<usize> = None;
+        let mut current_node_idx: Option<u32> = None;
 
         while let Some(part) = parts.next() {
             let is_dir = parts.peek().is_some();
@@ -113,15 +106,15 @@ impl BudgetTrie {
 
     fn get_or_insert_child(
         &mut self,
-        parent_idx: Option<usize>,
+        parent_idx: Option<u32>,
         part: &str,
         is_dir: bool,
-    ) -> usize {
+    ) -> u32 {
+        let new_node_idx = u32::try_from(self.nodes.len()).expect("trie node count exceeds u32::MAX");
         match parent_idx {
             None => match find_child_idx(&self.nodes, &self.root_children, part, is_dir) {
                 Ok(slot) => self.root_children[slot],
                 Err(insert_pos) => {
-                    let new_node_idx = self.nodes.len();
                     self.nodes
                         .push(BudgetTrieNode::new(part, is_dir, self.escape_xml));
                     self.root_children.insert(insert_pos, new_node_idx);
@@ -129,13 +122,12 @@ impl BudgetTrie {
                 }
             },
             Some(p_idx) => {
-                match find_child_idx(&self.nodes, &self.nodes[p_idx].children, part, is_dir) {
-                    Ok(slot) => self.nodes[p_idx].children[slot],
+                match find_child_idx(&self.nodes, &self.nodes[p_idx as usize].children, part, is_dir) {
+                    Ok(slot) => self.nodes[p_idx as usize].children[slot],
                     Err(insert_pos) => {
-                        let new_node_idx = self.nodes.len();
                         self.nodes
                             .push(BudgetTrieNode::new(part, is_dir, self.escape_xml));
-                        self.nodes[p_idx].children.insert(insert_pos, new_node_idx);
+                        self.nodes[p_idx as usize].children.insert(insert_pos, new_node_idx);
                         new_node_idx
                     }
                 }
@@ -151,13 +143,13 @@ impl BudgetTrie {
     fn render_node_indices<W: Write + ?Sized>(
         &self,
         writer: &mut W,
-        child_indices: &[usize],
+        child_indices: &[u32],
         prefix: &mut String,
     ) -> std::io::Result<()> {
         let total = child_indices.len();
         for (idx, &node_idx) in child_indices.iter().enumerate() {
             let is_last = idx + 1 == total;
-            let node = &self.nodes[node_idx];
+            let node = &self.nodes[node_idx as usize];
 
             writer.write_all(prefix.as_bytes())?;
             if is_last {
@@ -250,16 +242,16 @@ pub(crate) mod tests {
         let mut trie = BudgetTrie::new(false);
         trie.insert("clean/dir/file.rs");
         let clean_dir_idx = trie.root_children[0];
-        let clean_dir = &trie.nodes[clean_dir_idx];
-        assert_eq!(clean_dir.name, "clean");
+        let clean_dir = &trie.nodes[clean_dir_idx as usize];
+        assert_eq!(&*clean_dir.name, "clean");
         assert!(clean_dir.display.is_none());
         assert_eq!(clean_dir.display(), "clean");
 
         let mut trie_esc = BudgetTrie::new(true);
         trie_esc.insert("a & b/c.rs");
         let esc_dir_idx = trie_esc.root_children[0];
-        let esc_dir = &trie_esc.nodes[esc_dir_idx];
-        assert_eq!(esc_dir.name, "a & b");
+        let esc_dir = &trie_esc.nodes[esc_dir_idx as usize];
+        assert_eq!(&*esc_dir.name, "a & b");
         assert_eq!(esc_dir.display.as_deref(), Some("a &amp; b"));
         assert_eq!(esc_dir.display(), "a &amp; b");
     }
@@ -270,11 +262,11 @@ pub(crate) mod tests {
         trie.insert("src/lib.rs");
         assert_eq!(trie.nodes.len(), 2);
         assert_eq!(trie.root_children, vec![0]);
-        assert_eq!(trie.nodes[0].name, "src");
+        assert_eq!(&*trie.nodes[0].name, "src");
         assert!(trie.nodes[0].is_dir);
         assert_eq!(trie.nodes[0].children, vec![1]);
 
-        assert_eq!(trie.nodes[1].name, "lib.rs");
+        assert_eq!(&*trie.nodes[1].name, "lib.rs");
         assert!(!trie.nodes[1].is_dir);
         assert!(trie.nodes[1].children.is_empty());
     }

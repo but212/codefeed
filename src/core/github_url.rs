@@ -40,22 +40,39 @@ pub(crate) fn tarball_url(owner: &str, repo: &str, reference: Option<&str>) -> S
     url
 }
 
-const UNRESERVED: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
-    .remove(b'-')
-    .remove(b'.')
-    .remove(b'_')
-    .remove(b'~');
+#[inline]
+const fn is_unreserved(b: u8) -> bool {
+    matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~')
+}
 
 fn push_encoded_segment(url: &mut String, segment: &str) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
     url.push('/');
-    for chunk in percent_encoding::utf8_percent_encode(segment, UNRESERVED) {
-        url.push_str(chunk);
+    for &b in segment.as_bytes() {
+        if is_unreserved(b) {
+            url.push(b as char);
+        } else {
+            url.push('%');
+            url.push(HEX[(b >> 4) as usize] as char);
+            url.push(HEX[(b & 0xF) as usize] as char);
+        }
     }
 }
 
 #[cfg(test)]
 fn encode_path_segment(segment: &str) -> String {
-    percent_encoding::utf8_percent_encode(segment, UNRESERVED).to_string()
+    let mut out = String::with_capacity(segment.len());
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for &b in segment.as_bytes() {
+        if is_unreserved(b) {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0xF) as usize] as char);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
