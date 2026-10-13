@@ -59,17 +59,16 @@ fn open_local_file(root: &Path, path: &Path) -> io::Result<Option<fs::File>> {
 
     #[cfg(target_os = "linux")]
     {
-        use rustix::fs::{OpenHow, ResolveFlags};
+        use rustix::fs::ResolveFlags;
 
         static OPENAT2_UNAVAILABLE: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
 
         if !OPENAT2_UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed) {
-            let mut how = OpenHow::new();
-            how.flags(OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK);
-            how.resolve(ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS);
+            let oflags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
+            let resolve = ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS;
 
-            match rustix::fs::openat2(&directory, relative, how) {
+            match rustix::fs::openat2(&directory, relative, oflags, Mode::empty(), resolve) {
                 Ok(opened) => return Ok(Some(fs::File::from(opened))),
                 Err(err) => {
                     let io_err = io::Error::from(err);
