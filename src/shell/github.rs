@@ -12,42 +12,7 @@ use crate::core::model::{CollectionResult, DigestFormat};
 use crate::core::policy::{MAX_FILE_SIZE, PathClassification};
 
 use super::github_client::GithubClient;
-
-pub struct GitHubCollector {
-    pub owner: String,
-    pub repo: String,
-    pub reference: Option<String>,
-    pub format: DigestFormat,
-}
-
-impl GitHubCollector {
-    pub fn new(
-        owner: String,
-        repo: String,
-        reference: Option<String>,
-        format: DigestFormat,
-    ) -> Self {
-        Self {
-            owner,
-            repo,
-            reference,
-            format,
-        }
-    }
-}
-
-impl super::collector::Collector for GitHubCollector {
-    fn collect(&self) -> Result<CollectionResult, IngestError> {
-        collect_github(
-            &self.owner,
-            &self.repo,
-            self.reference.as_deref(),
-            self.format,
-        )
-    }
-}
-
-pub(crate) fn collect_github(
+pub fn collect_github(
     owner: &str,
     repo: &str,
     reference: Option<&str>,
@@ -76,7 +41,7 @@ pub(crate) fn collect_from_archive<R: Read>(
 
     let label = format!("https://github.com/{owner}/{repo}");
     let mut parsed_revision: Option<String> = None;
-    let mut selector: Option<Selector> = None;
+    let mut selector = Selector::new(format);
 
     let entries = archive.entries().map_err(IngestError::Io)?;
 
@@ -84,7 +49,7 @@ pub(crate) fn collect_from_archive<R: Read>(
         let mut entry = entry_res.map_err(IngestError::Io)?;
         match probe_tar_entry(&mut entry)? {
             ArchiveEntryOutcome::PaxHeader(sha) => {
-                if selector.is_some() {
+                if !selector.is_empty() {
                     return Err(IngestError::InvalidMetadata(
                         "pax header after archive entries".into(),
                     ));
@@ -92,26 +57,13 @@ pub(crate) fn collect_from_archive<R: Read>(
                 parsed_revision = Some(sha);
             }
             ArchiveEntryOutcome::Item(item) => {
-                let sel = match &mut selector {
-                    Some(s) => s,
-                    None => {
-                        let rev = parsed_revision.as_deref().or(reference);
-                        selector = Some(Selector::new(&label, rev, format)?);
-                        selector.as_mut().expect("selector initialized")
-                    }
-                };
-                sel.decide(item)?;
+                selector.decide(item)?;
             }
             ArchiveEntryOutcome::Ignored => {}
         }
     }
 
     let final_revision = parsed_revision.or_else(|| reference.map(str::to_string));
-    let selector = match selector {
-        Some(sel) => sel,
-        None => Selector::new(&label, final_revision.as_deref(), format)?,
-    };
-
     let (files, skipped, trie, format) = selector.into_parts();
     Ok(CollectionResult {
         label,

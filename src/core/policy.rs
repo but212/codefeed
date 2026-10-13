@@ -6,8 +6,6 @@ pub const MAX_FILE_SIZE: u64 = 1024 * 1024;
 pub const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
 /// Maximum candidate files evaluated before candidate budget overflows (10,000 files).
 pub const MAX_FILE_COUNT: usize = 10_000;
-/// Number of concurrent local file reader threads in a batch.
-pub const FETCH_WINDOW: usize = 16;
 /// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
 pub const ARCHIVE_MAX_SECS: u64 = 300;
 

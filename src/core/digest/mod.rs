@@ -1,9 +1,7 @@
 mod text;
-mod token;
 mod trie;
 mod xml;
 
-pub use token::TokenEstimatingWriter;
 pub use trie::BudgetTrie;
 pub use xml::{escaped_metrics, write_xml_escaped, xml_escape};
 
@@ -11,71 +9,12 @@ use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
 use crate::core::policy::MAX_OUTPUT_SIZE;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct FormatFrameMetrics {
-    pub(crate) fixed_frame: u64,
-    pub(crate) revision_overhead: u64,
-    pub(crate) per_file: u64,
-}
-
-impl FormatFrameMetrics {
-    pub(crate) const TEXT: Self = text::FRAME_METRICS;
-    pub(crate) const XML: Self = xml::FRAME_METRICS;
-}
-
 impl DigestFormat {
-    pub(crate) fn escape_label_or_revision<'a>(self, text: &'a str) -> std::borrow::Cow<'a, str> {
-        match self {
-            Self::Text => text::escape_header(text),
-            Self::Xml => xml::xml_escape(text),
-        }
-    }
-
     pub(crate) const fn escape_tree_xml(self) -> bool {
         match self {
             Self::Text => false,
             Self::Xml => true,
         }
-    }
-
-    pub(crate) fn calculate_file_bytes(
-        self,
-        file: &FileRecord,
-    ) -> Result<(u64, u64, u64), IngestError> {
-        match self {
-            Self::Text => text::calculate_file_bytes(file),
-            Self::Xml => xml::calculate_file_bytes(file),
-        }
-    }
-
-    pub(crate) const fn frame_metrics(self) -> FormatFrameMetrics {
-        match self {
-            Self::Text => FormatFrameMetrics::TEXT,
-            Self::Xml => FormatFrameMetrics::XML,
-        }
-    }
-
-    pub(crate) fn extra_metadata_bytes(self, budget: &DigestBudget) -> Option<u64> {
-        match self {
-            Self::Text => text::extra_metadata_bytes(budget.content.file_count, budget.skipped),
-            Self::Xml => Some(0),
-        }
-    }
-
-    pub(crate) fn rendered_base_size(self, budget: &DigestBudget) -> Option<u64> {
-        let metrics = self.frame_metrics();
-        let count = u64::try_from(budget.content.file_count).ok()?;
-        let mut size = metrics.fixed_frame;
-        size = size.checked_add(budget.label_bytes)?;
-        if let Some(rev) = budget.revision_bytes {
-            size = size.checked_add(metrics.revision_overhead)?;
-            size = size.checked_add(rev)?;
-        }
-        size = size.checked_add(self.extra_metadata_bytes(budget)?)?;
-        size = size.checked_add(count.checked_mul(metrics.per_file)?)?;
-        size = size.checked_add(budget.content.path_bytes)?;
-        size = size.checked_add(budget.content.content_bytes)?;
-        size.checked_add(budget.content.trailing_bytes)
     }
 
     pub(crate) fn render<'a, W, I>(
@@ -98,142 +37,44 @@ impl DigestFormat {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ContentMetrics {
-    pub(crate) file_count: usize,
-    pub(crate) path_bytes: u64,
-    pub(crate) content_bytes: u64,
-    pub(crate) trailing_bytes: u64,
-}
-
-impl ContentMetrics {
-    pub(crate) fn checked_add_file(
-        &self,
-        path_b: u64,
-        content_b: u64,
-        trailing_b: u64,
-    ) -> Result<Self, IngestError> {
-        let file_count = self
-            .file_count
-            .checked_add(1)
-            .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
-
-        let path_bytes =
-            self.path_bytes
-                .checked_add(path_b)
-                .ok_or_else(|| IngestError::OutputTooLarge {
-                    largest_files: Vec::new(),
-                })?;
-
-        let content_bytes = self.content_bytes.checked_add(content_b).ok_or_else(|| {
-            IngestError::OutputTooLarge {
-                largest_files: Vec::new(),
-            }
-        })?;
-
-        let trailing_bytes = self.trailing_bytes.checked_add(trailing_b).ok_or_else(|| {
-            IngestError::OutputTooLarge {
-                largest_files: Vec::new(),
-            }
-        })?;
-
-        Ok(Self {
-            file_count,
-            path_bytes,
-            content_bytes,
-            trailing_bytes,
-        })
-    }
-}
-
-/// Accounting budget for digest size. Once any operation returns an `Err`,
-/// the budget enters a terminal error state and must not be used further.
+/// Accounting budget for digest size.
 #[derive(Debug, Clone)]
 pub(crate) struct DigestBudget {
     pub(crate) format: DigestFormat,
-    pub(crate) label_bytes: u64,
-    pub(crate) revision_bytes: Option<u64>,
-    pub(crate) content: ContentMetrics,
+    pub(crate) content_bytes: u64,
     pub(crate) skipped: usize,
     pub(crate) trie: BudgetTrie,
 }
 
 impl DigestBudget {
-    pub(crate) fn new(
-        label: &str,
-        revision: Option<&str>,
-        format: DigestFormat,
-    ) -> Result<Self, IngestError> {
-        let label_bytes = byte_count(&format.escape_label_or_revision(label))?;
-        let revision_bytes = revision
-            .map(|value| byte_count(&format.escape_label_or_revision(value)))
-            .transpose()?;
-
-        Ok(Self {
+    pub(crate) fn new(format: DigestFormat) -> Self {
+        Self {
             format,
-            label_bytes,
-            revision_bytes,
-            content: ContentMetrics::default(),
+            content_bytes: 0,
             skipped: 0,
             trie: BudgetTrie::new(format.escape_tree_xml()),
-        })
+        }
     }
 
     pub(crate) fn add(&mut self, file: &FileRecord) -> Result<(), IngestError> {
-        let (path_b, content_b, trailing_b) = self.format.calculate_file_bytes(file)?;
-        let new_content = self
-            .content
-            .checked_add_file(path_b, content_b, trailing_b)?;
-
-        self.trie.insert(&file.path);
-        self.content = new_content;
-
-        self.ensure_fits()?;
-
-        Ok(())
-    }
-
-    pub(crate) fn skip(&mut self) -> Result<(), IngestError> {
-        self.skipped = self
-            .skipped
-            .checked_add(1)
-            .ok_or_else(|| IngestError::InvalidMetadata("skipped file count overflow".into()))?;
-        self.ensure_fits()
-    }
-
-    pub(crate) fn skipped(&self) -> usize {
-        self.skipped
-    }
-
-    fn ensure_fits(&self) -> Result<(), IngestError> {
-        let base_size = self
-            .rendered_base_size()
-            .ok_or_else(|| IngestError::OutputTooLarge {
-                largest_files: Vec::new(),
-            })?;
-        let conservative_tree_upper = self.trie.upper_bound_bytes;
-        if base_size.saturating_add(conservative_tree_upper) <= MAX_OUTPUT_SIZE {
-            return Ok(());
-        }
-
-        if self
-            .rendered_size()
-            .is_none_or(|size| size > MAX_OUTPUT_SIZE)
-        {
+        let file_bytes = (file.path.len() + file.content.len()) as u64;
+        let new_total = self.content_bytes.saturating_add(file_bytes);
+        if new_total > MAX_OUTPUT_SIZE {
             return Err(IngestError::OutputTooLarge {
                 largest_files: Vec::new(),
             });
         }
+        self.trie.insert(&file.path);
+        self.content_bytes = new_total;
         Ok(())
     }
 
-    fn rendered_base_size(&self) -> Option<u64> {
-        self.format.rendered_base_size(self)
+    pub(crate) fn skip(&mut self) {
+        self.skipped = self.skipped.saturating_add(1);
     }
 
-    fn rendered_size(&self) -> Option<u64> {
-        let base = self.rendered_base_size()?;
-        base.checked_add(self.trie.calculate_size())
+    pub(crate) fn skipped(&self) -> usize {
+        self.skipped
     }
 }
 
@@ -263,26 +104,192 @@ pub(crate) fn largest_files<'a>(
         .collect()
 }
 
-pub(crate) fn byte_count(value: &str) -> Result<u64, IngestError> {
-    u64::try_from(value.len()).map_err(|_| IngestError::OutputTooLarge {
-        largest_files: Vec::new(),
-    })
+pub fn estimate_tokens(text: &str) -> usize {
+    let mut tokens = 0;
+    let mut in_word = false;
+    let mut word_len = 0;
+
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            in_word = true;
+            word_len += 1;
+            if word_len >= 4 {
+                tokens += 1;
+                word_len = 0;
+            }
+        } else {
+            if std::mem::take(&mut in_word) {
+                tokens += 1;
+                word_len = 0;
+            }
+            if !ch.is_ascii_whitespace() {
+                if ch.is_ascii() {
+                    tokens += 1;
+                } else {
+                    tokens += 2;
+                }
+            } else if ch == '\n' {
+                tokens += 1;
+            }
+        }
+    }
+    if in_word {
+        tokens += 1;
+    }
+    if tokens == 0 && text.is_empty() {
+        0
+    } else {
+        tokens.max(1)
+    }
+}
+
+struct BoundedEstimatingWriter<'a, W: std::io::Write + ?Sized> {
+    inner: &'a mut W,
+    written: u64,
+    tokens: usize,
+    in_word: bool,
+    word_len: usize,
+    pending: [u8; 4],
+    pending_len: usize,
+    overflowed: bool,
+}
+
+impl<'a, W: std::io::Write + ?Sized> BoundedEstimatingWriter<'a, W> {
+    fn new(inner: &'a mut W) -> Self {
+        Self {
+            inner,
+            written: 0,
+            tokens: 0,
+            in_word: false,
+            word_len: 0,
+            pending: [0; 4],
+            pending_len: 0,
+            overflowed: false,
+        }
+    }
+
+    fn finish(mut self) -> usize {
+        if self.pending_len > 0 {
+            self.tokens += 2;
+        }
+        if self.tokens == 0 && !self.in_word {
+            return 0;
+        }
+        if self.in_word {
+            self.tokens += 1;
+        }
+        self.tokens.max(1)
+    }
+
+    fn process_char(&mut self, ch: char) {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            self.in_word = true;
+            self.word_len += 1;
+            if self.word_len >= 4 {
+                self.tokens += 1;
+                self.word_len = 0;
+            }
+        } else {
+            if std::mem::take(&mut self.in_word) {
+                self.tokens += 1;
+                self.word_len = 0;
+            }
+            if !ch.is_ascii_whitespace() {
+                if ch.is_ascii() {
+                    self.tokens += 1;
+                } else {
+                    self.tokens += 2;
+                }
+            } else if ch == '\n' {
+                self.tokens += 1;
+            }
+        }
+    }
+}
+
+impl<W: std::io::Write + ?Sized> std::io::Write for BoundedEstimatingWriter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let new_written = self.written.saturating_add(buf.len() as u64);
+        if new_written > MAX_OUTPUT_SIZE {
+            self.overflowed = true;
+            return Err(std::io::Error::other("output size limit exceeded"));
+        }
+
+        self.inner.write_all(buf)?;
+        self.written = new_written;
+
+        let mut input = buf;
+        if self.pending_len > 0 {
+            while !input.is_empty() && self.pending_len < 4 {
+                self.pending[self.pending_len] = input[0];
+                self.pending_len += 1;
+                input = &input[1..];
+                if let Ok(s) = std::str::from_utf8(&self.pending[..self.pending_len]) {
+                    let ch = s.chars().next().expect("valid utf8 has at least one char");
+                    self.pending_len = 0;
+                    self.process_char(ch);
+                    break;
+                }
+            }
+        }
+
+        if !input.is_empty() {
+            match std::str::from_utf8(input) {
+                Ok(text) => {
+                    for ch in text.chars() {
+                        self.process_char(ch);
+                    }
+                }
+                Err(e) => {
+                    let valid_len = e.valid_up_to();
+                    if valid_len > 0 {
+                        let valid_str = match std::str::from_utf8(&input[..valid_len]) {
+                            Ok(s) => s,
+                            Err(_) => unreachable!(),
+                        };
+                        for ch in valid_str.chars() {
+                            self.process_char(ch);
+                        }
+                    }
+                    if e.error_len().is_none() {
+                        let remaining = &input[valid_len..];
+                        self.pending[..remaining.len()].copy_from_slice(remaining);
+                        self.pending_len = remaining.len();
+                    }
+                }
+            }
+        }
+
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 pub fn render_digest_to_writer<W: std::io::Write + ?Sized>(
     writer: &mut W,
     collection: &CollectionResult,
 ) -> Result<usize, IngestError> {
-    let mut estimator = TokenEstimatingWriter::new(writer);
-    collection.format.render(
-        &mut estimator,
+    let mut estimating_writer = BoundedEstimatingWriter::new(writer);
+    let render_res = collection.format.render(
+        &mut estimating_writer,
         &collection.label,
         collection.revision.as_deref(),
         &collection.files,
         collection.skipped,
         &collection.trie,
-    )?;
-    Ok(estimator.finish())
+    );
+
+    if estimating_writer.overflowed {
+        return Err(IngestError::OutputTooLarge {
+            largest_files: largest_files(&collection.files),
+        });
+    }
+
+    render_res?;
+    Ok(estimating_writer.finish())
 }
 
 #[cfg(test)]
@@ -291,24 +298,6 @@ mod tests {
     use crate::core::error::IngestError;
     use crate::core::model::FileRecord;
     use crate::core::policy::MAX_OUTPUT_SIZE;
-
-    #[test]
-    fn format_frame_metrics_and_flags_evaluate_in_const() {
-        const {
-            assert!(!DigestFormat::Text.escape_tree_xml());
-            assert!(DigestFormat::Xml.escape_tree_xml());
-            assert!(DigestFormat::Text.frame_metrics().fixed_frame > 0);
-            assert!(DigestFormat::Xml.frame_metrics().fixed_frame > 0);
-            assert!(
-                FormatFrameMetrics::TEXT.fixed_frame
-                    == DigestFormat::Text.frame_metrics().fixed_frame
-            );
-            assert!(
-                FormatFrameMetrics::XML.fixed_frame
-                    == DigestFormat::Xml.frame_metrics().fixed_frame
-            );
-        }
-    }
 
     fn test_trie(files: &[FileRecord], escape_xml: bool) -> BudgetTrie {
         let mut trie = BudgetTrie::new(escape_xml);
@@ -457,43 +446,38 @@ hello\n\
     }
 
     #[test]
-    fn digest_budget_matches_rendered_size() -> Result<(), Box<dyn std::error::Error>> {
-        let files = vec![
-            FileRecord {
-                path: "z.txt".into(),
-                content: "z\n".into(),
-            },
-            FileRecord {
-                path: "a.txt".into(),
-                content: "a".into(),
-            },
-        ];
-        for revision in ["abc", "feature\\x\r\nFiles: 9"] {
-            let mut budget = DigestBudget::new("repo", Some(revision), DigestFormat::Text)?;
-            for file in &files {
-                budget.add(file)?;
-            }
-            budget.skip()?;
-            let rendered = render_digest("repo", Some(revision), &files, budget.skipped())?;
-
-            assert_eq!(
-                budget.rendered_size(),
-                Some(rendered.len() as u64),
-                "revision: {revision:?}"
-            );
+    fn rejects_digest_before_storing_over_budget_content() {
+        let candidate = FileRecord {
+            path: "large.txt".into(),
+            content: "x".repeat(MAX_OUTPUT_SIZE as usize + 1),
+        };
+        let mut budget = DigestBudget::new(DigestFormat::Text);
+        match budget.add(&candidate) {
+            Err(IngestError::OutputTooLarge { .. }) => {}
+            other => panic!("expected OutputTooLarge, got {other:?}"),
         }
-        Ok(())
     }
 
     #[test]
-    fn rejects_digest_before_storing_over_budget_content() {
+    fn render_digest_to_writer_enforces_output_size_cap() {
         let candidate = FileRecord {
             path: "large.txt".into(),
             content: "x".repeat(MAX_OUTPUT_SIZE as usize),
         };
-        let mut budget = DigestBudget::new("repo", None, DigestFormat::Text).unwrap();
-        match budget.add(&candidate) {
-            Err(IngestError::OutputTooLarge { .. }) => {}
+        let collection = CollectionResult {
+            label: "repo".into(),
+            revision: None,
+            files: vec![candidate],
+            skipped: 0,
+            trie: BudgetTrie::new(false),
+            format: DigestFormat::Text,
+        };
+        let mut sink = Vec::new();
+        match render_digest_to_writer(&mut sink, &collection) {
+            Err(IngestError::OutputTooLarge { largest_files }) => {
+                assert_eq!(largest_files.len(), 1);
+                assert_eq!(largest_files[0].0, "large.txt");
+            }
             other => panic!("expected OutputTooLarge, got {other:?}"),
         }
     }
@@ -542,74 +526,6 @@ z &lt; 10
     }
 
     #[test]
-    fn xml_budget_matches_rendered_size() -> Result<(), Box<dyn std::error::Error>> {
-        let files = vec![
-            FileRecord {
-                path: "z.txt".into(),
-                content: "z & 1\n".into(),
-            },
-            FileRecord {
-                path: "a.txt".into(),
-                content: "a < 2".into(),
-            },
-        ];
-        for revision in [None, Some("v1.0")] {
-            let mut budget = DigestBudget::new("repo", revision, DigestFormat::Xml)?;
-            for file in &files {
-                budget.add(file)?;
-            }
-            let collection = CollectionResult {
-                label: "repo".into(),
-                revision: revision.map(str::to_string),
-                files: files.clone(),
-                skipped: 0,
-                trie: budget.trie.clone(),
-                format: DigestFormat::Xml,
-            };
-            let mut out = Vec::new();
-            render_digest_to_writer(&mut out, &collection)?;
-            assert_eq!(budget.rendered_size(), Some(out.len() as u64));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn skip_enforces_budget_limit_on_digit_growth() {
-        let mut budget = DigestBudget::new("repo", None, DigestFormat::Text).unwrap();
-        for _ in 0..9 {
-            budget.skip().unwrap();
-        }
-        budget
-            .add(&FileRecord {
-                path: "a.txt".into(),
-                content: "a\n".into(),
-            })
-            .unwrap();
-        let current = budget.rendered_size().unwrap();
-        budget.content.content_bytes += MAX_OUTPUT_SIZE - current;
-        assert_eq!(budget.rendered_size(), Some(MAX_OUTPUT_SIZE));
-
-        assert!(budget.skip().is_err());
-    }
-
-    #[test]
-    fn deep_tree_enforces_output_size_limit() {
-        let deep_path = trie::tests::deep_test_path(1800);
-
-        let mut budget = DigestBudget::new("repo", None, DigestFormat::Text).unwrap();
-        let large_content_len = (MAX_OUTPUT_SIZE - 2 * 1024 * 1024) as usize;
-        let file = FileRecord {
-            path: deep_path,
-            content: "a".repeat(large_content_len),
-        };
-        let result = budget.add(&file);
-        assert!(
-            matches!(result, Err(IngestError::OutputTooLarge { .. })),
-            "Expected OutputTooLarge due to actual tree size exceeding budget, got {result:?}"
-        );
-    }
-
-    #[test]
     fn control_character_policy_preserves_raw_text_and_sanitizes_xml()
     -> Result<(), Box<dyn std::error::Error>> {
         let raw_ansi = "\x1b[31mRed Alert\x1b[0m\tTabbed\r\nNewline";
@@ -618,14 +534,12 @@ z &lt; 10
             content: raw_ansi.into(),
         }];
 
-        // 1. Plain text format preserves all UTF-8 bytes verbatim for LLM fidelity
         let text_rendered = render_digest("repo", None, &files, 0)?;
         assert!(
             text_rendered.contains(raw_ansi),
             "Text format must preserve raw ANSI/control characters for LLM fidelity"
         );
 
-        // 2. XML format sanitizes disallowed XML 1.0 control characters (e.g. \x1b -> \u{FFFD})
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,
@@ -691,25 +605,12 @@ z &lt; 10
     }
 
     #[test]
-    fn content_metrics_checked_add_file_accumulates_and_detects_overflow() {
-        let metrics = ContentMetrics::default();
-        let next = metrics.checked_add_file(10, 100, 1).unwrap();
-        assert_eq!(
-            next,
-            ContentMetrics {
-                file_count: 1,
-                path_bytes: 10,
-                content_bytes: 100,
-                trailing_bytes: 1,
-            }
-        );
-
-        let max_content = ContentMetrics {
-            file_count: 1,
-            path_bytes: 0,
-            content_bytes: u64::MAX,
-            trailing_bytes: 0,
-        };
-        assert!(max_content.checked_add_file(0, 1, 0).is_err());
+    fn test_estimate_tokens_counts() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("hello"), 2);
+        assert!(estimate_tokens("let mut x = 123;") >= 4);
+        assert!(estimate_tokens("fn main() {\n    println!(\"Hello, world!\");\n}\n") >= 8);
+        assert!(estimate_tokens("한글 텍스트 테스트") >= 4);
+        assert!(estimate_tokens("word1 word2...word3\nword4") >= 5);
     }
 }

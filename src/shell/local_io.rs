@@ -1,16 +1,17 @@
 //! Safe local file acquisition: never follows symlinks, never blocks on
 //! special files.
 
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
+
+#[cfg(any(windows, not(any(unix, windows))))]
+use std::fs::OpenOptions;
 
 #[cfg(unix)]
 use rustix::fs::{Mode, OFlags};
 #[cfg(unix)]
 use std::os::fd::OwnedFd;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 
@@ -123,10 +124,12 @@ fn open_local_file_components(mut directory: OwnedFd, relative: &Path) -> io::Re
 
 #[cfg(unix)]
 fn open_directory(path: &Path) -> io::Result<OwnedFd> {
-    let mut options = OpenOptions::new();
-    let flags = (OFlags::CLOEXEC | OFlags::DIRECTORY | OFlags::NOFOLLOW).bits() as i32;
-    options.read(true).custom_flags(flags);
-    Ok(options.open(path)?.into())
+    rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(io::Error::from)
 }
 
 #[cfg(windows)]

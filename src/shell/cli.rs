@@ -145,7 +145,7 @@ where
 
     if parsed_reference
         .as_ref()
-        .is_some_and(|r| r.trim().is_empty())
+        .is_some_and(|r| r.trim_ascii().is_empty())
     {
         return Err(IngestError::InvalidSource("--ref cannot be empty".into()));
     }

@@ -4,41 +4,19 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use ignore::{WalkBuilder, WalkState};
+use ignore::WalkBuilder;
 
 use super::local_io::read_local_file;
 use super::output_exclusion::OutputFilter;
 use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
-use crate::core::policy::PathClassification;
+use crate::core::policy::{MAX_FILE_COUNT, PathClassification};
 
 struct LocalCandidate {
     path: PathBuf,
     item_path: ItemPath,
     probe: Option<Probe>,
-}
-
-pub struct LocalCollector {
-    pub root: PathBuf,
-    pub output: OutputTarget,
-    pub format: DigestFormat,
-}
-
-impl LocalCollector {
-    pub fn new(root: PathBuf, output: OutputTarget, format: DigestFormat) -> Self {
-        Self {
-            root,
-            output,
-            format,
-        }
-    }
-}
-
-impl super::collector::Collector for LocalCollector {
-    fn collect(&self) -> Result<CollectionResult, IngestError> {
-        collect_local(&self.root, &self.output, self.format)
-    }
 }
 
 pub fn collect_local(
@@ -53,24 +31,17 @@ pub fn collect_local(
     };
     let label = local_label(&canonical_root);
     let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
-    let mut selector = Selector::new(&label, None, format)?;
+    let mut selector = Selector::new(format);
 
-    let mut iter = candidates.into_iter();
-    loop {
-        let window: Vec<_> = iter
-            .by_ref()
-            .take(crate::core::policy::FETCH_WINDOW)
-            .collect();
-        if window.is_empty() {
-            break;
-        }
-        let probes = probe_candidates(&canonical_root, &window)?;
-        for (candidate, probe) in window.into_iter().zip(probes) {
-            selector.decide(Item {
-                path: candidate.item_path,
-                probe,
-            })?;
-        }
+    for candidate in candidates {
+        let probe = match candidate.probe {
+            Some(p) => p,
+            None => read_local_file(&canonical_root, &candidate.path)?,
+        };
+        selector.decide(Item {
+            path: candidate.item_path,
+            probe,
+        })?;
     }
 
     let (files, skipped, trie, format) = selector.into_parts();
@@ -111,87 +82,48 @@ fn walk_candidates(
         .require_git(false)
         .parents(false)
         .follow_links(false)
-        .build_parallel();
+        .build();
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    let root_clone = root.to_path_buf();
-    let filter_arc = output_filter.cloned().map(std::sync::Arc::new);
-    let candidate_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut candidates = Vec::new();
 
-    walker.run(|| {
-        let tx = tx.clone();
-        let output_filter = filter_arc.clone();
-        let root = root_clone.clone();
-        let candidate_counter = candidate_counter.clone();
-        Box::new(move |entry| {
-            if candidate_counter.load(std::sync::atomic::Ordering::Relaxed)
-                > crate::core::policy::MAX_FILE_COUNT
-            {
-                return WalkState::Quit;
-            }
-            let entry = match entry {
-                Ok(e) => e,
-                Err(err) => {
-                    let _ = tx.send(Err(IngestError::Io(io::Error::other(err))));
-                    return WalkState::Continue;
-                }
-            };
-            let entry_path = entry.path();
-            if entry_path == root
-                || output_filter
-                    .as_ref()
-                    .is_some_and(|filter| filter.is_excluded(entry_path))
-                || !entry.file_type().is_some_and(|kind| kind.is_file())
-            {
-                return WalkState::Continue;
-            }
-            let relative = match entry_path.strip_prefix(&root) {
-                Ok(rel) => rel,
-                Err(err) => {
-                    let _ = tx.send(Err(IngestError::InvalidMetadata(err.to_string())));
-                    return WalkState::Quit;
-                }
-            };
-            let item_path = match relative
-                .components()
-                .map(|part| part.as_os_str().to_str())
-                .collect::<Option<Vec<_>>>()
-            {
-                Some(parts) => ItemPath::Utf8(parts.join("/")),
-                None => ItemPath::NonUtf8,
-            };
+    for entry in walker {
+        let entry = entry.map_err(|err| IngestError::Io(io::Error::other(err)))?;
+        let entry_path = entry.path();
+        if entry_path == root
+            || output_filter.is_some_and(|filter| filter.is_excluded(entry_path))
+            || !entry.file_type().is_some_and(|kind| kind.is_file())
+        {
+            continue;
+        }
 
-            let probe = match &item_path {
-                ItemPath::NonUtf8 => Some(Probe::Missing),
-                ItemPath::Utf8(path) => match PathClassification::classify(path) {
-                    PathClassification::Ignored => Some(Probe::Ignored),
-                    PathClassification::PreclassifiedBinary => Some(Probe::Missing),
-                    PathClassification::NeedsContent => None,
-                },
-            };
+        let relative = entry_path
+            .strip_prefix(root)
+            .map_err(|err| IngestError::InvalidMetadata(err.to_string()))?;
+        let item_path = normalize_relative_path(relative);
 
-            if matches!(probe, Some(Probe::Ignored)) {
-                return WalkState::Continue;
-            }
+        let probe = match &item_path {
+            ItemPath::NonUtf8 => Some(Probe::Missing),
+            ItemPath::Utf8(path) => match PathClassification::classify(path) {
+                PathClassification::Ignored => Some(Probe::Ignored),
+                PathClassification::PreclassifiedBinary => Some(Probe::Missing),
+                PathClassification::NeedsContent => None,
+            },
+        };
 
-            if candidate_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                > crate::core::policy::MAX_FILE_COUNT
-            {
-                return WalkState::Quit;
-            }
+        if matches!(probe, Some(Probe::Ignored)) {
+            continue;
+        }
 
-            let _ = tx.send(Ok(LocalCandidate {
-                path: entry_path.to_path_buf(),
-                item_path,
-                probe,
-            }));
-            WalkState::Continue
-        })
-    });
+        candidates.push(LocalCandidate {
+            path: entry_path.to_path_buf(),
+            item_path,
+            probe,
+        });
 
-    drop(tx);
-
-    let mut candidates: Vec<LocalCandidate> = rx.into_iter().collect::<Result<_, _>>()?;
+        if candidates.len() > MAX_FILE_COUNT {
+            break;
+        }
+    }
 
     CandidateBudget::verify_count(
         candidates.iter().map(|item| match &item.item_path {
@@ -201,7 +133,7 @@ fn walk_candidates(
         candidates.len(),
     )?;
 
-    candidates.sort_by(|a, b| match (&a.item_path, &b.item_path) {
+    candidates.sort_unstable_by(|a, b| match (&a.item_path, &b.item_path) {
         (ItemPath::Utf8(left), ItemPath::Utf8(right)) => left.cmp(right),
         (ItemPath::Utf8(_), ItemPath::NonUtf8) => std::cmp::Ordering::Less,
         (ItemPath::NonUtf8, ItemPath::Utf8(_)) => std::cmp::Ordering::Greater,
@@ -211,45 +143,28 @@ fn walk_candidates(
     Ok(candidates)
 }
 
-fn probe_candidates(root: &Path, candidates: &[LocalCandidate]) -> Result<Vec<Probe>, IngestError> {
-    if candidates.is_empty() {
-        return Ok(Vec::new());
+fn normalize_relative_path(relative: &Path) -> ItemPath {
+    let mut parts = relative.components().peekable();
+    let Some(first) = parts.next() else {
+        return ItemPath::Utf8(String::new());
+    };
+    let Some(first_str) = first.as_os_str().to_str() else {
+        return ItemPath::NonUtf8;
+    };
+    if parts.peek().is_none() {
+        return ItemPath::Utf8(first_str.to_owned());
     }
 
-    let next_idx = std::sync::atomic::AtomicUsize::new(0);
-    let worker_count = crate::core::policy::FETCH_WINDOW
-        .min(candidates.len())
-        .max(1);
-
-    std::thread::scope(|s| {
-        let handles: Vec<_> = (0..worker_count)
-            .map(|_| {
-                s.spawn(|| {
-                    let mut local_results = Vec::new();
-                    loop {
-                        let idx = next_idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if idx >= candidates.len() {
-                            break;
-                        }
-                        let candidate = &candidates[idx];
-                        let res = match &candidate.probe {
-                            Some(probe) => Ok(probe.clone()),
-                            None => read_local_file(root, &candidate.path),
-                        };
-                        local_results.push((idx, res));
-                    }
-                    local_results
-                })
-            })
-            .collect();
-
-        let mut results: Vec<_> = handles
-            .into_iter()
-            .flat_map(|handle| handle.join().expect("reader thread panicked"))
-            .collect();
-        results.sort_unstable_by_key(|(idx, _)| *idx);
-        results.into_iter().map(|(_, res)| res).collect()
-    })
+    let mut buf = String::with_capacity(relative.as_os_str().len());
+    buf.push_str(first_str);
+    for part in parts {
+        let Some(s) = part.as_os_str().to_str() else {
+            return ItemPath::NonUtf8;
+        };
+        buf.push('/');
+        buf.push_str(s);
+    }
+    ItemPath::Utf8(buf)
 }
 
 fn local_label(root: &Path) -> String {
