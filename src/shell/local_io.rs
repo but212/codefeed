@@ -6,13 +6,9 @@ use std::io::{self, Read};
 use std::path::Path;
 
 #[cfg(unix)]
-use super::sys;
+use rustix::fs::{Mode, OFlags};
 #[cfg(unix)]
-use std::ffi::CString;
-#[cfg(unix)]
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-#[cfg(unix)]
-use std::os::unix::ffi::OsStrExt;
+use std::os::fd::OwnedFd;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(windows)]
@@ -50,19 +46,6 @@ fn read_bounded_content(file: fs::File) -> io::Result<Probe> {
     Ok(Probe::Bytes(bytes))
 }
 
-#[cfg(target_os = "linux")]
-#[repr(C)]
-struct OpenHow {
-    flags: u64,
-    mode: u64,
-    resolve: u64,
-}
-
-#[cfg(target_os = "linux")]
-const RESOLVE_BENEATH: u64 = 0x08;
-#[cfg(target_os = "linux")]
-const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-
 #[cfg(unix)]
 fn open_local_file(root: &Path, path: &Path) -> io::Result<Option<fs::File>> {
     let relative = path
@@ -76,40 +59,31 @@ fn open_local_file(root: &Path, path: &Path) -> io::Result<Option<fs::File>> {
 
     #[cfg(target_os = "linux")]
     {
+        use rustix::fs::{OpenHow, ResolveFlags};
+
         static OPENAT2_UNAVAILABLE: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
 
-        if !OPENAT2_UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed)
-            && let Ok(c_rel) = CString::new(relative.as_os_str().as_bytes())
-        {
-            let how = OpenHow {
-                flags: (sys::O_RDONLY | sys::O_CLOEXEC | sys::O_NOFOLLOW | sys::O_NONBLOCK) as u64,
-                mode: 0,
-                resolve: RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS,
-            };
-            let fd = unsafe {
-                sys::syscall(
-                    sys::SYS_openat2,
-                    directory.as_raw_fd(),
-                    c_rel.as_ptr(),
-                    &how as *const OpenHow,
-                    std::mem::size_of::<OpenHow>(),
-                )
-            };
-            if fd >= 0 {
-                let opened = unsafe { OwnedFd::from_raw_fd(fd as sys::c_int) };
-                return Ok(Some(fs::File::from(opened)));
-            }
-            let err = io::Error::last_os_error();
-            if is_missing_or_unsupported(&err) {
-                return Ok(None);
-            }
-            match err.raw_os_error() {
-                Some(sys::ENOSYS) | Some(sys::EPERM) => {
-                    OPENAT2_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Relaxed);
+        if !OPENAT2_UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed) {
+            let mut how = OpenHow::new();
+            how.flags(OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK);
+            how.resolve(ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS);
+
+            match rustix::fs::openat2(&directory, relative, how) {
+                Ok(opened) => return Ok(Some(fs::File::from(opened))),
+                Err(err) => {
+                    let io_err = io::Error::from(err);
+                    if is_missing_or_unsupported(&io_err) {
+                        return Ok(None);
+                    }
+                    match err {
+                        rustix::io::Errno::NOSYS | rustix::io::Errno::PERM => {
+                            OPENAT2_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        rustix::io::Errno::INVAL | rustix::io::Errno::OPNOTSUPP => {}
+                        _ => return Err(io_err),
+                    }
                 }
-                Some(sys::EINVAL) | Some(sys::EOPNOTSUPP) => {}
-                _ => return Err(err),
             }
         }
     }
@@ -132,23 +106,14 @@ fn open_local_file_components(mut directory: OwnedFd, relative: &Path) -> io::Re
     };
     let mut component = first;
     loop {
-        let name = CString::new(component.as_os_str().as_bytes())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
+        let name = component.as_os_str();
         let is_file = components.peek().is_none();
         let flags = if is_file {
-            sys::O_RDONLY | sys::O_CLOEXEC | sys::O_NOFOLLOW | sys::O_NONBLOCK
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK
         } else {
-            sys::O_RDONLY | sys::O_CLOEXEC | sys::O_DIRECTORY | sys::O_NOFOLLOW
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY | OFlags::NOFOLLOW
         };
-        // SAFETY: `directory.as_raw_fd()` is an open, valid directory descriptor.
-        // `name` is a valid null-terminated C string containing no intermediate slashes.
-        let descriptor = unsafe { sys::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
-        if descriptor == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: `descriptor` was checked to be non-negative, representing a newly
-        // opened, valid file descriptor whose unique ownership is transferred to `OwnedFd`.
-        let opened = unsafe { OwnedFd::from_raw_fd(descriptor) };
+        let opened = rustix::fs::openat(&directory, name, flags, Mode::empty())?;
         if is_file {
             return Ok(fs::File::from(opened));
         }
@@ -160,9 +125,8 @@ fn open_local_file_components(mut directory: OwnedFd, relative: &Path) -> io::Re
 #[cfg(unix)]
 fn open_directory(path: &Path) -> io::Result<OwnedFd> {
     let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(sys::O_CLOEXEC | sys::O_DIRECTORY | sys::O_NOFOLLOW);
+    let flags = (OFlags::CLOEXEC | OFlags::DIRECTORY | OFlags::NOFOLLOW).bits() as i32;
+    options.read(true).custom_flags(flags);
     Ok(options.open(path)?.into())
 }
 
@@ -273,8 +237,8 @@ fn open_local_file(_root: &Path, path: &Path) -> io::Result<Option<fs::File>> {
 #[cfg(unix)]
 fn is_missing_or_unsupported(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::NotFound
-        || error.raw_os_error() == Some(sys::ELOOP)
-        || error.raw_os_error() == Some(sys::ENXIO)
+        || error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error())
+        || error.raw_os_error() == Some(rustix::io::Errno::NXIO.raw_os_error())
 }
 
 #[cfg(test)]
@@ -300,19 +264,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn does_not_block_when_candidate_becomes_fifo() -> Result<(), Box<dyn std::error::Error>> {
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
+        use rustix::fs::{CWD, FileType, Mode, mknodat};
         use std::sync::mpsc;
         use std::thread;
         use std::time::Duration;
 
         let root = temp_dir("fifo")?;
         let path = root.join("candidate");
-        let c_path = CString::new(path.as_os_str().as_bytes())?;
-        assert_eq!(
-            unsafe { sys::mkfifo(c_path.as_ptr(), 0o600 as sys::mode_t) },
-            0
-        );
+        mknodat(CWD, &path, FileType::Fifo, Mode::from_raw_mode(0o600), 0)?;
 
         let (sender, receiver) = mpsc::channel();
         let thread_path = path.clone();

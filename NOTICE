@@ -25,10 +25,13 @@ This software contains components licensed under the following open-source licen
    - tar (https://github.com/alexcrichton/tar-rs)
    - flate2 (https://github.com/rust-lang/flate2-rs)
 
-2. Unlicense OR MIT:
+2. Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT:
+   - rustix (https://github.com/bytecodealliance/rustix)
+
+3. Unlicense OR MIT:
    - ignore (https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore)
 
-3. Transitive runtime dependencies compiled into binary distributions (non-exhaustive list of key libraries):
+4. Transitive runtime dependencies compiled into binary distributions (non-exhaustive list of key libraries):
    - rustls (Apache-2.0 OR ISC OR MIT)
    - ring (Apache-2.0 AND ISC)
    - webpki-roots (CDLA-Permissive-2.0)

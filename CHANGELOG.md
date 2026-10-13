@@ -17,13 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Unix FFI open flags (`O_DIRECTORY`, `O_NOFOLLOW`) in `src/shell/sys.rs` with explicit `(target_os, target_arch)` gates across `aarch64`/`arm`, `x86_64`/`x86`/`riscv64`/`loongarch64`, and `macos`, backed by a compile-time unsupported target fallback.
+- Unix FFI open flags (`O_DIRECTORY`, `O_NOFOLLOW`) mapped directly through `rustix::fs::OFlags` across all Unix targets.
 - Case-insensitive prefix classification for sensitive paths (`.env`, `id_rsa`, `id_ed25519`, `credentials`) in `src/core/policy.rs`.
 - Differentiated HTTP transport error retry in `src/shell/github_client.rs`, restricting retries to transient errors (`Io`, `Timeout`, `ConnectionFailed`) while failing immediately on non-transient transport failures.
 - Non-verbatim path fallback removal in `verify_beneath_root` on Windows, enforcing canonical root preconditions.
 
 ### Changed
 
+- Migrated Unix file and directory opening in `src/shell/local_io.rs` to `rustix::fs`, eliminating manual architecture-specific FFI definitions and raw system calls.
 - Unified ingestion pipeline entry point (`orchestrate::ingest`) accepting `&RunConfig` and dispatching via `AnyCollector`.
 - Embedded `format: DigestFormat` directly into `CollectionResult`, establishing a single source of truth and removing redundant format parameters from `render_digest_to_writer`.
 - Scoped GitHub API authorization headers strictly to exact-origin `https://api.github.com` requests in `src/core/github_url.rs`.
@@ -48,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Centralized format frame metrics into associated constants (`FormatFrameMetrics::TEXT`, `FormatFrameMetrics::XML`) in `src/core/digest/mod.rs`, eliminating redundant intermediate wrapper functions.
 - Optimized metadata digit overhead calculation (`extra_metadata_bytes`) using pure mathematical `const fn num_digits`, eliminating `to_string()` heap allocations during budget checks in `src/core/digest/text.rs`.
 - Optimized `CandidateBudget::add` using `extract_dir_slice` and cached `get_mut` lookups in `src/core/decide.rs`, eliminating redundant `String` key allocations for known directory paths.
+
+### Removed
+
+- Manual Unix FFI bindings and architecture-specific constants module `src/shell/sys.rs`.
 
 ## [0.2.0]
 

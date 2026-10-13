@@ -17,6 +17,9 @@ ureq = { version = "3", default-features = false, features = ["rustls", "platfor
 flate2 = "1.0"
 tar = "0.4"
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", default-features = false, features = ["fs"] }
+
 [lib]
 path = "src/lib.rs"
 bench = false

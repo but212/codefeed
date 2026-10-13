@@ -115,4 +115,3 @@ never depends on shell code; shell code depends on the core in one direction.
   - `shell/github.rs`: streaming archive GitHub collection (`GitHubCollector`, `collect_github`).
   - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`) or standard output stream emission.
   - `shell/mod.rs`: shell module declarations and scoped test fixture isolation (`TempDirGuard`).
-  - `shell/sys.rs`: minimal Unix FFI bindings and POSIX constants for symlink and boundary checks.
