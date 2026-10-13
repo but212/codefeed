@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::core::digest::DigestBudget;
 use crate::core::error::IngestError;
-use crate::core::model::{DigestFormat, FileRecord};
+use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
 use crate::core::policy::MAX_FILE_COUNT;
 
 /// Path text as observed by the imperative shell. Non-UTF-8 paths are still
@@ -50,7 +50,7 @@ impl Item {
 }
 
 /// Pure per-item selection and budget accounting. Owns no I/O; the shell feeds
-/// observations and reads the outcome through [`Selector::into_parts`].
+/// observations and reads the outcome through [`Selector::finish`].
 pub struct Selector {
     files: Vec<FileRecord>,
     candidates: CandidateBudget,
@@ -100,20 +100,15 @@ impl Selector {
         Ok(())
     }
 
-    pub fn into_parts(
-        self,
-    ) -> (
-        Vec<FileRecord>,
-        usize,
-        crate::core::digest::BudgetTrie,
-        DigestFormat,
-    ) {
-        (
-            self.files,
-            self.digest.skipped(),
-            self.digest.trie,
-            self.digest.format,
-        )
+    pub fn finish(self, label: String, revision: Option<String>) -> CollectionResult {
+        CollectionResult {
+            label,
+            revision,
+            files: self.files,
+            skipped: self.digest.skipped(),
+            trie: self.digest.trie,
+            format: self.digest.format,
+        }
     }
 }
 
@@ -184,8 +179,10 @@ fn format_overflow_diagnostic(dir_counts: &HashMap<String, usize>) -> String {
 
 /// UTF-8 text predicate: NUL-free bytes only.
 pub fn text_content(bytes: Vec<u8>) -> Option<String> {
-    let s = String::from_utf8(bytes).ok()?;
-    (!s.as_bytes().contains(&0)).then_some(s)
+    if memchr::memchr(0, &bytes).is_some() {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }
 
 #[cfg(test)]
@@ -253,12 +250,12 @@ mod tests {
             Probe::Bytes(vec![b'x'; MAX_FILE_SIZE as usize]),
         ))?;
 
-        let (files, skipped, _, format) = selector.into_parts();
-        assert_eq!(files.len(), 2);
-        assert_eq!(files[0].path, "a.txt");
-        assert_eq!(files[1].path, "exact.txt");
-        assert_eq!(skipped, 4);
-        assert_eq!(format, DigestFormat::Text);
+        let collection = selector.finish("test".into(), None);
+        assert_eq!(collection.files.len(), 2);
+        assert_eq!(collection.files[0].path, "a.txt");
+        assert_eq!(collection.files[1].path, "exact.txt");
+        assert_eq!(collection.skipped, 4);
+        assert_eq!(collection.format, DigestFormat::Text);
         Ok(())
     }
 
@@ -269,9 +266,9 @@ mod tests {
             selector.decide(decide_item("ignored.txt", Probe::Ignored))?;
         }
         selector.decide(decide_item("kept.txt", Probe::Bytes(b"kept".to_vec())))?;
-        let (files, skipped, _, _) = selector.into_parts();
-        assert_eq!(files.len(), 1);
-        assert_eq!(skipped, 0);
+        let collection = selector.finish("test".into(), None);
+        assert_eq!(collection.files.len(), 1);
+        assert_eq!(collection.skipped, 0);
         Ok(())
     }
 

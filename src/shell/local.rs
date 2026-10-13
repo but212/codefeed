@@ -44,16 +44,7 @@ pub fn collect_local(
         })?;
     }
 
-    let (files, skipped, trie, format) = selector.into_parts();
-
-    Ok(CollectionResult {
-        label,
-        revision: None,
-        files,
-        skipped,
-        trie,
-        format,
-    })
+    Ok(selector.finish(label, None))
 }
 
 fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {

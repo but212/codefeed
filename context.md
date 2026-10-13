@@ -37,7 +37,7 @@ imperative-shell boundary.
 ### Rendering & Formats
 
 - ASCII hierarchy tree (`├── `, `└── `, `│   `) renders deterministic directory structure, escaping control codes and XML entities to prevent tree line-break injections.
-- Heuristic token estimation runs via pure function `estimate_tokens(&str)`, reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
+- Heuristic token estimation runs via state machine `TokenEstimator`, exposed through pure function `estimate_tokens(&str)` and `BoundedEstimatingWriter`, reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
 - Plain text serialization (`--format text`) preserves all valid UTF-8 file content verbatim (rejecting only NUL bytes) to maintain raw fidelity for LLM prompts; headers and paths are escaped, but file bodies are unmutated (viewing raw digests in interactive terminals may affect emulator state if files contain ANSI escape codes).
 - XML serialization (`--format xml`) structures output into `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`) and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`.
 - File-path ordering is strictly lexicographical and owned solely by `render_digest_to_writer` / `render_digest`. Format rendering consumes `IntoIterator<Item = &FileRecord>` to support streaming and arbitrary iteration pipelines while preserving deterministic path sorting.
@@ -93,11 +93,11 @@ never depends on shell code; shell code depends on the core in one direction.
   - `model.rs`: domain value types (`Source`, `FileRecord`, `CollectionResult`,
     `IngestReport`, `RunConfig`, `Options`, `OutputTarget`, `DigestFormat`).
   - `error.rs`: domain error enum `IngestError` with structured diagnostic payload.
-  - `decide.rs`: `Selector::decide`, `CandidateBudget`, item evaluation, and
+  - `decide.rs`: `Selector::decide`, `Selector::finish`, `CandidateBudget`, item evaluation via `memchr`, and
     candidate overflow diagnostics.
   - `digest/`: `DigestBudget`, size check, deterministic
-    digest rendering (`render_digest_to_writer`), format implementations (`text.rs`, `xml.rs`), trie representation (`trie.rs`), and token estimation (`estimate_tokens`).
-  - `github_url.rs`: URL construction and origin credential scoping.
+    digest rendering (`render_digest_to_writer`), format implementations (`text.rs`, `xml.rs`), trie representation (`trie.rs`), and token estimation (`TokenEstimator`, `estimate_tokens`).
+  - `github_url.rs`: URL construction via `percent-encoding` and origin credential scoping.
   - `archive.rs`: Pax header comment extraction and archive root stripping.
 - Imperative shell (`src/shell/`):
   - `shell/cli.rs`: Pure CLI argument parsing, help detection, and `CliAction` generation.
@@ -106,7 +106,7 @@ never depends on shell code; shell code depends on the core in one direction.
   - `shell/local.rs`: 2-step linear filesystem walking and collection (`collect_local`).
   - `shell/local_io.rs`: TOCTOU-resistant file opening and root containment enforcement (`openat2` / Win32 handle resolution).
   - `shell/output_exclusion.rs`: Output file identity tracking (`OutputFilter`) using device and inode checks.
-  - `shell/github_client.rs`: HTTP transport, body bounding, and token resolution.
+  - `shell/github_client.rs`: HTTP transport, retry logging via `log`, body bounding, and token resolution.
   - `shell/github.rs`: streaming archive GitHub collection (`collect_github`).
   - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`) or standard output stream emission.
   - `shell/mod.rs`: shell module declarations and scoped test fixture isolation (`TempDirGuard`).

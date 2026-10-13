@@ -40,29 +40,22 @@ pub(crate) fn tarball_url(owner: &str, repo: &str, reference: Option<&str>) -> S
     url
 }
 
+const UNRESERVED: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
 fn push_encoded_segment(url: &mut String, segment: &str) {
     url.push('/');
-    append_encoded_segment(url, segment);
-}
-
-fn append_encoded_segment(url: &mut String, segment: &str) {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    for byte in segment.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            url.push(byte as char);
-        } else {
-            url.push('%');
-            url.push(HEX[(byte >> 4) as usize] as char);
-            url.push(HEX[(byte & 0x0f) as usize] as char);
-        }
+    for chunk in percent_encoding::utf8_percent_encode(segment, UNRESERVED) {
+        url.push_str(chunk);
     }
 }
 
 #[cfg(test)]
 fn encode_path_segment(segment: &str) -> String {
-    let mut encoded = String::with_capacity(segment.len());
-    append_encoded_segment(&mut encoded, segment);
-    encoded
+    percent_encoding::utf8_percent_encode(segment, UNRESERVED).to_string()
 }
 
 #[cfg(test)]

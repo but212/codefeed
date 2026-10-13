@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Promoted `percent-encoding`, `memchr`, and `log` from `Cargo.lock` to explicit direct dependencies in `Cargo.toml`.
+- Unified token estimation state machine `TokenEstimator` in `src/core/digest/mod.rs`, shared by `estimate_tokens` and `BoundedEstimatingWriter`.
+- Encapsulated collection completion in `Selector::finish` in `src/core/decide.rs`, constructing `CollectionResult` directly.
+- Instrumented transient transport error and retryable HTTP status logging in `src/shell/github_client.rs` via `log::warn!`.
+
+### Changed
+
+- Replaced manual 16-hex byte percent-encoding loop in `src/core/github_url.rs` with `percent_encoding::utf8_percent_encode`.
+- Accelerated `text_content` in `src/core/decide.rs` by checking NUL (`\0`) bytes via `memchr::memchr` before UTF-8 decoding.
+
+### Removed
+
+- Removed `Selector::into_parts` across `src/core/decide.rs`, shell collectors, and benchmarks in favor of `Selector::finish`.
+
 ## [0.2.2]
 
 ### Added
@@ -137,6 +155,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Conventional lockfile and noise path exclusion before candidate accounting.
 - Resource budgets enforcing maximum candidate file counts and output sizes.
 
+[Unreleased]: https://github.com/but212/codefeed/compare/v0.2.2...HEAD
 [0.2.2]: https://github.com/but212/codefeed/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/but212/codefeed/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/but212/codefeed/compare/v0.1.2...v0.2.0

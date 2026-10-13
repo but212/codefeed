@@ -69,6 +69,9 @@ impl GithubClient {
                     if is_retryable_transport_error(&error) && attempt + 1 < MAX_RETRIES {
                         attempt += 1;
                         let delay = retry_delay(attempt - 1, current_entropy());
+                        log::warn!(
+                            "GitHub transport error on attempt {attempt}/{MAX_RETRIES} for {url}: {error}; retrying in {delay:?}"
+                        );
                         std::thread::sleep(delay);
                         continue;
                     }
@@ -80,6 +83,9 @@ impl GithubClient {
             if is_retryable_status(status.as_u16()) && attempt + 1 < MAX_RETRIES {
                 attempt += 1;
                 let delay = retry_delay(attempt - 1, current_entropy());
+                log::warn!(
+                    "GitHub HTTP status {status} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
+                );
                 std::thread::sleep(delay);
                 continue;
             }
