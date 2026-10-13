@@ -3,8 +3,6 @@
 use std::borrow::Cow;
 use std::io::Write;
 
-use super::FormatFrameMetrics;
-use super::byte_count;
 use super::trie::BudgetTrie;
 use crate::core::error::IngestError;
 use crate::core::model::FileRecord;
@@ -20,19 +18,6 @@ const XML_REPO_END: &str = "</repository>\n";
 const XML_FILE_START: &str = "<file path=\"";
 const XML_FILE_END: &str = "</file>\n";
 const NEWLINE: &str = "\n";
-
-const XML_PER_FILE_TAG_BYTES: u64 =
-    (XML_FILE_START.len() + XML_TAG_CLOSE.len() + XML_FILE_END.len()) as u64;
-
-const XML_FIXED_FRAME_BYTES: u64 = (XML_REPO_START.len()
-    + XML_TAG_CLOSE.len()
-    + XML_DIR_START.len()
-    + XML_DIR_END.len()
-    + XML_FILES_START.len()
-    + XML_FILES_END.len()
-    + XML_REPO_END.len()) as u64;
-
-const XML_REVISION_ATTR_BYTES: u64 = XML_REVISION_ATTR.len() as u64;
 
 const fn make_escape_ascii() -> [Option<&'static str>; 128] {
     let mut table = [None; 128];
@@ -188,18 +173,6 @@ pub fn write_xml_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std:
     Ok(ends_with_nl)
 }
 
-pub(crate) fn calculate_file_bytes(file: &FileRecord) -> Result<(u64, u64, u64), IngestError> {
-    let path_b = byte_count(&xml_escape(&file.path))?;
-    let (content_b, ends_with_nl) = escaped_metrics(&file.content);
-    let trailing_b = usize::from(!ends_with_nl) as u64;
-    Ok((path_b, content_b, trailing_b))
-}
-
-pub(crate) const FRAME_METRICS: FormatFrameMetrics = FormatFrameMetrics {
-    fixed_frame: XML_FIXED_FRAME_BYTES,
-    revision_overhead: XML_REVISION_ATTR_BYTES,
-    per_file: XML_PER_FILE_TAG_BYTES,
-};
 
 pub(crate) fn render<'a, W, I>(
     writer: &mut W,
@@ -319,22 +292,5 @@ mod tests {
                 XmlChunk::Escaped("&apos;"),
             ]
         );
-    }
-
-    #[test]
-    fn xml_static_frame_constants_match_individual_tags() {
-        let expected_per_file =
-            (XML_FILE_START.len() + XML_TAG_CLOSE.len() + XML_FILE_END.len()) as u64;
-        assert_eq!(XML_PER_FILE_TAG_BYTES, expected_per_file);
-
-        let expected_fixed_frame = (XML_REPO_START.len()
-            + XML_TAG_CLOSE.len()
-            + XML_DIR_START.len()
-            + XML_DIR_END.len()
-            + XML_FILES_START.len()
-            + XML_FILES_END.len()
-            + XML_REPO_END.len()) as u64;
-        assert_eq!(XML_FIXED_FRAME_BYTES, expected_fixed_frame);
-        assert_eq!(XML_REVISION_ATTR_BYTES, XML_REVISION_ATTR.len() as u64);
     }
 }

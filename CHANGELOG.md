@@ -7,15 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `BoundedEstimatingWriter` wrapping output stream serialization to strictly enforce `MAX_OUTPUT_SIZE` against rendered bytes (framing, tree, metadata, content) and estimate tokens in a single pass.
+
 ### Changed
 
-- Eliminated per-node heap allocations during `BudgetTrie::render_nodes` traversal by reusing a single mutable `String` buffer with stack-like `push_str` and `truncate`.
-- Replaced chained `.replace()` calls in `text::escape_header` with a single-pass byte scanner and preallocated buffer assembly.
-- Converted unique file path sorting in `text::render`, `xml::render`, and `local::walk_candidates` from stable sort (`sort_by`) to in-place pdqsort (`sort_unstable_by`), eliminating scratch buffer allocations.
+- Streamlined local walk to a 2-step linear collection pipeline (`ignore::WalkBuilder` candidate harvest followed by bounded file reads).
+- Replaced channel passing and worker thread pools in `src/shell/local.rs` with sequential traversal, simplifying codebase structure.
+- Simplified `DigestBudget::skip` to return `()` directly, removing dead error plumbing in `Selector::decide`.
+- Converted unique file path sorting in `text::render` and `xml::render` to in-place pdqsort (`sort_unstable_by`).
 - Replaced multi-byte Unicode whitespace sweeps with `trim_ascii()` for `--ref` and GitHub token parsing in `cli.rs` and `github_client.rs`.
-- Refactored `local::walk_candidates` to replace per-item `std::sync::mpsc` channel transmission with thread-local chunking (flushed on drop or at 128 items into a `Mutex<Vec<LocalCandidate>>`), reducing lock contention and drop glue code size.
-- Optimized relative path normalization in `local.rs` using a single preallocated buffer (`normalize_relative_path`), eliminating intermediate `Vec<&str>` allocations.
-- Optimized `CandidateBudget::add` using `get_mut` pre-lookups in `src/core/decide.rs`, eliminating redundant `String` key allocations for known directory paths.
+- Optimized `CandidateBudget::add` using `get_mut` pre-lookups in `src/core/decide.rs`, eliminating redundant key allocations for known directory paths.
+
+### Removed
+
+- Intermediate `Collector` / `AnyCollector` trait abstraction in `src/shell/collector.rs`, routing collection directly via `orchestrate::ingest`.
 
 ## [0.2.1]
 

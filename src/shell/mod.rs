@@ -4,7 +4,6 @@
 //! core in `crate::core`.
 
 pub(crate) mod cli;
-pub(crate) mod collector;
 pub(crate) mod github;
 pub(crate) mod github_client;
 pub(crate) mod local;

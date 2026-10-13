@@ -58,16 +58,16 @@ pub struct Selector {
 }
 
 impl Selector {
-    pub fn new(
-        label: &str,
-        revision: Option<&str>,
-        format: DigestFormat,
-    ) -> Result<Self, IngestError> {
-        Ok(Self {
+    pub fn new(format: DigestFormat) -> Self {
+        Self {
             files: Vec::new(),
             candidates: CandidateBudget::default(),
-            digest: DigestBudget::new(label, revision, format)?,
-        })
+            digest: DigestBudget::new(format),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty() && self.digest.skipped() == 0
     }
 
     pub fn decide(&mut self, item: Item) -> Result<(), IngestError> {
@@ -79,7 +79,8 @@ impl Selector {
             }
             ItemResolution::Skipped(path) => {
                 self.candidates.add(path.as_deref())?;
-                self.digest.skip()
+                self.digest.skip();
+                Ok(())
             }
         }
     }
@@ -241,7 +242,7 @@ mod tests {
     #[test]
     fn decide_classifies_text_binary_and_size_boundaries() -> Result<(), Box<dyn std::error::Error>>
     {
-        let mut selector = Selector::new("repo", None, DigestFormat::Text)?;
+        let mut selector = Selector::new(DigestFormat::Text);
         selector.decide(decide_item("a.txt", Probe::Bytes(b"hello".to_vec())))?;
         selector.decide(decide_item("bin.bin", Probe::Bytes(vec![0, 1, 2])))?;
         selector.decide(decide_item("bad_utf8", Probe::Bytes(vec![0xff])))?;
@@ -263,7 +264,7 @@ mod tests {
 
     #[test]
     fn github_ignored_is_not_skipped() -> Result<(), Box<dyn std::error::Error>> {
-        let mut selector = Selector::new("repo", None, DigestFormat::Text)?;
+        let mut selector = Selector::new(DigestFormat::Text);
         for _ in 0..MAX_FILE_COUNT {
             selector.decide(decide_item("ignored.txt", Probe::Ignored))?;
         }
@@ -312,7 +313,7 @@ mod tests {
 
     #[test]
     fn decide_counts_candidate_before_content() -> Result<(), Box<dyn std::error::Error>> {
-        let mut selector = Selector::new("repo", None, DigestFormat::Text)?;
+        let mut selector = Selector::new(DigestFormat::Text);
         for _ in 0..MAX_FILE_COUNT {
             selector.decide(decide_item("bin.txt", Probe::Bytes(vec![0])))?;
         }
@@ -326,7 +327,7 @@ mod tests {
     #[test]
     fn output_overflow_includes_largest_files_diagnostic() -> Result<(), Box<dyn std::error::Error>>
     {
-        let mut selector = Selector::new("repo", None, DigestFormat::Text)?;
+        let mut selector = Selector::new(DigestFormat::Text);
         selector.decide(decide_item("small.txt", Probe::Bytes(vec![b'a'; 100])))?;
         selector.decide(decide_item("medium.txt", Probe::Bytes(vec![b'b'; 50_000])))?;
         let err = selector
@@ -346,7 +347,7 @@ mod tests {
     #[test]
     fn candidate_overflow_includes_largest_directories_diagnostic()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut selector = Selector::new("repo", None, DigestFormat::Text)?;
+        let mut selector = Selector::new(DigestFormat::Text);
         for index in 0..8_000 {
             selector.decide(decide_item(
                 &format!("vendor/pkg_{index}.rs"),

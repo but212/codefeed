@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use codefeed::__bench::{
     BudgetTrie, CollectionResult, DigestFormat, FileRecord, Item, ItemPath, OutputTarget, Probe,
-    Selector, TokenEstimatingWriter, collect_local, escaped_metrics, render_digest_to_writer,
+    Selector, collect_local, escaped_metrics, estimate_tokens, render_digest_to_writer,
     text_content, write_xml_escaped, xml_escape,
 };
 
@@ -433,11 +433,10 @@ mod suites {
             let payload = chunk.repeat(repeats).into_bytes();
             let payload_len = payload.len() as u64;
 
+            let payload_str = std::str::from_utf8(&payload).unwrap();
+
             runner.bench(name, 5, 30, Some(payload_len), || {
-                let mut writer = VoidWriter;
-                let mut estimator = TokenEstimatingWriter::new(&mut writer);
-                estimator.write_all(&payload).expect("write should succeed");
-                let tokens = estimator.finish();
+                let tokens = estimate_tokens(payload_str);
                 black_box(tokens);
             });
         }
@@ -488,8 +487,7 @@ mod suites {
 
         runner.bench(name, warmup, iterations, None, || {
             let items = batches.pop().expect("batch should be available");
-            let mut selector = Selector::new("bench_repo", None, DigestFormat::Text)
-                .expect("selector init should succeed");
+            let mut selector = Selector::new(DigestFormat::Text);
             for item in items {
                 let _ = selector.decide(item);
             }
