@@ -43,13 +43,19 @@ pub(crate) fn is_noise_path(path: &str) -> bool {
     NOISE.contains(&file_name)
 }
 
+fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+    value
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
 /// Returns `true` if `path` matches conventional sensitive files (.env, keys, credentials).
 pub(crate) fn is_sensitive_path(path: &str) -> bool {
     let file_name = path.rsplit('/').next().unwrap_or(path);
-    if file_name.starts_with(".env")
-        || file_name.starts_with("id_rsa")
-        || file_name.starts_with("id_ed25519")
-        || file_name.starts_with("credentials")
+    if starts_with_ignore_ascii_case(file_name, ".env")
+        || starts_with_ignore_ascii_case(file_name, "id_rsa")
+        || starts_with_ignore_ascii_case(file_name, "id_ed25519")
+        || starts_with_ignore_ascii_case(file_name, "credentials")
     {
         return true;
     }
@@ -173,6 +179,10 @@ mod tests {
             ("auth/aws.credentials", PathClassification::Ignored),
             ("aws/credentials", PathClassification::Ignored),
             ("config/credentials.yaml", PathClassification::Ignored),
+            ("Credentials.json", PathClassification::Ignored),
+            ("keys/ID_RSA", PathClassification::Ignored),
+            ("ID_ED25519_backup", PathClassification::Ignored),
+            ("config/.ENV.prod", PathClassification::Ignored),
             (".git/config", PathClassification::Ignored),
             ("src/.hidden.rs", PathClassification::Ignored),
             ("assets/logo.png", PathClassification::PreclassifiedBinary),

@@ -187,25 +187,7 @@ fn verify_beneath_root(root: &Path, file: &fs::File) -> io::Result<bool> {
     use std::os::windows::io::AsRawHandle;
 
     let canonical_file = get_final_path_from_handle(file.as_raw_handle())?;
-    if is_verbatim_path(root) {
-        Ok(is_strictly_beneath(root, &canonical_file))
-    } else {
-        let canonical_root = fs::canonicalize(root)?;
-        Ok(is_strictly_beneath(&canonical_root, &canonical_file))
-    }
-}
-
-#[cfg(windows)]
-fn is_verbatim_path(path: &Path) -> bool {
-    use std::path::{Component, Prefix};
-    matches!(
-        path.components().next(),
-        Some(Component::Prefix(p))
-            if matches!(
-                p.kind(),
-                Prefix::Verbatim(_) | Prefix::VerbatimDisk(_) | Prefix::VerbatimUNC(_, _)
-            )
-    )
+    Ok(is_strictly_beneath(root, &canonical_file))
 }
 
 #[cfg(windows)]

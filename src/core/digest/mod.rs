@@ -272,10 +272,9 @@ pub(crate) fn byte_count(value: &str) -> Result<u64, IngestError> {
 pub fn render_digest_to_writer<W: std::io::Write + ?Sized>(
     writer: &mut W,
     collection: &CollectionResult,
-    format: DigestFormat,
 ) -> Result<usize, IngestError> {
     let mut estimator = TokenEstimatingWriter::new(writer);
-    format.render(
+    collection.format.render(
         &mut estimator,
         &collection.label,
         collection.revision.as_deref(),
@@ -332,9 +331,10 @@ mod tests {
             files: files.to_vec(),
             skipped,
             trie,
+            format: DigestFormat::Text,
         };
         let mut buffer = Vec::new();
-        render_digest_to_writer(&mut buffer, &collection, DigestFormat::Text)?;
+        render_digest_to_writer(&mut buffer, &collection)?;
         String::from_utf8(buffer).map_err(|error| IngestError::Io(std::io::Error::other(error)))
     }
 
@@ -394,9 +394,10 @@ mod tests {
             files: files.clone(),
             skipped: 2,
             trie: test_trie(&files, false),
+            format: DigestFormat::Text,
         };
         let mut streamed = Vec::new();
-        render_digest_to_writer(&mut streamed, &collection, DigestFormat::Text)?;
+        render_digest_to_writer(&mut streamed, &collection)?;
         let streamed_str = std::str::from_utf8(&streamed)?;
 
         let expected = "\
@@ -443,7 +444,7 @@ hello\n\
                 content: "content_a\n".into(),
             },
         ];
-        let trie = test_trie(&files[0..1], false);
+        let trie = test_trie(&[files[0].clone(), files[2].clone()], false);
         let mut buf = Vec::new();
         let filtered_iter = files.iter().filter(|f| f.path != "excluded.txt");
         DigestFormat::Text.render(&mut buf, "repo", None, filtered_iter, 1, &trie)?;
@@ -515,9 +516,10 @@ hello\n\
             files: files.clone(),
             skipped: 1,
             trie: test_trie(&files, true),
+            format: DigestFormat::Xml,
         };
         let mut out = Vec::new();
-        render_digest_to_writer(&mut out, &collection, DigestFormat::Xml)?;
+        render_digest_to_writer(&mut out, &collection)?;
         let xml_str = std::str::from_utf8(&out)?;
         let expected = "\
 <repository name=\"my-repo\" revision=\"v1.0\">
@@ -562,9 +564,10 @@ z &lt; 10
                 files: files.clone(),
                 skipped: 0,
                 trie: budget.trie.clone(),
+                format: DigestFormat::Xml,
             };
             let mut out = Vec::new();
-            render_digest_to_writer(&mut out, &collection, DigestFormat::Xml)?;
+            render_digest_to_writer(&mut out, &collection)?;
             assert_eq!(budget.rendered_size(), Some(out.len() as u64));
         }
         Ok(())
@@ -629,9 +632,10 @@ z &lt; 10
             files: files.clone(),
             skipped: 0,
             trie: test_trie(&files, true),
+            format: DigestFormat::Xml,
         };
         let mut xml_out = Vec::new();
-        render_digest_to_writer(&mut xml_out, &collection, DigestFormat::Xml)?;
+        render_digest_to_writer(&mut xml_out, &collection)?;
         let xml_str = std::str::from_utf8(&xml_out)?;
         assert!(
             !xml_str.contains("\x1b"),

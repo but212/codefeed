@@ -1,25 +1,20 @@
 //! Pipeline orchestration: coordinates collection, emission, and digest rendering.
 
 use crate::core::error::IngestError;
-use crate::core::model::{IngestReport, Options, Source};
+use crate::core::model::{IngestReport, RunConfig};
 use crate::shell;
+use crate::shell::collector::{AnyCollector, Collector};
 
-pub fn ingest(source: &Source, options: &Options) -> Result<IngestReport, IngestError> {
-    let collection = match source {
-        Source::Local(root) => shell::local::collect_local(root, &options.output, options.format)?,
-        Source::GitHub {
-            owner,
-            repo,
-            reference,
-        } => shell::github::collect_github(owner, repo, reference.as_deref(), options.format)?,
-    };
+pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
+    let collector = AnyCollector::from_config(config);
+    let collection = collector.collect()?;
 
-    let estimated_tokens = shell::output::emit(&options.output, |writer| {
-        crate::core::digest::render_digest_to_writer(writer, &collection, options.format)
+    let estimated_tokens = shell::output::emit(&config.output, |writer| {
+        crate::core::digest::render_digest_to_writer(writer, &collection)
     })?;
 
     Ok(IngestReport {
-        output: options.output.clone(),
+        output: config.output.clone(),
         included_files: collection.files.len(),
         skipped_files: collection.skipped,
         estimated_tokens,

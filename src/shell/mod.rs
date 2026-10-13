@@ -4,6 +4,7 @@
 //! core in `crate::core`.
 
 pub(crate) mod cli;
+pub(crate) mod collector;
 pub(crate) mod github;
 pub(crate) mod github_client;
 pub(crate) mod local;
@@ -25,7 +26,7 @@ impl TempDirGuard {
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let path = std::env::temp_dir().join(format!("local_ingest_{label}_{nanos}"));
         std::fs::create_dir_all(&path)?;
-        Ok(Self(path))
+        Ok(Self(std::fs::canonicalize(&path)?))
     }
 }
 

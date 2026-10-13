@@ -15,7 +15,7 @@ fn main() {
         CliAction::Help => {
             println!("{}", help_text());
         }
-        CliAction::Run { source, options } => match ingest(&source, &options) {
+        CliAction::Run(config) => match ingest(&config) {
             // With `--output -` the digest owns stdout, so the completion message
             // goes to stderr there and stays on stdout for a file target.
             Ok(report) => {

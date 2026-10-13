@@ -45,8 +45,6 @@ impl BudgetTrieNode {
 #[derive(Debug, Clone, Default)]
 pub struct BudgetTrie {
     pub(crate) escape_xml: bool,
-    pub(crate) node_count: usize,
-    pub(crate) display_bytes: u64,
     pub(crate) upper_bound_bytes: u64,
     pub(crate) children: Vec<BudgetTrieNode>,
 }
@@ -88,8 +86,6 @@ impl BudgetTrie {
     pub fn new(escape_xml: bool) -> Self {
         Self {
             escape_xml,
-            node_count: 0,
-            display_bytes: 0,
             upper_bound_bytes: 0,
             children: Vec::new(),
         }
@@ -108,8 +104,6 @@ impl BudgetTrie {
                 Err(insert_idx) => {
                     let node = BudgetTrieNode::new(part, is_dir, self.escape_xml);
                     let display_len = node.display().len() as u64;
-                    self.display_bytes += display_len;
-                    self.node_count += 1;
                     let node_max_format = depth
                         .saturating_mul(TREE_DEPTH_BYTE_FACTOR)
                         .saturating_add(TREE_NODE_BASE_OVERHEAD);

@@ -56,19 +56,17 @@ impl GithubClient {
             let mut request = self.agent.get(url);
             let target = request_target(url);
 
-            if matches!(target, RequestTarget::Api | RequestTarget::Raw)
-                && let Some(auth) = &self.auth_header
-            {
-                request = request.header("Authorization", auth);
-            }
             if target == RequestTarget::Api {
+                if let Some(auth) = &self.auth_header {
+                    request = request.header("Authorization", auth);
+                }
                 request = request.header("X-Github-Api-Version", "2022-11-28");
             }
 
             let response = match request.call() {
                 Ok(resp) => resp,
                 Err(error) => {
-                    if attempt + 1 < MAX_RETRIES {
+                    if is_retryable_transport_error(&error) && attempt + 1 < MAX_RETRIES {
                         attempt += 1;
                         let delay = retry_delay(attempt - 1, current_entropy());
                         std::thread::sleep(delay);
@@ -99,6 +97,13 @@ impl GithubClient {
             return Ok(Box::new(response.into_body().into_reader()));
         }
     }
+}
+
+fn is_retryable_transport_error(error: &ureq::Error) -> bool {
+    matches!(
+        error,
+        ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed
+    )
 }
 
 fn api_error(status: StatusCode, body_bytes: &[u8]) -> IngestError {
@@ -279,5 +284,46 @@ mod tests {
 
         handle.join().expect("server thread finish");
         assert_eq!(attempts.load(Ordering::SeqCst), MAX_RETRIES);
+    }
+
+    #[test]
+    fn does_not_retry_non_transient_transport_error() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+
+        assert!(is_retryable_transport_error(&ureq::Error::Timeout(
+            ureq::Timeout::Global
+        )));
+        assert!(is_retryable_transport_error(&ureq::Error::ConnectionFailed));
+        assert!(is_retryable_transport_error(&ureq::Error::Io(
+            std::io::Error::from(std::io::ErrorKind::ConnectionReset)
+        )));
+        assert!(!is_retryable_transport_error(&ureq::Error::HostNotFound));
+        assert!(!is_retryable_transport_error(&ureq::Error::Tls(
+            "cert error"
+        )));
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let port = listener.local_addr().expect("local addr").port();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept 1");
+            attempts_clone.fetch_add(1, Ordering::SeqCst);
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(b"NOT_HTTP/1.1\r\n\r\n");
+        });
+
+        let client = GithubClient::new();
+        let url = format!("http://127.0.0.1:{port}/test");
+        assert!(client.stream_url(&url).is_err());
+
+        handle.join().expect("server thread finish");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }

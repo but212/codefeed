@@ -178,6 +178,7 @@ mod fixture {
             files,
             skipped: 0,
             trie,
+            format,
         }
     }
 
@@ -385,7 +386,7 @@ mod suites {
 
             runner.bench(name, 5, 20, Some(approx_bytes), || {
                 let mut sink = Vec::with_capacity(2 * 1024 * 1024);
-                let tokens = render_digest_to_writer(&mut sink, &collection, format)
+                let tokens = render_digest_to_writer(&mut sink, &collection)
                     .expect("rendering should succeed");
                 black_box(tokens);
                 black_box(sink.len());
@@ -492,7 +493,7 @@ mod suites {
             for item in items {
                 let _ = selector.decide(item);
             }
-            let (files, skipped, _) = selector.into_parts();
+            let (files, skipped, _, _) = selector.into_parts();
             black_box((files.len(), skipped));
         });
     }

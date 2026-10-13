@@ -54,6 +54,35 @@ impl Default for Options {
     }
 }
 
+/// Execution configuration unifying source, output destination, and format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunConfig {
+    /// Ingestion source location.
+    pub source: Source,
+    /// Target destination for the rendered digest.
+    pub output: OutputTarget,
+    /// Serialization format for the digest.
+    pub format: DigestFormat,
+}
+
+impl RunConfig {
+    pub fn new(source: Source, output: OutputTarget, format: DigestFormat) -> Self {
+        Self {
+            source,
+            output,
+            format,
+        }
+    }
+
+    pub fn from_source_and_options(source: Source, options: Options) -> Self {
+        Self {
+            source,
+            output: options.output,
+            format: options.format,
+        }
+    }
+}
+
 /// Summary report emitted upon successful digest generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IngestReport {
@@ -82,4 +111,5 @@ pub struct CollectionResult {
     pub files: Vec<FileRecord>,
     pub skipped: usize,
     pub trie: crate::core::digest::BudgetTrie,
+    pub format: DigestFormat,
 }

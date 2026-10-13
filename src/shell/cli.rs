@@ -2,7 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use crate::core::error::IngestError;
-use crate::core::model::{DigestFormat, Options, OutputTarget, Source};
+use crate::core::model::{DigestFormat, Options, OutputTarget, RunConfig, Source};
 use crate::core::source::parse_source_os;
 
 const HELP: &str = "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <FORMAT>]";
@@ -14,7 +14,7 @@ pub fn help_text() -> &'static str {
 #[derive(Debug, PartialEq, Eq)]
 pub enum CliAction {
     Help,
-    Run { source: Source, options: Options },
+    Run(RunConfig),
 }
 
 /// `--output -` selects standard output; every other value is a filesystem
@@ -171,7 +171,9 @@ where
         }
     }
 
-    Ok(CliAction::Run { source, options })
+    Ok(CliAction::Run(RunConfig::from_source_and_options(
+        source, options,
+    )))
 }
 
 fn usage(message: &str) -> IngestError {
@@ -204,38 +206,38 @@ mod tests {
         let run_standard =
             parse_cli(["codefeed", ".", "--format", "xml", "--output", "-"]).unwrap();
         match run_standard {
-            CliAction::Run { source, options } => {
-                assert!(matches!(source, Source::Local(_)));
-                assert_eq!(options.format, DigestFormat::Xml);
-                assert_eq!(options.output, OutputTarget::Stdout);
+            CliAction::Run(config) => {
+                assert!(matches!(config.source, Source::Local(_)));
+                assert_eq!(config.format, DigestFormat::Xml);
+                assert_eq!(config.output, OutputTarget::Stdout);
             }
             CliAction::Help => panic!("expected Run action"),
         }
 
         let run_short = parse_cli(["codefeed", "-f", "xml", "-o", "-", "."]).unwrap();
         match run_short {
-            CliAction::Run { source, options } => {
-                assert!(matches!(source, Source::Local(_)));
-                assert_eq!(options.format, DigestFormat::Xml);
-                assert_eq!(options.output, OutputTarget::Stdout);
+            CliAction::Run(config) => {
+                assert!(matches!(config.source, Source::Local(_)));
+                assert_eq!(config.format, DigestFormat::Xml);
+                assert_eq!(config.output, OutputTarget::Stdout);
             }
             CliAction::Help => panic!("expected Run action"),
         }
 
         let run_eq = parse_cli(["codefeed", "--format=xml", "-o=-", "."]).unwrap();
         match run_eq {
-            CliAction::Run { source, options } => {
-                assert!(matches!(source, Source::Local(_)));
-                assert_eq!(options.format, DigestFormat::Xml);
-                assert_eq!(options.output, OutputTarget::Stdout);
+            CliAction::Run(config) => {
+                assert!(matches!(config.source, Source::Local(_)));
+                assert_eq!(config.format, DigestFormat::Xml);
+                assert_eq!(config.output, OutputTarget::Stdout);
             }
             CliAction::Help => panic!("expected Run action"),
         }
 
         let run_delimiter = parse_cli(["codefeed", "--", "-weird-path"]).unwrap();
         match run_delimiter {
-            CliAction::Run { source, .. } => {
-                assert_eq!(source, Source::Local(PathBuf::from("-weird-path")));
+            CliAction::Run(config) => {
+                assert_eq!(config.source, Source::Local(PathBuf::from("-weird-path")));
             }
             CliAction::Help => panic!("expected Run action"),
         }
@@ -248,9 +250,9 @@ mod tests {
         ])
         .unwrap();
         match run_gh {
-            CliAction::Run { source, .. } => {
+            CliAction::Run(config) => {
                 assert_eq!(
-                    source,
+                    config.source,
                     Source::GitHub {
                         owner: "rust-lang".into(),
                         repo: "cargo".into(),

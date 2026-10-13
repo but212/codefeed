@@ -13,11 +13,32 @@ use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
 use crate::core::policy::PathClassification;
 
-#[derive(Clone)]
 struct LocalCandidate {
     path: PathBuf,
     item_path: ItemPath,
     probe: Option<Probe>,
+}
+
+pub struct LocalCollector {
+    pub root: PathBuf,
+    pub output: OutputTarget,
+    pub format: DigestFormat,
+}
+
+impl LocalCollector {
+    pub fn new(root: PathBuf, output: OutputTarget, format: DigestFormat) -> Self {
+        Self {
+            root,
+            output,
+            format,
+        }
+    }
+}
+
+impl super::collector::Collector for LocalCollector {
+    fn collect(&self) -> Result<CollectionResult, IngestError> {
+        collect_local(&self.root, &self.output, self.format)
+    }
 }
 
 pub fn collect_local(
@@ -31,20 +52,28 @@ pub fn collect_local(
         OutputTarget::Stdout => None,
     };
     let label = local_label(&canonical_root);
-    let mut candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
+    let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
     let mut selector = Selector::new(&label, None, format)?;
 
-    for window in candidates.chunks_mut(crate::core::policy::FETCH_WINDOW) {
-        let probes = probe_candidates(&canonical_root, window)?;
-        for (candidate, probe) in window.iter_mut().zip(probes) {
+    let mut iter = candidates.into_iter();
+    loop {
+        let window: Vec<_> = iter
+            .by_ref()
+            .take(crate::core::policy::FETCH_WINDOW)
+            .collect();
+        if window.is_empty() {
+            break;
+        }
+        let probes = probe_candidates(&canonical_root, &window)?;
+        for (candidate, probe) in window.into_iter().zip(probes) {
             selector.decide(Item {
-                path: std::mem::take(&mut candidate.item_path),
+                path: candidate.item_path,
                 probe,
             })?;
         }
     }
 
-    let (files, skipped, trie) = selector.into_parts();
+    let (files, skipped, trie, format) = selector.into_parts();
 
     Ok(CollectionResult {
         label,
@@ -52,6 +81,7 @@ pub fn collect_local(
         files,
         skipped,
         trie,
+        format,
     })
 }
 
@@ -234,7 +264,7 @@ fn local_label(root: &Path) -> String {
 mod tests {
     use super::super::temp_dir;
     use super::*;
-    use crate::core::model::{Options, Source};
+    use crate::core::model::{RunConfig, Source};
     use crate::ingest;
 
     #[cfg(unix)]
@@ -246,13 +276,11 @@ mod tests {
         fs::write(root.join("a").join("b.txt"), "slash")?;
         let output = root.join("digest.txt");
 
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output.clone()),
-                ..Default::default()
-            },
-        )?;
+        let report = ingest(&RunConfig::new(
+            Source::Local(root.to_path_buf()),
+            OutputTarget::File(output.clone()),
+            DigestFormat::Text,
+        ))?;
         let digest = fs::read_to_string(output)?;
 
         assert_eq!(report.included_files, 2);
@@ -269,13 +297,11 @@ mod tests {
         fs::write(root.join("digest.txt"), "previous output")?;
         let output = root.join("missing").join("..").join("digest.txt");
 
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output),
-                ..Default::default()
-            },
-        )?;
+        let report = ingest(&RunConfig::new(
+            Source::Local(root.to_path_buf()),
+            OutputTarget::File(output),
+            DigestFormat::Text,
+        ))?;
         let digest = fs::read_to_string(root.join("digest.txt"))?;
 
         assert_eq!(report.included_files, 1);
@@ -292,13 +318,11 @@ mod tests {
         fs::write(root.join("digest.txt"), "previous output")?;
         let output = root.join("DIGEST.TXT");
 
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output),
-                ..Default::default()
-            },
-        )?;
+        let report = ingest(&RunConfig::new(
+            Source::Local(root.to_path_buf()),
+            OutputTarget::File(output),
+            DigestFormat::Text,
+        ))?;
         let digest = fs::read_to_string(root.join("DIGEST.TXT"))?;
 
         assert_eq!(report.included_files, 1);
@@ -339,13 +363,11 @@ mod tests {
         fs::write(root.join("ignored.txt"), "ignored")?;
 
         let output = root.join("digest.txt");
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output.clone()),
-                ..Default::default()
-            },
-        )?;
+        let report = ingest(&RunConfig::new(
+            Source::Local(root.to_path_buf()),
+            OutputTarget::File(output.clone()),
+            DigestFormat::Text,
+        ))?;
         let digest = fs::read_to_string(output)?;
 
         assert_eq!(report.included_files, 1);
@@ -369,13 +391,11 @@ mod tests {
         fs::write(root.join("important.txt"), "important")?;
         let output = root.join("digest.txt");
 
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output.clone()),
-                ..Default::default()
-            },
-        )?;
+        let report = ingest(&RunConfig::new(
+            Source::Local(root.to_path_buf()),
+            OutputTarget::File(output.clone()),
+            DigestFormat::Text,
+        ))?;
         let digest = fs::read_to_string(output)?;
 
         assert_eq!(report.included_files, 1);
@@ -388,13 +408,11 @@ mod tests {
         let root = temp_dir("custom_repo_name")?;
         fs::write(root.join("file.txt"), "hello")?;
         let output = root.join("digest.txt");
-        let _ = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output.clone()),
-                ..Default::default()
-            },
-        )?;
+        let _ = ingest(&RunConfig::new(
+            Source::Local(root.to_path_buf()),
+            OutputTarget::File(output.clone()),
+            DigestFormat::Text,
+        ))?;
         let digest = fs::read_to_string(&output)?;
         let expected_basename = root.file_name().unwrap().to_str().unwrap();
         assert!(digest.starts_with(&format!("Repository: {expected_basename}\n")));
@@ -418,13 +436,11 @@ mod tests {
         fs::write(root.join(OsString::from_vec(b"a\x80".to_vec())), "a")?;
         fs::write(root.join(OsString::from_vec(b"b\x81".to_vec())), "b")?;
         let output = root.join("digest.txt");
-        let report = ingest(
-            &Source::Local(root.to_path_buf()),
-            &Options {
-                output: OutputTarget::File(output),
-                ..Default::default()
-            },
-        )?;
+        let report = ingest(&RunConfig::new(
+            Source::Local(root.to_path_buf()),
+            OutputTarget::File(output),
+            DigestFormat::Text,
+        ))?;
         assert_eq!(report.included_files, 0);
         assert_eq!(report.skipped_files, 2);
         Ok(())

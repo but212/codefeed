@@ -7,10 +7,9 @@ use crate::core::policy::MAX_FILE_COUNT;
 
 /// Path text as observed by the imperative shell. Non-UTF-8 paths are still
 /// candidates and must be counted, then skipped.
-#[derive(Clone, Default, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ItemPath {
     Utf8(String),
-    #[default]
     NonUtf8,
 }
 
@@ -100,8 +99,20 @@ impl Selector {
         Ok(())
     }
 
-    pub fn into_parts(self) -> (Vec<FileRecord>, usize, crate::core::digest::BudgetTrie) {
-        (self.files, self.digest.skipped(), self.digest.trie)
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<FileRecord>,
+        usize,
+        crate::core::digest::BudgetTrie,
+        DigestFormat,
+    ) {
+        (
+            self.files,
+            self.digest.skipped(),
+            self.digest.trie,
+            self.digest.format,
+        )
     }
 }
 
@@ -237,11 +248,12 @@ mod tests {
             Probe::Bytes(vec![b'x'; MAX_FILE_SIZE as usize]),
         ))?;
 
-        let (files, skipped, _) = selector.into_parts();
+        let (files, skipped, _, format) = selector.into_parts();
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].path, "a.txt");
         assert_eq!(files[1].path, "exact.txt");
         assert_eq!(skipped, 4);
+        assert_eq!(format, DigestFormat::Text);
         Ok(())
     }
 
@@ -252,7 +264,7 @@ mod tests {
             selector.decide(decide_item("ignored.txt", Probe::Ignored))?;
         }
         selector.decide(decide_item("kept.txt", Probe::Bytes(b"kept".to_vec())))?;
-        let (files, skipped, _) = selector.into_parts();
+        let (files, skipped, _, _) = selector.into_parts();
         assert_eq!(files.len(), 1);
         assert_eq!(skipped, 0);
         Ok(())
@@ -292,7 +304,6 @@ mod tests {
             probe: Probe::Bytes(b"text".to_vec()),
         };
         assert!(matches!(non_utf8.resolve(), ItemResolution::Skipped(None)));
-        assert!(matches!(ItemPath::default(), ItemPath::NonUtf8));
     }
 
     #[test]
