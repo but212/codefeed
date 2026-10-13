@@ -60,7 +60,7 @@ imperative-shell boundary.
 - Windows containment checks (`is_strictly_beneath`) verify handle canonical paths (`GetFinalPathNameByHandleW`) against `canonical_root` component-wise without intermediate heap allocations.
 - Trie insertion is iterative and non-recursive with $O(1)$ fast-path sibling comparison against previously inserted nodes (`find_child`), avoiding stack frame exhaustion on deeply nested directories. `BudgetTrieNode` leverages `Cow<'_, str>` and sparse escaping (`Option<String>`), eliminating redundant heap allocations for unescaped paths. Trie rendering reuses a single mutable `String` buffer across recursive node visits (`push_str` / `truncate`), achieving zero heap allocations during serialization.
 - CLI arguments are parsed linearly into options and source without third-party dependencies, supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters.
-- Candidate budget uses `HashMap` with `extract_dir_slice`, formatting overflow diagnostics from observed candidates at termination sorted deterministically by count descending then directory ascending.
+- Candidate budget uses `HashMap` with `extract_dir_slice`, performing `get_mut` lookups before insertions to avoid heap allocations for existing directories, formatting overflow diagnostics from observed candidates at termination sorted deterministically by count descending then directory ascending.
 - Digest budget is error-terminal: limit breach immediately errors and aborts without internal transactional rollback.
 
 ### Network & GitHub

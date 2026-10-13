@@ -130,7 +130,11 @@ impl CandidateBudget {
             .checked_add(1)
             .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
         let dir_slice = extract_dir_slice(path);
-        *self.dir_counts.entry(dir_slice.to_owned()).or_default() += 1;
+        if let Some(count) = self.dir_counts.get_mut(dir_slice) {
+            *count += 1;
+        } else {
+            self.dir_counts.insert(dir_slice.to_owned(), 1);
+        }
 
         if self.count > MAX_FILE_COUNT {
             return Err(IngestError::CandidateLimitExceeded(
@@ -166,7 +170,7 @@ fn extract_dir_slice(path: Option<&str>) -> &str {
 
 fn format_overflow_diagnostic(dir_counts: &HashMap<String, usize>) -> String {
     let mut dirs: Vec<(&str, usize)> = dir_counts.iter().map(|(d, c)| (d.as_str(), *c)).collect();
-    dirs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    dirs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
 
     let mut msg =
         format!("repository contains more than {MAX_FILE_COUNT} files\nlargest directories:");

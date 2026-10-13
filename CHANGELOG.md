@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced multi-byte Unicode whitespace sweeps with `trim_ascii()` for `--ref` and GitHub token parsing in `cli.rs` and `github_client.rs`.
 - Refactored `local::walk_candidates` to replace per-item `std::sync::mpsc` channel transmission with thread-local chunking (flushed on drop or at 128 items into a `Mutex<Vec<LocalCandidate>>`), reducing lock contention and drop glue code size.
 - Optimized relative path normalization in `local.rs` using a single preallocated buffer (`normalize_relative_path`), eliminating intermediate `Vec<&str>` allocations.
+- Optimized `CandidateBudget::add` using `get_mut` pre-lookups in `src/core/decide.rs`, eliminating redundant `String` key allocations for known directory paths.
 
 ## [0.2.1]
 
