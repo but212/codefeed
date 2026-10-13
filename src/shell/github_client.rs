@@ -124,7 +124,7 @@ where
     ["GITHUB_TOKEN", "GH_TOKEN"].into_iter().find_map(|key| {
         lookup(key)
             .ok()
-            .map(|t| t.trim().to_string())
+            .map(|t| t.trim_ascii().to_string())
             .filter(|t| !t.is_empty())
     })
 }

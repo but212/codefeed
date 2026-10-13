@@ -33,15 +33,19 @@ const TEXT_FIXED_FRAME_BYTES: u64 = (REPOSITORY_PREFIX.len()
 const TEXT_REVISION_OVERHEAD_BYTES: u64 = (REVISION_PREFIX.len() + NEWLINE.len()) as u64;
 
 pub(crate) fn escape_header(value: &str) -> Cow<'_, str> {
-    if !value.contains('\\') && !value.contains('\r') && !value.contains('\n') {
+    if !value.bytes().any(|b| matches!(b, b'\\' | b'\r' | b'\n')) {
         return Cow::Borrowed(value);
     }
-    Cow::Owned(
-        value
-            .replace('\\', "\\\\")
-            .replace('\r', "\\r")
-            .replace('\n', "\\n"),
-    )
+    let mut out = String::with_capacity(value.len() + 8);
+    for b in value.bytes() {
+        match b {
+            b'\\' => out.push_str("\\\\"),
+            b'\r' => out.push_str("\\r"),
+            b'\n' => out.push_str("\\n"),
+            _ => out.push(b as char),
+        }
+    }
+    Cow::Owned(out)
 }
 
 pub(crate) fn calculate_file_bytes(file: &FileRecord) -> Result<(u64, u64, u64), IngestError> {
@@ -85,7 +89,7 @@ where
     I: IntoIterator<Item = &'a FileRecord>,
 {
     let mut ordered_files: Vec<&FileRecord> = files.into_iter().collect();
-    ordered_files.sort_by(|left, right| left.path.cmp(&right.path));
+    ordered_files.sort_unstable_by(|left, right| left.path.cmp(&right.path));
 
     writer.write_all(REPOSITORY_PREFIX.as_bytes())?;
     writer.write_all(escape_header(label).as_bytes())?;
@@ -136,6 +140,13 @@ mod tests {
             escape_header("path\nwith\nnewline"),
             Cow::Owned(_)
         ));
+    }
+
+    #[test]
+    fn escape_header_replaces_all_target_characters_in_single_string() {
+        let input = "a\\b\rc\nd\\\\e\r\n";
+        let expected = "a\\\\b\\rc\\nd\\\\\\\\e\\r\\n";
+        assert_eq!(escape_header(input).as_ref(), expected);
     }
 
     #[test]

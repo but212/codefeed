@@ -153,13 +153,14 @@ impl BudgetTrie {
     }
 
     pub fn render_to_writer<W: Write + ?Sized>(&self, writer: &mut W) -> std::io::Result<()> {
-        Self::render_nodes(writer, &self.children, "")
+        let mut prefix = String::new();
+        Self::render_nodes(writer, &self.children, &mut prefix)
     }
 
     fn render_nodes<W: Write + ?Sized>(
         writer: &mut W,
         nodes: &[BudgetTrieNode],
-        prefix: &str,
+        prefix: &mut String,
     ) -> std::io::Result<()> {
         let total = nodes.len();
         for (idx, node) in nodes.iter().enumerate() {
@@ -176,12 +177,10 @@ impl BudgetTrie {
             }
             writer.write_all(b"\n")?;
             if !node.children.is_empty() {
-                let child_prefix = if is_last {
-                    format!("{prefix}{TREE_SPACE}")
-                } else {
-                    format!("{prefix}{TREE_VERT}")
-                };
-                Self::render_nodes(writer, &node.children, &child_prefix)?;
+                let prev_len = prefix.len();
+                prefix.push_str(if is_last { TREE_SPACE } else { TREE_VERT });
+                Self::render_nodes(writer, &node.children, prefix)?;
+                prefix.truncate(prev_len);
             }
         }
         Ok(())

@@ -224,7 +224,7 @@ where
     writer.write_all(XML_DIR_END.as_bytes())?;
     writer.write_all(XML_FILES_START.as_bytes())?;
     let mut ordered_files: Vec<_> = files.into_iter().collect();
-    ordered_files.sort_by(|left, right| left.path.cmp(&right.path));
+    ordered_files.sort_unstable_by(|left, right| left.path.cmp(&right.path));
     for file in ordered_files {
         writer.write_all(XML_FILE_START.as_bytes())?;
         writer.write_all(xml_escape(&file.path).as_bytes())?;

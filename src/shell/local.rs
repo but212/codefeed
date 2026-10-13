@@ -113,16 +113,38 @@ fn walk_candidates(
         .follow_links(false)
         .build_parallel();
 
-    let (tx, rx) = std::sync::mpsc::channel();
+    let candidates_mutex = std::sync::Mutex::new(Vec::new());
+    let error_slot = std::sync::Mutex::new(None);
     let root_clone = root.to_path_buf();
     let filter_arc = output_filter.cloned().map(std::sync::Arc::new);
     let candidate_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     walker.run(|| {
-        let tx = tx.clone();
+        let candidates_mutex = &candidates_mutex;
+        let error_slot = &error_slot;
         let output_filter = filter_arc.clone();
         let root = root_clone.clone();
         let candidate_counter = candidate_counter.clone();
+        struct BatchFlusher<'a> {
+            batch: Vec<LocalCandidate>,
+            target: &'a std::sync::Mutex<Vec<LocalCandidate>>,
+        }
+        impl Drop for BatchFlusher<'_> {
+            fn drop(&mut self) {
+                if !self.batch.is_empty() {
+                    self.target
+                        .lock()
+                        .unwrap()
+                        .append(&mut self.batch);
+                }
+            }
+        }
+
+        let mut flusher = BatchFlusher {
+            batch: Vec::with_capacity(128),
+            target: candidates_mutex,
+        };
+
         Box::new(move |entry| {
             if candidate_counter.load(std::sync::atomic::Ordering::Relaxed)
                 > crate::core::policy::MAX_FILE_COUNT
@@ -132,7 +154,10 @@ fn walk_candidates(
             let entry = match entry {
                 Ok(e) => e,
                 Err(err) => {
-                    let _ = tx.send(Err(IngestError::Io(io::Error::other(err))));
+                    let mut err_guard = error_slot.lock().unwrap();
+                    if err_guard.is_none() {
+                        *err_guard = Some(IngestError::Io(io::Error::other(err)));
+                    }
                     return WalkState::Continue;
                 }
             };
@@ -148,18 +173,14 @@ fn walk_candidates(
             let relative = match entry_path.strip_prefix(&root) {
                 Ok(rel) => rel,
                 Err(err) => {
-                    let _ = tx.send(Err(IngestError::InvalidMetadata(err.to_string())));
+                    let mut err_guard = error_slot.lock().unwrap();
+                    if err_guard.is_none() {
+                        *err_guard = Some(IngestError::InvalidMetadata(err.to_string()));
+                    }
                     return WalkState::Quit;
                 }
             };
-            let item_path = match relative
-                .components()
-                .map(|part| part.as_os_str().to_str())
-                .collect::<Option<Vec<_>>>()
-            {
-                Some(parts) => ItemPath::Utf8(parts.join("/")),
-                None => ItemPath::NonUtf8,
-            };
+            let item_path = normalize_relative_path(relative);
 
             let probe = match &item_path {
                 ItemPath::NonUtf8 => Some(Probe::Missing),
@@ -180,18 +201,29 @@ fn walk_candidates(
                 return WalkState::Quit;
             }
 
-            let _ = tx.send(Ok(LocalCandidate {
+            flusher.batch.push(LocalCandidate {
                 path: entry_path.to_path_buf(),
                 item_path,
                 probe,
-            }));
+            });
+
+            if flusher.batch.len() >= 128 {
+                flusher
+                    .target
+                    .lock()
+                    .unwrap()
+                    .append(&mut flusher.batch);
+            }
+
             WalkState::Continue
         })
     });
 
-    drop(tx);
+    if let Some(err) = error_slot.into_inner().unwrap() {
+        return Err(err);
+    }
 
-    let mut candidates: Vec<LocalCandidate> = rx.into_iter().collect::<Result<_, _>>()?;
+    let mut candidates = candidates_mutex.into_inner().unwrap();
 
     CandidateBudget::verify_count(
         candidates.iter().map(|item| match &item.item_path {
@@ -201,7 +233,7 @@ fn walk_candidates(
         candidates.len(),
     )?;
 
-    candidates.sort_by(|a, b| match (&a.item_path, &b.item_path) {
+    candidates.sort_unstable_by(|a, b| match (&a.item_path, &b.item_path) {
         (ItemPath::Utf8(left), ItemPath::Utf8(right)) => left.cmp(right),
         (ItemPath::Utf8(_), ItemPath::NonUtf8) => std::cmp::Ordering::Less,
         (ItemPath::NonUtf8, ItemPath::Utf8(_)) => std::cmp::Ordering::Greater,
@@ -250,6 +282,30 @@ fn probe_candidates(root: &Path, candidates: &[LocalCandidate]) -> Result<Vec<Pr
         results.sort_unstable_by_key(|(idx, _)| *idx);
         results.into_iter().map(|(_, res)| res).collect()
     })
+}
+
+fn normalize_relative_path(relative: &Path) -> ItemPath {
+    let mut parts = relative.components().peekable();
+    let Some(first) = parts.next() else {
+        return ItemPath::Utf8(String::new());
+    };
+    let Some(first_str) = first.as_os_str().to_str() else {
+        return ItemPath::NonUtf8;
+    };
+    if parts.peek().is_none() {
+        return ItemPath::Utf8(first_str.to_owned());
+    }
+
+    let mut buf = String::with_capacity(relative.as_os_str().len());
+    buf.push_str(first_str);
+    for part in parts {
+        let Some(s) = part.as_os_str().to_str() else {
+            return ItemPath::NonUtf8;
+        };
+        buf.push('/');
+        buf.push_str(s);
+    }
+    ItemPath::Utf8(buf)
 }
 
 fn local_label(root: &Path) -> String {

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Eliminated per-node heap allocations during `BudgetTrie::render_nodes` traversal by reusing a single mutable `String` buffer with stack-like `push_str` and `truncate`.
+- Replaced chained `.replace()` calls in `text::escape_header` with a single-pass byte scanner and preallocated buffer assembly.
+- Converted unique file path sorting in `text::render`, `xml::render`, and `local::walk_candidates` from stable sort (`sort_by`) to in-place pdqsort (`sort_unstable_by`), eliminating scratch buffer allocations.
+- Replaced multi-byte Unicode whitespace sweeps with `trim_ascii()` for `--ref` and GitHub token parsing in `cli.rs` and `github_client.rs`.
+- Refactored `local::walk_candidates` to replace per-item `std::sync::mpsc` channel transmission with thread-local chunking (flushed on drop or at 128 items into a `Mutex<Vec<LocalCandidate>>`), reducing lock contention and drop glue code size.
+- Optimized relative path normalization in `local.rs` using a single preallocated buffer (`normalize_relative_path`), eliminating intermediate `Vec<&str>` allocations.
+
 ## [0.2.1]
 
 ### Added
@@ -118,6 +129,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Conventional lockfile and noise path exclusion before candidate accounting.
 - Resource budgets enforcing maximum candidate file counts and output sizes.
 
+[Unreleased]: https://github.com/but212/codefeed/compare/v0.2.1...HEAD
 [0.2.1]: https://github.com/but212/codefeed/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/but212/codefeed/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/but212/codefeed/compare/v0.1.1...v0.1.2
