@@ -1,9 +1,12 @@
 //! Safe local file acquisition: never follows symlinks, never blocks on
 //! special files.
 
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
+
+#[cfg(any(windows, not(any(unix, windows))))]
+use std::fs::OpenOptions;
 
 #[cfg(unix)]
 use rustix::fs::{Mode, OFlags};
@@ -126,7 +129,6 @@ fn open_directory(path: &Path) -> io::Result<OwnedFd> {
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY | OFlags::NOFOLLOW,
         Mode::empty(),
     )
-    .map(OwnedFd::from)
     .map_err(io::Error::from)
 }
 
