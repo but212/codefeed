@@ -195,9 +195,10 @@ where
     trie.render_to_writer(writer)?;
     writer.write_all(XML_DIR_END.as_bytes())?;
     writer.write_all(XML_FILES_START.as_bytes())?;
-    let mut ordered_files: Vec<_> = files.into_iter().collect();
-    ordered_files.sort_unstable_by(|left, right| left.path.cmp(&right.path));
-    for file in ordered_files {
+    let mut ordered_files: Vec<(&str, &FileRecord)> =
+        files.into_iter().map(|f| (f.path.as_str(), f)).collect();
+    ordered_files.sort_unstable_by_key(|(path, _)| *path);
+    for (_, file) in ordered_files {
         writer.write_all(XML_FILE_START.as_bytes())?;
         writer.write_all(xml_escape(&file.path).as_bytes())?;
         writer.write_all(XML_TAG_CLOSE.as_bytes())?;

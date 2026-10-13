@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Refactored `BudgetTrie` in `src/core/digest/trie.rs` into a contiguous flat node arena (`Vec<BudgetTrieNode>`) with indexed child tracking (`Vec<usize>`), eliminating recursive heap pointer chasing and improving CPU prefetching locality.
+- Accelerated digest sorting in `src/core/digest/text.rs` and `src/core/digest/xml.rs` using key-projected `Vec<(&str, &FileRecord)>` sorting, removing double heap indirection in comparator loops.
 - Replaced manual 16-hex byte percent-encoding loop in `src/core/github_url.rs` with `percent_encoding::utf8_percent_encode`.
 - Accelerated `text_content` in `src/core/decide.rs` by checking NUL (`\0`) bytes via `memchr::memchr` before UTF-8 decoding.
 - Accelerated header escaping (`escape_header`) in `src/core/digest/text.rs` by scanning target escape bytes (`\`, `\r`, `\n`) via `memchr::memchr3`.
