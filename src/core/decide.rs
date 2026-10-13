@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::core::digest::DigestBudget;
 use crate::core::error::IngestError;
-use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
+use crate::core::model::{CollectionResult, DigestFormat, FileRecord, FileStorage};
 use crate::core::policy::MAX_FILE_COUNT;
 
 /// Path text as observed by the imperative shell. Non-UTF-8 paths are still
@@ -31,7 +31,7 @@ pub struct Item {
 
 enum ItemResolution {
     Ignored,
-    Included(FileRecord),
+    Included(String, String),
     Skipped(Option<String>),
 }
 
@@ -40,7 +40,7 @@ impl Item {
         match (self.path, self.probe) {
             (_, Probe::Ignored) => ItemResolution::Ignored,
             (ItemPath::Utf8(path), Probe::Bytes(bytes)) => match text_content(bytes) {
-                Some(content) => ItemResolution::Included(FileRecord { path, content }),
+                Some(content) => ItemResolution::Included(path, content),
                 None => ItemResolution::Skipped(Some(path)),
             },
             (ItemPath::Utf8(path), _) => ItemResolution::Skipped(Some(path)),
@@ -52,7 +52,7 @@ impl Item {
 /// Pure per-item selection and budget accounting. Owns no I/O; the shell feeds
 /// observations and reads the outcome through [`Selector::finish`].
 pub struct Selector {
-    files: Vec<FileRecord>,
+    storage: FileStorage,
     candidates: CandidateBudget,
     digest: DigestBudget,
 }
@@ -60,22 +60,22 @@ pub struct Selector {
 impl Selector {
     pub fn new(format: DigestFormat) -> Self {
         Self {
-            files: Vec::new(),
+            storage: FileStorage::new(),
             candidates: CandidateBudget::default(),
             digest: DigestBudget::new(format),
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.files.is_empty() && self.digest.skipped() == 0
+        self.storage.is_empty() && self.digest.skipped() == 0
     }
 
     pub fn decide(&mut self, item: Item) -> Result<(), IngestError> {
         match item.resolve() {
             ItemResolution::Ignored => Ok(()),
-            ItemResolution::Included(file) => {
-                self.candidates.add(Some(file.path.as_str()))?;
-                self.add_file(file)
+            ItemResolution::Included(path, content) => {
+                self.candidates.add(Some(path.as_str()))?;
+                self.add_file(&path, &content)
             }
             ItemResolution::Skipped(path) => {
                 self.candidates.add(path.as_deref())?;
@@ -85,18 +85,19 @@ impl Selector {
         }
     }
 
-    fn add_file(&mut self, file: FileRecord) -> Result<(), IngestError> {
-        if let Err(err) = self.digest.add(&file) {
+    fn add_file(&mut self, path: &str, content: &str) -> Result<(), IngestError> {
+        let record = FileRecord { path, content };
+        if let Err(err) = self.digest.add(&record) {
             if matches!(err, IngestError::OutputTooLarge { .. }) {
                 return Err(IngestError::OutputTooLarge {
                     largest_files: crate::core::digest::largest_files(
-                        self.files.iter().chain(std::iter::once(&file)),
+                        self.storage.iter().chain(std::iter::once(record)),
                     ),
                 });
             }
             return Err(err);
         }
-        self.files.push(file);
+        self.storage.push(path, content);
         Ok(())
     }
 
@@ -104,7 +105,7 @@ impl Selector {
         CollectionResult {
             label,
             revision,
-            files: self.files,
+            files: self.storage,
             skipped: self.digest.skipped(),
             trie: self.digest.trie,
             format: self.digest.format,
@@ -230,8 +231,8 @@ mod tests {
 
         let collection = selector.finish("test".into(), None);
         assert_eq!(collection.files.len(), 2);
-        assert_eq!(collection.files[0].path, "a.txt");
-        assert_eq!(collection.files[1].path, "exact.txt");
+        assert_eq!(collection.files.get_at(0).unwrap().path, "a.txt");
+        assert_eq!(collection.files.get_at(1).unwrap().path, "exact.txt");
         assert_eq!(collection.skipped, 4);
         assert_eq!(collection.format, DigestFormat::Text);
         Ok(())
@@ -263,9 +264,9 @@ mod tests {
             probe: Probe::Bytes(b"hello".to_vec()),
         };
         match included.resolve() {
-            ItemResolution::Included(file) => {
-                assert_eq!(file.path, "included.txt");
-                assert_eq!(file.content, "hello");
+            ItemResolution::Included(path, content) => {
+                assert_eq!(path, "included.txt");
+                assert_eq!(content, "hello");
             }
             _ => panic!("expected Included"),
         }

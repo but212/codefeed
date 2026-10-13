@@ -54,7 +54,7 @@ pub(crate) fn render<W>(
     writer: &mut W,
     label: &str,
     revision: Option<&str>,
-    ordered_files: &[(&str, &FileRecord)],
+    ordered_files: &[(&str, FileRecord<'_>)],
     skipped: usize,
     trie: &BudgetTrie,
 ) -> Result<(), IngestError>

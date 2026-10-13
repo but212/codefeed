@@ -96,11 +96,141 @@ pub struct IngestReport {
     pub estimated_tokens: usize,
 }
 
-/// One digest entry. Owned by the domain core; rendered by `digest`.
-#[derive(Debug, Clone)]
-pub struct FileRecord {
-    pub path: String,
-    pub content: String,
+/// 16-byte POD indexing a file path and content slice in [`FileStorage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FileSpan {
+    pub path_offset: u32,
+    pub path_len: u32,
+    pub content_offset: u32,
+    pub content_len: u32,
+}
+
+/// Continuous arena storage for file paths and contents.
+/// Eliminates per-file heap allocations and preserves cache locality.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileStorage {
+    pub spans: Vec<FileSpan>,
+    pub path_arena: String,
+    pub content_arena: String,
+}
+
+impl FileStorage {
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.spans.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.spans.is_empty()
+    }
+
+    /// Appends path and content to the arenas and records a [`FileSpan`].
+    pub fn push(&mut self, path: &str, content: &str) -> FileSpan {
+        let path_offset = self.path_arena.len() as u32;
+        let path_len = path.len() as u32;
+        self.path_arena.push_str(path);
+
+        let content_offset = self.content_arena.len() as u32;
+        let content_len = content.len() as u32;
+        self.content_arena.push_str(content);
+
+        let span = FileSpan {
+            path_offset,
+            path_len,
+            content_offset,
+            content_len,
+        };
+        self.spans.push(span);
+        span
+    }
+
+    /// Resolves a [`FileSpan`] into a borrowed [`FileRecord`].
+    #[inline]
+    pub fn get(&self, span: FileSpan) -> FileRecord<'_> {
+        let p_start = span.path_offset as usize;
+        let p_end = p_start + span.path_len as usize;
+        let c_start = span.content_offset as usize;
+        let c_end = c_start + span.content_len as usize;
+
+        FileRecord {
+            path: &self.path_arena[p_start..p_end],
+            content: &self.content_arena[c_start..c_end],
+        }
+    }
+
+    /// Resolves a span by index into a borrowed [`FileRecord`].
+    #[inline]
+    pub fn get_at(&self, index: usize) -> Option<FileRecord<'_>> {
+        self.spans.get(index).map(|&span| self.get(span))
+    }
+
+    /// Iterator yielding borrowed [`FileRecord`] views over the arena.
+    pub fn iter(&self) -> impl Iterator<Item = FileRecord<'_>> + ExactSizeIterator {
+        self.spans.iter().map(move |&span| self.get(span))
+    }
+}
+
+impl std::ops::Index<usize> for FileStorage {
+    type Output = FileSpan;
+
+    #[inline]
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.spans[index]
+    }
+}
+
+impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
+    fn from_iter<T: IntoIterator<Item = FileRecord<'a>>>(iter: T) -> Self {
+        let mut storage = Self::new();
+        for record in iter {
+            storage.push(record.path, record.content);
+        }
+        storage
+    }
+}
+
+impl<'a> FromIterator<&'a FileRecord<'a>> for FileStorage {
+    fn from_iter<T: IntoIterator<Item = &'a FileRecord<'a>>>(iter: T) -> Self {
+        let mut storage = Self::new();
+        for record in iter {
+            storage.push(record.path, record.content);
+        }
+        storage
+    }
+}
+
+impl<'a> IntoIterator for &'a FileStorage {
+    type Item = FileRecord<'a>;
+    type IntoIter = Box<dyn Iterator<Item = FileRecord<'a>> + 'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Box::new(self.iter())
+    }
+}
+
+/// Zero-copy borrowed view into a file record stored within [`FileStorage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileRecord<'a> {
+    pub path: &'a str,
+    pub content: &'a str,
+}
+
+impl FileRecord<'_> {
+    #[inline]
+    pub fn path(&self) -> &str {
+        self.path
+    }
+
+    #[inline]
+    pub fn content(&self) -> &str {
+        self.content
+    }
 }
 
 /// Raw files and metadata collected by the shell before digest rendering.
@@ -108,8 +238,49 @@ pub struct FileRecord {
 pub struct CollectionResult {
     pub label: String,
     pub revision: Option<String>,
-    pub files: Vec<FileRecord>,
+    pub files: FileStorage,
     pub skipped: usize,
     pub trie: crate::core::digest::BudgetTrie,
     pub format: DigestFormat,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_storage_maintains_continuous_arena_and_zero_copy_views() {
+        let mut storage = FileStorage::new();
+        assert!(storage.is_empty());
+        assert_eq!(storage.len(), 0);
+
+        let span1 = storage.push("path/to/first.rs", "pub fn first() {}");
+        let span2 = storage.push("second.txt", "second content\n");
+
+        assert_eq!(storage.len(), 2);
+        assert!(!storage.is_empty());
+
+        let rec1 = storage.get(span1);
+        assert_eq!(rec1.path(), "path/to/first.rs");
+        assert_eq!(rec1.content(), "pub fn first() {}");
+
+        let rec2 = storage.get(span2);
+        assert_eq!(rec2.path(), "second.txt");
+        assert_eq!(rec2.content(), "second content\n");
+
+        assert_eq!(storage.get_at(0), Some(rec1));
+        assert_eq!(storage.get_at(1), Some(rec2));
+        assert_eq!(storage.get_at(2), None);
+
+        let collected: Vec<FileRecord<'_>> = storage.iter().collect();
+        assert_eq!(collected, vec![rec1, rec2]);
+
+        // Arena contents verification
+        assert_eq!(storage.path_arena, "path/to/first.rssecond.txt");
+        assert_eq!(storage.content_arena, "pub fn first() {}second content\n");
+
+        // FromIterator verification
+        let reconstructed: FileStorage = collected.into_iter().collect();
+        assert_eq!(reconstructed, storage);
+    }
 }

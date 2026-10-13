@@ -158,7 +158,7 @@ fn local_label(root: &Path) -> String {
 mod tests {
     use super::super::temp_dir;
     use super::*;
-    use crate::core::model::{RunConfig, Source};
+    use crate::core::model::{FileRecord, RunConfig, Source};
     use crate::ingest;
 
     #[cfg(unix)]
@@ -355,7 +355,8 @@ mod tests {
         let result = collect_local(&root, &OutputTarget::Stdout, DigestFormat::Text)?;
         let files = result.files;
         assert_eq!(files.len(), 30);
-        for window in files.windows(2) {
+        let records: Vec<FileRecord<'_>> = files.iter().collect();
+        for window in records.windows(2) {
             assert!(
                 window[0].path < window[1].path,
                 "ordering violated: {} >= {}",

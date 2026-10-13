@@ -10,7 +10,7 @@ use std::io::Write;
 use std::time::Instant;
 
 use codefeed::__bench::{
-    BudgetTrie, CollectionResult, DigestFormat, FileRecord, Item, ItemPath, OutputTarget, Probe,
+    BudgetTrie, CollectionResult, DigestFormat, FileStorage, Item, ItemPath, OutputTarget, Probe,
     Selector, collect_local, escaped_metrics, estimate_tokens, render_digest_to_writer,
     text_content, write_xml_escaped, xml_escape,
 };
@@ -113,64 +113,57 @@ mod engine {
 mod fixture {
     use super::*;
 
-    pub fn generate_flat_files(count: usize, file_size: usize) -> Vec<FileRecord> {
+    pub fn generate_flat_files(count: usize, file_size: usize) -> FileStorage {
         let line = "pub fn sample() -> i32 { 42 }\n";
         let repeats = (file_size / line.len()).max(1);
         let content = line.repeat(repeats);
 
-        (0..count)
-            .map(|i| FileRecord {
-                path: format!("src/file_{i:05}.rs"),
-                content: content.clone(),
-            })
-            .collect()
+        let mut storage = FileStorage::new();
+        for i in 0..count {
+            let path = format!("src/file_{i:05}.rs");
+            storage.push(&path, &content);
+        }
+        storage
     }
 
-    pub fn generate_deep_files(
-        count: usize,
-        max_depth: usize,
-        file_size: usize,
-    ) -> Vec<FileRecord> {
+    pub fn generate_deep_files(count: usize, max_depth: usize, file_size: usize) -> FileStorage {
         let line = "const DEPTH_VAL: usize = 100;\n";
         let repeats = (file_size / line.len()).max(1);
         let content = line.repeat(repeats);
 
-        (0..count)
-            .map(|i| {
-                let mut path = String::new();
-                for d in 0..max_depth {
-                    path.push_str(&format!("level_{d}/"));
-                }
-                path.push_str(&format!("node_{i:05}.rs"));
-                FileRecord {
-                    path,
-                    content: content.clone(),
-                }
-            })
-            .collect()
+        let mut storage = FileStorage::new();
+        for i in 0..count {
+            let mut path = String::new();
+            for d in 0..max_depth {
+                path.push_str(&format!("level_{d}/"));
+            }
+            path.push_str(&format!("node_{i:05}.rs"));
+            storage.push(&path, &content);
+        }
+        storage
     }
 
-    pub fn generate_xml_heavy_files(count: usize, file_size: usize) -> Vec<FileRecord> {
+    pub fn generate_xml_heavy_files(count: usize, file_size: usize) -> FileStorage {
         let line = "if (a < b && c > d) { let s = \"'quotes' & <tags>\"; }\n";
         let repeats = (file_size / line.len()).max(1);
         let content = line.repeat(repeats);
 
-        (0..count)
-            .map(|i| FileRecord {
-                path: format!("src/xml_{i:05}.rs"),
-                content: content.clone(),
-            })
-            .collect()
+        let mut storage = FileStorage::new();
+        for i in 0..count {
+            let path = format!("src/xml_{i:05}.rs");
+            storage.push(&path, &content);
+        }
+        storage
     }
 
     pub fn build_collection(
         label: &str,
-        files: Vec<FileRecord>,
+        files: FileStorage,
         format: DigestFormat,
     ) -> CollectionResult {
         let mut trie = BudgetTrie::new(matches!(format, DigestFormat::Xml));
-        for file in &files {
-            trie.insert(&file.path);
+        for file in files.iter() {
+            trie.insert(file.path);
         }
         CollectionResult {
             label: label.to_string(),
@@ -598,15 +591,20 @@ fn run_self_tests() {
 
     let flat = fixture::generate_flat_files(10, 50);
     assert_eq!(flat.len(), 10);
-    assert!(flat[0].path.starts_with("src/file_"));
+    assert!(flat.get_at(0).unwrap().path.starts_with("src/file_"));
 
     let deep = fixture::generate_deep_files(5, 4, 50);
     assert_eq!(deep.len(), 5);
-    assert!(deep[0].path.starts_with("level_0/level_1/level_2/level_3/"));
+    assert!(
+        deep.get_at(0)
+            .unwrap()
+            .path
+            .starts_with("level_0/level_1/level_2/level_3/")
+    );
 
     let xml = fixture::generate_xml_heavy_files(3, 50);
     assert_eq!(xml.len(), 3);
-    assert!(xml[0].content.contains("<tags>"));
+    assert!(xml.get_at(0).unwrap().content.contains("<tags>"));
 }
 
 fn main() {

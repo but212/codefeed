@@ -205,7 +205,7 @@ mod tests {
         );
         assert_eq!(result.label, "https://github.com/but212/codefeed");
 
-        let paths: Vec<&str> = result.files.iter().map(|f| f.path.as_str()).collect();
+        let paths: Vec<&str> = result.files.iter().map(|f| f.path).collect();
         assert_eq!(paths, vec!["Cargo.toml", "src/main.rs"]);
 
         // Cargo.lock is ignored (neither candidate nor skipped)
@@ -234,7 +234,7 @@ mod tests {
         .expect("collection should succeed");
 
         assert_eq!(result.files.len(), 1);
-        assert_eq!(result.files[0].path, "small.txt");
+        assert_eq!(result.files.get_at(0).unwrap().path, "small.txt");
         assert_eq!(result.skipped, 1);
     }
 
@@ -256,8 +256,8 @@ mod tests {
         .expect("collection should succeed");
 
         assert_eq!(result.files.len(), 1);
-        assert_eq!(result.files[0].path, "pax_global_header");
-        assert_eq!(result.files[0].content, "hello content");
+        assert_eq!(result.files.get_at(0).unwrap().path, "pax_global_header");
+        assert_eq!(result.files.get_at(0).unwrap().content, "hello content");
         assert_eq!(result.revision, None);
     }
 

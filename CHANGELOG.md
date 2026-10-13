@@ -9,11 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Continuous arena storage `FileStorage` in `src/core/model.rs` backed by contiguous path and content arenas (`String`) and 16-byte index descriptors (`FileSpan`), eliminating per-file heap fragmentation and preserving cache locality.
+- Zero-copy borrowed view `FileRecord<'a>` into files stored within `FileStorage`.
 - Unified token estimation state machine `TokenEstimator` in `src/core/digest/mod.rs`, shared by `estimate_tokens` and `BoundedEstimatingWriter`.
 - Encapsulated collection completion in `Selector::finish` in `src/core/decide.rs`, constructing `CollectionResult` directly.
 
 ### Changed
 
+- Replaced `Vec<FileRecord>` in `CollectionResult` and `Selector` with `FileStorage`, feeding zero-copy borrowed records to digest renderers and diagnostic handlers.
 - Refactored `BudgetTrie` in `src/core/digest/trie.rs` into a contiguous flat node arena (`Vec<BudgetTrieNode>`) with `u32` indexed child tracking (`Vec<u32>`) and `Box<str>` node labels, reducing arena memory footprint on 64-bit platforms and eliminating recursive heap pointer chasing.
 - Consolidated duplicated root and parent child insertion logic in `BudgetTrie::insert` into `get_or_insert_child`.
 - Extracted OS-dependent filename case comparison in `src/shell/output_exclusion.rs` into `names_match` helper.

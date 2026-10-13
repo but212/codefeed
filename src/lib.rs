@@ -14,6 +14,8 @@ pub mod __bench {
         BudgetTrie, escaped_metrics, estimate_tokens, render_digest_to_writer, write_xml_escaped,
         xml_escape,
     };
-    pub use crate::core::model::{CollectionResult, DigestFormat, FileRecord, OutputTarget};
+    pub use crate::core::model::{
+        CollectionResult, DigestFormat, FileRecord, FileSpan, FileStorage, OutputTarget,
+    };
     pub use crate::shell::local::collect_local;
 }

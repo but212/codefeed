@@ -14,8 +14,10 @@ imperative-shell boundary.
 - `Item` — one observed entry handed to the pure core: `path`
   (`ItemPath::Utf8 | NonUtf8`) and `probe`
   (`Probe::Bytes | Missing | TooLarge | Ignored`). Shell collectors filter ignored paths pre-candidate (`PathClassification::Ignored`), while pure core supports `Probe::Ignored` as a no-op variant.
-- `FileRecord` — digest entry: `path`, `content`.
-- `CollectionResult` — uniform collection record: `label`, optional `revision`, `files`, `skipped`, `trie`, `format`.
+- `FileSpan` — 16-byte POD indexing path and content byte spans (`path_offset`, `path_len`, `content_offset`, `content_len`).
+- `FileStorage` — continuous append-only arena buffer (`path_arena: String`, `content_arena: String`, `spans: Vec<FileSpan>`) eliminating per-file heap fragmentation.
+- `FileRecord<'a>` — zero-copy borrowed digest entry view: `path: &'a str`, `content: &'a str`.
+- `CollectionResult` — uniform collection record: `label`, optional `revision`, `files: FileStorage`, `skipped`, `trie`, `format`.
 - `IngestReport` — `output`, `included_files`, `skipped_files`, `estimated_tokens`.
 - `OutputTarget` — digest destination: `File(PathBuf)` or `Stdout`.
 - `DigestFormat` — output serialization format: `Text` or `Xml`.

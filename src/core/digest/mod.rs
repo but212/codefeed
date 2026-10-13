@@ -54,10 +54,10 @@ impl DigestFormat {
     ) -> Result<(), IngestError>
     where
         W: std::io::Write + ?Sized,
-        I: IntoIterator<Item = &'a FileRecord>,
+        I: IntoIterator<Item = FileRecord<'a>>,
     {
-        let mut ordered_files: Vec<(&str, &FileRecord)> =
-            files.into_iter().map(|f| (f.path.as_str(), f)).collect();
+        let mut ordered_files: Vec<(&str, FileRecord<'a>)> =
+            files.into_iter().map(|f| (f.path, f)).collect();
         ordered_files.sort_unstable_by_key(|(path, _)| *path);
 
         match self {
@@ -86,7 +86,7 @@ impl DigestBudget {
         }
     }
 
-    pub(crate) fn add(&mut self, file: &FileRecord) -> Result<(), IngestError> {
+    pub(crate) fn add(&mut self, file: &FileRecord<'_>) -> Result<(), IngestError> {
         let file_bytes = (file.path.len() + file.content.len()) as u64;
         let new_total = self.content_bytes.saturating_add(file_bytes);
         if new_total > MAX_OUTPUT_SIZE {
@@ -94,7 +94,7 @@ impl DigestBudget {
                 largest_files: Vec::new(),
             });
         }
-        self.trie.insert(&file.path);
+        self.trie.insert(file.path);
         self.content_bytes = new_total;
         Ok(())
     }
@@ -109,7 +109,7 @@ impl DigestBudget {
 }
 
 pub(crate) fn largest_files<'a>(
-    files: impl IntoIterator<Item = &'a FileRecord>,
+    files: impl IntoIterator<Item = FileRecord<'a>>,
 ) -> Vec<(String, usize)> {
     let mut top: Vec<(&'a str, usize)> = Vec::with_capacity(6);
 
@@ -124,7 +124,7 @@ pub(crate) fn largest_files<'a>(
             .position(|probe| probe.1 < size)
             .unwrap_or(top.len());
         if idx < 5 {
-            top.insert(idx, (file.path.as_str(), size));
+            top.insert(idx, (file.path, size));
             top.truncate(5);
         }
     }
@@ -249,14 +249,14 @@ pub fn render_digest_to_writer<W: std::io::Write + ?Sized>(
         &mut estimating_writer,
         &collection.label,
         collection.revision.as_deref(),
-        &collection.files,
+        collection.files.iter(),
         collection.skipped,
         &collection.trie,
     );
 
     if estimating_writer.overflowed {
         return Err(IngestError::OutputTooLarge {
-            largest_files: largest_files(&collection.files),
+            largest_files: largest_files(collection.files.iter()),
         });
     }
 
@@ -268,13 +268,16 @@ pub fn render_digest_to_writer<W: std::io::Write + ?Sized>(
 mod tests {
     use super::*;
     use crate::core::error::IngestError;
-    use crate::core::model::FileRecord;
+    use crate::core::model::{FileRecord, FileStorage};
     use crate::core::policy::MAX_OUTPUT_SIZE;
 
-    fn test_trie(files: &[FileRecord], escape_xml: bool) -> BudgetTrie {
+    fn test_trie<'a>(
+        files: impl IntoIterator<Item = FileRecord<'a>>,
+        escape_xml: bool,
+    ) -> BudgetTrie {
         let mut trie = BudgetTrie::new(escape_xml);
         for file in files {
-            trie.insert(&file.path);
+            trie.insert(file.path);
         }
         trie
     }
@@ -282,14 +285,15 @@ mod tests {
     fn render_digest(
         label: &str,
         revision: Option<&str>,
-        files: &[FileRecord],
+        files: &[FileRecord<'_>],
         skipped: usize,
     ) -> Result<String, IngestError> {
-        let trie = test_trie(files, false);
+        let storage: FileStorage = files.iter().copied().collect();
+        let trie = test_trie(files.iter().copied(), false);
         let collection = CollectionResult {
             label: label.to_string(),
             revision: revision.map(str::to_string),
-            files: files.to_vec(),
+            files: storage,
             skipped,
             trie,
             format: DigestFormat::Text,
@@ -339,22 +343,22 @@ mod tests {
 
     #[test]
     fn streaming_matches_string_render() -> Result<(), Box<dyn std::error::Error>> {
-        let files = vec![
+        let files = [
             FileRecord {
-                path: "b.txt".into(),
-                content: "hello\n".into(),
+                path: "b.txt",
+                content: "hello\n",
             },
             FileRecord {
-                path: "a.txt".into(),
-                content: "world".into(),
+                path: "a.txt",
+                content: "world",
             },
         ];
         let collection = CollectionResult {
             label: "my-repo".into(),
             revision: Some("v1.0".into()),
-            files: files.clone(),
+            files: files.into_iter().collect(),
             skipped: 2,
-            trie: test_trie(&files, false),
+            trie: test_trie(files, false),
             format: DigestFormat::Text,
         };
         let mut streamed = Vec::new();
@@ -393,21 +397,21 @@ hello\n\
     fn renders_from_arbitrary_iterator() -> Result<(), Box<dyn std::error::Error>> {
         let files = [
             FileRecord {
-                path: "b.txt".into(),
-                content: "content_b\n".into(),
+                path: "b.txt",
+                content: "content_b\n",
             },
             FileRecord {
-                path: "excluded.txt".into(),
-                content: "skip_me\n".into(),
+                path: "excluded.txt",
+                content: "skip_me\n",
             },
             FileRecord {
-                path: "a.txt".into(),
-                content: "content_a\n".into(),
+                path: "a.txt",
+                content: "content_a\n",
             },
         ];
-        let trie = test_trie(&[files[0].clone(), files[2].clone()], false);
+        let trie = test_trie([files[0], files[2]], false);
         let mut buf = Vec::new();
-        let filtered_iter = files.iter().filter(|f| f.path != "excluded.txt");
+        let filtered_iter = files.into_iter().filter(|f| f.path != "excluded.txt");
         DigestFormat::Text.render(&mut buf, "repo", None, filtered_iter, 1, &trie)?;
         let rendered = std::str::from_utf8(&buf)?;
         assert!(rendered.contains("Files: 2"));
@@ -419,9 +423,10 @@ hello\n\
 
     #[test]
     fn rejects_digest_before_storing_over_budget_content() {
+        let content = "x".repeat(MAX_OUTPUT_SIZE as usize + 1);
         let candidate = FileRecord {
-            path: "large.txt".into(),
-            content: "x".repeat(MAX_OUTPUT_SIZE as usize + 1),
+            path: "large.txt",
+            content: &content,
         };
         let mut budget = DigestBudget::new(DigestFormat::Text);
         match budget.add(&candidate) {
@@ -432,14 +437,17 @@ hello\n\
 
     #[test]
     fn render_digest_to_writer_enforces_output_size_cap() {
+        let content = "x".repeat(MAX_OUTPUT_SIZE as usize);
         let candidate = FileRecord {
-            path: "large.txt".into(),
-            content: "x".repeat(MAX_OUTPUT_SIZE as usize),
+            path: "large.txt",
+            content: &content,
         };
+        let mut storage = FileStorage::new();
+        storage.push(candidate.path, candidate.content);
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,
-            files: vec![candidate],
+            files: storage,
             skipped: 0,
             trie: BudgetTrie::new(false),
             format: DigestFormat::Text,
@@ -456,22 +464,22 @@ hello\n\
 
     #[test]
     fn renders_xml_in_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
-        let files = vec![
+        let files = [
             FileRecord {
-                path: "z.txt".into(),
-                content: "z < 10".into(),
+                path: "z.txt",
+                content: "z < 10",
             },
             FileRecord {
-                path: "a.txt".into(),
-                content: "a & b".into(),
+                path: "a.txt",
+                content: "a & b",
             },
         ];
         let collection = CollectionResult {
             label: "my-repo".into(),
             revision: Some("v1.0".into()),
-            files: files.clone(),
+            files: files.into_iter().collect(),
             skipped: 1,
-            trie: test_trie(&files, true),
+            trie: test_trie(files, true),
             format: DigestFormat::Xml,
         };
         let mut out = Vec::new();
@@ -501,9 +509,9 @@ z &lt; 10
     fn control_character_policy_preserves_raw_text_and_sanitizes_xml()
     -> Result<(), Box<dyn std::error::Error>> {
         let raw_ansi = "\x1b[31mRed Alert\x1b[0m\tTabbed\r\nNewline";
-        let files = vec![FileRecord {
-            path: "ansi.txt".into(),
-            content: raw_ansi.into(),
+        let files = [FileRecord {
+            path: "ansi.txt",
+            content: raw_ansi,
         }];
 
         let text_rendered = render_digest("repo", None, &files, 0)?;
@@ -515,9 +523,9 @@ z &lt; 10
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,
-            files: files.clone(),
+            files: files.into_iter().collect(),
             skipped: 0,
-            trie: test_trie(&files, true),
+            trie: test_trie(files, true),
             format: DigestFormat::Xml,
         };
         let mut xml_out = Vec::new();
@@ -537,37 +545,37 @@ z &lt; 10
 
     #[test]
     fn largest_files_selects_top_five_with_stability() {
-        let files = vec![
+        let files = [
             FileRecord {
-                path: "f1.txt".into(),
-                content: "1".into(),
+                path: "f1.txt",
+                content: "1",
             },
             FileRecord {
-                path: "f2.txt".into(),
-                content: "22".into(),
+                path: "f2.txt",
+                content: "22",
             },
             FileRecord {
-                path: "f3.txt".into(),
-                content: "333".into(),
+                path: "f3.txt",
+                content: "333",
             },
             FileRecord {
-                path: "f4.txt".into(),
-                content: "4444".into(),
+                path: "f4.txt",
+                content: "4444",
             },
             FileRecord {
-                path: "f5_a.txt".into(),
-                content: "55555".into(),
+                path: "f5_a.txt",
+                content: "55555",
             },
             FileRecord {
-                path: "f5_b.txt".into(),
-                content: "55555".into(),
+                path: "f5_b.txt",
+                content: "55555",
             },
             FileRecord {
-                path: "f6.txt".into(),
-                content: "666666".into(),
+                path: "f6.txt",
+                content: "666666",
             },
         ];
-        let result = largest_files(&files);
+        let result = largest_files(files);
         assert_eq!(result.len(), 5);
         assert_eq!(result[0], ("f6.txt".into(), 6));
         assert_eq!(result[1], ("f5_a.txt".into(), 5));
