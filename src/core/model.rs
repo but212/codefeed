@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::core::error::IngestError;
+
 /// Ingestion source location.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -14,6 +16,33 @@ pub enum Source {
         /// Optional GitHub branch, tag, or commit SHA.
         reference: Option<String>,
     },
+}
+
+impl Source {
+    pub fn with_reference(self, reference: Option<String>) -> Result<Self, IngestError> {
+        if reference
+            .as_ref()
+            .is_some_and(|r| r.trim_ascii().is_empty())
+        {
+            return Err(IngestError::InvalidSource("--ref cannot be empty".into()));
+        }
+        match self {
+            Self::GitHub { owner, repo, .. } => Ok(Self::GitHub {
+                owner,
+                repo,
+                reference,
+            }),
+            Self::Local(_) => {
+                if reference.is_some() {
+                    Err(IngestError::InvalidSource(
+                        "--ref is only valid for GitHub sources".into(),
+                    ))
+                } else {
+                    Ok(self)
+                }
+            }
+        }
+    }
 }
 
 /// Where the digest is delivered. Distinguishes a filesystem path from the
@@ -36,24 +65,6 @@ pub enum DigestFormat {
     Xml,
 }
 
-/// Ingestion options controlling destination and serialization format.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Options {
-    /// Target destination for the rendered digest. Defaults to `digest.txt`.
-    pub output: OutputTarget,
-    /// Serialization format for the digest. Defaults to plain text.
-    pub format: DigestFormat,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            output: OutputTarget::File(PathBuf::from("digest.txt")),
-            format: DigestFormat::Text,
-        }
-    }
-}
-
 /// Execution configuration unifying source, output destination, and format.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunConfig {
@@ -71,14 +82,6 @@ impl RunConfig {
             source,
             output,
             format,
-        }
-    }
-
-    pub fn from_source_and_options(source: Source, options: Options) -> Self {
-        Self {
-            source,
-            output: options.output,
-            format: options.format,
         }
     }
 }
@@ -109,9 +112,9 @@ pub struct FileSpan {
 /// Eliminates per-file heap allocations and preserves cache locality.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileStorage {
-    pub spans: Vec<FileSpan>,
-    pub path_arena: String,
-    pub content_arena: String,
+    spans: Vec<FileSpan>,
+    path_arena: String,
+    content_arena: String,
 }
 
 impl FileStorage {
@@ -174,6 +177,11 @@ impl FileStorage {
     pub fn iter(&self) -> impl ExactSizeIterator<Item = FileRecord<'_>> {
         self.spans.iter().map(move |&span| self.get(span))
     }
+    /// Test-only inspector for continuous arena storage.
+    #[cfg(test)]
+    pub(crate) fn arenas(&self) -> (&str, &str) {
+        (&self.path_arena, &self.content_arena)
+    }
 }
 
 impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
@@ -223,7 +231,6 @@ pub struct CollectionResult {
     pub files: FileStorage,
     pub skipped: usize,
     pub trie: crate::core::digest::BudgetTrie,
-    pub format: DigestFormat,
 }
 
 #[cfg(test)]
@@ -258,11 +265,57 @@ mod tests {
         assert_eq!(collected, vec![rec1, rec2]);
 
         // Arena contents verification
-        assert_eq!(storage.path_arena, "path/to/first.rssecond.txt");
-        assert_eq!(storage.content_arena, "pub fn first() {}second content\n");
+        let (path_arena, content_arena) = storage.arenas();
+        assert_eq!(path_arena, "path/to/first.rssecond.txt");
+        assert_eq!(content_arena, "pub fn first() {}second content\n");
 
         // FromIterator verification
         let reconstructed: FileStorage = collected.into_iter().collect();
         assert_eq!(reconstructed, storage);
+    }
+
+    #[test]
+    fn source_with_reference_validates_and_updates_reference() {
+        let gh = Source::GitHub {
+            owner: "rust-lang".into(),
+            repo: "rust".into(),
+            reference: None,
+        };
+        let updated = gh.with_reference(Some("main".into())).unwrap();
+        assert_eq!(
+            updated,
+            Source::GitHub {
+                owner: "rust-lang".into(),
+                repo: "rust".into(),
+                reference: Some("main".into()),
+            }
+        );
+
+        let cleared = updated.with_reference(None).unwrap();
+        assert_eq!(
+            cleared,
+            Source::GitHub {
+                owner: "rust-lang".into(),
+                repo: "rust".into(),
+                reference: None,
+            }
+        );
+
+        let empty_err = cleared
+            .clone()
+            .with_reference(Some("   ".into()))
+            .unwrap_err();
+        assert!(
+            matches!(empty_err, IngestError::InvalidSource(msg) if msg.contains("--ref cannot be empty"))
+        );
+
+        let local = Source::Local(PathBuf::from("."));
+        let local_ok = local.clone().with_reference(None).unwrap();
+        assert_eq!(local_ok, local);
+
+        let local_err = local.with_reference(Some("main".into())).unwrap_err();
+        assert!(
+            matches!(local_err, IngestError::InvalidSource(msg) if msg.contains("--ref is only valid for GitHub sources"))
+        );
     }
 }

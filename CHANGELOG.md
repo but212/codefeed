@@ -11,9 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Continuous arena storage `FileStorage` in `src/core/model.rs` backed by contiguous path and content arenas (`String`) and 16-byte index descriptors (`FileSpan`), eliminating per-file heap fragmentation and preserving cache locality.
 - Zero-copy borrowed view `FileRecord<'a>` into files stored within `FileStorage`.
-- Unified token estimation state machine `TokenEstimator` in `src/core/digest/mod.rs`, shared by `estimate_tokens` and `BoundedEstimatingWriter`.
+- Unified token estimation state machine `TokenEstimator` in `src/core/digest/token.rs`, shared by `estimate_tokens` and `BoundedEstimatingWriter`.
+- Isolated byte budget tracking and top-K file diagnostics in `src/core/digest/budget.rs`.
+- Pure CLI argument parser `src/core/cli.rs`, migrating argument and flag evaluation to the functional core without side effects or I/O.
+- Explicit candidate probe variant `Probe::PreclassifiedBinary` in `src/core/decide.rs`, differentiating policy binary extension skipping from missing file I/O states.
+- Domain reference setter `Source::with_reference` in `src/core/model.rs` encapsulating revision validation and GitHub/local source invariants.
+- Batch pre-flight candidate verification `CandidateBudget::check_limit` with $O(1)$ fast-path in `src/core/decide.rs`.
+- Centralized shell epoch timestamp generator `current_epoch_nanos()` in `src/shell/mod.rs`.
 - Encapsulated collection completion in `Selector::finish` in `src/core/decide.rs`, constructing `CollectionResult` directly.
-- Batch pre-flight candidate verification `CandidateBudget::check_limit` and `ItemPath::as_utf8_str` in `src/core/decide.rs`.
 
 ### Fixed
 
@@ -23,8 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Decoupled data collection (`Selector`, `DigestBudget`, `CollectionResult`, `collect_local`, `collect_github`) from presentation format (`DigestFormat`), passing format strictly to `render_digest_to_writer`.
+- Shifted `BudgetTrie` XML entity and newline escaping from node insertion time to on-the-fly rendering (`render_to_writer`), pruning cached display strings from `BudgetTrieNode` and keeping trie structures format-neutral.
 - Replaced `Vec<FileRecord>` in `CollectionResult` and `Selector` with `FileStorage`, feeding zero-copy borrowed records to digest renderers and diagnostic handlers.
+- Encapsulated `FileStorage` internal arena buffers (`spans`, `path_arena`, `content_arena`) behind private visibility.
 - Refactored `BudgetTrie` in `src/core/digest/trie.rs` into a contiguous flat node arena (`Vec<BudgetTrieNode>`) with `u32` indexed child tracking (`Vec<u32>`) and `Box<str>` node labels, reducing arena memory footprint on 64-bit platforms and eliminating recursive heap pointer chasing.
+- Structured `IngestError::CandidateLimitExceeded` and `IngestError::OutputTooLarge` diagnostics, centralizing message formatting in `error.rs`'s `Display` implementation.
 - Consolidated duplicated root and parent child insertion logic in `BudgetTrie::insert` into `get_or_insert_child`.
 - Extracted OS-dependent filename case comparison in `src/shell/output_exclusion.rs` into `names_match` helper.
 - Centralized deterministic digest file sorting in `DigestFormat::render` (`src/core/digest/mod.rs`), passing sorted `&[FileRecord]` slices to `text::render` and `xml::render` to eliminate duplicate sorting and redundant allocations.
@@ -37,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - Removed external dependencies `percent-encoding`, `memchr`, and `log` from `Cargo.toml`.
+- Removed intermediate single-use `Options` struct from `src/core/model.rs`.
+- Removed dead `Probe::Ignored` variant and unused `ItemResolution::Ignored` match arm from `src/core/decide.rs`.
+- Removed `src/shell/cli.rs` in favor of `src/core/cli.rs`.
+- Removed duplicated `SystemTime` and `UNIX_EPOCH` calls across `output.rs`, `github_client.rs`, and `output_exclusion.rs`.
 - Removed dead `Index<usize>` implementation on `FileStorage` in `src/core/model.rs`.
 - Removed dead `escaped_metrics` helper and `XmlChunk::len` method in `src/core/digest/xml.rs`.
 - Removed `Selector::into_parts` across `src/core/decide.rs`, shell collectors, and benchmarks in favor of `Selector::finish`.

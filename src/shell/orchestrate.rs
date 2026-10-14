@@ -6,16 +6,16 @@ use crate::shell;
 
 pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
     let collection = match &config.source {
-        Source::Local(path) => shell::local::collect_local(path, &config.output, config.format)?,
+        Source::Local(path) => shell::local::collect_local(path, &config.output)?,
         Source::GitHub {
             owner,
             repo,
             reference,
-        } => shell::github::collect_github(owner, repo, reference.as_deref(), config.format)?,
+        } => shell::github::collect_github(owner, repo, reference.as_deref())?,
     };
 
     let estimated_tokens = shell::output::emit(&config.output, |writer| {
-        crate::core::digest::render_digest_to_writer(writer, &collection)
+        crate::core::digest::render_digest_to_writer(writer, &collection, config.format)
     })?;
 
     Ok(IngestReport {

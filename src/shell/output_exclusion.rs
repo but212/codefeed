@@ -131,6 +131,7 @@ pub(crate) fn normalize_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use super::super::temp_dir;
     use super::*;
 
     #[test]
@@ -144,19 +145,12 @@ mod tests {
     #[test]
     fn matches_non_ascii_cased_files_pointing_to_same_file()
     -> Result<(), Box<dyn std::error::Error>> {
-        let root = std::env::temp_dir().join(format!(
-            "output_non_ascii_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root)?;
+        let root = temp_dir("output_non_ascii")?;
         let file_a = root.join("вывод.txt");
         fs::write(&file_a, "test")?;
         let file_b = root.join("ВЫВОД.TXT");
         let filter = OutputFilter::new(&file_a)?;
         let same = filter.is_excluded(&file_b);
-        fs::remove_dir_all(&root)?;
         assert!(same);
         Ok(())
     }
@@ -171,14 +165,8 @@ mod tests {
 
     #[test]
     fn filter_identifies_output_file() -> Result<(), Box<dyn std::error::Error>> {
-        let root = std::env::temp_dir().join(format!(
-            "output_filter_test_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-        ));
+        let root = temp_dir("output_filter_test")?;
         fs::create_dir_all(root.join("subdir"))?;
-        let root = fs::canonicalize(&root)?;
         let output = root.join("digest.txt");
         fs::write(&output, "output")?;
 
@@ -189,20 +177,13 @@ mod tests {
         #[cfg(any(windows, target_os = "macos"))]
         assert!(filter.is_excluded(&root.join("DIGEST.TXT")));
 
-        fs::remove_dir_all(&root)?;
         Ok(())
     }
 
     #[cfg(unix)]
     #[test]
     fn excludes_hard_link_to_output_file() -> Result<(), Box<dyn std::error::Error>> {
-        let root = std::env::temp_dir().join(format!(
-            "output_hard_link_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root)?;
+        let root = temp_dir("output_hard_link")?;
         let output = root.join("digest.txt");
         let hardlink = root.join("notes.txt");
         fs::write(&output, "output content")?;
@@ -211,7 +192,6 @@ mod tests {
         let filter = OutputFilter::new(&output)?;
         assert!(filter.is_excluded(&hardlink));
 
-        fs::remove_dir_all(&root)?;
         Ok(())
     }
 }

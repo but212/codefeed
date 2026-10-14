@@ -75,7 +75,7 @@ where
     writer.write_all(skipped.to_string().as_bytes())?;
     writer.write_all(METADATA_SUFFIX.as_bytes())?;
     writer.write_all(DIRECTORY_HEADER.as_bytes())?;
-    trie.render_to_writer(writer)?;
+    trie.render_to_writer(writer, false)?;
     writer.write_all(FILES_HEADER.as_bytes())?;
 
     for file in ordered_files {

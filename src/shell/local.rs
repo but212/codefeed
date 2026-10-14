@@ -10,7 +10,7 @@ use super::local_io::read_local_file;
 use super::output_exclusion::OutputFilter;
 use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
-use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
+use crate::core::model::{CollectionResult, OutputTarget};
 use crate::core::policy::{MAX_FILE_COUNT, PathClassification};
 
 struct LocalCandidate {
@@ -19,11 +19,7 @@ struct LocalCandidate {
     probe: Option<Probe>,
 }
 
-pub fn collect_local(
-    root: &Path,
-    output: &OutputTarget,
-    format: DigestFormat,
-) -> Result<CollectionResult, IngestError> {
+pub fn collect_local(root: &Path, output: &OutputTarget) -> Result<CollectionResult, IngestError> {
     let canonical_root = validate_root(root)?;
     let output_filter = match output {
         OutputTarget::File(path) => Some(OutputFilter::new(path)?),
@@ -31,12 +27,9 @@ pub fn collect_local(
     };
     let label = local_label(&canonical_root);
     let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
-    let mut selector = Selector::new(format);
+    let mut selector = Selector::new();
 
-    if candidates.len() > MAX_FILE_COUNT {
-        CandidateBudget::check_limit(candidates.iter().map(|c| c.item_path.as_utf8_str()))?;
-        unreachable!("candidate count exceeds MAX_FILE_COUNT");
-    }
+    CandidateBudget::check_limit(candidates.iter().map(|c| c.item_path.as_utf8_str()))?;
 
     for candidate in candidates {
         let probe = match candidate.probe {
@@ -101,7 +94,7 @@ fn walk_candidates(
             ItemPath::NonUtf8 => Some(Probe::Missing),
             ItemPath::Utf8(path) => match PathClassification::classify(path) {
                 PathClassification::Ignored => continue,
-                PathClassification::PreclassifiedBinary => Some(Probe::Missing),
+                PathClassification::PreclassifiedBinary => Some(Probe::PreclassifiedBinary),
                 PathClassification::NeedsContent => None,
             },
         };
@@ -163,7 +156,7 @@ fn local_label(root: &Path) -> String {
 mod tests {
     use super::super::temp_dir;
     use super::*;
-    use crate::core::model::{FileRecord, RunConfig, Source};
+    use crate::core::model::{DigestFormat, FileRecord, RunConfig, Source};
     use crate::ingest;
 
     #[cfg(unix)]
@@ -357,7 +350,7 @@ mod tests {
                 )?;
             }
         }
-        let result = collect_local(&root, &OutputTarget::Stdout, DigestFormat::Text)?;
+        let result = collect_local(&root, &OutputTarget::Stdout)?;
         let files = result.files;
         assert_eq!(files.len(), 30);
         let records: Vec<FileRecord<'_>> = files.iter().collect();
@@ -390,9 +383,10 @@ mod tests {
             .share_mode(0)
             .open(root.join("file_00000.txt"))?;
 
-        let err = collect_local(&root, &OutputTarget::Stdout, DigestFormat::Text).unwrap_err();
+        let err = collect_local(&root, &OutputTarget::Stdout).unwrap_err();
         match err {
-            IngestError::CandidateLimitExceeded(msg) => {
+            IngestError::CandidateLimitExceeded { .. } => {
+                let msg = err.to_string();
                 assert!(msg.contains("repository contains more than 10000 files"));
             }
             other => panic!("expected CandidateLimitExceeded, got {other:?}"),

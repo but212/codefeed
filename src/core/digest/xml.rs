@@ -213,7 +213,7 @@ where
     }
     writer.write_all(XML_TAG_CLOSE.as_bytes())?;
     writer.write_all(XML_DIR_START.as_bytes())?;
-    trie.render_to_writer(writer)?;
+    trie.render_to_writer(writer, true)?;
     writer.write_all(XML_DIR_END.as_bytes())?;
     writer.write_all(XML_FILES_START.as_bytes())?;
     for file in ordered_files {

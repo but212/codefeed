@@ -2,7 +2,6 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::error::IngestError;
 use crate::core::model::OutputTarget;
@@ -64,10 +63,7 @@ impl<'a> AtomicFile<'a> {
             return Err(IngestError::Usage("output path has no filename".into()));
         };
         let file_name = raw_name.to_string_lossy();
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
+        let timestamp = super::current_epoch_nanos();
         let (temporary, file) = loop {
             let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
             let temporary = parent.join(format!(".{file_name}.{timestamp}.{counter}.tmp"));

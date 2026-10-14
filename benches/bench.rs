@@ -156,12 +156,8 @@ mod fixture {
         storage
     }
 
-    pub fn build_collection(
-        label: &str,
-        files: FileStorage,
-        format: DigestFormat,
-    ) -> CollectionResult {
-        let mut trie = BudgetTrie::new(matches!(format, DigestFormat::Xml));
+    pub fn build_collection(label: &str, files: FileStorage) -> CollectionResult {
+        let mut trie = BudgetTrie::new();
         for file in files.iter() {
             trie.insert(file.path);
         }
@@ -171,7 +167,6 @@ mod fixture {
             files,
             skipped: 0,
             trie,
-            format,
         }
     }
 
@@ -311,7 +306,7 @@ mod suites {
             };
 
             runner.bench(name, warmup, iterations, None, || {
-                let mut trie = BudgetTrie::new(false);
+                let mut trie = BudgetTrie::new();
                 for p in &paths {
                     trie.insert(p);
                 }
@@ -322,7 +317,7 @@ mod suites {
 
     fn bench_trie_render(runner: &mut Runner) {
         let flat_paths: Vec<String> = (0..1_000).map(|i| format!("src/file_{i:05}.rs")).collect();
-        let mut flat_trie = BudgetTrie::new(false);
+        let mut flat_trie = BudgetTrie::new();
         for p in &flat_paths {
             flat_trie.insert(p);
         }
@@ -330,7 +325,7 @@ mod suites {
         runner.bench("trie_render_flat_1000", 20, 50, None, || {
             let mut writer = VoidWriter;
             flat_trie
-                .render_to_writer(&mut writer)
+                .render_to_writer(&mut writer, false)
                 .expect("render trie");
             black_box(&mut writer);
         });
@@ -345,7 +340,7 @@ mod suites {
                 p
             })
             .collect();
-        let mut deep_trie = BudgetTrie::new(false);
+        let mut deep_trie = BudgetTrie::new();
         for p in &deep_paths {
             deep_trie.insert(p);
         }
@@ -353,7 +348,7 @@ mod suites {
         runner.bench("trie_render_deep_1000", 20, 50, None, || {
             let mut writer = VoidWriter;
             deep_trie
-                .render_to_writer(&mut writer)
+                .render_to_writer(&mut writer, false)
                 .expect("render trie");
             black_box(&mut writer);
         });
@@ -375,11 +370,11 @@ mod suites {
                 .iter()
                 .map(|f| (f.path.len() + f.content.len()) as u64)
                 .sum();
-            let collection = build_collection("bench_repo", files, format);
+            let collection = build_collection("bench_repo", files);
 
             runner.bench(name, 5, 20, Some(approx_bytes), || {
                 let mut sink = Vec::with_capacity(2 * 1024 * 1024);
-                let tokens = render_digest_to_writer(&mut sink, &collection)
+                let tokens = render_digest_to_writer(&mut sink, &collection, format)
                     .expect("rendering should succeed");
                 black_box(tokens);
                 black_box(sink.len());
@@ -442,11 +437,11 @@ mod suites {
                 }),
                 1 => items.push(Item {
                     path: ItemPath::Utf8(format!("src/image_{i}.png")),
-                    probe: Probe::Missing,
+                    probe: Probe::PreclassifiedBinary,
                 }),
                 2 => items.push(Item {
-                    path: ItemPath::Utf8("Cargo.lock".to_string()),
-                    probe: Probe::Ignored,
+                    path: ItemPath::Utf8(format!("src/big_{i}.bin")),
+                    probe: Probe::TooLarge,
                 }),
                 3 => items.push(Item {
                     path: ItemPath::Utf8(format!("secret_{i}.key")),
@@ -475,7 +470,7 @@ mod suites {
 
         runner.bench(name, warmup, iterations, None, || {
             let items = batches.pop().expect("batch should be available");
-            let mut selector = Selector::new(DigestFormat::Text);
+            let mut selector = Selector::new();
             for item in items {
                 let _ = selector.decide(item);
             }
@@ -515,7 +510,7 @@ mod suites {
         let (_guard, temp_root) = setup_temp_hierarchy(1_000);
 
         runner.bench(name, 2, 10, None, || {
-            let res = collect_local(&temp_root, &OutputTarget::Stdout, DigestFormat::Text)
+            let res = collect_local(&temp_root, &OutputTarget::Stdout)
                 .expect("collect_local should succeed");
             black_box(res.files.len());
         });

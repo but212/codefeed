@@ -148,10 +148,7 @@ fn resolve_token_from_env() -> Option<String> {
 }
 
 fn current_entropy() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
+    super::current_epoch_nanos() as u64
 }
 
 #[cfg(test)]

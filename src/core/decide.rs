@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::core::digest::DigestBudget;
 use crate::core::error::IngestError;
-use crate::core::model::{CollectionResult, DigestFormat, FileRecord, FileStorage};
+use crate::core::model::{CollectionResult, FileRecord, FileStorage};
 use crate::core::policy::MAX_FILE_COUNT;
 
 /// Path text as observed by the imperative shell. Non-UTF-8 paths are still
@@ -23,15 +23,14 @@ impl ItemPath {
     }
 }
 
-/// Result of the shell's bounded resource acquisition. `Ignored`, `TooLarge`,
-/// and `Missing` carry no content. `TooLarge` and `Missing` still consume a
-/// candidate slot; `Ignored` is excluded before candidate accounting.
+/// Result of the shell's bounded resource acquisition. `PreclassifiedBinary`,
+/// `TooLarge`, and `Missing` carry no content and consume a candidate slot.
 #[derive(Clone)]
 pub enum Probe {
     Bytes(Vec<u8>),
     Missing,
     TooLarge,
-    Ignored,
+    PreclassifiedBinary,
 }
 
 pub struct Item {
@@ -40,7 +39,6 @@ pub struct Item {
 }
 
 enum ItemResolution {
-    Ignored,
     Included(String, String),
     Skipped(Option<String>),
 }
@@ -48,12 +46,14 @@ enum ItemResolution {
 impl Item {
     fn resolve(self) -> ItemResolution {
         match (self.path, self.probe) {
-            (_, Probe::Ignored) => ItemResolution::Ignored,
             (ItemPath::Utf8(path), Probe::Bytes(bytes)) => match text_content(bytes) {
                 Some(content) => ItemResolution::Included(path, content),
                 None => ItemResolution::Skipped(Some(path)),
             },
-            (ItemPath::Utf8(path), _) => ItemResolution::Skipped(Some(path)),
+            (
+                ItemPath::Utf8(path),
+                Probe::Missing | Probe::TooLarge | Probe::PreclassifiedBinary,
+            ) => ItemResolution::Skipped(Some(path)),
             (ItemPath::NonUtf8, _) => ItemResolution::Skipped(None),
         }
     }
@@ -68,11 +68,11 @@ pub struct Selector {
 }
 
 impl Selector {
-    pub fn new(format: DigestFormat) -> Self {
+    pub fn new() -> Self {
         Self {
             storage: FileStorage::new(),
             candidates: CandidateBudget::default(),
-            digest: DigestBudget::new(format),
+            digest: DigestBudget::new(),
         }
     }
 
@@ -82,7 +82,6 @@ impl Selector {
 
     pub fn decide(&mut self, item: Item) -> Result<(), IngestError> {
         match item.resolve() {
-            ItemResolution::Ignored => Ok(()),
             ItemResolution::Included(path, content) => {
                 self.candidates.add(Some(path.as_str()))?;
                 self.add_file(&path, &content)
@@ -97,15 +96,12 @@ impl Selector {
 
     fn add_file(&mut self, path: &str, content: &str) -> Result<(), IngestError> {
         let record = FileRecord { path, content };
-        if let Err(err) = self.digest.add(&record) {
-            if matches!(err, IngestError::OutputTooLarge { .. }) {
-                return Err(IngestError::OutputTooLarge {
-                    largest_files: crate::core::digest::largest_files(
-                        self.storage.iter().chain(std::iter::once(record)),
-                    ),
-                });
-            }
-            return Err(err);
+        if self.digest.add(&record).is_err() {
+            return Err(IngestError::OutputTooLarge {
+                largest_files: crate::core::digest::largest_files(
+                    self.storage.iter().chain(std::iter::once(record)),
+                ),
+            });
         }
         self.storage.push(path, content);
         Ok(())
@@ -118,8 +114,13 @@ impl Selector {
             files: self.storage,
             skipped: self.digest.skipped(),
             trie: self.digest.trie,
-            format: self.digest.format,
         }
+    }
+}
+
+impl Default for Selector {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -135,8 +136,12 @@ impl CandidateBudget {
     where
         I: IntoIterator<Item = Option<&'a str>>,
     {
+        let iter = paths.into_iter();
+        if matches!(iter.size_hint().1, Some(upper) if upper <= MAX_FILE_COUNT) {
+            return Ok(());
+        }
         let mut budget = Self::default();
-        for path in paths {
+        for path in iter {
             budget.add(path)?;
         }
         Ok(())
@@ -155,9 +160,10 @@ impl CandidateBudget {
         }
 
         if self.count > MAX_FILE_COUNT {
-            return Err(IngestError::CandidateLimitExceeded(
-                format_overflow_diagnostic(&self.dir_counts),
-            ));
+            return Err(IngestError::CandidateLimitExceeded {
+                limit: MAX_FILE_COUNT,
+                largest_directories: top_overflow_directories(&self.dir_counts),
+            });
         }
         Ok(())
     }
@@ -173,17 +179,11 @@ fn extract_dir_slice(path: Option<&str>) -> &str {
     }
 }
 
-fn format_overflow_diagnostic(dir_counts: &HashMap<String, usize>) -> String {
-    let mut dirs: Vec<(&str, usize)> = dir_counts.iter().map(|(d, c)| (d.as_str(), *c)).collect();
-    dirs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-
-    let mut msg =
-        format!("repository contains more than {MAX_FILE_COUNT} files\nlargest directories:");
-    for (dir, count) in dirs.into_iter().take(3) {
-        use std::fmt::Write;
-        let _ = write!(msg, "\n  - {dir} ({count} files)");
-    }
-    msg
+fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String, usize)> {
+    let mut dirs: Vec<(String, usize)> = dir_counts.iter().map(|(d, c)| (d.clone(), *c)).collect();
+    dirs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    dirs.truncate(3);
+    dirs
 }
 
 /// UTF-8 text predicate: NUL-free bytes only.
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn decide_classifies_text_binary_and_size_boundaries() -> Result<(), Box<dyn std::error::Error>>
     {
-        let mut selector = Selector::new(DigestFormat::Text);
+        let mut selector = Selector::new();
         selector.decide(decide_item("a.txt", Probe::Bytes(b"hello".to_vec())))?;
         selector.decide(decide_item("bin.bin", Probe::Bytes(vec![0, 1, 2])))?;
         selector.decide(decide_item("bad_utf8", Probe::Bytes(vec![0xff])))?;
@@ -264,30 +264,30 @@ mod tests {
         assert_eq!(collection.files.get_at(0).unwrap().path, "a.txt");
         assert_eq!(collection.files.get_at(1).unwrap().path, "exact.txt");
         assert_eq!(collection.skipped, 4);
-        assert_eq!(collection.format, DigestFormat::Text);
         Ok(())
     }
 
     #[test]
-    fn github_ignored_is_not_skipped() -> Result<(), Box<dyn std::error::Error>> {
-        let mut selector = Selector::new(DigestFormat::Text);
-        for _ in 0..MAX_FILE_COUNT {
-            selector.decide(decide_item("ignored.txt", Probe::Ignored))?;
-        }
+    fn preclassified_binary_is_skipped() -> Result<(), Box<dyn std::error::Error>> {
+        let mut selector = Selector::new();
+        selector.decide(decide_item("binary.png", Probe::PreclassifiedBinary))?;
         selector.decide(decide_item("kept.txt", Probe::Bytes(b"kept".to_vec())))?;
         let collection = selector.finish("test".into(), None);
         assert_eq!(collection.files.len(), 1);
-        assert_eq!(collection.skipped, 0);
+        assert_eq!(collection.skipped, 1);
         Ok(())
     }
 
     #[test]
     fn item_resolve_classifies_all_variants() {
-        let ignored = Item {
-            path: ItemPath::Utf8("ignored.txt".into()),
-            probe: Probe::Ignored,
+        let preclassified = Item {
+            path: ItemPath::Utf8("binary.png".into()),
+            probe: Probe::PreclassifiedBinary,
         };
-        assert!(matches!(ignored.resolve(), ItemResolution::Ignored));
+        match preclassified.resolve() {
+            ItemResolution::Skipped(Some(path)) => assert_eq!(path, "binary.png"),
+            _ => panic!("expected Skipped(Some)"),
+        }
 
         let included = Item {
             path: ItemPath::Utf8("included.txt".into()),
@@ -319,13 +319,13 @@ mod tests {
 
     #[test]
     fn decide_counts_candidate_before_content() -> Result<(), Box<dyn std::error::Error>> {
-        let mut selector = Selector::new(DigestFormat::Text);
+        let mut selector = Selector::new();
         for _ in 0..MAX_FILE_COUNT {
             selector.decide(decide_item("bin.txt", Probe::Bytes(vec![0])))?;
         }
         assert!(matches!(
             selector.decide(decide_item("extra.txt", Probe::Bytes(b"ok".to_vec()))),
-            Err(IngestError::CandidateLimitExceeded(_))
+            Err(IngestError::CandidateLimitExceeded { .. })
         ));
         Ok(())
     }
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn output_overflow_includes_largest_files_diagnostic() -> Result<(), Box<dyn std::error::Error>>
     {
-        let mut selector = Selector::new(DigestFormat::Text);
+        let mut selector = Selector::new();
         selector.decide(decide_item("small.txt", Probe::Bytes(vec![b'a'; 100])))?;
         selector.decide(decide_item("medium.txt", Probe::Bytes(vec![b'b'; 50_000])))?;
         let err = selector
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn candidate_overflow_includes_largest_directories_diagnostic()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut selector = Selector::new(DigestFormat::Text);
+        let mut selector = Selector::new();
         for index in 0..8_000 {
             selector.decide(decide_item(
                 &format!("vendor/pkg_{index}.rs"),

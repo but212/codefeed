@@ -8,7 +8,7 @@ use tar::{Archive, EntryType};
 use crate::core::archive::{parse_pax_comment, strip_archive_root};
 use crate::core::decide::{Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
-use crate::core::model::{CollectionResult, DigestFormat};
+use crate::core::model::CollectionResult;
 use crate::core::policy::{MAX_FILE_SIZE, PathClassification};
 
 use super::github_client::GithubClient;
@@ -16,11 +16,10 @@ pub fn collect_github(
     owner: &str,
     repo: &str,
     reference: Option<&str>,
-    format: DigestFormat,
 ) -> Result<CollectionResult, IngestError> {
     let client = GithubClient::new();
     let stream = client.tarball_stream(owner, repo, reference)?;
-    collect_from_archive(stream, owner, repo, reference, format)
+    collect_from_archive(stream, owner, repo, reference)
 }
 
 enum ArchiveEntryOutcome {
@@ -34,14 +33,13 @@ pub(crate) fn collect_from_archive<R: Read>(
     owner: &str,
     repo: &str,
     reference: Option<&str>,
-    format: DigestFormat,
 ) -> Result<CollectionResult, IngestError> {
     let gz = GzDecoder::new(reader);
     let mut archive = Archive::new(gz);
 
     let label = format!("https://github.com/{owner}/{repo}");
     let mut parsed_revision: Option<String> = None;
-    let mut selector = Selector::new(format);
+    let mut selector = Selector::new();
 
     let entries = archive.entries().map_err(IngestError::Io)?;
 
@@ -119,7 +117,7 @@ fn probe_tar_entry<R: Read>(entry: &mut tar::Entry<R>) -> Result<ArchiveEntryOut
     if classification == PathClassification::PreclassifiedBinary {
         return Ok(ArchiveEntryOutcome::Item(Item {
             path: ItemPath::Utf8(rel_path),
-            probe: Probe::Missing,
+            probe: Probe::PreclassifiedBinary,
         }));
     }
 
@@ -191,14 +189,8 @@ mod tests {
             ("repo-root/image.png", b"binary-data", EntryType::Regular),
         ]);
 
-        let result = collect_from_archive(
-            mock_data.as_slice(),
-            "but212",
-            "codefeed",
-            None,
-            DigestFormat::Text,
-        )
-        .expect("collection should succeed");
+        let result = collect_from_archive(mock_data.as_slice(), "but212", "codefeed", None)
+            .expect("collection should succeed");
 
         assert_eq!(
             result.revision.as_deref(),
@@ -225,14 +217,8 @@ mod tests {
             ),
         ]);
 
-        let result = collect_from_archive(
-            mock_data.as_slice(),
-            "owner",
-            "repo",
-            Some("main"),
-            DigestFormat::Text,
-        )
-        .expect("collection should succeed");
+        let result = collect_from_archive(mock_data.as_slice(), "owner", "repo", Some("main"))
+            .expect("collection should succeed");
 
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files.get_at(0).unwrap().path, "small.txt");
@@ -247,14 +233,8 @@ mod tests {
             EntryType::Regular,
         )]);
 
-        let result = collect_from_archive(
-            mock_data.as_slice(),
-            "owner",
-            "repo",
-            None,
-            DigestFormat::Text,
-        )
-        .expect("collection should succeed");
+        let result = collect_from_archive(mock_data.as_slice(), "owner", "repo", None)
+            .expect("collection should succeed");
 
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files.get_at(0).unwrap().path, "pax_global_header");
@@ -289,14 +269,8 @@ mod tests {
         }
         let mock_data = gz.finish().unwrap();
 
-        let result = collect_from_archive(
-            mock_data.as_slice(),
-            "owner",
-            "repo",
-            None,
-            DigestFormat::Text,
-        )
-        .expect("collection should succeed");
+        let result = collect_from_archive(mock_data.as_slice(), "owner", "repo", None)
+            .expect("collection should succeed");
 
         assert_eq!(result.files.len(), 0);
         assert_eq!(result.skipped, 0);
@@ -310,13 +284,7 @@ mod tests {
             ("pax_global_header", pax_comment, EntryType::XGlobalHeader),
         ]);
 
-        let result = collect_from_archive(
-            mock_data.as_slice(),
-            "owner",
-            "repo",
-            None,
-            DigestFormat::Text,
-        );
+        let result = collect_from_archive(mock_data.as_slice(), "owner", "repo", None);
 
         assert!(matches!(
             result,
