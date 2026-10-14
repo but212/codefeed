@@ -77,7 +77,7 @@ pub struct RunConfig {
 }
 
 impl RunConfig {
-    pub fn new(source: Source, output: OutputTarget, format: DigestFormat) -> Self {
+    pub const fn new(source: Source, output: OutputTarget, format: DigestFormat) -> Self {
         Self {
             source,
             output,
@@ -133,12 +133,12 @@ impl FileStorage {
     }
 
     #[inline]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.spans.len()
     }
 
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.spans.is_empty()
     }
 

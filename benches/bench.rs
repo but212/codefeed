@@ -12,7 +12,7 @@ use std::time::Instant;
 use codefeed::__bench::{
     BudgetTrie, CandidateBudget, CollectionResult, DigestFormat, FileStorage, Item, ItemPath,
     LocalStream, OutputTarget, Probe, Selector, collect_stream, escape_header, estimate_tokens,
-    render_digest_to_writer, text_str, write_xml_escaped, xml_escape,
+    render_to_writer, text_str, write_escaped, xml_escape,
 };
 
 pub struct VoidWriter;
@@ -387,7 +387,7 @@ mod suites {
 
             runner.bench(name, 5, 20, Some(approx_bytes), || {
                 let mut sink = Vec::with_capacity(2 * 1024 * 1024);
-                let tokens = render_digest_to_writer(&mut sink, &collection, format)
+                let tokens = render_to_writer(&mut sink, &collection, format)
                     .expect("rendering should succeed");
                 black_box(tokens);
                 black_box(sink.len());
@@ -408,7 +408,7 @@ mod suites {
 
         runner.bench("xml_stream_write_100k", 10, 50, Some(payload_bytes), || {
             let mut writer = VoidWriter;
-            write_xml_escaped(&mut writer, &payload).expect("write xml");
+            write_escaped(&mut writer, &payload).expect("write xml");
             black_box(&mut writer);
         });
 
@@ -640,14 +640,14 @@ mod cli {
         let mut filter: Option<String> = None;
         let mut self_test = false;
 
-        let mut idx = 0;
-        while idx < args.len() {
-            match args[idx].as_str() {
+        let mut index = 0;
+        while index < args.len() {
+            match args[index].as_str() {
                 "--json" => format = OutputFormat::Json,
                 "--filter" => {
-                    idx += 1;
-                    if idx < args.len() {
-                        filter = Some(args[idx].clone());
+                    index += 1;
+                    if index < args.len() {
+                        filter = Some(args[index].clone());
                     }
                 }
                 "--test" | "tests" | "--self-test" => {
@@ -662,7 +662,7 @@ mod cli {
                 }
                 _ => {}
             }
-            idx += 1;
+            index += 1;
         }
 
         Some(CliConfig {

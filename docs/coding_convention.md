@@ -58,6 +58,11 @@ Project-wide coding standards and API design principles for `codefeed`. Combines
   - Keep standard domain abbreviations concise: `id`, `url`, `len`, `src`, `dst`, `err`.
   - Prefer established Rust naming idioms (`len()` over `length()`, `iter()` over `iterator()`).
 
+- **Brevity vs. Explicitness:**
+  - **No Cryptic Truncation:** Never truncate identifiers to the point of losing domain semantics (e.g., avoid `chk_vld_pt()`, `cnt_buf`; use `is_valid_path()`, `buffer_count`). Reserve abbreviations strictly for standard, established domain terms.
+  - **No Redundant Verbosity:** Eliminate context already conveyed by the enclosing module, type, or scope (e.g., `file_record.file_record_path` $\rightarrow$ `file_record.path`, `config::parse_config()` $\rightarrow$ `config::parse()`).
+  - **Direct Intent:** Prefer concise, self-documenting identifiers over paragraph-style names or unnecessary helper wrappers.
+
 ---
 
 ## 2. Conversion Methods (`C-CONV`, `C-CONV-TRAITS`, `C-CONV-SPECIFIC`)

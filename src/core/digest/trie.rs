@@ -26,7 +26,7 @@ pub(crate) struct BudgetTrieNode {
 }
 
 impl BudgetTrieNode {
-    pub(crate) fn new(name_offset: u32, name_len: u16, is_dir: bool) -> Self {
+    pub(crate) const fn new(name_offset: u32, name_len: u16, is_dir: bool) -> Self {
         Self {
             name_offset,
             name_len,
@@ -73,8 +73,8 @@ impl BudgetTrie {
     }
 
     #[inline]
-    pub(crate) fn node_name(&self, idx: u32) -> &str {
-        let node = &self.nodes[idx as usize];
+    pub(crate) fn node_name(&self, index: u32) -> &str {
+        let node = &self.nodes[index as usize];
         let start = node.name_offset as usize;
         let end = start + node.name_len as usize;
         &self.label_arena[start..end]
@@ -82,31 +82,31 @@ impl BudgetTrie {
 
     pub fn insert(&mut self, path: &str) {
         let mut parts = path.split('/').filter(|s| !s.is_empty()).peekable();
-        let mut current_node_idx: u32 = 0;
+        let mut current_node_index: u32 = 0;
 
         while let Some(part) = parts.next() {
             let is_dir = parts.peek().is_some();
-            current_node_idx = self.get_or_insert_child(current_node_idx, part, is_dir);
+            current_node_index = self.get_or_insert_child(current_node_index, part, is_dir);
         }
     }
 
-    fn get_or_insert_child(&mut self, parent_idx: u32, part: &str, is_dir: bool) -> u32 {
-        let p = parent_idx as usize;
-        let last_child_idx = self.last_children[p];
+    fn get_or_insert_child(&mut self, parent_index: u32, part: &str, is_dir: bool) -> u32 {
+        let parent_node = parent_index as usize;
+        let last_child_index = self.last_children[parent_node];
 
-        if last_child_idx != NO_NODE {
-            let last_node = self.nodes[last_child_idx as usize];
+        if last_child_index != NO_NODE {
+            let last_node = self.nodes[last_child_index as usize];
             let last_name = &self.label_arena[last_node.name_offset as usize
                 ..(last_node.name_offset + last_node.name_len as u32) as usize];
-            let ord = last_name
+            let ordering = last_name
                 .cmp(part)
                 .then_with(|| last_node.is_dir.cmp(&is_dir));
-            if ord == std::cmp::Ordering::Equal {
-                return last_child_idx;
+            if ordering == std::cmp::Ordering::Equal {
+                return last_child_index;
             }
-            if ord == std::cmp::Ordering::Less {
+            if ordering == std::cmp::Ordering::Less {
                 // Sequential append (presorted fast path): append after last_child
-                let new_idx =
+                let new_index =
                     u32::try_from(self.nodes.len()).expect("trie node count exceeds u32::MAX");
                 let name_offset =
                     u32::try_from(self.label_arena.len()).expect("trie arena exceeds u32::MAX");
@@ -116,13 +116,13 @@ impl BudgetTrie {
                     .push(BudgetTrieNode::new(name_offset, name_len, is_dir));
                 self.last_children.push(NO_NODE);
 
-                self.nodes[last_child_idx as usize].next_sibling = new_idx;
-                self.last_children[p] = new_idx;
-                return new_idx;
+                self.nodes[last_child_index as usize].next_sibling = new_index;
+                self.last_children[parent_node] = new_index;
+                return new_index;
             }
         } else {
             // First child for parent
-            let new_idx =
+            let new_index =
                 u32::try_from(self.nodes.len()).expect("trie node count exceeds u32::MAX");
             let name_offset =
                 u32::try_from(self.label_arena.len()).expect("trie arena exceeds u32::MAX");
@@ -132,13 +132,13 @@ impl BudgetTrie {
                 .push(BudgetTrieNode::new(name_offset, name_len, is_dir));
             self.last_children.push(NO_NODE);
 
-            self.nodes[p].first_child = new_idx;
-            self.last_children[p] = new_idx;
-            return new_idx;
+            self.nodes[parent_node].first_child = new_index;
+            self.last_children[parent_node] = new_index;
+            return new_index;
         }
 
         // Non-sequential / arbitrary insertion: search sibling chain
-        let mut curr = self.nodes[p].first_child;
+        let mut curr = self.nodes[parent_node].first_child;
         let mut prev = NO_NODE;
 
         while curr != NO_NODE {
@@ -158,7 +158,7 @@ impl BudgetTrie {
             }
         }
 
-        let new_idx = u32::try_from(self.nodes.len()).expect("trie node count exceeds u32::MAX");
+        let new_index = u32::try_from(self.nodes.len()).expect("trie node count exceeds u32::MAX");
         let name_offset =
             u32::try_from(self.label_arena.len()).expect("trie arena exceeds u32::MAX");
         let name_len = u16::try_from(part.len()).expect("part length exceeds u16::MAX");
@@ -169,15 +169,15 @@ impl BudgetTrie {
         self.last_children.push(NO_NODE);
 
         if prev == NO_NODE {
-            self.nodes[p].first_child = new_idx;
+            self.nodes[parent_node].first_child = new_index;
         } else {
-            self.nodes[prev as usize].next_sibling = new_idx;
+            self.nodes[prev as usize].next_sibling = new_index;
         }
         if curr == NO_NODE {
-            self.last_children[p] = new_idx;
+            self.last_children[parent_node] = new_index;
         }
 
-        new_idx
+        new_index
     }
 
     pub fn render_to_writer<W: Write + ?Sized>(
@@ -298,13 +298,13 @@ pub(crate) mod tests {
 
         let mut trie = BudgetTrie::new();
         trie.insert("clean/dir/file.rs");
-        let clean_dir_idx = trie.nodes[0].first_child;
-        assert_eq!(trie.node_name(clean_dir_idx), "clean");
+        let clean_dir_index = trie.nodes[0].first_child;
+        assert_eq!(trie.node_name(clean_dir_index), "clean");
 
         let mut trie_esc = BudgetTrie::new();
         trie_esc.insert("a & b/c.rs");
-        let esc_dir_idx = trie_esc.nodes[0].first_child;
-        assert_eq!(trie_esc.node_name(esc_dir_idx), "a & b");
+        let esc_dir_index = trie_esc.nodes[0].first_child;
+        assert_eq!(trie_esc.node_name(esc_dir_index), "a & b");
     }
 
     #[test]

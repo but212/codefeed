@@ -10,7 +10,7 @@ use crate::core::source::parse_source_os;
 const HELP: &str =
     "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]";
 
-pub fn help_text() -> &'static str {
+pub const fn help_text() -> &'static str {
     HELP
 }
 

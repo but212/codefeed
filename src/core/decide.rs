@@ -230,7 +230,7 @@ impl CandidateBudget {
 fn extract_dir_slice(path: Option<&str>) -> &str {
     match path {
         Some(p) => match p.find('/') {
-            Some(idx) => &p[..=idx],
+            Some(index) => &p[..=index],
             None => "<root>/",
         },
         None => "<unknown>/",

@@ -180,16 +180,16 @@ fn normalize_relative_path(relative: &Path) -> ItemPath {
         return ItemPath::Utf8(first_str.to_owned());
     }
 
-    let mut buf = String::with_capacity(relative.as_os_str().len());
-    buf.push_str(first_str);
+    let mut normalized_path = String::with_capacity(relative.as_os_str().len());
+    normalized_path.push_str(first_str);
     for part in parts {
         let Some(s) = part.as_os_str().to_str() else {
             return ItemPath::NonUtf8;
         };
-        buf.push('/');
-        buf.push_str(s);
+        normalized_path.push('/');
+        normalized_path.push_str(s);
     }
-    ItemPath::Utf8(buf)
+    ItemPath::Utf8(normalized_path)
 }
 
 fn local_label(root: &Path) -> String {
@@ -395,9 +395,9 @@ mod tests {
         let root = temp_dir("parallel_order")?;
         for dir in ["b_dir", "a_dir", "c_dir"] {
             fs::create_dir_all(root.join(dir))?;
-            for file_idx in 0..10 {
+            for file_index in 0..10 {
                 fs::write(
-                    root.join(dir).join(format!("file_{file_idx:02}.txt")),
+                    root.join(dir).join(format!("file_{file_index:02}.txt")),
                     "content",
                 )?;
             }

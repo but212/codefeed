@@ -102,7 +102,7 @@ never depends on shell code; shell code depends on the core in one direction.
     - `token.rs`: `TokenEstimator` heuristic token state machine and `estimate_tokens`.
     - `trie.rs`: Format-neutral ASCII hierarchy tree (`BudgetTrie`).
     - `text.rs` / `xml.rs`: Format-specific streaming serializers.
-    - `mod.rs`: `DigestFormat::render`, `render_digest_to_writer`, and streaming `BoundedEstimatingWriter`.
+    - `mod.rs`: `DigestFormat::render`, `render_to_writer`, and streaming `BoundedEstimatingWriter`.
   - `github_url.rs`: Pure `std` URL construction with RFC 3986 percent-encoding and origin credential scoping.
   - `archive.rs`: Pax header comment extraction and archive root stripping.
 - Imperative shell (`src/shell/`):

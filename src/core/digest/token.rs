@@ -1,8 +1,8 @@
 //! Heuristic token count estimation over streaming bytes and strings.
 
 const FLAG_WORD: u8 = 1 << 0; // [0-9a-zA-Z_]
-const FLAG_WS: u8 = 1 << 1; // whitespace
-const FLAG_NL: u8 = 1 << 2; // \n
+const FLAG_WHITESPACE: u8 = 1 << 1; // whitespace
+const FLAG_NEWLINE: u8 = 1 << 2; // \n
 
 const CHAR_FLAGS: [u8; 256] = {
     let mut t = [0u8; 256];
@@ -16,10 +16,10 @@ const CHAR_FLAGS: [u8; 256] = {
             t[b] |= FLAG_WORD;
         }
         if b == b' ' as usize || b == b'\t' as usize || b == b'\r' as usize || b == 0x0C {
-            t[b] |= FLAG_WS;
+            t[b] |= FLAG_WHITESPACE;
         }
         if b == b'\n' as usize {
-            t[b] |= FLAG_WS | FLAG_NL;
+            t[b] |= FLAG_WHITESPACE | FLAG_NEWLINE;
         }
         b += 1;
     }
@@ -46,8 +46,8 @@ impl TokenEstimator {
         let flags = CHAR_FLAGS[b as usize];
 
         let is_word = (flags & FLAG_WORD) as usize; // 0 or 1
-        let is_ws = ((flags & FLAG_WS) >> 1) as usize; // 0 or 1
-        let is_nl = ((flags & FLAG_NL) >> 2) as usize; // 0 or 1
+        let is_whitespace = ((flags & FLAG_WHITESPACE) >> 1) as usize; // 0 or 1
+        let is_newline = ((flags & FLAG_NEWLINE) >> 2) as usize; // 0 or 1
 
         let prev_in_word = self.in_word as usize;
         self.in_word = is_word != 0;
@@ -56,12 +56,12 @@ impl TokenEstimator {
         let full_word = (next_word_len >= 4) as usize;
         self.word_len = next_word_len * (1 - full_word);
 
-        let is_cont = ((b & 0xC0) == 0x80) as usize;
-        let is_lead = 1 - is_cont;
+        let is_continuation = ((b & 0xC0) == 0x80) as usize;
+        let is_lead = 1 - is_continuation;
         let is_non_ascii_lead = ((b >= 0x80) as usize) & is_lead;
 
-        let non_ws_weight = (1 - is_ws) * (is_lead + is_non_ascii_lead);
-        let non_word_tokens = (1 - is_word) * (prev_in_word + non_ws_weight + is_nl);
+        let non_ws_weight = (1 - is_whitespace) * (is_lead + is_non_ascii_lead);
+        let non_word_tokens = (1 - is_word) * (prev_in_word + non_ws_weight + is_newline);
 
         self.tokens += full_word + non_word_tokens;
     }

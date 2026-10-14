@@ -14,8 +14,8 @@ pub(crate) fn strip_archive_root(raw_bytes: &[u8]) -> Option<&[u8]> {
         .rposition(|&b| b != b'/')
         .map_or(start, |i| i + 1);
     let normalized = &raw_bytes[start..end];
-    let slash_idx = normalized.iter().position(|&b| b == b'/')?;
-    let rest = &normalized[slash_idx + 1..];
+    let slash_index = normalized.iter().position(|&b| b == b'/')?;
+    let rest = &normalized[slash_index + 1..];
     if rest.is_empty() { None } else { Some(rest) }
 }
 
@@ -28,8 +28,8 @@ pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
     text.lines().find_map(|line| {
         let trimmed = line.trim_ascii();
         let payload = match trimmed.find(' ') {
-            Some(space_idx) if trimmed[..space_idx].chars().all(|c| c.is_ascii_digit()) => {
-                &trimmed[space_idx + 1..]
+            Some(space_index) if trimmed[..space_index].chars().all(|c| c.is_ascii_digit()) => {
+                &trimmed[space_index + 1..]
             }
             _ => trimmed,
         };
