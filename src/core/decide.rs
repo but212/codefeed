@@ -112,10 +112,6 @@ impl Selector {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.storage.is_empty() && self.skipped == 0
-    }
-
     pub(crate) fn accumulate(&mut self, decision: ItemDecision<'_>) -> Result<(), IngestError> {
         self.candidates.add(decision.path())?;
         match decision {
@@ -257,11 +253,6 @@ pub fn text_str(bytes: &[u8]) -> Option<&str> {
     std::str::from_utf8(bytes).ok()
 }
 
-/// UTF-8 text predicate: NUL-free bytes only.
-pub fn text_content(bytes: Vec<u8>) -> Option<String> {
-    text_str(&bytes).map(str::to_owned)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,24 +266,24 @@ mod tests {
     }
 
     #[test]
-    fn text_content_detects_binary_and_handles_probe_boundary() {
+    fn text_str_detects_binary_and_handles_probe_boundary() {
         let mut bin = vec![b'a'; 1024];
         bin[12] = 0;
-        assert!(text_content(bin).is_none());
+        assert!(text_str(&bin).is_none());
 
         let mut bin_tail = vec![b'b'; 5000];
         bin_tail[4500] = 0;
-        assert!(text_content(bin_tail).is_none());
+        assert!(text_str(&bin_tail).is_none());
 
         let mut bytes = vec![b'a'; 4095];
         bytes.extend_from_slice("€tail\n".as_bytes());
-        let content = text_content(bytes);
+        let content = text_str(&bytes);
         assert!(content.is_some());
         assert!(content.unwrap().ends_with("€tail\n"));
 
         let mut bytes_with_nul = vec![b'a'; 4095];
         bytes_with_nul.extend_from_slice("€\0tail\n".as_bytes());
-        assert!(text_content(bytes_with_nul).is_none());
+        assert!(text_str(&bytes_with_nul).is_none());
     }
 
     #[test]

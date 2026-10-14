@@ -8,6 +8,25 @@ fn run(args: &[&str]) -> std::process::Output {
 }
 
 #[test]
+fn public_api_types_are_accessible() {
+    use codefeed::{DigestFormat, IngestError, IngestReport, OutputTarget, RunConfig, Source};
+    let config = RunConfig::new(
+        Source::Local(std::path::PathBuf::from(".")),
+        OutputTarget::Stdout,
+        DigestFormat::Text,
+    );
+    assert_eq!(config.format, DigestFormat::Text);
+    let report = IngestReport {
+        output: OutputTarget::Stdout,
+        included_files: 1,
+        skipped_files: 0,
+        estimated_tokens: 42,
+    };
+    assert_eq!(report.estimated_tokens, 42);
+    let _err = IngestError::Usage("test".into());
+}
+
+#[test]
 fn help_exits_successfully_without_ingesting() {
     let cases: &[&[&str]] = &[&["--help"], &[".", "--help"]];
     for args in cases {

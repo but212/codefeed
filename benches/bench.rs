@@ -12,7 +12,7 @@ use std::time::Instant;
 use codefeed::__bench::{
     BudgetTrie, CandidateBudget, CollectionResult, DigestFormat, FileStorage, Item, ItemPath,
     LocalStream, OutputTarget, Probe, Selector, collect_stream, escape_header, estimate_tokens,
-    render_digest_to_writer, text_content, write_xml_escaped, xml_escape,
+    render_digest_to_writer, text_str, write_xml_escaped, xml_escape,
 };
 
 pub struct VoidWriter;
@@ -536,7 +536,7 @@ mod suites {
         let ascii_len = ascii_bytes.len() as u64;
 
         runner.bench("text_content_ascii_100k", 10, 50, Some(ascii_len), || {
-            let res = text_content(ascii_bytes.clone());
+            let res = text_str(&ascii_bytes);
             black_box(res);
         });
 
@@ -546,7 +546,7 @@ mod suites {
         let mixed_len = mixed_bytes.len() as u64;
 
         runner.bench("text_content_mixed_100k", 10, 50, Some(mixed_len), || {
-            let res = text_content(mixed_bytes.clone());
+            let res = text_str(&mixed_bytes);
             black_box(res);
         });
     }

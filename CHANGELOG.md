@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Re-exported domain types `DigestFormat`, `IngestReport`, `Source`, and `IngestError` in `src/lib.rs`.
 - `SourceStream` trait and generic streaming collection driver `collect_stream` in `src/shell/orchestrate.rs`, unifying selection, budget management, and completion across all source types.
 - Lazy candidate reader iterator `LocalStream` in `src/shell/local.rs` with fast-fail preflight limit validation on creation.
 - Streaming archive entry iterator `GitHubStream` in `src/shell/github.rs` yielding `Item`s and managing revision resolution.
@@ -25,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Decoupled inner stream flushing from `BoundedEstimatingWriter::finish` (`src/core/digest/mod.rs`), preserving computed `estimated_tokens` on downstream `BrokenPipe` during stdout streaming and eliminating redundant duplicate flushing for atomic file targets.
+- Prioritized `fs::canonicalize(output)` directly in `OutputFilter::new` (`src/shell/output_exclusion.rs`) before lexical traversal fallback, and normalized parent paths before `fs::create_dir_all` in `AtomicFile::create` (`src/shell/output.rs`) to prevent phantom directory creation from relative parent aliases.
+- Stripped tar archive root and filtered hidden entries on raw path bytes prior to candidate slot allocation in `probe_tar_entry` (`src/shell/github.rs`), validated paths with `text_str` to reject embedded NUL bytes, and escaped `0x00` to `\u{FFFD}` in `xml_escape` and `write_xml_escaped` (`src/core/digest/xml.rs`).
+- Short-circuited canonical path checks and eliminated redundant `names_match` and `fs::canonicalize` fallback syscalls on Unix in `OutputFilter::is_excluded`.
 - Enforced deterministic filesystem traversal order in `collect_local` via `WalkBuilder::sort_by_file_name`, guaranteeing reproducible `CandidateLimitExceeded` diagnostic output across different operating systems and filesystems.
 - Dissolved nonexistent output file filtering by returning `Ok(None)` from `OutputFilter::new` when the output path does not exist on disk prior to walking, eliminating redundant path normalization and comparisons.
 - Checked `entry.file_type().is_file()` before output exclusion checks in `collect_local`, and used `fs::symlink_metadata` on Unix to prevent following symlinks.
@@ -37,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Consolidated `OutputFilter`, path identity resolution, and lexical `normalize_path` from `src/shell/output_exclusion.rs` directly into `src/shell/output.rs`, encapsulated destination matching via `OutputFilter::from_target(&OutputTarget)`, and eliminated `output_exclusion.rs`.
 - Decoupled item evaluation and storage accumulation in `src/core/decide.rs` by extracting pure `ItemDecision` contract (`Included`, `Skipped`), enabling zero-copy UTF-8/NUL evaluation via `Item::evaluate` and direct accumulation via `Selector::accumulate`.
 - Propagated collection stream size hints from `LocalStream` (`ExactSizeIterator`) into `Selector::from_size_hint` in `src/shell/orchestrate.rs`, pre-sizing storage arenas according to upstream candidate counts.
 - Optimized `BudgetTrie` in `src/core/digest/trie.rs` into a 16-byte fixed-size Left-Child Right-Sibling (LCRS) node arena and contiguous `label_arena: String`, reducing node size from 48B to 16B and eliminating per-node heap allocations.
@@ -69,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- Removed dead `Selector::is_empty` method and uncalled `text_content` wrapper in `src/core/decide.rs`, switching benchmarks in `benches/bench.rs` to zero-copy `text_str(&[u8])`.
 - Removed separate collection entry points `collect_local`, `collect_github`, and `collect_from_archive` in favor of the unified `collect_stream` streaming pipeline.
 - Removed redundant `Probe::PreclassifiedBinary` variant, consolidating binary extension skipping with `Probe::Missing`.
 - Removed `DigestBudget` and `BudgetOverflow` wrapper types in `src/core/digest/budget.rs`.

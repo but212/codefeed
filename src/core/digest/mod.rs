@@ -70,7 +70,6 @@ impl<'a, W: std::io::Write + ?Sized> BoundedEstimatingWriter<'a, W> {
 
     fn finish(mut self) -> std::io::Result<usize> {
         self.flush_buf()?;
-        self.inner.flush()?;
         Ok(self.estimator.finish())
     }
 }
@@ -410,5 +409,36 @@ z &lt; 10
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn bounded_estimating_writer_finish_does_not_flush_inner_stream() {
+        struct BrokenPipeOnFlushWriter {
+            buf: Vec<u8>,
+        }
+
+        impl std::io::Write for BrokenPipeOnFlushWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.buf.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "closed pipe",
+                ))
+            }
+        }
+
+        let mut inner = BrokenPipeOnFlushWriter { buf: Vec::new() };
+        let mut writer = BoundedEstimatingWriter::new(&mut inner);
+        use std::io::Write;
+        writer.write_all(b"hello world\n").unwrap();
+        let tokens = writer
+            .finish()
+            .expect("finish must succeed even if inner flush fails");
+        assert!(tokens > 0);
+        assert_eq!(inner.buf, b"hello world\n");
     }
 }

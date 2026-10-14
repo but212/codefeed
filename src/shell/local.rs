@@ -8,7 +8,7 @@ use ignore::WalkBuilder;
 
 use super::local_io::read_local_file;
 use super::orchestrate::SourceStream;
-use super::output_exclusion::OutputFilter;
+use super::output::OutputFilter;
 use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe};
 use crate::core::error::IngestError;
 use crate::core::model::OutputTarget;
@@ -38,10 +38,7 @@ impl std::fmt::Debug for LocalStream {
 impl LocalStream {
     pub fn new(root: &Path, output: &OutputTarget) -> Result<Self, IngestError> {
         let canonical_root = validate_root(root)?;
-        let output_filter = match output {
-            OutputTarget::File(path) => OutputFilter::new(path)?,
-            OutputTarget::Stdout => None,
-        };
+        let output_filter = OutputFilter::from_target(output)?;
         let label = local_label(&canonical_root);
         let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
 
@@ -243,6 +240,10 @@ mod tests {
         assert_eq!(report.included_files, 1);
         assert!(!digest.contains("previous output"));
         assert!(digest.contains("FILE: source.txt"));
+        assert!(
+            !root.join("missing").exists(),
+            "nonexistent parent alias must not create phantom directory"
+        );
         Ok(())
     }
 

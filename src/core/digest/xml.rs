@@ -20,7 +20,7 @@ const XML_FILE_END: &str = "</file>\n";
 const NEWLINE: &str = "\n";
 const SPECIAL_BITSET: [u64; 4] = {
     let mut mask = [0u64; 4];
-    let mut i = 1;
+    let mut i = 0;
     while i <= 8 {
         mask[0] |= 1 << i;
         i += 1;
@@ -54,7 +54,7 @@ fn xml_special(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
         b'>' => Some((1, "&gt;")),
         b'"' => Some((1, "&quot;")),
         b'\'' => Some((1, "&apos;")),
-        0x01..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F => Some((1, "\u{FFFD}")),
+        0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F => Some((1, "\u{FFFD}")),
         0xEF if i + 2 < bytes.len() => {
             let tail = ((bytes[i + 1] as u32) << 8) | (bytes[i + 2] as u32);
             ((tail & !1) == 0xBFBE).then_some((3, "\u{FFFD}"))
@@ -234,8 +234,8 @@ mod tests {
             ("hello\x0Cworld", "hello\u{FFFD}world"),
             ("valid\t\n\rwhitespace", "valid\t\n\rwhitespace"),
             (
-                "code\u{0001}\u{0008}\u{000B}\u{001F}",
-                "code\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}",
+                "code\u{0000}\u{0001}\u{0008}\u{000B}\u{001F}",
+                "code\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}",
             ),
             (
                 "한글과 이모지 🦀 & 특수문자\n",
