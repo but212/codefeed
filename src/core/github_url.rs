@@ -1,25 +1,11 @@
 //! Pure GitHub URL construction, percent-encoding, and origin classification
 //! used to scope credentials and API-only headers.
 
-const GITHUB_API_BASE_URL: &str = "https://api.github.com";
+pub(crate) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 
-/// Origin of a request URL: which headers and credentials the shell may attach.
-///
-/// `Other` covers every non-API origin and host-confusion lookalikes
-/// (`https://api.github.com.evil.example/...`, `https://api.github.com@evil.example/...`);
-/// those requests must never carry `Authorization`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RequestTarget {
-    Api,
-    Other,
-}
-
-pub(crate) fn request_target(url: &str) -> RequestTarget {
-    if has_origin(url, GITHUB_API_BASE_URL) {
-        RequestTarget::Api
-    } else {
-        RequestTarget::Other
-    }
+/// Exact-origin match: returns `true` if `url == GITHUB_API_BASE_URL` or starts with `GITHUB_API_BASE_URL + "/"`.
+pub(crate) fn is_github_api_origin(url: &str) -> bool {
+    has_origin(url, GITHUB_API_BASE_URL)
 }
 
 /// Exact-origin match: `url == base` or `url` starts with `base + "/"`.
@@ -90,43 +76,25 @@ mod tests {
     }
 
     #[test]
-    fn request_target_classifies_origins_correctly() {
+    fn origin_classification_identifies_github_api_correctly() {
         let cases = [
-            (
-                "https://api.github.com/repos/owner/repo",
-                RequestTarget::Api,
-            ),
-            ("https://api.github.com", RequestTarget::Api),
+            ("https://api.github.com/repos/owner/repo", true),
+            ("https://api.github.com", true),
             (
                 "https://raw.githubusercontent.com/owner/repo/main/lib.rs",
-                RequestTarget::Other,
+                false,
             ),
-            ("https://raw.githubusercontent.com", RequestTarget::Other),
-            (
-                "https://api.github.com.evil.example/x",
-                RequestTarget::Other,
-            ),
-            (
-                "https://api.github.com@evil.example/x",
-                RequestTarget::Other,
-            ),
-            (
-                "https://raw.githubusercontent.com.evil.example/x",
-                RequestTarget::Other,
-            ),
-            (
-                "https://raw.githubusercontent.com@evil.example/x",
-                RequestTarget::Other,
-            ),
-            (
-                "http://127.0.0.1:8080/repos/owner/repo",
-                RequestTarget::Other,
-            ),
-            ("https://evil.example/", RequestTarget::Other),
+            ("https://raw.githubusercontent.com", false),
+            ("https://api.github.com.evil.example/x", false),
+            ("https://api.github.com@evil.example/x", false),
+            ("https://raw.githubusercontent.com.evil.example/x", false),
+            ("https://raw.githubusercontent.com@evil.example/x", false),
+            ("http://127.0.0.1:8080/repos/owner/repo", false),
+            ("https://evil.example/", false),
         ];
         for (url, expected) in cases {
             assert_eq!(
-                request_target(url),
+                is_github_api_origin(url),
                 expected,
                 "unexpected auth scope for: {url}"
             );

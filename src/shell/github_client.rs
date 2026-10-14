@@ -8,7 +8,7 @@ use ureq::http::StatusCode;
 use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::core::error::IngestError;
-use crate::core::github_url::{RequestTarget, request_target, tarball_url};
+use crate::core::github_url::{is_github_api_origin, tarball_url};
 use crate::core::policy::{ARCHIVE_MAX_SECS, MAX_RETRIES, is_retryable_status, retry_delay};
 
 const GITHUB_USER_AGENT: &str = "codefeed/0.1";
@@ -54,9 +54,8 @@ impl GithubClient {
         let mut attempt = 0;
         loop {
             let mut request = self.agent.get(url);
-            let target = request_target(url);
 
-            if target == RequestTarget::Api {
+            if is_github_api_origin(url) {
                 if let Some(auth) = &self.auth_header {
                     request = request.header("Authorization", auth);
                 }

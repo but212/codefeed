@@ -57,11 +57,20 @@ struct AtomicFile<'a> {
 
 impl<'a> AtomicFile<'a> {
     fn create(target: &'a Path) -> Result<Self, IngestError> {
-        let parent = target.parent().unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent)?;
         let Some(raw_name) = target.file_name() else {
             return Err(IngestError::Usage("output path has no filename".into()));
         };
+        if target.is_dir() {
+            return Err(IngestError::Io(io::Error::new(
+                io::ErrorKind::IsADirectory,
+                "output path is a directory",
+            )));
+        }
+        let parent = target
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
         let file_name = raw_name.to_string_lossy();
         let timestamp = super::current_epoch_nanos();
         let (temporary, file) = loop {
@@ -218,5 +227,21 @@ mod tests {
             }
             other => panic!("expected IngestError::Usage, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn rejects_directory_target_immediately() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("output_dir_test")?;
+        let existing_dir = root.join("existing_subdir");
+        fs::create_dir(&existing_dir)?;
+
+        let result = write_atomic(&existing_dir, |_w| Ok(()));
+        match result {
+            Err(IngestError::Io(err)) => {
+                assert_eq!(err.kind(), io::ErrorKind::IsADirectory);
+            }
+            other => panic!("expected IngestError::Io(IsADirectory), got {other:?}"),
+        }
+        Ok(())
     }
 }

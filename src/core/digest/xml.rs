@@ -108,14 +108,6 @@ impl<'a> XmlChunk<'a> {
     pub fn as_bytes(&self) -> &'a [u8] {
         self.as_str().as_bytes()
     }
-
-    #[inline]
-    pub fn ends_with_nl(&self) -> bool {
-        match *self {
-            XmlChunk::Raw(s) => s.as_bytes().last() == Some(&b'\n'),
-            XmlChunk::Escaped(s) => s.ends_with('\n'),
-        }
-    }
 }
 
 pub struct XmlChunks<'a> {
@@ -184,26 +176,23 @@ pub fn xml_escape(value: &str) -> Cow<'_, str> {
     Cow::Owned(result)
 }
 
-pub fn write_xml_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<bool> {
-    let mut ends_with_nl = false;
-
+pub fn write_xml_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
     for chunk in XmlChunks::new(value) {
         writer.write_all(chunk.as_bytes())?;
-        ends_with_nl = chunk.ends_with_nl();
     }
-
-    Ok(ends_with_nl)
+    Ok(())
 }
 
-pub(crate) fn render<W>(
+pub(crate) fn render<'a, W, I>(
     writer: &mut W,
     label: &str,
     revision: Option<&str>,
-    ordered_files: &[FileRecord<'_>],
+    ordered_files: I,
     trie: &BudgetTrie,
 ) -> Result<(), IngestError>
 where
     W: Write + ?Sized,
+    I: IntoIterator<Item = FileRecord<'a>>,
 {
     writer.write_all(XML_REPO_START.as_bytes())?;
     writer.write_all(xml_escape(label).as_bytes())?;
@@ -220,8 +209,8 @@ where
         writer.write_all(XML_FILE_START.as_bytes())?;
         writer.write_all(xml_escape(file.path).as_bytes())?;
         writer.write_all(XML_TAG_CLOSE.as_bytes())?;
-        let ends_with_nl = write_xml_escaped(writer, file.content)?;
-        if !ends_with_nl {
+        write_xml_escaped(writer, file.content)?;
+        if !file.content.ends_with('\n') {
             writer.write_all(NEWLINE.as_bytes())?;
         }
         writer.write_all(XML_FILE_END.as_bytes())?;
@@ -269,13 +258,12 @@ mod tests {
             );
 
             let mut streamed = Vec::new();
-            let stream_ends_with_nl = write_xml_escaped(&mut streamed, text).unwrap();
+            write_xml_escaped(&mut streamed, text).unwrap();
             assert_eq!(
                 String::from_utf8(streamed).unwrap(),
                 escaped.as_ref(),
                 "streamed content mismatch for {text:?}"
             );
-            assert_eq!(stream_ends_with_nl, escaped.ends_with('\n'));
         }
     }
 

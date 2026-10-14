@@ -1,45 +1,6 @@
-//! Accounting budget and diagnostic ranking for digest size.
+//! Diagnostic ranking for digest size.
 
-use super::trie::BudgetTrie;
 use crate::core::model::FileRecord;
-use crate::core::policy::MAX_OUTPUT_SIZE;
-
-/// Signal indicating that a candidate file would exceed MAX_OUTPUT_SIZE.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct BudgetOverflow;
-
-/// Accounting budget for digest size.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct DigestBudget {
-    pub(crate) content_bytes: u64,
-    pub(crate) skipped: usize,
-    pub(crate) trie: BudgetTrie,
-}
-
-impl DigestBudget {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn add(&mut self, file: &FileRecord<'_>) -> Result<(), BudgetOverflow> {
-        let file_bytes = (file.path.len() + file.content.len()) as u64;
-        let new_total = self.content_bytes.saturating_add(file_bytes);
-        if new_total > MAX_OUTPUT_SIZE {
-            return Err(BudgetOverflow);
-        }
-        self.trie.insert(file.path);
-        self.content_bytes = new_total;
-        Ok(())
-    }
-
-    pub(crate) fn skip(&mut self) {
-        self.skipped = self.skipped.saturating_add(1);
-    }
-
-    pub(crate) fn skipped(&self) -> usize {
-        self.skipped
-    }
-}
 
 pub(crate) fn largest_files<'a>(
     files: impl IntoIterator<Item = FileRecord<'a>>,

@@ -56,8 +56,7 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
 /// and extensions in [`SENSITIVE_EXT`] (`*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.credentials`).
 pub(crate) fn is_sensitive_path(path: &str) -> bool {
     let file_name = path.rsplit('/').next().unwrap_or(path);
-    if starts_with_ignore_ascii_case(file_name, ".env")
-        || starts_with_ignore_ascii_case(file_name, "id_rsa")
+    if starts_with_ignore_ascii_case(file_name, "id_rsa")
         || starts_with_ignore_ascii_case(file_name, "id_ed25519")
         || starts_with_ignore_ascii_case(file_name, "credentials")
     {

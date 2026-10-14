@@ -6,63 +6,84 @@ use flate2::read::GzDecoder;
 use tar::{Archive, EntryType};
 
 use crate::core::archive::{parse_pax_comment, strip_archive_root};
-use crate::core::decide::{Item, ItemPath, Probe, Selector};
+use crate::core::decide::{Item, ItemPath, Probe};
 use crate::core::error::IngestError;
-use crate::core::model::CollectionResult;
 use crate::core::policy::{MAX_FILE_SIZE, PathClassification};
 
-use super::github_client::GithubClient;
-pub fn collect_github(
-    owner: &str,
-    repo: &str,
-    reference: Option<&str>,
-) -> Result<CollectionResult, IngestError> {
-    let client = GithubClient::new();
-    let stream = client.tarball_stream(owner, repo, reference)?;
-    collect_from_archive(stream, owner, repo, reference)
+use super::orchestrate::SourceStream;
+
+pub struct GitHubStream<'a, R: Read> {
+    label: String,
+    reference: Option<String>,
+    parsed_revision: Option<String>,
+    entries: tar::Entries<'a, GzDecoder<R>>,
+    seen_items: bool,
+}
+
+impl<'a, R: Read> GitHubStream<'a, R> {
+    pub fn new(
+        archive: &'a mut Archive<GzDecoder<R>>,
+        owner: &str,
+        repo: &str,
+        reference: Option<&str>,
+    ) -> Result<Self, IngestError> {
+        let entries = archive.entries().map_err(IngestError::Io)?;
+        Ok(Self {
+            label: format!("https://github.com/{owner}/{repo}"),
+            reference: reference.map(str::to_string),
+            parsed_revision: None,
+            entries,
+            seen_items: false,
+        })
+    }
+}
+
+impl<'a, R: Read> Iterator for GitHubStream<'a, R> {
+    type Item = Result<Item, IngestError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        for entry_res in self.entries.by_ref() {
+            let mut entry = match entry_res {
+                Ok(e) => e,
+                Err(err) => return Some(Err(IngestError::Io(err))),
+            };
+            match probe_tar_entry(&mut entry) {
+                Ok(ArchiveEntryOutcome::PaxHeader(sha)) => {
+                    if self.seen_items {
+                        return Some(Err(IngestError::InvalidMetadata(
+                            "pax header after archive entries".into(),
+                        )));
+                    }
+                    self.parsed_revision = Some(sha);
+                }
+                Ok(ArchiveEntryOutcome::Item(item)) => {
+                    self.seen_items = true;
+                    return Some(Ok(item));
+                }
+                Ok(ArchiveEntryOutcome::Ignored) => {}
+                Err(err) => return Some(Err(err)),
+            }
+        }
+        None
+    }
+}
+
+impl<'a, R: Read> SourceStream for GitHubStream<'a, R> {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn revision(&self) -> Option<&str> {
+        self.parsed_revision
+            .as_deref()
+            .or(self.reference.as_deref())
+    }
 }
 
 enum ArchiveEntryOutcome {
     PaxHeader(String),
     Item(Item),
     Ignored,
-}
-
-pub(crate) fn collect_from_archive<R: Read>(
-    reader: R,
-    owner: &str,
-    repo: &str,
-    reference: Option<&str>,
-) -> Result<CollectionResult, IngestError> {
-    let gz = GzDecoder::new(reader);
-    let mut archive = Archive::new(gz);
-
-    let label = format!("https://github.com/{owner}/{repo}");
-    let mut parsed_revision: Option<String> = None;
-    let mut selector = Selector::new();
-
-    let entries = archive.entries().map_err(IngestError::Io)?;
-
-    for entry_res in entries {
-        let mut entry = entry_res.map_err(IngestError::Io)?;
-        match probe_tar_entry(&mut entry)? {
-            ArchiveEntryOutcome::PaxHeader(sha) => {
-                if !selector.is_empty() {
-                    return Err(IngestError::InvalidMetadata(
-                        "pax header after archive entries".into(),
-                    ));
-                }
-                parsed_revision = Some(sha);
-            }
-            ArchiveEntryOutcome::Item(item) => {
-                selector.decide(item)?;
-            }
-            ArchiveEntryOutcome::Ignored => {}
-        }
-    }
-
-    let final_revision = parsed_revision.or_else(|| reference.map(str::to_string));
-    Ok(selector.finish(label, final_revision))
 }
 
 fn probe_tar_entry<R: Read>(entry: &mut tar::Entry<R>) -> Result<ArchiveEntryOutcome, IngestError> {
@@ -79,22 +100,13 @@ fn probe_tar_entry<R: Read>(entry: &mut tar::Entry<R>) -> Result<ArchiveEntryOut
     }
 
     // 2. Skip directories, symlinks, and special entries before path decoding
-    if entry_type.is_dir() || !matches!(entry_type, EntryType::Regular | EntryType::Continuous) {
+    if !matches!(entry_type, EntryType::Regular | EntryType::Continuous) {
         return Ok(ArchiveEntryOutcome::Ignored);
     }
 
     // 3. Path decoding & root stripping
-    let path_cow = match entry.path() {
-        Ok(p) => p,
-        Err(_) => {
-            return Ok(ArchiveEntryOutcome::Item(Item {
-                path: ItemPath::NonUtf8,
-                probe: Probe::Missing,
-            }));
-        }
-    };
-
-    let Some(path_str) = path_cow.to_str() else {
+    let path_bytes = entry.path_bytes();
+    let Ok(path_str) = std::str::from_utf8(&path_bytes) else {
         return Ok(ArchiveEntryOutcome::Item(Item {
             path: ItemPath::NonUtf8,
             probe: Probe::Missing,
@@ -117,7 +129,7 @@ fn probe_tar_entry<R: Read>(entry: &mut tar::Entry<R>) -> Result<ArchiveEntryOut
     if classification == PathClassification::PreclassifiedBinary {
         return Ok(ArchiveEntryOutcome::Item(Item {
             path: ItemPath::Utf8(rel_path),
-            probe: Probe::PreclassifiedBinary,
+            probe: Probe::Missing,
         }));
     }
 
@@ -189,8 +201,11 @@ mod tests {
             ("repo-root/image.png", b"binary-data", EntryType::Regular),
         ]);
 
-        let result = collect_from_archive(mock_data.as_slice(), "but212", "codefeed", None)
-            .expect("collection should succeed");
+        let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
+        let stream = GitHubStream::new(&mut archive, "but212", "codefeed", None)
+            .expect("stream should open");
+        let result =
+            crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
 
         assert_eq!(
             result.revision.as_deref(),
@@ -217,8 +232,11 @@ mod tests {
             ),
         ]);
 
-        let result = collect_from_archive(mock_data.as_slice(), "owner", "repo", Some("main"))
-            .expect("collection should succeed");
+        let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
+        let stream = GitHubStream::new(&mut archive, "owner", "repo", Some("main"))
+            .expect("stream should open");
+        let result =
+            crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
 
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files.get_at(0).unwrap().path, "small.txt");
@@ -233,8 +251,11 @@ mod tests {
             EntryType::Regular,
         )]);
 
-        let result = collect_from_archive(mock_data.as_slice(), "owner", "repo", None)
-            .expect("collection should succeed");
+        let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
+        let stream =
+            GitHubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
+        let result =
+            crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
 
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files.get_at(0).unwrap().path, "pax_global_header");
@@ -269,8 +290,11 @@ mod tests {
         }
         let mock_data = gz.finish().unwrap();
 
-        let result = collect_from_archive(mock_data.as_slice(), "owner", "repo", None)
-            .expect("collection should succeed");
+        let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
+        let stream =
+            GitHubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
+        let result =
+            crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
 
         assert_eq!(result.files.len(), 0);
         assert_eq!(result.skipped, 0);
@@ -284,7 +308,10 @@ mod tests {
             ("pax_global_header", pax_comment, EntryType::XGlobalHeader),
         ]);
 
-        let result = collect_from_archive(mock_data.as_slice(), "owner", "repo", None);
+        let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
+        let stream =
+            GitHubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
+        let result = crate::shell::orchestrate::collect_stream(stream);
 
         assert!(matches!(
             result,

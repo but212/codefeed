@@ -4,7 +4,7 @@ pub mod token;
 mod trie;
 mod xml;
 
-pub(crate) use budget::{DigestBudget, largest_files};
+pub(crate) use budget::largest_files;
 pub use token::{TokenEstimator, estimate_tokens};
 pub use trie::BudgetTrie;
 pub use xml::{write_xml_escaped, xml_escape};
@@ -26,13 +26,11 @@ impl DigestFormat {
     where
         W: std::io::Write + ?Sized,
         I: IntoIterator<Item = FileRecord<'a>>,
+        I::IntoIter: ExactSizeIterator,
     {
-        let mut ordered_files: Vec<FileRecord<'a>> = files.into_iter().collect();
-        ordered_files.sort_unstable_by_key(|f| f.path);
-
         match self {
-            Self::Text => text::render(writer, label, revision, &ordered_files, skipped, trie),
-            Self::Xml => xml::render(writer, label, revision, &ordered_files, trie),
+            Self::Text => text::render(writer, label, revision, files, skipped, trie),
+            Self::Xml => xml::render(writer, label, revision, files, trie),
         }
     }
 }
@@ -125,8 +123,9 @@ mod tests {
         files: &[FileRecord<'_>],
         skipped: usize,
     ) -> Result<String, IngestError> {
-        let storage: FileStorage = files.iter().copied().collect();
-        let trie = test_trie(files.iter().copied());
+        let mut storage: FileStorage = files.iter().copied().collect();
+        storage.sort_by_path();
+        let trie = test_trie(storage.iter());
         let collection = CollectionResult {
             label: label.to_string(),
             revision: revision.map(str::to_string),
@@ -189,10 +188,12 @@ mod tests {
                 content: "world",
             },
         ];
+        let mut storage: FileStorage = files.into_iter().collect();
+        storage.sort_by_path();
         let collection = CollectionResult {
             label: "my-repo".into(),
             revision: Some("v1.0".into()),
-            files: files.into_iter().collect(),
+            files: storage,
             skipped: 2,
             trie: test_trie(files),
         };
@@ -246,8 +247,11 @@ hello\n\
         ];
         let trie = test_trie([files[0], files[2]]);
         let mut buf = Vec::new();
-        let filtered_iter = files.into_iter().filter(|f| f.path != "excluded.txt");
-        DigestFormat::Text.render(&mut buf, "repo", None, filtered_iter, 1, &trie)?;
+        let filtered: Vec<_> = files
+            .into_iter()
+            .filter(|f| f.path != "excluded.txt")
+            .collect();
+        DigestFormat::Text.render(&mut buf, "repo", None, filtered, 1, &trie)?;
         let rendered = std::str::from_utf8(&buf)?;
         assert!(rendered.contains("Files: 2"));
         assert!(rendered.contains("FILE: a.txt"));
@@ -258,13 +262,14 @@ hello\n\
 
     #[test]
     fn rejects_digest_before_storing_over_budget_content() {
-        let content = "x".repeat(MAX_OUTPUT_SIZE as usize + 1);
-        let candidate = FileRecord {
-            path: "large.txt",
-            content: &content,
-        };
-        let mut budget = DigestBudget::new();
-        assert!(budget.add(&candidate).is_err());
+        use crate::core::decide::{Item, ItemPath, Probe, Selector};
+        let content = vec![b'x'; MAX_OUTPUT_SIZE as usize + 1];
+        let mut selector = Selector::new();
+        let res = selector.decide(Item {
+            path: ItemPath::Utf8("large.txt".into()),
+            probe: Probe::Bytes(content),
+        });
+        assert!(res.is_err());
     }
 
     #[test]
@@ -305,10 +310,12 @@ hello\n\
                 content: "a & b",
             },
         ];
+        let mut storage: FileStorage = files.into_iter().collect();
+        storage.sort_by_path();
         let collection = CollectionResult {
             label: "my-repo".into(),
             revision: Some("v1.0".into()),
-            files: files.into_iter().collect(),
+            files: storage,
             skipped: 1,
             trie: test_trie(files),
         };

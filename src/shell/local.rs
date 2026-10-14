@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 use ignore::WalkBuilder;
 
 use super::local_io::read_local_file;
+use super::orchestrate::SourceStream;
 use super::output_exclusion::OutputFilter;
-use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe, Selector};
+use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe};
 use crate::core::error::IngestError;
-use crate::core::model::{CollectionResult, OutputTarget};
+use crate::core::model::OutputTarget;
 use crate::core::policy::{MAX_FILE_COUNT, PathClassification};
 
 struct LocalCandidate {
@@ -19,30 +20,64 @@ struct LocalCandidate {
     probe: Option<Probe>,
 }
 
-pub fn collect_local(root: &Path, output: &OutputTarget) -> Result<CollectionResult, IngestError> {
-    let canonical_root = validate_root(root)?;
-    let output_filter = match output {
-        OutputTarget::File(path) => Some(OutputFilter::new(path)?),
-        OutputTarget::Stdout => None,
-    };
-    let label = local_label(&canonical_root);
-    let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
-    let mut selector = Selector::new();
+pub struct LocalStream {
+    root: PathBuf,
+    label: String,
+    candidates: std::vec::IntoIter<LocalCandidate>,
+}
 
-    CandidateBudget::check_limit(candidates.iter().map(|c| c.item_path.as_utf8_str()))?;
+impl std::fmt::Debug for LocalStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalStream")
+            .field("root", &self.root)
+            .field("label", &self.label)
+            .finish()
+    }
+}
 
-    for candidate in candidates {
+impl LocalStream {
+    pub fn new(root: &Path, output: &OutputTarget) -> Result<Self, IngestError> {
+        let canonical_root = validate_root(root)?;
+        let output_filter = match output {
+            OutputTarget::File(path) => OutputFilter::new(path)?,
+            OutputTarget::Stdout => None,
+        };
+        let label = local_label(&canonical_root);
+        let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
+
+        CandidateBudget::check_limit(candidates.iter().map(|c| c.item_path.as_utf8_str()))?;
+
+        Ok(Self {
+            root: canonical_root,
+            label,
+            candidates: candidates.into_iter(),
+        })
+    }
+}
+
+impl Iterator for LocalStream {
+    type Item = Result<Item, IngestError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let candidate = self.candidates.next()?;
         let probe = match candidate.probe {
             Some(p) => p,
-            None => read_local_file(&canonical_root, &candidate.path)?,
+            None => match read_local_file(&self.root, &candidate.path) {
+                Ok(p) => p,
+                Err(err) => return Some(Err(err)),
+            },
         };
-        selector.decide(Item {
+        Some(Ok(Item {
             path: candidate.item_path,
             probe,
-        })?;
+        }))
     }
+}
 
-    Ok(selector.finish(label, None))
+impl SourceStream for LocalStream {
+    fn label(&self) -> &str {
+        &self.label
+    }
 }
 
 fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
@@ -71,6 +106,7 @@ fn walk_candidates(
         .require_git(false)
         .parents(false)
         .follow_links(false)
+        .sort_by_file_name(|a, b| a.cmp(b))
         .build();
 
     let mut candidates = Vec::new();
@@ -79,8 +115,8 @@ fn walk_candidates(
         let entry = entry.map_err(|err| IngestError::Io(io::Error::other(err)))?;
         let entry_path = entry.path();
         if entry_path == root
-            || output_filter.is_some_and(|filter| filter.is_excluded(entry_path))
             || !entry.file_type().is_some_and(|kind| kind.is_file())
+            || output_filter.is_some_and(|filter| filter.is_excluded(entry_path))
         {
             continue;
         }
@@ -94,7 +130,7 @@ fn walk_candidates(
             ItemPath::NonUtf8 => Some(Probe::Missing),
             ItemPath::Utf8(path) => match PathClassification::classify(path) {
                 PathClassification::Ignored => continue,
-                PathClassification::PreclassifiedBinary => Some(Probe::PreclassifiedBinary),
+                PathClassification::PreclassifiedBinary => Some(Probe::Missing),
                 PathClassification::NeedsContent => None,
             },
         };
@@ -350,7 +386,10 @@ mod tests {
                 )?;
             }
         }
-        let result = collect_local(&root, &OutputTarget::Stdout)?;
+        let result = crate::shell::orchestrate::collect_stream(LocalStream::new(
+            &root,
+            &OutputTarget::Stdout,
+        )?)?;
         let files = result.files;
         assert_eq!(files.len(), 30);
         let records: Vec<FileRecord<'_>> = files.iter().collect();
@@ -383,7 +422,7 @@ mod tests {
             .share_mode(0)
             .open(root.join("file_00000.txt"))?;
 
-        let err = collect_local(&root, &OutputTarget::Stdout).unwrap_err();
+        let err = LocalStream::new(&root, &OutputTarget::Stdout).unwrap_err();
         match err {
             IngestError::CandidateLimitExceeded { .. } => {
                 let msg = err.to_string();

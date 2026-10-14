@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use crate::core::digest::DigestBudget;
+use crate::core::digest::BudgetTrie;
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, FileRecord, FileStorage};
-use crate::core::policy::MAX_FILE_COUNT;
+use crate::core::policy::{MAX_FILE_COUNT, MAX_OUTPUT_SIZE};
 
 /// Path text as observed by the imperative shell. Non-UTF-8 paths are still
 /// candidates and must be counted, then skipped.
@@ -23,14 +23,13 @@ impl ItemPath {
     }
 }
 
-/// Result of the shell's bounded resource acquisition. `PreclassifiedBinary`,
-/// `TooLarge`, and `Missing` carry no content and consume a candidate slot.
+/// Result of the shell's bounded resource acquisition. `TooLarge` and `Missing`
+/// carry no content and consume a candidate slot.
 #[derive(Clone)]
 pub enum Probe {
     Bytes(Vec<u8>),
     Missing,
     TooLarge,
-    PreclassifiedBinary,
 }
 
 pub struct Item {
@@ -50,10 +49,9 @@ impl Item {
                 Some(content) => ItemResolution::Included(path, content),
                 None => ItemResolution::Skipped(Some(path)),
             },
-            (
-                ItemPath::Utf8(path),
-                Probe::Missing | Probe::TooLarge | Probe::PreclassifiedBinary,
-            ) => ItemResolution::Skipped(Some(path)),
+            (ItemPath::Utf8(path), Probe::Missing | Probe::TooLarge) => {
+                ItemResolution::Skipped(Some(path))
+            }
             (ItemPath::NonUtf8, _) => ItemResolution::Skipped(None),
         }
     }
@@ -64,7 +62,8 @@ impl Item {
 pub struct Selector {
     storage: FileStorage,
     candidates: CandidateBudget,
-    digest: DigestBudget,
+    content_bytes: u64,
+    skipped: usize,
 }
 
 impl Selector {
@@ -72,12 +71,13 @@ impl Selector {
         Self {
             storage: FileStorage::new(),
             candidates: CandidateBudget::default(),
-            digest: DigestBudget::new(),
+            content_bytes: 0,
+            skipped: 0,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.storage.is_empty() && self.digest.skipped() == 0
+        self.storage.is_empty() && self.skipped == 0
     }
 
     pub fn decide(&mut self, item: Item) -> Result<(), IngestError> {
@@ -88,32 +88,40 @@ impl Selector {
             }
             ItemResolution::Skipped(path) => {
                 self.candidates.add(path.as_deref())?;
-                self.digest.skip();
+                self.skipped = self.skipped.saturating_add(1);
                 Ok(())
             }
         }
     }
 
     fn add_file(&mut self, path: &str, content: &str) -> Result<(), IngestError> {
-        let record = FileRecord { path, content };
-        if self.digest.add(&record).is_err() {
+        let file_bytes = (path.len() + content.len()) as u64;
+        let new_total = self.content_bytes.saturating_add(file_bytes);
+        if new_total > MAX_OUTPUT_SIZE {
+            let record = FileRecord { path, content };
             return Err(IngestError::OutputTooLarge {
                 largest_files: crate::core::digest::largest_files(
                     self.storage.iter().chain(std::iter::once(record)),
                 ),
             });
         }
+        self.content_bytes = new_total;
         self.storage.push(path, content);
         Ok(())
     }
 
-    pub fn finish(self, label: String, revision: Option<String>) -> CollectionResult {
+    pub fn finish(mut self, label: String, revision: Option<String>) -> CollectionResult {
+        self.storage.sort_by_path();
+        let mut trie = BudgetTrie::new();
+        for file in self.storage.iter() {
+            trie.insert(file.path);
+        }
         CollectionResult {
             label,
             revision,
             files: self.storage,
-            skipped: self.digest.skipped(),
-            trie: self.digest.trie,
+            skipped: self.skipped,
+            trie,
         }
     }
 }
@@ -128,7 +136,7 @@ impl Default for Selector {
 #[derive(Default)]
 pub(crate) struct CandidateBudget {
     count: usize,
-    dir_counts: HashMap<String, usize>,
+    dir_runs: Vec<(String, usize)>,
 }
 
 impl CandidateBudget {
@@ -153,16 +161,23 @@ impl CandidateBudget {
             .checked_add(1)
             .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
         let dir_slice = extract_dir_slice(path);
-        if let Some(count) = self.dir_counts.get_mut(dir_slice) {
-            *count += 1;
+
+        if let Some(last) = self.dir_runs.last_mut()
+            && last.0 == dir_slice
+        {
+            last.1 += 1;
         } else {
-            self.dir_counts.insert(dir_slice.to_owned(), 1);
+            self.dir_runs.push((dir_slice.to_owned(), 1));
         }
 
         if self.count > MAX_FILE_COUNT {
+            let mut aggregated: HashMap<String, usize> = HashMap::new();
+            for (dir, count) in &self.dir_runs {
+                *aggregated.entry(dir.clone()).or_insert(0) += count;
+            }
             return Err(IngestError::CandidateLimitExceeded {
                 limit: MAX_FILE_COUNT,
-                largest_directories: top_overflow_directories(&self.dir_counts),
+                largest_directories: top_overflow_directories(&aggregated),
             });
         }
         Ok(())
@@ -268,9 +283,9 @@ mod tests {
     }
 
     #[test]
-    fn preclassified_binary_is_skipped() -> Result<(), Box<dyn std::error::Error>> {
+    fn missing_probe_is_skipped() -> Result<(), Box<dyn std::error::Error>> {
         let mut selector = Selector::new();
-        selector.decide(decide_item("binary.png", Probe::PreclassifiedBinary))?;
+        selector.decide(decide_item("missing.png", Probe::Missing))?;
         selector.decide(decide_item("kept.txt", Probe::Bytes(b"kept".to_vec())))?;
         let collection = selector.finish("test".into(), None);
         assert_eq!(collection.files.len(), 1);
@@ -280,11 +295,11 @@ mod tests {
 
     #[test]
     fn item_resolve_classifies_all_variants() {
-        let preclassified = Item {
+        let missing = Item {
             path: ItemPath::Utf8("binary.png".into()),
-            probe: Probe::PreclassifiedBinary,
+            probe: Probe::Missing,
         };
-        match preclassified.resolve() {
+        match missing.resolve() {
             ItemResolution::Skipped(Some(path)) => assert_eq!(path, "binary.png"),
             _ => panic!("expected Skipped(Some)"),
         }

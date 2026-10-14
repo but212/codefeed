@@ -10,9 +10,9 @@ use std::io::Write;
 use std::time::Instant;
 
 use codefeed::__bench::{
-    BudgetTrie, CollectionResult, DigestFormat, FileStorage, Item, ItemPath, OutputTarget, Probe,
-    Selector, collect_local, estimate_tokens, render_digest_to_writer, text_content,
-    write_xml_escaped, xml_escape,
+    BudgetTrie, CollectionResult, DigestFormat, FileStorage, Item, ItemPath, LocalStream,
+    OutputTarget, Probe, Selector, collect_stream, estimate_tokens, render_digest_to_writer,
+    text_content, write_xml_escaped, xml_escape,
 };
 
 pub struct VoidWriter;
@@ -395,8 +395,8 @@ mod suites {
 
         runner.bench("xml_stream_write_100k", 10, 50, Some(payload_bytes), || {
             let mut writer = VoidWriter;
-            let nl = write_xml_escaped(&mut writer, &payload).expect("write xml");
-            black_box(nl);
+            write_xml_escaped(&mut writer, &payload).expect("write xml");
+            black_box(&mut writer);
         });
     }
 
@@ -437,7 +437,7 @@ mod suites {
                 }),
                 1 => items.push(Item {
                     path: ItemPath::Utf8(format!("src/image_{i}.png")),
-                    probe: Probe::PreclassifiedBinary,
+                    probe: Probe::Missing,
                 }),
                 2 => items.push(Item {
                     path: ItemPath::Utf8(format!("src/big_{i}.bin")),
@@ -510,8 +510,9 @@ mod suites {
         let (_guard, temp_root) = setup_temp_hierarchy(1_000);
 
         runner.bench(name, 2, 10, None, || {
-            let res = collect_local(&temp_root, &OutputTarget::Stdout)
-                .expect("collect_local should succeed");
+            let stream = LocalStream::new(&temp_root, &OutputTarget::Stdout)
+                .expect("LocalStream::new should succeed");
+            let res = collect_stream(stream).expect("collect_stream should succeed");
             black_box(res.files.len());
         });
     }

@@ -9,12 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `SourceStream` trait and generic streaming collection driver `collect_stream` in `src/shell/orchestrate.rs`, unifying selection, budget management, and completion across all source types.
+- Lazy candidate reader iterator `LocalStream` in `src/shell/local.rs` with fast-fail preflight limit validation on creation.
+- Streaming archive entry iterator `GitHubStream` in `src/shell/github.rs` yielding `Item`s and managing revision resolution.
 - Continuous arena storage `FileStorage` in `src/core/model.rs` backed by contiguous path and content arenas (`String`) and 16-byte index descriptors (`FileSpan`), eliminating per-file heap fragmentation and preserving cache locality.
+- In-place span sorting `FileStorage::sort_by_path(&mut self)` operating directly on 16-byte `FileSpan` slices.
 - Zero-copy borrowed view `FileRecord<'a>` into files stored within `FileStorage`.
 - Unified token estimation state machine `TokenEstimator` in `src/core/digest/token.rs`, shared by `estimate_tokens` and `BoundedEstimatingWriter`.
 - Isolated byte budget tracking and top-K file diagnostics in `src/core/digest/budget.rs`.
 - Pure CLI argument parser `src/core/cli.rs`, migrating argument and flag evaluation to the functional core without side effects or I/O.
-- Explicit candidate probe variant `Probe::PreclassifiedBinary` in `src/core/decide.rs`, differentiating policy binary extension skipping from missing file I/O states.
 - Domain reference setter `Source::with_reference` in `src/core/model.rs` encapsulating revision validation and GitHub/local source invariants.
 - Batch pre-flight candidate verification `CandidateBudget::check_limit` with $O(1)$ fast-path in `src/core/decide.rs`.
 - Centralized shell epoch timestamp generator `current_epoch_nanos()` in `src/shell/mod.rs`.
@@ -22,29 +25,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Enforced deterministic filesystem traversal order in `collect_local` via `WalkBuilder::sort_by_file_name`, guaranteeing reproducible `CandidateLimitExceeded` diagnostic output across different operating systems and filesystems.
+- Dissolved nonexistent output file filtering by returning `Ok(None)` from `OutputFilter::new` when the output path does not exist on disk prior to walking, eliminating redundant path normalization and comparisons.
+- Checked `entry.file_type().is_file()` before output exclusion checks in `collect_local`, and used `fs::symlink_metadata` on Unix to prevent following symlinks.
+- Rejected directory target paths immediately with `io::ErrorKind::IsADirectory` in `AtomicFile::create` prior to temporary file creation.
 - Filtered redundant empty path components (`//`) in `is_hidden_path` (`src/core/policy.rs`) to prevent non-hidden paths with duplicate delimiters from being misclassified as hidden.
 - Mapped invalid output file paths lacking a file name component to `IngestError::Usage` in `src/shell/output.rs`.
 - Enforced candidate count limits prior to reading file contents from disk in local walk (`src/shell/local.rs`) via `CandidateBudget::check_limit`, preventing unbounded I/O when file counts exceed `MAX_FILE_COUNT`.
 
 ### Changed
 
-- Decoupled data collection (`Selector`, `DigestBudget`, `CollectionResult`, `collect_local`, `collect_github`) from presentation format (`DigestFormat`), passing format strictly to `render_digest_to_writer`.
+- Replaced `CandidateBudget` happy-path `HashMap` allocations with run-length encoded directory tracking (`dir_runs: Vec<(String, usize)>`), deferring aggregation until candidate overflow diagnostics are formatted.
+- Unified `BudgetTrie` tree root at `nodes[0]`, eliminating `root_children: Vec<u32>` and redundant `Option<u32>` branch checks in `get_or_insert_child`.
+- Streamlined `DigestFormat::render` to consume `ExactSizeIterator<Item = FileRecord<'_>>` streaming directly, eliminating 32-byte `Vec<FileRecord>` heap reallocation and re-sorting.
+- Inlined byte counting and skip tracking directly into `Selector`, eliminating split-brain states between `CollectionResult.files` and `CollectionResult.trie`.
+- Decoupled data collection (`Selector`, `CollectionResult`, `collect_local`, `collect_github`) from presentation format (`DigestFormat`), passing format strictly to `render_digest_to_writer`.
 - Shifted `BudgetTrie` XML entity and newline escaping from node insertion time to on-the-fly rendering (`render_to_writer`), pruning cached display strings from `BudgetTrieNode` and keeping trie structures format-neutral.
 - Replaced `Vec<FileRecord>` in `CollectionResult` and `Selector` with `FileStorage`, feeding zero-copy borrowed records to digest renderers and diagnostic handlers.
 - Encapsulated `FileStorage` internal arena buffers (`spans`, `path_arena`, `content_arena`) behind private visibility.
 - Refactored `BudgetTrie` in `src/core/digest/trie.rs` into a contiguous flat node arena (`Vec<BudgetTrieNode>`) with `u32` indexed child tracking (`Vec<u32>`) and `Box<str>` node labels, reducing arena memory footprint on 64-bit platforms and eliminating recursive heap pointer chasing.
 - Structured `IngestError::CandidateLimitExceeded` and `IngestError::OutputTooLarge` diagnostics, centralizing message formatting in `error.rs`'s `Display` implementation.
-- Consolidated duplicated root and parent child insertion logic in `BudgetTrie::insert` into `get_or_insert_child`.
-- Extracted OS-dependent filename case comparison in `src/shell/output_exclusion.rs` into `names_match` helper.
-- Centralized deterministic digest file sorting in `DigestFormat::render` (`src/core/digest/mod.rs`), passing sorted `&[FileRecord]` slices to `text::render` and `xml::render` to eliminate duplicate sorting and redundant allocations.
 - Replaced external crate `percent-encoding` in `src/core/github_url.rs` with a pure `std` RFC 3986 Unreserved validator and `%XX` hex encoder.
 - Replaced external crate `memchr` in `src/core/decide.rs` with `slice::contains(&0)` and in `src/core/digest/text.rs` with `std` pattern matching.
 - Replaced external crate `log` in `src/shell/github_client.rs` with `eprintln!` diagnostics.
 - Buffered streaming GitHub tarball HTTP response bodies through a 64 KiB `BufReader` in `src/shell/github_client.rs` before decompression.
+- Decoded GitHub tarball paths directly from `entry.path_bytes()` in `src/shell/github.rs` via `std::str::from_utf8`.
 - Consolidated duplicated HTTP transport error and status retry logic in `src/shell/github_client.rs` into a unified helper.
 
 ### Removed
 
+- Removed separate collection entry points `collect_local`, `collect_github`, and `collect_from_archive` in favor of the unified `collect_stream` streaming pipeline.
+- Removed redundant `Probe::PreclassifiedBinary` variant, consolidating binary extension skipping with `Probe::Missing`.
+- Removed `DigestBudget` and `BudgetOverflow` wrapper types in `src/core/digest/budget.rs`.
+- Removed `XmlChunk::ends_with_nl()` in `src/core/digest/xml.rs`, checking trailing newline directly on the source content.
+- Removed 4 KiB static character escape table in `src/core/digest/text.rs` in favor of inline byte pattern matching.
+- Removed `RequestTarget` enum in `src/core/github_url.rs`, replacing origin checks with `is_github_api_origin`.
+- Removed dead `output_identity` and redundant path normalization helpers from `src/shell/output_exclusion.rs`.
 - Removed external dependencies `percent-encoding`, `memchr`, and `log` from `Cargo.toml`.
 - Removed intermediate single-use `Options` struct from `src/core/model.rs`.
 - Removed dead `Probe::Ignored` variant and unused `ItemResolution::Ignored` match arm from `src/core/decide.rs`.

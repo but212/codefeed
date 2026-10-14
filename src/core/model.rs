@@ -102,10 +102,10 @@ pub struct IngestReport {
 /// 16-byte POD indexing a file path and content slice in [`FileStorage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FileSpan {
-    pub path_offset: u32,
-    pub path_len: u32,
-    pub content_offset: u32,
-    pub content_len: u32,
+    pub(crate) path_offset: u32,
+    pub(crate) path_len: u32,
+    pub(crate) content_offset: u32,
+    pub(crate) content_len: u32,
 }
 
 /// Continuous arena storage for file paths and contents.
@@ -131,6 +131,16 @@ impl FileStorage {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.spans.is_empty()
+    }
+
+    /// Sorts spans lexicographically by path in-place within the path arena.
+    pub fn sort_by_path(&mut self) {
+        let path_arena = &self.path_arena;
+        self.spans.sort_unstable_by(|a, b| {
+            let pa = &path_arena[a.path_offset as usize..(a.path_offset + a.path_len) as usize];
+            let pb = &path_arena[b.path_offset as usize..(b.path_offset + b.path_len) as usize];
+            pa.cmp(pb)
+        });
     }
 
     /// Appends path and content to the arenas and records a [`FileSpan`].
@@ -194,33 +204,11 @@ impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
     }
 }
 
-impl<'a> FromIterator<&'a FileRecord<'a>> for FileStorage {
-    fn from_iter<T: IntoIterator<Item = &'a FileRecord<'a>>>(iter: T) -> Self {
-        let mut storage = Self::new();
-        for record in iter {
-            storage.push(record.path, record.content);
-        }
-        storage
-    }
-}
-
 /// Zero-copy borrowed view into a file record stored within [`FileStorage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileRecord<'a> {
     pub path: &'a str,
     pub content: &'a str,
-}
-
-impl FileRecord<'_> {
-    #[inline]
-    pub fn path(&self) -> &str {
-        self.path
-    }
-
-    #[inline]
-    pub fn content(&self) -> &str {
-        self.content
-    }
 }
 
 /// Raw files and metadata collected by the shell before digest rendering.
@@ -250,12 +238,12 @@ mod tests {
         assert!(!storage.is_empty());
 
         let rec1 = storage.get(span1);
-        assert_eq!(rec1.path(), "path/to/first.rs");
-        assert_eq!(rec1.content(), "pub fn first() {}");
+        assert_eq!(rec1.path, "path/to/first.rs");
+        assert_eq!(rec1.content, "pub fn first() {}");
 
         let rec2 = storage.get(span2);
-        assert_eq!(rec2.path(), "second.txt");
-        assert_eq!(rec2.content(), "second content\n");
+        assert_eq!(rec2.path, "second.txt");
+        assert_eq!(rec2.content, "second content\n");
 
         assert_eq!(storage.get_at(0), Some(rec1));
         assert_eq!(storage.get_at(1), Some(rec2));
@@ -272,6 +260,19 @@ mod tests {
         // FromIterator verification
         let reconstructed: FileStorage = collected.into_iter().collect();
         assert_eq!(reconstructed, storage);
+    }
+
+    #[test]
+    fn file_storage_sorts_by_path_in_place() {
+        let mut storage = FileStorage::new();
+        storage.push("z/file.rs", "content_z");
+        storage.push("a/file.rs", "content_a");
+        storage.push("m/file.rs", "content_m");
+
+        storage.sort_by_path();
+
+        let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
+        assert_eq!(paths, vec!["a/file.rs", "m/file.rs", "z/file.rs"]);
     }
 
     #[test]

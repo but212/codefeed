@@ -55,8 +55,8 @@ fn parse_github_url(value: &str) -> Result<Source, IngestError> {
         ));
     }
 
-    let parts: Vec<_> = path.split('/').filter(|part| !part.is_empty()).collect();
-    let [owner, repo_segment] = parts.as_slice() else {
+    let mut parts = path.split('/').filter(|part| !part.is_empty());
+    let (Some(owner), Some(repo_segment), None) = (parts.next(), parts.next(), parts.next()) else {
         return Err(IngestError::InvalidSource(
             "expected https://github.com/{owner}/{repo}".into(),
         ));

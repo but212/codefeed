@@ -14,7 +14,8 @@ pub mod __bench {
         BudgetTrie, estimate_tokens, render_digest_to_writer, write_xml_escaped, xml_escape,
     };
     pub use crate::core::model::{
-        CollectionResult, DigestFormat, FileRecord, FileSpan, FileStorage, OutputTarget,
+        CollectionResult, DigestFormat, FileRecord, FileStorage, OutputTarget,
     };
-    pub use crate::shell::local::collect_local;
+    pub use crate::shell::local::LocalStream;
+    pub use crate::shell::orchestrate::{SourceStream, collect_stream};
 }
