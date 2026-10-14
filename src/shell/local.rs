@@ -9,7 +9,7 @@ use ignore::WalkBuilder;
 use super::local_io::read_local_file;
 use super::orchestrate::SourceStream;
 use super::output::OutputFilter;
-use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe};
+use crate::core::decide::{Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
 use crate::core::model::OutputTarget;
 use crate::core::policy::{MAX_FILE_COUNT, PathClassification};
@@ -35,6 +35,14 @@ impl std::fmt::Debug for LocalStream {
     }
 }
 
+pub(crate) fn collect_local(
+    root: &Path,
+    output: &OutputTarget,
+) -> Result<crate::core::model::CollectionResult, IngestError> {
+    let stream = LocalStream::new(root, output)?;
+    super::orchestrate::collect_stream(stream)
+}
+
 impl LocalStream {
     pub fn new(root: &Path, output: &OutputTarget) -> Result<Self, IngestError> {
         let canonical_root = validate_root(root)?;
@@ -42,7 +50,7 @@ impl LocalStream {
         let label = local_label(&canonical_root);
         let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
 
-        CandidateBudget::check_limit(candidates.iter().map(|c| c.item_path.as_utf8_str()))?;
+        Selector::check_candidate_limit(candidates.iter().map(|c| c.item_path.as_utf8_str()))?;
 
         Ok(Self {
             root: canonical_root,
@@ -60,7 +68,7 @@ impl Iterator for LocalStream {
         let probe = if candidate.skip_read {
             Probe::Missing
         } else {
-            match read_local_file(&self.root, &candidate.path) {
+            match read_local_file(&candidate.path) {
                 Ok(p) => p,
                 Err(err) => return Some(Err(err)),
             }

@@ -42,7 +42,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Migrated CLI argument parsing in `src/core/cli.rs` to `clap` (derive), eliminating manual token iteration and ad-hoc error reporting while preserving POSIX delimiters and help formatting.
+- Encapsulated stream construction and archive decompression in `src/shell/local.rs` (`collect_local`) and `src/shell/github.rs` (`collect_github`), simplifying `orchestrate::ingest` to a clean collection-to-emission pipeline.
+- Consolidated candidate count limit verification under `Selector::check_candidate_limit`.
+- Replaced platform-specific TOCTOU containment checks (`openat2`, Win32 reparse flags) in `src/shell/local_io.rs` with standard `fs::symlink_metadata` and `fs::File::open`.
+- Replaced dev/inode comparisons and multi-layer fallback in `OutputFilter` (`src/shell/output.rs`) with zero-syscall in-memory lexical matching and parent-canonical normalization.
 - Eliminated duplicate `xml_special` evaluations in `XmlChunks` by caching pending escape sequences and streamlined preflight special byte detection in `src/core/digest/xml.rs`.
+
+### Removed
+
+- Removed `rustix` dependency and platform-specific FFI hooks.
 - Refactored hot and warm path routines (XML/text header escaping, trie insertion, SHA and name validation, and path classification) to branchless bitwise operations and constant lookup tables.
 - Consolidated `OutputFilter`, path identity resolution, and lexical `normalize_path` from `src/shell/output_exclusion.rs` directly into `src/shell/output.rs`, encapsulated destination matching via `OutputFilter::from_target(&OutputTarget)`, and eliminated `output_exclusion.rs`.
 - Decoupled item evaluation and storage accumulation in `src/core/decide.rs` by extracting pure `ItemDecision` contract (`Included`, `Skipped`), enabling zero-copy UTF-8/NUL evaluation via `Item::evaluate` and direct accumulation via `Selector::accumulate`.

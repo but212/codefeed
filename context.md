@@ -49,10 +49,10 @@ imperative-shell boundary.
 - Stdout target writes directly to stdout with no temporary file or filesystem sync.
 - Completion messages emit to stdout for file targets and stderr for stdout targets.
 - Broken downstream pipe (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0.
-- Local walk excludes existing output files by device/inode (Unix) and normalized path identity (`output::OutputFilter`). If the target output does not exist on disk prior to ingestion, `OutputFilter::new` returns `None`, dissolving path comparison checks entirely.
-- Local walk uses a 2-step linear pipeline with TOCTOU-resistant containment checks:
+- Local walk excludes existing output files via normalized path comparison (`output::OutputFilter`). The output target is normalized once at initialization (resolving parent symlinks when the file does not exist yet); walk candidates are compared directly without syscalls during traversal.
+- Local walk uses a 2-step linear pipeline:
   1. `ignore::WalkBuilder` with `follow_links(false)` and `.sort_by_file_name(|a, b| a.cmp(b))` collects candidate paths into a deterministically sorted list, with pre-flight batch candidate budget verification (`CandidateBudget::check_limit`) to fail fast before reading file bodies.
-  2. Bounded, containment-checked file reads via `local_io::read_local_file` (`openat2(RESOLVE_BENEATH)` / non-blocking Win32 handles) feed observations into `Selector`.
+  2. Bounded sequential reads via `local_io::read_local_file` (verifying regular non-symlink metadata before opening) feed observations into `Selector`.
 - Digest cap (`MAX_OUTPUT_SIZE`) is strictly enforced on bytes actually written to the output stream via `BoundedEstimatingWriter`, preventing framing/metadata overflow.
 - Token count is estimated on the same writer stream pass over rendered bytes.
 - `BudgetTrie` stores nodes in a flat continuous 16-byte Left-Child Right-Sibling (LCRS) arena (`Vec<BudgetTrieNode>`) with compact contiguous labels in `label_arena: String`, with a unified root directory node at index 0. It is format-neutral; XML entity and newline escaping occurs on-the-fly during `render_to_writer(writer, escape_xml)`.
@@ -108,8 +108,8 @@ never depends on shell code; shell code depends on the core in one direction.
   - `src/main.rs`: binary entry point and user-facing CLI completion report formatting.
   - `shell/orchestrate.rs`: Pipeline orchestration (`ingest`) and unified streaming collection driver (`SourceStream`, `collect_stream`).
   - `shell/local.rs`: 2-step linear filesystem candidate discovery and streaming reader (`LocalStream`).
-  - `shell/local_io.rs`: TOCTOU-resistant file opening and root containment enforcement (`openat2` / Win32 handle resolution).
+  - `shell/local_io.rs`: Non-symlink file metadata validation and bounded streaming reads.
   - `shell/github_client.rs`: HTTP transport, retry diagnostics, body bounding, and token resolution.
   - `shell/github.rs`: streaming archive tarball entry iterator (`GitHubStream`).
-  - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`), standard output stream emission, and output file identity tracking (`OutputFilter`).
+  - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`), standard output stream emission, and lexical output path filtering (`OutputFilter`).
   - `shell/mod.rs`: shell module declarations, centralized `current_epoch_nanos()`, and scoped test fixture isolation (`TempDirGuard`).

@@ -12,6 +12,18 @@ use crate::core::policy::{MAX_FILE_SIZE, PathClassification};
 
 use super::orchestrate::SourceStream;
 
+pub(crate) fn collect_github(
+    owner: &str,
+    repo: &str,
+    reference: Option<&str>,
+) -> Result<crate::core::model::CollectionResult, IngestError> {
+    let client = super::github_client::GithubClient::new();
+    let reader = client.tarball_stream(owner, repo, reference)?;
+    let mut archive = Archive::new(GzDecoder::new(reader));
+    let stream = GitHubStream::new(&mut archive, owner, repo, reference)?;
+    super::orchestrate::collect_stream(stream)
+}
+
 pub struct GitHubStream<'a, R: Read> {
     label: String,
     reference: Option<String>,

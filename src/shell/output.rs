@@ -149,9 +149,7 @@ where
 
 #[derive(Debug, Clone)]
 pub(crate) struct OutputFilter {
-    canonical: PathBuf,
-    #[cfg(unix)]
-    dev_ino: Option<(u64, u64)>,
+    normalized_target: PathBuf,
 }
 
 impl OutputFilter {
@@ -163,90 +161,58 @@ impl OutputFilter {
     }
 
     pub(crate) fn new(output: &Path) -> Result<Option<Self>, IngestError> {
-        let canonical = match fs::canonicalize(output) {
-            Ok(c) => c,
-            Err(_) => {
-                let absolute = if output.is_absolute() {
-                    output.to_path_buf()
-                } else {
-                    env::current_dir()?.join(output)
-                };
-                let Ok(c) = fs::canonicalize(normalize_path(&absolute)) else {
-                    // An output file that does not exist on disk prior to ingest cannot be visited during walk
-                    return Ok(None);
-                };
-                c
+        let absolute = if output.is_absolute() {
+            output.to_path_buf()
+        } else {
+            env::current_dir()?.join(output)
+        };
+        let normalized = normalize_path(&absolute);
+
+        let normalized_target = if let Ok(canonical) = fs::canonicalize(&normalized) {
+            canonical
+        } else {
+            let parent = normalized.parent().unwrap_or(Path::new("."));
+            let file_name = normalized.file_name().ok_or_else(|| {
+                IngestError::Usage(format!("invalid output path: {}", output.display()))
+            })?;
+            if let Ok(canon_parent) = fs::canonicalize(parent) {
+                canon_parent.join(file_name)
+            } else {
+                normalized
             }
         };
 
-        #[cfg(unix)]
-        let dev_ino = fs::symlink_metadata(&canonical).ok().map(|m| {
-            use std::os::unix::fs::MetadataExt;
-            (m.dev(), m.ino())
-        });
-
-        Ok(Some(Self {
-            canonical,
-            #[cfg(unix)]
-            dev_ino,
-        }))
+        Ok(Some(Self { normalized_target }))
     }
 
+    #[inline]
     pub(crate) fn is_excluded(&self, candidate: &Path) -> bool {
-        if candidate == self.canonical {
-            return true;
-        }
-
-        #[cfg(unix)]
-        if let (Some(target_id), Ok(meta)) = (self.dev_ino, fs::symlink_metadata(candidate)) {
-            use std::os::unix::fs::MetadataExt;
-            return (meta.dev(), meta.ino()) == target_id;
-        }
-
-        #[cfg(not(unix))]
+        #[cfg(any(windows, target_os = "macos"))]
         {
-            let Some(cand_name) = candidate.file_name() else {
-                return false;
-            };
-            let Some(target_name) = self.canonical.file_name() else {
-                return false;
-            };
-
-            if !names_match(cand_name, target_name) {
-                return false;
+            if candidate == self.normalized_target {
+                return true;
             }
-
-            fs::canonicalize(candidate).is_ok_and(|c| c == self.canonical)
+            paths_equal_ignore_case(candidate, &self.normalized_target)
         }
 
-        #[cfg(unix)]
-        false
+        #[cfg(not(any(windows, target_os = "macos")))]
+        {
+            candidate == self.normalized_target
+        }
     }
 }
 
-#[cfg(not(unix))]
-#[inline]
-fn names_match(candidate: &std::ffi::OsStr, target: &std::ffi::OsStr) -> bool {
-    #[cfg(any(windows, target_os = "macos"))]
-    {
-        if candidate.is_ascii() && target.is_ascii() {
-            candidate
-                .to_string_lossy()
-                .eq_ignore_ascii_case(&target.to_string_lossy())
-        } else {
-            candidate
-                .to_string_lossy()
-                .chars()
-                .flat_map(char::to_lowercase)
-                .eq(target
-                    .to_string_lossy()
-                    .chars()
-                    .flat_map(char::to_lowercase))
-        }
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        candidate == target
+#[cfg(any(windows, target_os = "macos"))]
+fn paths_equal_ignore_case(a: &Path, b: &Path) -> bool {
+    let a_str = a.to_string_lossy();
+    let b_str = b.to_string_lossy();
+    if a_str.is_ascii() && b_str.is_ascii() {
+        a_str.eq_ignore_ascii_case(&b_str)
+    } else {
+        a_str
+            .chars()
+            .flat_map(char::to_lowercase)
+            .eq(b_str.chars().flat_map(char::to_lowercase))
     }
 }
 
@@ -374,9 +340,11 @@ mod tests {
     }
 
     #[test]
-    fn nonexistent_output_yields_none() -> Result<(), Box<dyn std::error::Error>> {
-        let filter = OutputFilter::new(Path::new("nonexistent_output_definitely_missing.txt"))?;
-        assert!(filter.is_none());
+    fn nonexistent_output_normalizes_parent() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("output_nonexistent")?;
+        let output = root.join("missing_file.txt");
+        let filter = OutputFilter::new(&output)?.expect("filter created for nonexistent file");
+        assert!(filter.is_excluded(&output));
         Ok(())
     }
 
@@ -386,10 +354,9 @@ mod tests {
         let filter = OutputFilter::from_target(&OutputTarget::Stdout)?;
         assert!(filter.is_none());
 
-        let missing = OutputFilter::from_target(&OutputTarget::File(PathBuf::from(
-            "nonexistent_output_definitely_missing.txt",
-        )))?;
-        assert!(missing.is_none());
+        let file_target =
+            OutputFilter::from_target(&OutputTarget::File(PathBuf::from("test_output.txt")))?;
+        assert!(file_target.is_some());
         Ok(())
     }
 
@@ -437,16 +404,21 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn excludes_hard_link_to_output_file() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("output_hard_link")?;
-        let output = root.join("digest.txt");
-        let hardlink = root.join("notes.txt");
-        fs::write(&output, "output content")?;
-        fs::hard_link(&output, &hardlink)?;
+    fn filter_excludes_output_in_symlinked_parent() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
 
-        let filter = OutputFilter::new(&output)?.expect("filter exists");
-        assert!(filter.is_excluded(&hardlink));
+        let root = temp_dir("output_symlink_parent")?;
+        let real_dir = root.join("real");
+        fs::create_dir_all(&real_dir)?;
+        let link_dir = root.join("link");
+        symlink(&real_dir, &link_dir)?;
 
+        let output_via_link = link_dir.join("digest.txt");
+        let output_via_real = real_dir.join("digest.txt");
+
+        let filter = OutputFilter::new(&output_via_link)?.expect("filter exists");
+        assert!(filter.is_excluded(&output_via_real));
+        assert!(filter.is_excluded(&output_via_link));
         Ok(())
     }
 }

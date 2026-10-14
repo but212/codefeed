@@ -70,7 +70,10 @@ fn usage_error_formatting_does_not_prefix_invalid_source() {
     let output = run(&[".", "--unknown"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("error: unknown option: --unknown"));
+    assert!(
+        stderr.contains("unexpected argument '--unknown' found")
+            || stderr.contains("unknown option: --unknown")
+    );
     assert!(!stderr.contains("error: invalid source: unknown option"));
 }
 

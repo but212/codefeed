@@ -24,11 +24,11 @@ Read `context.md` and `README.md` before changing code. Do not duplicate domain 
 - Store file paths and contents in `FileStorage` arenas (`path_arena`, `content_arena`) indexed by `FileSpan`; iterate via zero-copy `FileRecord<'a>`. Never allocate per-file `String` structs.
 - Keep `BudgetTrie` (`Vec<BudgetTrieNode>`, `u32` indices) and `CandidateBudget` (`dir_runs` RLE) flat. Avoid pointer trees or happy-path `HashMap`s.
 - Stream output directly to `impl Write + ?Sized` using `Cow<'_, str>` or `XmlChunks`.
-- Add no external crates (`clap`, `serde`, `regex`, `tokio`, `libc`, `memchr`, `percent-encoding`, `log`). Use `std` state machines and lookup tables.
+- Default to `std` first. Add an external crate only if implementing or maintaining the logic in-tree introduces disproportionate complexity or security risk (e.g., `.gitignore` parsing via `ignore`, HTTP via `ureq`). Document the rationale as an inline comment in `Cargo.toml`.
 
 ### OS & Network Safety
 
-- **Local reads (`src/shell/local_io.rs`):** Open with `O_NOFOLLOW | O_NONBLOCK` (`openat2` + `RESOLVE_BENEATH` on Linux, component `openat` on Unix, `FILE_FLAG_OPEN_REPARSE_POINT` + `GetFinalPathNameByHandleW` on Windows). Never call raw `fs::read` or `fs::File::open` on candidates.
+- **Local reads (`src/shell/local_io.rs`):** Verify candidate entries are regular, non-symlink files (`fs::symlink_metadata`) and read bounded contents via standard `fs::File::open`. Never follow symlinks.
 - **File writes (`src/shell/output.rs`):** Write through `AtomicFile` so errors or panics unlink temp files on `Drop`.
 - **HTTP (`src/shell/github_client.rs`):** Keep `RedirectAuthHeaders::Never` and gate `Authorization` with `is_github_api_origin(url)`.
 

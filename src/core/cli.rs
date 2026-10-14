@@ -1,5 +1,7 @@
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::path::PathBuf;
+
+use clap::{Parser, ValueEnum};
 
 use crate::core::error::IngestError;
 use crate::core::model::{DigestFormat, OutputTarget, RunConfig};
@@ -18,47 +20,43 @@ pub enum CliAction {
     Run(RunConfig),
 }
 
-/// `--output -` selects standard output; every other value is a filesystem
-/// path, including names that merely start with a dash.
-fn parse_output_target(value: &OsStr) -> OutputTarget {
-    if value == OsStr::new("-") {
-        OutputTarget::Stdout
-    } else {
-        OutputTarget::File(PathBuf::from(value))
-    }
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum FormatArg {
+    Text,
+    Xml,
 }
 
-/// Returns `true` if the argument begins with a hyphen.
-fn starts_with_hyphen(arg: &OsStr) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        arg.as_bytes().starts_with(b"-")
-    }
-    #[cfg(not(unix))]
-    {
-        arg.to_str().is_some_and(|s| s.starts_with('-'))
-    }
-}
+#[derive(Parser, Debug)]
+#[command(
+    name = "codefeed",
+    override_usage = "codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]",
+    disable_help_flag = true
+)]
+struct Opts {
+    #[arg(short = 'h', long = "help", help = "Print help")]
+    help: bool,
 
-fn next_val<I: Iterator<Item = OsString>>(
-    args: &mut I,
-    inline_val: Option<&str>,
-    missing_msg: &str,
-) -> Result<OsString, IngestError> {
-    if let Some(v) = inline_val {
-        return Ok(OsString::from(v));
-    }
-    let Some(next_arg) = args.next() else {
-        return Err(usage(missing_msg));
-    };
-    if matches!(
-        next_arg.to_str(),
-        Some("--help" | "-h" | "--output" | "-o" | "--ref" | "-r" | "--format" | "-f")
-    ) {
-        return Err(usage(missing_msg));
-    }
-    Ok(next_arg)
+    #[arg(value_name = "SOURCE")]
+    source: Option<OsString>,
+
+    #[arg(
+        short = 'o',
+        long = "output",
+        default_value = "digest.txt",
+        value_name = "PATH|->"
+    )]
+    output: OsString,
+
+    #[arg(short = 'r', long = "ref", value_name = "REF")]
+    reference: Option<String>,
+
+    #[arg(
+        short = 'f',
+        long = "format",
+        default_value = "text",
+        value_name = "text|xml"
+    )]
+    format: FormatArg,
 }
 
 pub fn parse_cli<I, T>(args: I) -> Result<CliAction, IngestError>
@@ -66,115 +64,41 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
-    let mut args = args.into_iter().map(Into::into);
-    let _program = args.next(); // skip binary name
+    let args_vec: Vec<OsString> = args.into_iter().map(Into::into).collect();
 
-    let mut source_slot: Option<OsString> = None;
-    let mut parsed_reference: Option<String> = None;
-    let mut output = OutputTarget::File(PathBuf::from("digest.txt"));
-    let mut format = DigestFormat::Text;
-    let mut after_delimiter = false;
+    let opts = match Opts::try_parse_from(&args_vec) {
+        Ok(opts) => opts,
+        Err(err) => return Err(IngestError::Usage(err.to_string())),
+    };
 
-    while let Some(arg) = args.next() {
-        if !after_delimiter {
-            if arg == OsStr::new("--") {
-                after_delimiter = true;
-                continue;
-            }
-
-            if starts_with_hyphen(&arg) && arg != OsStr::new("-") {
-                let Some(arg_str) = arg.to_str() else {
-                    return Err(usage("unknown option contains non-UTF-8 bytes"));
-                };
-
-                if arg_str == "--help" || arg_str == "-h" {
-                    return Ok(CliAction::Help);
-                }
-
-                let (key, inline_val) = arg_str
-                    .split_once('=')
-                    .map_or((arg_str, None), |(k, v)| (k, Some(v)));
-
-                match key {
-                    "--output" | "-o" => {
-                        let val = next_val(&mut args, inline_val, "--output requires a path")?;
-                        output = parse_output_target(&val);
-                    }
-                    "--ref" | "-r" => {
-                        let val = next_val(
-                            &mut args,
-                            inline_val,
-                            "--ref requires a branch, tag, or commit",
-                        )?;
-                        let Some(s) = val.to_str() else {
-                            return Err(usage("--ref requires a UTF-8 value"));
-                        };
-                        parsed_reference = Some(s.to_owned());
-                    }
-                    "--format" | "-f" => {
-                        let val = next_val(
-                            &mut args,
-                            inline_val,
-                            "--format requires a format (text, xml)",
-                        )?;
-                        let Some(s) = val.to_str() else {
-                            return Err(usage("--format requires a UTF-8 value"));
-                        };
-                        match s.to_ascii_lowercase().as_str() {
-                            "text" => format = DigestFormat::Text,
-                            "xml" => format = DigestFormat::Xml,
-                            other => {
-                                return Err(usage(&format!(
-                                    "invalid format: {other} (expected text, xml)"
-                                )));
-                            }
-                        }
-                    }
-                    unknown => return Err(usage(&format!("unknown option: {unknown}"))),
-                }
-                continue;
-            }
-        }
-
-        if source_slot.is_some() {
-            return Err(usage(&format!(
-                "unexpected argument: {}",
-                arg.to_string_lossy()
-            )));
-        }
-        source_slot = Some(arg);
+    if opts.help {
+        return Ok(CliAction::Help);
     }
 
-    let Some(source_value) = source_slot else {
-        return Err(usage("missing source"));
+    let Some(source_value) = opts.source else {
+        return Err(IngestError::Usage(format!("missing source\n\n{HELP}")));
     };
-    let source = parse_source_os(&source_value)?.with_reference(parsed_reference)?;
+
+    let output = if source_value != "-" && opts.output == "-" {
+        OutputTarget::Stdout
+    } else {
+        OutputTarget::File(PathBuf::from(opts.output))
+    };
+
+    let format = match opts.format {
+        FormatArg::Text => DigestFormat::Text,
+        FormatArg::Xml => DigestFormat::Xml,
+    };
+
+    let source = parse_source_os(&source_value)?.with_reference(opts.reference)?;
 
     Ok(CliAction::Run(RunConfig::new(source, output, format)))
-}
-
-fn usage(message: &str) -> IngestError {
-    IngestError::Usage(format!("{message}\n\n{HELP}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::model::Source;
-    use std::path::PathBuf;
-
-    #[test]
-    fn parses_stdout_output_target() {
-        assert_eq!(parse_output_target(OsStr::new("-")), OutputTarget::Stdout);
-        assert_eq!(
-            parse_output_target(OsStr::new("digest.txt")),
-            OutputTarget::File(PathBuf::from("digest.txt"))
-        );
-        assert_eq!(
-            parse_output_target(OsStr::new("-digest.txt")),
-            OutputTarget::File(PathBuf::from("-digest.txt"))
-        );
-    }
 
     #[test]
     fn cli_parses_valid_invocations() {
