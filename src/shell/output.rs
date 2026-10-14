@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -151,6 +152,7 @@ where
 #[derive(Debug, Clone)]
 pub(crate) struct OutputFilter {
     normalized_target: PathBuf,
+    canonical_target: Option<PathBuf>,
 }
 
 impl OutputFilter {
@@ -167,39 +169,80 @@ impl OutputFilter {
         } else {
             env::current_dir()?.join(output)
         };
-        let normalized = normalize_path(&absolute);
+        let normalized_target = normalize_path(&absolute);
 
-        let normalized_target = if let Ok(canonical) = fs::canonicalize(&normalized) {
-            canonical
+        let canonical_target = if let Ok(canonical) = fs::canonicalize(&normalized_target) {
+            if canonical != normalized_target {
+                Some(canonical)
+            } else {
+                None
+            }
         } else {
-            let parent = normalized.parent().unwrap_or(Path::new("."));
-            let file_name = normalized.file_name().ok_or_else(|| {
+            let parent = normalized_target.parent().unwrap_or(Path::new("."));
+            let file_name = normalized_target.file_name().ok_or_else(|| {
                 IngestError::Usage(format!("invalid output path: {}", output.display()))
             })?;
             if let Ok(canon_parent) = fs::canonicalize(parent) {
-                canon_parent.join(file_name)
+                let canonical = canon_parent.join(file_name);
+                if canonical != normalized_target {
+                    Some(canonical)
+                } else {
+                    None
+                }
             } else {
-                normalized
+                None
             }
         };
 
-        Ok(Some(Self { normalized_target }))
+        Ok(Some(Self {
+            normalized_target,
+            canonical_target,
+        }))
     }
 
     #[inline]
     pub(crate) fn is_excluded(&self, candidate: &Path) -> bool {
-        #[cfg(any(windows, target_os = "macos"))]
-        {
-            if candidate == self.normalized_target {
-                return true;
+        let candidate_path = if candidate.is_relative() {
+            if let Ok(cwd) = env::current_dir() {
+                Cow::Owned(normalize_path(&cwd.join(candidate)))
+            } else {
+                Cow::Borrowed(candidate)
             }
-            paths_equal_ignore_case(candidate, &self.normalized_target)
+        } else if candidate
+            .components()
+            .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
+        {
+            Cow::Owned(normalize_path(candidate))
+        } else {
+            Cow::Borrowed(candidate)
+        };
+
+        if paths_match(candidate_path.as_ref(), &self.normalized_target) {
+            return true;
         }
 
-        #[cfg(not(any(windows, target_os = "macos")))]
-        {
-            candidate == self.normalized_target
+        if let Some(canonical) = &self.canonical_target {
+            if paths_match(candidate_path.as_ref(), canonical) {
+                return true;
+            }
         }
+
+        false
+    }
+}
+
+#[inline]
+fn paths_match(candidate: &Path, target: &Path) -> bool {
+    if candidate == target {
+        return true;
+    }
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        paths_equal_ignore_case(candidate, target)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        false
     }
 }
 
