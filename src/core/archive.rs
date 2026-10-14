@@ -1,12 +1,21 @@
 //! Archive parsing pure utilities: Pax header comment extraction and root stripping.
 
-/// Strips the top-level directory prefix from an archive entry path.
+/// Strips the top-level directory prefix from raw archive entry path bytes.
 ///
 /// GitHub tarballs wrap all entries in a root directory `{owner}-{repo}-{hash}/`.
 /// Returns `None` for the root directory itself or empty paths.
-pub(crate) fn strip_archive_root(raw_path: &str) -> Option<&str> {
-    let normalized = raw_path.trim_matches('/');
-    let (_root, rest) = normalized.split_once('/')?;
+pub(crate) fn strip_archive_root(raw_bytes: &[u8]) -> Option<&[u8]> {
+    let start = raw_bytes
+        .iter()
+        .position(|&b| b != b'/')
+        .unwrap_or(raw_bytes.len());
+    let end = raw_bytes
+        .iter()
+        .rposition(|&b| b != b'/')
+        .map_or(start, |i| i + 1);
+    let normalized = &raw_bytes[start..end];
+    let slash_idx = normalized.iter().position(|&b| b == b'/')?;
+    let rest = &normalized[slash_idx + 1..];
     if rest.is_empty() { None } else { Some(rest) }
 }
 
@@ -33,7 +42,10 @@ pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
 }
 
 fn is_valid_commit_sha(sha: &str) -> bool {
-    (sha.len() == 40 || sha.len() == 64) && sha.chars().all(|c| c.is_ascii_hexdigit())
+    ((sha.len() == 40) | (sha.len() == 64))
+        && sha
+            .bytes()
+            .all(|b| (b.wrapping_sub(b'0') < 10) | ((b | 32).wrapping_sub(b'a') < 6))
 }
 
 #[cfg(test)]
@@ -43,16 +55,16 @@ mod tests {
     #[test]
     fn strips_archive_root_correctly() {
         assert_eq!(
-            strip_archive_root("but212-codefeed-c1863c8/src/main.rs"),
-            Some("src/main.rs")
+            strip_archive_root(b"but212-codefeed-c1863c8/src/main.rs"),
+            Some(&b"src/main.rs"[..])
         );
         assert_eq!(
-            strip_archive_root("repo-root/deep/nested/file.txt"),
-            Some("deep/nested/file.txt")
+            strip_archive_root(b"repo-root/deep/nested/file.txt"),
+            Some(&b"deep/nested/file.txt"[..])
         );
-        assert_eq!(strip_archive_root("but212-codefeed-c1863c8/"), None);
-        assert_eq!(strip_archive_root("but212-codefeed-c1863c8"), None);
-        assert_eq!(strip_archive_root(""), None);
+        assert_eq!(strip_archive_root(b"but212-codefeed-c1863c8/"), None);
+        assert_eq!(strip_archive_root(b"but212-codefeed-c1863c8"), None);
+        assert_eq!(strip_archive_root(b""), None);
     }
 
     #[test]

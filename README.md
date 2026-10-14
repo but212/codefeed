@@ -97,7 +97,7 @@ Credentials are sent as `Authorization: Bearer <token>` strictly to exact-origin
 - **Hierarchy**: Renders directory structure as an ASCII tree (`├── `, `└── `, `│   `).
 - **Exclusions**: Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and case-insensitive sensitive patterns (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.credentials`, `id_rsa*`, `id_ed25519*`, `credentials*`). Sensitive filtering matches path conventions, not deep content. Excluded files consume neither candidate slots nor skipped counts.
 - **Gitignore**: Applies `.gitignore` rules in local sources without Git state. Ignores `.ignore` files.
-- **Traversal**: Traverses local filesystems via `ignore::WalkBuilder` (`follow_links(false)`) with deterministic sorting, sequential reads, TOCTOU-resistant containment checks (`openat2` / Win32 handles), and hard-link output exclusion.
+- **Traversal**: Traverses local filesystems via `ignore::WalkBuilder` (`follow_links(false)`) with deterministic sorting, sequential reads, non-symlink metadata validation, and normalized output path exclusion.
 - **Remote Ingestion**: Streams GitHub repository archives (`/repos/{owner}/{repo}/tarball/{ref}`) in a single HTTP request via `flate2` and `tar` directly into the selection pipeline with zero intermediate disk files. Extracts commit SHA from `pax_global_header`.
 - **Limits**:
   - Candidate files: bounded candidate budget; aborts on overflow with deterministically sorted largest-directory diagnostics from observed candidates at termination.

@@ -80,9 +80,13 @@ fn valid_github_name(value: &str) -> bool {
     !value.is_empty()
         && value != "."
         && value != ".."
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        && value.bytes().all(|byte| {
+            (byte.wrapping_sub(b'0') < 10)
+                | ((byte | 32).wrapping_sub(b'a') < 26)
+                | (byte == b'-')
+                | (byte == b'_')
+                | (byte == b'.')
+        })
 }
 
 #[cfg(test)]

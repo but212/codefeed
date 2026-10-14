@@ -13,7 +13,7 @@ pub trait SourceStream: Iterator<Item = Result<Item, IngestError>> {
 }
 
 pub fn collect_stream<S: SourceStream>(mut stream: S) -> Result<CollectionResult, IngestError> {
-    let mut selector = Selector::new();
+    let mut selector = Selector::from_size_hint(stream.size_hint());
     for item_res in stream.by_ref() {
         selector.decide(item_res?)?;
     }
@@ -24,22 +24,12 @@ pub fn collect_stream<S: SourceStream>(mut stream: S) -> Result<CollectionResult
 
 pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
     let collection = match &config.source {
-        Source::Local(path) => {
-            let stream = shell::local::LocalStream::new(path, &config.output)?;
-            collect_stream(stream)?
-        }
+        Source::Local(path) => shell::local::collect_local(path, &config.output)?,
         Source::GitHub {
             owner,
             repo,
             reference,
-        } => {
-            let client = shell::github_client::GithubClient::new();
-            let reader = client.tarball_stream(owner, repo, reference.as_deref())?;
-            let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(reader));
-            let stream =
-                shell::github::GitHubStream::new(&mut archive, owner, repo, reference.as_deref())?;
-            collect_stream(stream)?
-        }
+        } => shell::github::collect_github(owner, repo, reference.as_deref())?,
     };
 
     let estimated_tokens = shell::output::emit(&config.output, |writer| {

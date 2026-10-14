@@ -1,6 +1,8 @@
+use std::borrow::Cow;
+use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::core::error::IngestError;
@@ -49,14 +51,14 @@ where
     }
 }
 
-struct AtomicFile<'a> {
-    target: &'a Path,
-    temporary: Option<std::path::PathBuf>,
+struct AtomicFile {
+    target: PathBuf,
+    temporary: Option<PathBuf>,
     writer: Option<io::BufWriter<fs::File>>,
 }
 
-impl<'a> AtomicFile<'a> {
-    fn create(target: &'a Path) -> Result<Self, IngestError> {
+impl AtomicFile {
+    fn create(target: &Path) -> Result<Self, IngestError> {
         let Some(raw_name) = target.file_name() else {
             return Err(IngestError::Usage("output path has no filename".into()));
         };
@@ -70,12 +72,14 @@ impl<'a> AtomicFile<'a> {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent)?;
+        let normalized_parent = normalize_path(parent);
+        fs::create_dir_all(&normalized_parent)?;
         let file_name = raw_name.to_string_lossy();
         let timestamp = super::current_epoch_nanos();
         let (temporary, file) = loop {
             let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let temporary = parent.join(format!(".{file_name}.{timestamp}.{counter}.tmp"));
+            let temporary =
+                normalized_parent.join(format!(".{file_name}.{timestamp}.{counter}.tmp"));
             match OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -88,7 +92,7 @@ impl<'a> AtomicFile<'a> {
         };
 
         Ok(Self {
-            target,
+            target: normalized_parent.join(raw_name),
             temporary: Some(temporary),
             writer: Some(io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, file)),
         })
@@ -104,13 +108,13 @@ impl<'a> AtomicFile<'a> {
         }
 
         let temp_path = self.temporary.as_ref().expect("temporary path exists");
-        fs::rename(temp_path, self.target)?;
+        fs::rename(temp_path, &self.target)?;
         self.temporary = None;
         Ok(())
     }
 }
 
-impl io::Write for AtomicFile<'_> {
+impl io::Write for AtomicFile {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match &mut self.writer {
             Some(w) => w.write(buf),
@@ -126,7 +130,7 @@ impl io::Write for AtomicFile<'_> {
     }
 }
 
-impl Drop for AtomicFile<'_> {
+impl Drop for AtomicFile {
     fn drop(&mut self) {
         drop(self.writer.take());
         if let Some(temp_path) = self.temporary.take() {
@@ -143,6 +147,132 @@ where
     let value = write_fn(&mut file)?;
     file.commit()?;
     Ok(value)
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct OutputFilter {
+    normalized_target: PathBuf,
+    canonical_target: Option<PathBuf>,
+}
+
+impl OutputFilter {
+    pub(crate) fn from_target(target: &OutputTarget) -> Result<Option<Self>, IngestError> {
+        match target {
+            OutputTarget::File(path) => Self::new(path),
+            OutputTarget::Stdout => Ok(None),
+        }
+    }
+
+    pub(crate) fn new(output: &Path) -> Result<Option<Self>, IngestError> {
+        let absolute = if output.is_absolute() {
+            output.to_path_buf()
+        } else {
+            env::current_dir()?.join(output)
+        };
+        let normalized_target = normalize_path(&absolute);
+
+        let canonical_target = if let Ok(canonical) = fs::canonicalize(&normalized_target) {
+            if canonical != normalized_target {
+                Some(canonical)
+            } else {
+                None
+            }
+        } else {
+            let parent = normalized_target.parent().unwrap_or(Path::new("."));
+            let file_name = normalized_target.file_name().ok_or_else(|| {
+                IngestError::Usage(format!("invalid output path: {}", output.display()))
+            })?;
+            if let Ok(canon_parent) = fs::canonicalize(parent) {
+                let canonical = canon_parent.join(file_name);
+                if canonical != normalized_target {
+                    Some(canonical)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        Ok(Some(Self {
+            normalized_target,
+            canonical_target,
+        }))
+    }
+
+    #[inline]
+    pub(crate) fn is_excluded(&self, candidate: &Path) -> bool {
+        let candidate_path = if candidate.is_relative() {
+            if let Ok(cwd) = env::current_dir() {
+                Cow::Owned(normalize_path(&cwd.join(candidate)))
+            } else {
+                Cow::Borrowed(candidate)
+            }
+        } else if candidate
+            .components()
+            .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
+        {
+            Cow::Owned(normalize_path(candidate))
+        } else {
+            Cow::Borrowed(candidate)
+        };
+
+        if paths_match(candidate_path.as_ref(), &self.normalized_target) {
+            return true;
+        }
+
+        if let Some(canonical) = &self.canonical_target
+            && paths_match(candidate_path.as_ref(), canonical) {
+                return true;
+            }
+
+        false
+    }
+}
+
+#[inline]
+fn paths_match(candidate: &Path, target: &Path) -> bool {
+    if candidate == target {
+        return true;
+    }
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        paths_equal_ignore_case(candidate, target)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        false
+    }
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn paths_equal_ignore_case(a: &Path, b: &Path) -> bool {
+    let a_str = a.to_string_lossy();
+    let b_str = b.to_string_lossy();
+    if a_str.is_ascii() && b_str.is_ascii() {
+        a_str.eq_ignore_ascii_case(&b_str)
+    } else {
+        a_str
+            .chars()
+            .flat_map(char::to_lowercase)
+            .eq(b_str.chars().flat_map(char::to_lowercase))
+    }
+}
+
+pub(crate) fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
 }
 
 #[cfg(test)]
@@ -242,6 +372,112 @@ mod tests {
             }
             other => panic!("expected IngestError::Io(IsADirectory), got {other:?}"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn normalizes_parent_and_current_dir_components() {
+        let path = Path::new("/a/b/../c/./d");
+        let normalized = normalize_path(path);
+        assert_eq!(normalized, Path::new("/a/c/d"));
+    }
+
+    #[test]
+    fn atomic_write_normalizes_parent_with_aliases() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("atomic_aliases")?;
+        let output = root.join("missing").join("..").join("digest.txt");
+
+        write_atomic(&output, |w| {
+            w.write_all(b"digest content")?;
+            Ok(())
+        })?;
+
+        let expected_file = root.join("digest.txt");
+        assert!(expected_file.exists());
+        assert_eq!(fs::read_to_string(&expected_file)?, "digest content");
+        Ok(())
+    }
+
+    #[test]
+    fn nonexistent_output_normalizes_parent() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("output_nonexistent")?;
+        let output = root.join("missing_file.txt");
+        let filter = OutputFilter::new(&output)?.expect("filter created for nonexistent file");
+        assert!(filter.is_excluded(&output));
+        Ok(())
+    }
+
+    #[test]
+    fn output_filter_from_target_handles_stdout_and_file() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let filter = OutputFilter::from_target(&OutputTarget::Stdout)?;
+        assert!(filter.is_none());
+
+        let file_target =
+            OutputFilter::from_target(&OutputTarget::File(PathBuf::from("test_output.txt")))?;
+        assert!(file_target.is_some());
+        Ok(())
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn matches_non_ascii_cased_files_pointing_to_same_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("output_non_ascii")?;
+        let file_a = root.join("вывод.txt");
+        fs::write(&file_a, "test")?;
+        let file_b = root.join("ВЫВОД.TXT");
+        let filter = OutputFilter::new(&file_a)?.expect("filter exists");
+        let same = filter.is_excluded(&file_b);
+        assert!(same);
+        Ok(())
+    }
+
+    #[test]
+    fn filter_skips_different_filename() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("output_filter_diff")?;
+        let output = root.join("digest.txt");
+        fs::write(&output, "output")?;
+        let filter = OutputFilter::new(&output)?.expect("filter exists");
+        assert!(!filter.is_excluded(&root.join("src/main.rs")));
+        assert!(!filter.is_excluded(&root.join("digest_other.txt")));
+        Ok(())
+    }
+
+    #[test]
+    fn filter_identifies_output_file() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("output_filter_test")?;
+        fs::create_dir_all(root.join("subdir"))?;
+        let output = root.join("digest.txt");
+        fs::write(&output, "output")?;
+
+        let filter = OutputFilter::new(&output)?.expect("filter exists");
+        assert!(filter.is_excluded(&output));
+        assert!(filter.is_excluded(&root.join("subdir").join("..").join("digest.txt")));
+
+        #[cfg(any(windows, target_os = "macos"))]
+        assert!(filter.is_excluded(&root.join("DIGEST.TXT")));
+
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn filter_excludes_output_in_symlinked_parent() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("output_symlink_parent")?;
+        let real_dir = root.join("real");
+        fs::create_dir_all(&real_dir)?;
+        let link_dir = root.join("link");
+        symlink(&real_dir, &link_dir)?;
+
+        let output_via_link = link_dir.join("digest.txt");
+        let output_via_real = real_dir.join("digest.txt");
+
+        let filter = OutputFilter::new(&output_via_link)?.expect("filter exists");
+        assert!(filter.is_excluded(&output_via_real));
+        assert!(filter.is_excluded(&output_via_link));
         Ok(())
     }
 }

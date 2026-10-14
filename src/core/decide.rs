@@ -37,22 +37,41 @@ pub struct Item {
     pub probe: Probe,
 }
 
-enum ItemResolution {
-    Included(String, String),
-    Skipped(Option<String>),
+/// Pure decision result evaluating an observed candidate item against content,
+/// encoding, and size invariants.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ItemDecision<'a> {
+    Included { path: &'a str, content: &'a str },
+    Skipped { path: Option<&'a str> },
+}
+
+impl<'a> ItemDecision<'a> {
+    #[inline]
+    pub(crate) fn path(&self) -> Option<&'a str> {
+        match self {
+            Self::Included { path, .. } => Some(path),
+            Self::Skipped { path } => *path,
+        }
+    }
 }
 
 impl Item {
-    fn resolve(self) -> ItemResolution {
-        match (self.path, self.probe) {
-            (ItemPath::Utf8(path), Probe::Bytes(bytes)) => match text_content(bytes) {
-                Some(content) => ItemResolution::Included(path, content),
-                None => ItemResolution::Skipped(Some(path)),
+    #[inline]
+    pub(crate) fn evaluate(&self) -> ItemDecision<'_> {
+        match (&self.path, &self.probe) {
+            (ItemPath::Utf8(path), Probe::Bytes(bytes)) => match text_str(bytes) {
+                Some(content) => ItemDecision::Included {
+                    path: path.as_str(),
+                    content,
+                },
+                None => ItemDecision::Skipped {
+                    path: Some(path.as_str()),
+                },
             },
-            (ItemPath::Utf8(path), Probe::Missing | Probe::TooLarge) => {
-                ItemResolution::Skipped(Some(path))
-            }
-            (ItemPath::NonUtf8, _) => ItemResolution::Skipped(None),
+            (ItemPath::Utf8(path), Probe::Missing | Probe::TooLarge) => ItemDecision::Skipped {
+                path: Some(path.as_str()),
+            },
+            (ItemPath::NonUtf8, _) => ItemDecision::Skipped { path: None },
         }
     }
 }
@@ -68,30 +87,44 @@ pub struct Selector {
 
 impl Selector {
     pub fn new() -> Self {
+        Self::with_capacity(512, 16 * 1024, 256 * 1024)
+    }
+
+    pub fn with_capacity(spans_cap: usize, path_bytes: usize, content_bytes: usize) -> Self {
         Self {
-            storage: FileStorage::new(),
+            storage: FileStorage::with_capacity(spans_cap, path_bytes, content_bytes),
             candidates: CandidateBudget::default(),
             content_bytes: 0,
             skipped: 0,
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.storage.is_empty() && self.skipped == 0
+    pub fn from_size_hint(hint: (usize, Option<usize>)) -> Self {
+        let estimated = hint.1.unwrap_or(hint.0);
+        if estimated == 0 {
+            Self::new()
+        } else {
+            let spans_cap = estimated.min(MAX_FILE_COUNT);
+            let path_cap = spans_cap.saturating_mul(48);
+            let content_cap =
+                (spans_cap.saturating_mul(2048)).clamp(256 * 1024, MAX_OUTPUT_SIZE as usize);
+            Self::with_capacity(spans_cap, path_cap, content_cap)
+        }
     }
 
-    pub fn decide(&mut self, item: Item) -> Result<(), IngestError> {
-        match item.resolve() {
-            ItemResolution::Included(path, content) => {
-                self.candidates.add(Some(path.as_str()))?;
-                self.add_file(&path, &content)
-            }
-            ItemResolution::Skipped(path) => {
-                self.candidates.add(path.as_deref())?;
+    pub(crate) fn accumulate(&mut self, decision: ItemDecision<'_>) -> Result<(), IngestError> {
+        self.candidates.add(decision.path())?;
+        match decision {
+            ItemDecision::Included { path, content } => self.add_file(path, content),
+            ItemDecision::Skipped { .. } => {
                 self.skipped = self.skipped.saturating_add(1);
                 Ok(())
             }
         }
+    }
+
+    pub fn decide(&mut self, item: Item) -> Result<(), IngestError> {
+        self.accumulate(item.evaluate())
     }
 
     fn add_file(&mut self, path: &str, content: &str) -> Result<(), IngestError> {
@@ -134,13 +167,13 @@ impl Default for Selector {
 
 /// Candidate-count budget owned by the selector that consumes it.
 #[derive(Default)]
-pub(crate) struct CandidateBudget {
+pub struct CandidateBudget {
     count: usize,
     dir_runs: Vec<(String, usize)>,
 }
 
 impl CandidateBudget {
-    pub(crate) fn check_limit<'a, I>(paths: I) -> Result<(), IngestError>
+    pub fn check_limit<'a, I>(paths: I) -> Result<(), IngestError>
     where
         I: IntoIterator<Item = Option<&'a str>>,
     {
@@ -155,32 +188,42 @@ impl CandidateBudget {
         Ok(())
     }
 
-    pub(crate) fn add(&mut self, path: Option<&str>) -> Result<(), IngestError> {
+    pub fn add(&mut self, path: Option<&str>) -> Result<(), IngestError> {
         self.count = self
             .count
             .checked_add(1)
             .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
-        let dir_slice = extract_dir_slice(path);
+        self.record_dir_run(extract_dir_slice(path));
 
-        if let Some(last) = self.dir_runs.last_mut()
-            && last.0 == dir_slice
+        if self.count > MAX_FILE_COUNT {
+            return Err(self.overflow_error());
+        }
+        Ok(())
+    }
+
+    fn record_dir_run(&mut self, dir_slice: &str) {
+        if let Some(entry) = self
+            .dir_runs
+            .iter_mut()
+            .rev()
+            .take(16)
+            .find(|(dir, _)| dir == dir_slice)
         {
-            last.1 += 1;
+            entry.1 += 1;
         } else {
             self.dir_runs.push((dir_slice.to_owned(), 1));
         }
+    }
 
-        if self.count > MAX_FILE_COUNT {
-            let mut aggregated: HashMap<String, usize> = HashMap::new();
-            for (dir, count) in &self.dir_runs {
-                *aggregated.entry(dir.clone()).or_insert(0) += count;
-            }
-            return Err(IngestError::CandidateLimitExceeded {
-                limit: MAX_FILE_COUNT,
-                largest_directories: top_overflow_directories(&aggregated),
-            });
+    fn overflow_error(&self) -> IngestError {
+        let mut aggregated: HashMap<String, usize> = HashMap::new();
+        for (dir, count) in &self.dir_runs {
+            *aggregated.entry(dir.clone()).or_insert(0) += count;
         }
-        Ok(())
+        IngestError::CandidateLimitExceeded {
+            limit: MAX_FILE_COUNT,
+            largest_directories: top_overflow_directories(&aggregated),
+        }
     }
 }
 
@@ -202,11 +245,12 @@ fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String,
 }
 
 /// UTF-8 text predicate: NUL-free bytes only.
-pub fn text_content(bytes: Vec<u8>) -> Option<String> {
+#[inline]
+pub fn text_str(bytes: &[u8]) -> Option<&str> {
     if bytes.contains(&0) {
         return None;
     }
-    String::from_utf8(bytes).ok()
+    std::str::from_utf8(bytes).ok()
 }
 
 #[cfg(test)]
@@ -222,24 +266,24 @@ mod tests {
     }
 
     #[test]
-    fn text_content_detects_binary_and_handles_probe_boundary() {
+    fn text_str_detects_binary_and_handles_probe_boundary() {
         let mut bin = vec![b'a'; 1024];
         bin[12] = 0;
-        assert!(text_content(bin).is_none());
+        assert!(text_str(&bin).is_none());
 
         let mut bin_tail = vec![b'b'; 5000];
         bin_tail[4500] = 0;
-        assert!(text_content(bin_tail).is_none());
+        assert!(text_str(&bin_tail).is_none());
 
         let mut bytes = vec![b'a'; 4095];
         bytes.extend_from_slice("€tail\n".as_bytes());
-        let content = text_content(bytes);
+        let content = text_str(&bytes);
         assert!(content.is_some());
         assert!(content.unwrap().ends_with("€tail\n"));
 
         let mut bytes_with_nul = vec![b'a'; 4095];
         bytes_with_nul.extend_from_slice("€\0tail\n".as_bytes());
-        assert!(text_content(bytes_with_nul).is_none());
+        assert!(text_str(&bytes_with_nul).is_none());
     }
 
     #[test]
@@ -299,8 +343,8 @@ mod tests {
             path: ItemPath::Utf8("binary.png".into()),
             probe: Probe::Missing,
         };
-        match missing.resolve() {
-            ItemResolution::Skipped(Some(path)) => assert_eq!(path, "binary.png"),
+        match missing.evaluate() {
+            ItemDecision::Skipped { path: Some(path) } => assert_eq!(path, "binary.png"),
             _ => panic!("expected Skipped(Some)"),
         }
 
@@ -308,8 +352,8 @@ mod tests {
             path: ItemPath::Utf8("included.txt".into()),
             probe: Probe::Bytes(b"hello".to_vec()),
         };
-        match included.resolve() {
-            ItemResolution::Included(path, content) => {
+        match included.evaluate() {
+            ItemDecision::Included { path, content } => {
                 assert_eq!(path, "included.txt");
                 assert_eq!(content, "hello");
             }
@@ -320,8 +364,8 @@ mod tests {
             path: ItemPath::Utf8("binary.bin".into()),
             probe: Probe::Bytes(vec![0, 1, 2]),
         };
-        match binary.resolve() {
-            ItemResolution::Skipped(Some(path)) => assert_eq!(path, "binary.bin"),
+        match binary.evaluate() {
+            ItemDecision::Skipped { path: Some(path) } => assert_eq!(path, "binary.bin"),
             _ => panic!("expected Skipped(Some)"),
         }
 
@@ -329,7 +373,10 @@ mod tests {
             path: ItemPath::NonUtf8,
             probe: Probe::Bytes(b"text".to_vec()),
         };
-        assert!(matches!(non_utf8.resolve(), ItemResolution::Skipped(None)));
+        assert!(matches!(
+            non_utf8.evaluate(),
+            ItemDecision::Skipped { path: None }
+        ));
     }
 
     #[test]
@@ -411,5 +458,70 @@ mod tests {
         assert_eq!(extract_dir_slice(Some("src/core/decide.rs")), "src/");
         assert_eq!(extract_dir_slice(Some("root_file.txt")), "<root>/");
         assert_eq!(extract_dir_slice(None), "<unknown>/");
+    }
+
+    #[test]
+    fn item_evaluation_separates_decisions_without_heap_allocation() {
+        let utf8_item = Item {
+            path: ItemPath::Utf8("src/lib.rs".to_string()),
+            probe: Probe::Bytes(b"pub fn run() {}".to_vec()),
+        };
+        assert_eq!(
+            utf8_item.evaluate(),
+            ItemDecision::Included {
+                path: "src/lib.rs",
+                content: "pub fn run() {}",
+            }
+        );
+
+        let binary_item = Item {
+            path: ItemPath::Utf8("assets/image.png".to_string()),
+            probe: Probe::Bytes(vec![0x89, 0x50, 0x00, 0x47]),
+        };
+        assert_eq!(
+            binary_item.evaluate(),
+            ItemDecision::Skipped {
+                path: Some("assets/image.png"),
+            }
+        );
+
+        let missing_item = Item {
+            path: ItemPath::Utf8("missing.txt".to_string()),
+            probe: Probe::Missing,
+        };
+        assert_eq!(
+            missing_item.evaluate(),
+            ItemDecision::Skipped {
+                path: Some("missing.txt"),
+            }
+        );
+
+        let non_utf8_item = Item {
+            path: ItemPath::NonUtf8,
+            probe: Probe::Missing,
+        };
+        assert_eq!(
+            non_utf8_item.evaluate(),
+            ItemDecision::Skipped { path: None }
+        );
+    }
+
+    #[test]
+    fn selector_accumulates_decisions_and_respects_size_hint() {
+        let mut selector = Selector::from_size_hint((10, Some(10)));
+        selector
+            .accumulate(ItemDecision::Included {
+                path: "a.txt",
+                content: "hello",
+            })
+            .unwrap();
+        selector
+            .accumulate(ItemDecision::Skipped {
+                path: Some("b.bin"),
+            })
+            .unwrap();
+        let res = selector.finish("test".to_string(), None);
+        assert_eq!(res.files.len(), 1);
+        assert_eq!(res.skipped, 1);
     }
 }

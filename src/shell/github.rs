@@ -12,6 +12,18 @@ use crate::core::policy::{MAX_FILE_SIZE, PathClassification};
 
 use super::orchestrate::SourceStream;
 
+pub(crate) fn collect_github(
+    owner: &str,
+    repo: &str,
+    reference: Option<&str>,
+) -> Result<crate::core::model::CollectionResult, IngestError> {
+    let client = super::github_client::GithubClient::new();
+    let reader = client.tarball_stream(owner, repo, reference)?;
+    let mut archive = Archive::new(GzDecoder::new(reader));
+    let stream = GitHubStream::new(&mut archive, owner, repo, reference)?;
+    super::orchestrate::collect_stream(stream)
+}
+
 pub struct GitHubStream<'a, R: Read> {
     label: String,
     reference: Option<String>,
@@ -106,18 +118,27 @@ fn probe_tar_entry<R: Read>(entry: &mut tar::Entry<R>) -> Result<ArchiveEntryOut
 
     // 3. Path decoding & root stripping
     let path_bytes = entry.path_bytes();
-    let Ok(path_str) = std::str::from_utf8(&path_bytes) else {
+    let Some(rel_bytes) = strip_archive_root(&path_bytes) else {
+        // Root directory entry itself (e.g. "{owner}-{repo}-{sha}/")
+        return Ok(ArchiveEntryOutcome::Ignored);
+    };
+
+    if rel_bytes.is_empty()
+        || rel_bytes
+            .split(|&b| b == b'/')
+            .filter(|part| !part.is_empty())
+            .any(|part| part.starts_with(b"."))
+    {
+        return Ok(ArchiveEntryOutcome::Ignored);
+    }
+
+    let Some(rel_str) = crate::core::decide::text_str(rel_bytes) else {
         return Ok(ArchiveEntryOutcome::Item(Item {
             path: ItemPath::NonUtf8,
             probe: Probe::Missing,
         }));
     };
-
-    let Some(rel_path) = strip_archive_root(path_str) else {
-        // Root directory entry itself (e.g. "{owner}-{repo}-{sha}/")
-        return Ok(ArchiveEntryOutcome::Ignored);
-    };
-    let rel_path = rel_path.to_owned();
+    let rel_path = rel_str.to_owned();
 
     // 4. Conventional filtering (noise, sensitive, hidden)
     let classification = PathClassification::classify(&rel_path);
@@ -298,6 +319,36 @@ mod tests {
 
         assert_eq!(result.files.len(), 0);
         assert_eq!(result.skipped, 0);
+    }
+
+    #[test]
+    fn non_utf8_hidden_regular_file_is_ignored() {
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        {
+            let mut tar = Builder::new(&mut gz);
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(EntryType::Regular);
+            header.set_size(5);
+            header.set_mode(0o644);
+            let name = b"repo-root/.git/\xff";
+            header.as_mut_bytes()[..name.len()].copy_from_slice(name);
+            header.set_cksum();
+            tar.append(&header, &b"dummy"[..]).unwrap();
+            tar.finish().unwrap();
+        }
+        let mock_data = gz.finish().unwrap();
+
+        let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
+        let stream =
+            GitHubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
+        let result =
+            crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
+
+        assert_eq!(result.files.len(), 0);
+        assert_eq!(
+            result.skipped, 0,
+            "hidden entries must never be accounted as candidates or skipped"
+        );
     }
 
     #[test]

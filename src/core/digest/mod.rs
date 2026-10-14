@@ -5,6 +5,7 @@ mod trie;
 mod xml;
 
 pub(crate) use budget::largest_files;
+pub use text::escape_header;
 pub use token::{TokenEstimator, estimate_tokens};
 pub use trie::BudgetTrie;
 pub use xml::{write_xml_escaped, xml_escape};
@@ -35,11 +36,15 @@ impl DigestFormat {
     }
 }
 
+const ESTIMATING_WRITER_BUF_SIZE: usize = 8 * 1024;
+
 struct BoundedEstimatingWriter<'a, W: std::io::Write + ?Sized> {
     inner: &'a mut W,
     written: u64,
     estimator: TokenEstimator,
     overflowed: bool,
+    buf: [u8; ESTIMATING_WRITER_BUF_SIZE],
+    buf_len: usize,
 }
 
 impl<'a, W: std::io::Write + ?Sized> BoundedEstimatingWriter<'a, W> {
@@ -49,11 +54,23 @@ impl<'a, W: std::io::Write + ?Sized> BoundedEstimatingWriter<'a, W> {
             written: 0,
             estimator: TokenEstimator::new(),
             overflowed: false,
+            buf: [0u8; ESTIMATING_WRITER_BUF_SIZE],
+            buf_len: 0,
         }
     }
 
-    fn finish(self) -> usize {
-        self.estimator.finish()
+    fn flush_buf(&mut self) -> std::io::Result<()> {
+        if self.buf_len > 0 {
+            self.inner.write_all(&self.buf[..self.buf_len])?;
+            self.estimator.process_bytes(&self.buf[..self.buf_len]);
+            self.buf_len = 0;
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> std::io::Result<usize> {
+        self.flush_buf()?;
+        Ok(self.estimator.finish())
     }
 }
 
@@ -64,15 +81,30 @@ impl<W: std::io::Write + ?Sized> std::io::Write for BoundedEstimatingWriter<'_, 
             self.overflowed = true;
             return Err(std::io::Error::other("output size limit exceeded"));
         }
-
-        self.inner.write_all(buf)?;
         self.written = new_written;
-        self.estimator.process_bytes(buf);
+
+        let space = self.buf.len() - self.buf_len;
+        if buf.len() <= space {
+            self.buf[self.buf_len..self.buf_len + buf.len()].copy_from_slice(buf);
+            self.buf_len += buf.len();
+            return Ok(buf.len());
+        }
+
+        self.flush_buf()?;
+
+        if buf.len() >= self.buf.len() {
+            self.inner.write_all(buf)?;
+            self.estimator.process_bytes(buf);
+        } else {
+            self.buf[..buf.len()].copy_from_slice(buf);
+            self.buf_len = buf.len();
+        }
 
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
+        self.flush_buf()?;
         self.inner.flush()
     }
 }
@@ -99,7 +131,7 @@ pub fn render_digest_to_writer<W: std::io::Write + ?Sized>(
     }
 
     render_res?;
-    Ok(estimating_writer.finish())
+    estimating_writer.finish().map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -377,5 +409,36 @@ z &lt; 10
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn bounded_estimating_writer_finish_does_not_flush_inner_stream() {
+        struct BrokenPipeOnFlushWriter {
+            buf: Vec<u8>,
+        }
+
+        impl std::io::Write for BrokenPipeOnFlushWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.buf.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "closed pipe",
+                ))
+            }
+        }
+
+        let mut inner = BrokenPipeOnFlushWriter { buf: Vec::new() };
+        let mut writer = BoundedEstimatingWriter::new(&mut inner);
+        use std::io::Write;
+        writer.write_all(b"hello world\n").unwrap();
+        let tokens = writer
+            .finish()
+            .expect("finish must succeed even if inner flush fails");
+        assert!(tokens > 0);
+        assert_eq!(inner.buf, b"hello world\n");
     }
 }

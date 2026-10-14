@@ -8,7 +8,7 @@ use ignore::WalkBuilder;
 
 use super::local_io::read_local_file;
 use super::orchestrate::SourceStream;
-use super::output_exclusion::OutputFilter;
+use super::output::OutputFilter;
 use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe};
 use crate::core::error::IngestError;
 use crate::core::model::OutputTarget;
@@ -17,11 +17,10 @@ use crate::core::policy::{MAX_FILE_COUNT, PathClassification};
 struct LocalCandidate {
     path: PathBuf,
     item_path: ItemPath,
-    probe: Option<Probe>,
+    skip_read: bool,
 }
 
 pub struct LocalStream {
-    root: PathBuf,
     label: String,
     candidates: std::vec::IntoIter<LocalCandidate>,
 }
@@ -29,26 +28,29 @@ pub struct LocalStream {
 impl std::fmt::Debug for LocalStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocalStream")
-            .field("root", &self.root)
             .field("label", &self.label)
             .finish()
     }
 }
 
+pub(crate) fn collect_local(
+    root: &Path,
+    output: &OutputTarget,
+) -> Result<crate::core::model::CollectionResult, IngestError> {
+    let stream = LocalStream::new(root, output)?;
+    super::orchestrate::collect_stream(stream)
+}
+
 impl LocalStream {
     pub fn new(root: &Path, output: &OutputTarget) -> Result<Self, IngestError> {
         let canonical_root = validate_root(root)?;
-        let output_filter = match output {
-            OutputTarget::File(path) => OutputFilter::new(path)?,
-            OutputTarget::Stdout => None,
-        };
+        let output_filter = OutputFilter::from_target(output)?;
         let label = local_label(&canonical_root);
         let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
 
         CandidateBudget::check_limit(candidates.iter().map(|c| c.item_path.as_utf8_str()))?;
 
         Ok(Self {
-            root: canonical_root,
             label,
             candidates: candidates.into_iter(),
         })
@@ -60,19 +62,27 @@ impl Iterator for LocalStream {
 
     fn next(&mut self) -> Option<Self::Item> {
         let candidate = self.candidates.next()?;
-        let probe = match candidate.probe {
-            Some(p) => p,
-            None => match read_local_file(&self.root, &candidate.path) {
+        let probe = if candidate.skip_read {
+            Probe::Missing
+        } else {
+            match read_local_file(&candidate.path) {
                 Ok(p) => p,
                 Err(err) => return Some(Err(err)),
-            },
+            }
         };
         Some(Ok(Item {
             path: candidate.item_path,
             probe,
         }))
     }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.candidates.size_hint()
+    }
 }
+
+impl ExactSizeIterator for LocalStream {}
 
 impl SourceStream for LocalStream {
     fn label(&self) -> &str {
@@ -126,19 +136,21 @@ fn walk_candidates(
             .map_err(|err| IngestError::InvalidMetadata(err.to_string()))?;
         let item_path = normalize_relative_path(relative);
 
-        let probe = match &item_path {
-            ItemPath::NonUtf8 => Some(Probe::Missing),
-            ItemPath::Utf8(path) => match PathClassification::classify(path) {
-                PathClassification::Ignored => continue,
-                PathClassification::PreclassifiedBinary => Some(Probe::Missing),
-                PathClassification::NeedsContent => None,
-            },
+        let skip_read = match &item_path {
+            ItemPath::NonUtf8 => true,
+            ItemPath::Utf8(path) => {
+                let classification = PathClassification::classify(path);
+                if classification == PathClassification::Ignored {
+                    continue;
+                }
+                classification == PathClassification::PreclassifiedBinary
+            }
         };
 
         candidates.push(LocalCandidate {
             path: entry_path.to_path_buf(),
             item_path,
-            probe,
+            skip_read,
         });
 
         if candidates.len() > MAX_FILE_COUNT {
@@ -235,6 +247,10 @@ mod tests {
         assert_eq!(report.included_files, 1);
         assert!(!digest.contains("previous output"));
         assert!(digest.contains("FILE: source.txt"));
+        assert!(
+            !root.join("missing").exists(),
+            "nonexistent parent alias must not create phantom directory"
+        );
         Ok(())
     }
 
@@ -431,5 +447,10 @@ mod tests {
             other => panic!("expected CandidateLimitExceeded, got {other:?}"),
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_local_candidate_size_is_under_cache_line() {
+        assert!(std::mem::size_of::<LocalCandidate>() <= 64);
     }
 }

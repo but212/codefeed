@@ -56,7 +56,8 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
 /// and extensions in [`SENSITIVE_EXT`] (`*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.credentials`).
 pub(crate) fn is_sensitive_path(path: &str) -> bool {
     let file_name = path.rsplit('/').next().unwrap_or(path);
-    if starts_with_ignore_ascii_case(file_name, "id_rsa")
+    if starts_with_ignore_ascii_case(file_name, ".env")
+        || starts_with_ignore_ascii_case(file_name, "id_rsa")
         || starts_with_ignore_ascii_case(file_name, "id_ed25519")
         || starts_with_ignore_ascii_case(file_name, "credentials")
     {
@@ -96,12 +97,14 @@ pub(crate) enum PathClassification {
 
 impl PathClassification {
     pub(crate) fn classify(path: &str) -> Self {
+        const CANDIDATE_KIND: [PathClassification; 2] = [
+            PathClassification::NeedsContent,
+            PathClassification::PreclassifiedBinary,
+        ];
         if is_hidden_path(path) || is_noise_path(path) || is_sensitive_path(path) {
             Self::Ignored
-        } else if has_binary_extension(path) {
-            Self::PreclassifiedBinary
         } else {
-            Self::NeedsContent
+            CANDIDATE_KIND[has_binary_extension(path) as usize]
         }
     }
 }
@@ -208,5 +211,14 @@ mod tests {
                 "classification mismatch for {path}"
             );
         }
+    }
+
+    #[test]
+    fn is_sensitive_path_matches_env_prefixes() {
+        assert!(is_sensitive_path(".env"));
+        assert!(is_sensitive_path(".env.local"));
+        assert!(is_sensitive_path("nested/.ENV.production"));
+        assert!(is_sensitive_path(".envrc"));
+        assert!(!is_sensitive_path("environment.rs"));
     }
 }

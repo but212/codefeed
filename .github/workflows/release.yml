@@ -35,7 +35,7 @@ jobs:
           fi
 
       - name: Run test suite
-        run: cargo test --all-targets --locked
+        run: cargo test --lib --bins --tests --locked
 
   build:
     name: Build (${{ matrix.target }})

@@ -18,34 +18,32 @@ const FILE_BLOCK_SUFFIX: &str = "\n=============================================
 const NEWLINE: &str = "\n";
 const METADATA_SUFFIX: &str = "\n\n";
 
-#[inline]
+#[inline(always)]
 const fn needs_header_escape(b: u8) -> bool {
-    matches!(b, b'\\' | b'\r' | b'\n')
+    (b == b'\\') | (b == b'\r') | (b == b'\n')
 }
 
-#[inline]
+#[inline(always)]
 const fn header_escape_str(b: u8) -> &'static str {
-    match b {
-        b'\\' => "\\\\",
-        b'\r' => "\\r",
-        b'\n' => "\\n",
-        _ => "",
-    }
+    const ESCAPES: [&str; 4] = ["\\\\", "\\r", "\\n", ""];
+    ESCAPES[(b & 3) as usize]
 }
 
-pub(crate) fn escape_header(value: &str) -> Cow<'_, str> {
+pub fn escape_header(value: &str) -> Cow<'_, str> {
     let bytes = value.as_bytes();
-    if !bytes.iter().any(|&b| needs_header_escape(b)) {
+    let Some(first) = bytes.iter().position(|&b| needs_header_escape(b)) else {
         return Cow::Borrowed(value);
-    }
+    };
 
     let mut out = String::with_capacity(value.len() + 8);
-    let mut last = 0;
-    for (i, &b) in bytes.iter().enumerate() {
+    out.push_str(&value[..first]);
+    let mut last = first;
+    for (i, &b) in bytes[first..].iter().enumerate() {
+        let abs_i = first + i;
         if needs_header_escape(b) {
-            out.push_str(&value[last..i]);
+            out.push_str(&value[last..abs_i]);
             out.push_str(header_escape_str(b));
-            last = i + 1;
+            last = abs_i + 1;
         }
     }
     out.push_str(&value[last..]);

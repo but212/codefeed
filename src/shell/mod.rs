@@ -9,7 +9,6 @@ pub(crate) mod local;
 pub(crate) mod local_io;
 pub(crate) mod orchestrate;
 pub(crate) mod output;
-pub(crate) mod output_exclusion;
 
 pub(crate) fn current_epoch_nanos() -> u128 {
     std::time::SystemTime::now()

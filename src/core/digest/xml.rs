@@ -16,36 +16,10 @@ const XML_FILES_START: &str = "<files>\n";
 const XML_FILES_END: &str = "</files>\n";
 const XML_REPO_END: &str = "</repository>\n";
 const XML_FILE_START: &str = "<file path=\"";
-const XML_FILE_END: &str = "</file>\n";
-const NEWLINE: &str = "\n";
-
-const fn make_escape_table() -> [Option<&'static str>; 256] {
-    let mut table = [None; 256];
-    table[b'&' as usize] = Some("&amp;");
-    table[b'<' as usize] = Some("&lt;");
-    table[b'>' as usize] = Some("&gt;");
-    table[b'"' as usize] = Some("&quot;");
-    table[b'\'' as usize] = Some("&apos;");
-    let mut i = 1;
-    while i <= 8 {
-        table[i] = Some("\u{FFFD}");
-        i += 1;
-    }
-    table[0x0B] = Some("\u{FFFD}");
-    table[0x0C] = Some("\u{FFFD}");
-    let mut j = 0x0E;
-    while j <= 0x1F {
-        table[j] = Some("\u{FFFD}");
-        j += 1;
-    }
-    table
-}
-
-const ESCAPE_TABLE: [Option<&'static str>; 256] = make_escape_table();
-
+const FILE_TAILS: [&[u8]; 2] = [b"</file>\n", b"\n</file>\n"];
 const SPECIAL_BITSET: [u64; 4] = {
     let mut mask = [0u64; 4];
-    let mut i = 1;
+    let mut i = 0;
     while i <= 8 {
         mask[0] |= 1 << i;
         i += 1;
@@ -71,21 +45,27 @@ fn is_special_byte(b: u8) -> bool {
     (word & (1u64 << (b & 63))) != 0
 }
 
+const XML_ESCAPES: [&str; 6] = ["\u{FFFD}", "&quot;", "&amp;", "&apos;", "&lt;", "&gt;"];
+const ASCII_ESC_IDX: [u8; 64] = {
+    let mut t = [0u8; 64];
+    t[b'"' as usize] = 1;
+    t[b'&' as usize] = 2;
+    t[b'\'' as usize] = 3;
+    t[b'<' as usize] = 4;
+    t[b'>' as usize] = 5;
+    t
+};
+
 #[inline(always)]
 fn xml_special(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     let b = bytes[i];
-
-    if let Some(esc) = ESCAPE_TABLE[b as usize] {
-        return Some((1, esc));
+    if b < 64 {
+        return Some((1, XML_ESCAPES[ASCII_ESC_IDX[b as usize] as usize]));
     }
-
     if b == 0xEF && i + 2 < bytes.len() {
         let tail = ((bytes[i + 1] as u32) << 8) | (bytes[i + 2] as u32);
-        if (tail & !1) == 0xBFBE {
-            return Some((3, "\u{FFFD}"));
-        }
+        return ((tail & !1) == 0xBFBE).then_some((3, "\u{FFFD}"));
     }
-
     None
 }
 
@@ -114,15 +94,23 @@ pub struct XmlChunks<'a> {
     value: &'a str,
     bytes: &'a [u8],
     cursor: usize,
+    pending: Option<&'static str>,
 }
 
 impl<'a> XmlChunks<'a> {
+    #[cfg(test)]
     #[inline]
     pub fn new(value: &'a str) -> Self {
+        Self::from_offset(value, 0)
+    }
+
+    #[inline]
+    pub fn from_offset(value: &'a str, offset: usize) -> Self {
         Self {
             value,
             bytes: value.as_bytes(),
-            cursor: 0,
+            cursor: offset,
+            pending: None,
         }
     }
 }
@@ -131,6 +119,10 @@ impl<'a> Iterator for XmlChunks<'a> {
     type Item = XmlChunk<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(esc) = self.pending.take() {
+            return Some(XmlChunk::Escaped(esc));
+        }
+
         if self.cursor >= self.bytes.len() {
             return None;
         }
@@ -141,7 +133,10 @@ impl<'a> Iterator for XmlChunks<'a> {
                 && let Some((consumed, esc)) = xml_special(self.bytes, self.cursor)
             {
                 if self.cursor > start {
-                    return Some(XmlChunk::Raw(&self.value[start..self.cursor]));
+                    let raw = &self.value[start..self.cursor];
+                    self.cursor += consumed;
+                    self.pending = Some(esc);
+                    return Some(XmlChunk::Raw(raw));
                 }
                 self.cursor += consumed;
                 return Some(XmlChunk::Escaped(esc));
@@ -160,24 +155,39 @@ impl<'a> Iterator for XmlChunks<'a> {
 pub fn xml_escape(value: &str) -> Cow<'_, str> {
     let bytes = value.as_bytes();
 
-    let needs_escape = bytes
+    let first = bytes
         .iter()
         .enumerate()
-        .any(|(i, &b)| is_special_byte(b) && xml_special(bytes, i).is_some());
+        .position(|(i, &b)| is_special_byte(b) && (b != 0xEF || xml_special(bytes, i).is_some()));
 
-    if !needs_escape {
+    let Some(first) = first else {
         return Cow::Borrowed(value);
-    }
+    };
 
     let mut result = String::with_capacity(value.len() + 16);
-    for chunk in XmlChunks::new(value) {
+    result.push_str(&value[..first]);
+    for chunk in XmlChunks::from_offset(value, first) {
         result.push_str(chunk.as_str());
     }
     Cow::Owned(result)
 }
 
 pub fn write_xml_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
-    for chunk in XmlChunks::new(value) {
+    let bytes = value.as_bytes();
+
+    let first = bytes
+        .iter()
+        .enumerate()
+        .position(|(i, &b)| is_special_byte(b) && (b != 0xEF || xml_special(bytes, i).is_some()));
+
+    let Some(first) = first else {
+        return writer.write_all(bytes);
+    };
+
+    if first > 0 {
+        writer.write_all(&bytes[..first])?;
+    }
+    for chunk in XmlChunks::from_offset(value, first) {
         writer.write_all(chunk.as_bytes())?;
     }
     Ok(())
@@ -210,10 +220,8 @@ where
         writer.write_all(xml_escape(file.path).as_bytes())?;
         writer.write_all(XML_TAG_CLOSE.as_bytes())?;
         write_xml_escaped(writer, file.content)?;
-        if !file.content.ends_with('\n') {
-            writer.write_all(NEWLINE.as_bytes())?;
-        }
-        writer.write_all(XML_FILE_END.as_bytes())?;
+        let needs_nl = (!file.content.ends_with('\n')) as usize;
+        writer.write_all(FILE_TAILS[needs_nl])?;
     }
     writer.write_all(XML_FILES_END.as_bytes())?;
     writer.write_all(XML_REPO_END.as_bytes())?;
@@ -239,8 +247,8 @@ mod tests {
             ("hello\x0Cworld", "hello\u{FFFD}world"),
             ("valid\t\n\rwhitespace", "valid\t\n\rwhitespace"),
             (
-                "code\u{0001}\u{0008}\u{000B}\u{001F}",
-                "code\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}",
+                "code\u{0000}\u{0001}\u{0008}\u{000B}\u{001F}",
+                "code\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}",
             ),
             (
                 "한글과 이모지 🦀 & 특수문자\n",

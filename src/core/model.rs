@@ -124,6 +124,15 @@ impl FileStorage {
     }
 
     #[inline]
+    pub fn with_capacity(spans_cap: usize, path_bytes: usize, content_bytes: usize) -> Self {
+        Self {
+            spans: Vec::with_capacity(spans_cap),
+            path_arena: String::with_capacity(path_bytes),
+            content_arena: String::with_capacity(content_bytes),
+        }
+    }
+
+    #[inline]
     pub fn len(&self) -> usize {
         self.spans.len()
     }
@@ -136,6 +145,16 @@ impl FileStorage {
     /// Sorts spans lexicographically by path in-place within the path arena.
     pub fn sort_by_path(&mut self) {
         let path_arena = &self.path_arena;
+        let is_sorted = self.spans.windows(2).all(|w| {
+            let pa =
+                &path_arena[w[0].path_offset as usize..(w[0].path_offset + w[0].path_len) as usize];
+            let pb =
+                &path_arena[w[1].path_offset as usize..(w[1].path_offset + w[1].path_len) as usize];
+            pa <= pb
+        });
+        if is_sorted {
+            return;
+        }
         self.spans.sort_unstable_by(|a, b| {
             let pa = &path_arena[a.path_offset as usize..(a.path_offset + a.path_len) as usize];
             let pb = &path_arena[b.path_offset as usize..(b.path_offset + b.path_len) as usize];
@@ -145,6 +164,11 @@ impl FileStorage {
 
     /// Appends path and content to the arenas and records a [`FileSpan`].
     pub fn push(&mut self, path: &str, content: &str) -> FileSpan {
+        debug_assert!(u32::try_from(self.path_arena.len()).is_ok());
+        debug_assert!(u32::try_from(path.len()).is_ok());
+        debug_assert!(u32::try_from(self.content_arena.len()).is_ok());
+        debug_assert!(u32::try_from(content.len()).is_ok());
+
         let path_offset = self.path_arena.len() as u32;
         let path_len = path.len() as u32;
         self.path_arena.push_str(path);
