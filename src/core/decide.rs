@@ -13,6 +13,16 @@ pub enum ItemPath {
     NonUtf8,
 }
 
+impl ItemPath {
+    #[inline]
+    pub fn as_utf8_str(&self) -> Option<&str> {
+        match self {
+            Self::Utf8(s) => Some(s.as_str()),
+            Self::NonUtf8 => None,
+        }
+    }
+}
+
 /// Result of the shell's bounded resource acquisition. `Ignored`, `TooLarge`,
 /// and `Missing` carry no content. `TooLarge` and `Missing` still consume a
 /// candidate slot; `Ignored` is excluded before candidate accounting.
@@ -121,6 +131,17 @@ pub(crate) struct CandidateBudget {
 }
 
 impl CandidateBudget {
+    pub(crate) fn check_limit<'a, I>(paths: I) -> Result<(), IngestError>
+    where
+        I: IntoIterator<Item = Option<&'a str>>,
+    {
+        let mut budget = Self::default();
+        for path in paths {
+            budget.add(path)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn add(&mut self, path: Option<&str>) -> Result<(), IngestError> {
         self.count = self
             .count
@@ -213,6 +234,15 @@ mod tests {
             candidates.add(None).unwrap();
         }
         assert!(candidates.add(None).is_err());
+    }
+
+    #[test]
+    fn candidate_budget_check_limit_validates_batch() {
+        let under_limit = (0..MAX_FILE_COUNT).map(|_| Some("dir/file.txt"));
+        assert!(CandidateBudget::check_limit(under_limit).is_ok());
+
+        let over_limit = (0..=MAX_FILE_COUNT).map(|_| Some("dir/file.txt"));
+        assert!(CandidateBudget::check_limit(over_limit).is_err());
     }
 
     #[test]

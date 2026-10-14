@@ -29,7 +29,7 @@ imperative-shell boundary.
 
 ### Filtering & Accounting
 
-- Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and conventional sensitive files by case-insensitive filename prefix (`.env*`, `id_rsa*`, `id_ed25519*`, `credentials*`) and extension (`*.key`/`*.pem`, `*.p12`/`*.pkcs12`, `*.credentials`) before candidate accounting (conventional pattern filter, not a content-based secret scanner). They are neither candidates nor `skipped`.
+- Excludes `.git`, hidden entries (empty path segments from redundant delimiters are filtered to prevent false positives), symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and conventional sensitive files by case-insensitive filename prefix (`.env*`, `id_rsa*`, `id_ed25519*`, `credentials*`) and extension (`*.key`/`*.pem`, `*.p12`/`*.pkcs12`, `*.credentials`) before candidate accounting (conventional pattern filter, not a content-based secret scanner). They are neither candidates nor `skipped`.
 - Consumes candidate slots before evaluating content, size, or encoding.
 - `skipped` counts candidates rejected for content, size, or encoding. Ignored paths are never counted in `skipped`.
 - Rejects content exceeding `MAX_OUTPUT_SIZE`; overflow content is never emitted.
@@ -42,7 +42,7 @@ imperative-shell boundary.
 - Heuristic token estimation runs via state machine `TokenEstimator`, exposed through pure function `estimate_tokens(&str)` and `BoundedEstimatingWriter`, reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
 - Plain text serialization (`--format text`) preserves all valid UTF-8 file content verbatim (rejecting only NUL bytes) to maintain raw fidelity for LLM prompts; headers and paths are escaped, but file bodies are unmutated (viewing raw digests in interactive terminals may affect emulator state if files contain ANSI escape codes).
 - XML serialization (`--format xml`) structures output into `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`) and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`.
-- File-path ordering is strictly lexicographical and owned solely by `DigestFormat::render`, sorted once into key-projected `(&str, &FileRecord)` slices to eliminate double heap indirection. Format sub-renderers (`text::render`, `xml::render`) consume the ordered slice directly without re-sorting or re-allocating.
+- File-path ordering is strictly lexicographical and owned solely by `DigestFormat::render`, sorted once into contiguous borrowed `FileRecord` slices. Format sub-renderers (`text::render`, `xml::render`) consume the ordered slice directly without re-sorting or re-allocating.
 - Local digest headers use root directory basename (`Repository: <basename>`), omitting absolute paths and system prefixes.
 
 ### I/O & Output Target Contracts
@@ -53,7 +53,7 @@ imperative-shell boundary.
 - Broken downstream pipe (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0.
 - Local walk excludes the output file by device/inode and path identity (`output_exclusion::OutputFilter`).
 - Local walk uses a 2-step linear pipeline with TOCTOU-resistant containment checks:
-  1. `ignore::WalkBuilder` with `follow_links(false)` collects candidate paths into a deterministically sorted list.
+  1. `ignore::WalkBuilder` with `follow_links(false)` collects candidate paths into a deterministically sorted list, with pre-flight batch candidate budget verification (`CandidateBudget::check_limit`) to fail fast before reading file bodies.
   2. Bounded, containment-checked file reads via `local_io::read_local_file` (`openat2(RESOLVE_BENEATH)` / non-blocking Win32 handles) feed observations into `Selector`.
 - Digest cap (`MAX_OUTPUT_SIZE`) is strictly enforced on bytes actually written to the output stream via `BoundedEstimatingWriter`, preventing framing/metadata overflow.
 - Token count is estimated on the same writer stream pass over rendered bytes.
@@ -95,7 +95,7 @@ never depends on shell code; shell code depends on the core in one direction.
   - `model.rs`: domain value types (`Source`, `FileRecord`, `CollectionResult`,
     `IngestReport`, `RunConfig`, `Options`, `OutputTarget`, `DigestFormat`).
   - `error.rs`: domain error enum `IngestError` with structured diagnostic payload.
-  - `decide.rs`: `Selector::decide`, `Selector::finish`, `CandidateBudget`, item evaluation via `slice::contains`, and
+  - `decide.rs`: `Selector::decide`, `Selector::finish`, `CandidateBudget`, `CandidateBudget::check_limit`, item evaluation via `slice::contains`, and
     candidate overflow diagnostics.
   - `digest/`: `DigestBudget`, size check, deterministic
     digest rendering (`render_digest_to_writer`), format implementations (`text.rs`, `xml.rs`), trie representation (`trie.rs`), and token estimation (`TokenEstimator`, `estimate_tokens`).
@@ -108,7 +108,7 @@ never depends on shell code; shell code depends on the core in one direction.
   - `shell/local.rs`: 2-step linear filesystem walking and collection (`collect_local`).
   - `shell/local_io.rs`: TOCTOU-resistant file opening and root containment enforcement (`openat2` / Win32 handle resolution).
   - `shell/output_exclusion.rs`: Output file identity tracking (`OutputFilter`) using device and inode checks.
-  - `shell/github_client.rs`: HTTP transport, retry logging via `log`, body bounding, and token resolution.
+  - `shell/github_client.rs`: HTTP transport, retry diagnostics, body bounding, and token resolution.
   - `shell/github.rs`: streaming archive GitHub collection (`collect_github`).
-  - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`) or standard output stream emission.
+  - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`) or standard output stream emission; missing output file names map to `IngestError::Usage`.
   - `shell/mod.rs`: shell module declarations and scoped test fixture isolation (`TempDirGuard`).

@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Zero-copy borrowed view `FileRecord<'a>` into files stored within `FileStorage`.
 - Unified token estimation state machine `TokenEstimator` in `src/core/digest/mod.rs`, shared by `estimate_tokens` and `BoundedEstimatingWriter`.
 - Encapsulated collection completion in `Selector::finish` in `src/core/decide.rs`, constructing `CollectionResult` directly.
+- Batch pre-flight candidate verification `CandidateBudget::check_limit` and `ItemPath::as_utf8_str` in `src/core/decide.rs`.
+
+### Fixed
+
+- Filtered redundant empty path components (`//`) in `is_hidden_path` (`src/core/policy.rs`) to prevent non-hidden paths with duplicate delimiters from being misclassified as hidden.
+- Mapped invalid output file paths lacking a file name component to `IngestError::Usage` in `src/shell/output.rs`.
+- Enforced candidate count limits prior to reading file contents from disk in local walk (`src/shell/local.rs`) via `CandidateBudget::check_limit`, preventing unbounded I/O when file counts exceed `MAX_FILE_COUNT`.
 
 ### Changed
 
@@ -20,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refactored `BudgetTrie` in `src/core/digest/trie.rs` into a contiguous flat node arena (`Vec<BudgetTrieNode>`) with `u32` indexed child tracking (`Vec<u32>`) and `Box<str>` node labels, reducing arena memory footprint on 64-bit platforms and eliminating recursive heap pointer chasing.
 - Consolidated duplicated root and parent child insertion logic in `BudgetTrie::insert` into `get_or_insert_child`.
 - Extracted OS-dependent filename case comparison in `src/shell/output_exclusion.rs` into `names_match` helper.
-- Centralized deterministic digest file sorting in `DigestFormat::render` (`src/core/digest/mod.rs`), passing key-projected `(&str, &FileRecord)` slices to `text::render` and `xml::render` to eliminate duplicate sorting and redundant allocations.
+- Centralized deterministic digest file sorting in `DigestFormat::render` (`src/core/digest/mod.rs`), passing sorted `&[FileRecord]` slices to `text::render` and `xml::render` to eliminate duplicate sorting and redundant allocations.
 - Replaced external crate `percent-encoding` in `src/core/github_url.rs` with a pure `std` RFC 3986 Unreserved validator and `%XX` hex encoder.
 - Replaced external crate `memchr` in `src/core/decide.rs` with `slice::contains(&0)` and in `src/core/digest/text.rs` with `std` pattern matching.
 - Replaced external crate `log` in `src/shell/github_client.rs` with `eprintln!` diagnostics.
@@ -30,7 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - Removed external dependencies `percent-encoding`, `memchr`, and `log` from `Cargo.toml`.
-- Removed redundant batch candidate pre-verification `CandidateBudget::verify_count` in `src/core/decide.rs` and `src/shell/local.rs` in favor of single-pass streaming budget enforcement in `Selector::decide`.
+- Removed dead `Index<usize>` implementation on `FileStorage` in `src/core/model.rs`.
+- Removed dead `escaped_metrics` helper and `XmlChunk::len` method in `src/core/digest/xml.rs`.
 - Removed `Selector::into_parts` across `src/core/decide.rs`, shell collectors, and benchmarks in favor of `Selector::finish`.
 
 ## [0.2.2]

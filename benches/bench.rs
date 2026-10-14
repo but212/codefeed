@@ -11,8 +11,8 @@ use std::time::Instant;
 
 use codefeed::__bench::{
     BudgetTrie, CollectionResult, DigestFormat, FileStorage, Item, ItemPath, OutputTarget, Probe,
-    Selector, collect_local, escaped_metrics, estimate_tokens, render_digest_to_writer,
-    text_content, write_xml_escaped, xml_escape,
+    Selector, collect_local, estimate_tokens, render_digest_to_writer, text_content,
+    write_xml_escaped, xml_escape,
 };
 
 pub struct VoidWriter;
@@ -396,11 +396,6 @@ mod suites {
         runner.bench("xml_escape_100k", 10, 50, Some(payload_bytes), || {
             let escaped = xml_escape(&payload);
             black_box(escaped);
-        });
-
-        runner.bench("xml_metrics_100k", 10, 50, Some(payload_bytes), || {
-            let (len, nl) = escaped_metrics(&payload);
-            black_box((len, nl));
         });
 
         runner.bench("xml_stream_write_100k", 10, 50, Some(payload_bytes), || {

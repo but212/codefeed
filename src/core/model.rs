@@ -176,15 +176,6 @@ impl FileStorage {
     }
 }
 
-impl std::ops::Index<usize> for FileStorage {
-    type Output = FileSpan;
-
-    #[inline]
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.spans[index]
-    }
-}
-
 impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
     fn from_iter<T: IntoIterator<Item = FileRecord<'a>>>(iter: T) -> Self {
         let mut storage = Self::new();
@@ -204,7 +195,6 @@ impl<'a> FromIterator<&'a FileRecord<'a>> for FileStorage {
         storage
     }
 }
-
 
 /// Zero-copy borrowed view into a file record stored within [`FileStorage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

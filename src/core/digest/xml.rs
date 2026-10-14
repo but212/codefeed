@@ -110,11 +110,6 @@ impl<'a> XmlChunk<'a> {
     }
 
     #[inline]
-    pub fn len(&self) -> usize {
-        self.as_str().len()
-    }
-
-    #[inline]
     pub fn ends_with_nl(&self) -> bool {
         match *self {
             XmlChunk::Raw(s) => s.as_bytes().last() == Some(&b'\n'),
@@ -189,18 +184,6 @@ pub fn xml_escape(value: &str) -> Cow<'_, str> {
     Cow::Owned(result)
 }
 
-pub fn escaped_metrics(value: &str) -> (u64, bool) {
-    let mut len: u64 = 0;
-    let mut ends_with_nl = false;
-
-    for chunk in XmlChunks::new(value) {
-        len += chunk.len() as u64;
-        ends_with_nl = chunk.ends_with_nl();
-    }
-
-    (len, ends_with_nl)
-}
-
 pub fn write_xml_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<bool> {
     let mut ends_with_nl = false;
 
@@ -216,7 +199,7 @@ pub(crate) fn render<W>(
     writer: &mut W,
     label: &str,
     revision: Option<&str>,
-    ordered_files: &[(&str, FileRecord<'_>)],
+    ordered_files: &[FileRecord<'_>],
     trie: &BudgetTrie,
 ) -> Result<(), IngestError>
 where
@@ -233,7 +216,7 @@ where
     trie.render_to_writer(writer)?;
     writer.write_all(XML_DIR_END.as_bytes())?;
     writer.write_all(XML_FILES_START.as_bytes())?;
-    for (_, file) in ordered_files {
+    for file in ordered_files {
         writer.write_all(XML_FILE_START.as_bytes())?;
         writer.write_all(xml_escape(file.path).as_bytes())?;
         writer.write_all(XML_TAG_CLOSE.as_bytes())?;
@@ -285,18 +268,6 @@ mod tests {
                 "escape mismatch for {text:?}"
             );
 
-            let (byte_count, ends_with_nl) = escaped_metrics(text);
-            assert_eq!(
-                byte_count,
-                escaped.len() as u64,
-                "length mismatch for {text:?}"
-            );
-            assert_eq!(
-                ends_with_nl,
-                escaped.ends_with('\n'),
-                "ends_with_nl mismatch for {text:?}"
-            );
-
             let mut streamed = Vec::new();
             let stream_ends_with_nl = write_xml_escaped(&mut streamed, text).unwrap();
             assert_eq!(
@@ -304,7 +275,7 @@ mod tests {
                 escaped.as_ref(),
                 "streamed content mismatch for {text:?}"
             );
-            assert_eq!(stream_ends_with_nl, ends_with_nl);
+            assert_eq!(stream_ends_with_nl, escaped.ends_with('\n'));
         }
     }
 

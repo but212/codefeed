@@ -54,7 +54,7 @@ pub(crate) fn render<W>(
     writer: &mut W,
     label: &str,
     revision: Option<&str>,
-    ordered_files: &[(&str, FileRecord<'_>)],
+    ordered_files: &[FileRecord<'_>],
     skipped: usize,
     trie: &BudgetTrie,
 ) -> Result<(), IngestError>
@@ -78,7 +78,7 @@ where
     trie.render_to_writer(writer)?;
     writer.write_all(FILES_HEADER.as_bytes())?;
 
-    for (_, file) in ordered_files {
+    for file in ordered_files {
         const TAIL: [&[u8]; 2] = [b"\n", b"\n\n"];
         let needs_extra_nl = (!file.content.ends_with('\n')) as usize;
         writer.write_all(FILE_BLOCK_PREFIX.as_bytes())?;

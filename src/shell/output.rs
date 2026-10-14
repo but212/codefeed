@@ -61,9 +61,7 @@ impl<'a> AtomicFile<'a> {
         let parent = target.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)?;
         let Some(raw_name) = target.file_name() else {
-            return Err(IngestError::InvalidMetadata(
-                "output path has no filename".into(),
-            ));
+            return Err(IngestError::Usage("output path has no filename".into()));
         };
         let file_name = raw_name.to_string_lossy();
         let timestamp = SystemTime::now()
@@ -213,5 +211,16 @@ mod tests {
             "temporary file should be cleaned up on panic unwinding"
         );
         Ok(())
+    }
+
+    #[test]
+    fn missing_output_filename_returns_usage_error() {
+        let result = write_atomic(Path::new("."), |_w| Ok(()));
+        match result {
+            Err(IngestError::Usage(msg)) => {
+                assert!(msg.contains("output path has no filename"));
+            }
+            other => panic!("expected IngestError::Usage, got {other:?}"),
+        }
     }
 }

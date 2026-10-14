@@ -80,7 +80,8 @@ pub(crate) fn has_binary_extension(path: &str) -> bool {
 /// Returns `true` if `path` contains hidden directory or file components (starting with `.`).
 pub(crate) fn is_hidden_path(path: &str) -> bool {
     path.split('/')
-        .any(|part| part.starts_with('.') || part.is_empty())
+        .filter(|part| !part.is_empty())
+        .any(|part| part.starts_with('.'))
 }
 
 /// Pre-ingestion classification of a relative path candidate.
@@ -196,6 +197,8 @@ mod tests {
             ("image.PNG", PathClassification::PreclassifiedBinary),
             ("assets/font.woff2", PathClassification::PreclassifiedBinary),
             ("src/main.rs", PathClassification::NeedsContent),
+            ("src//main.rs", PathClassification::NeedsContent),
+            ("/src/main.rs", PathClassification::NeedsContent),
             ("Cargo.toml", PathClassification::NeedsContent),
             ("Makefile", PathClassification::NeedsContent),
         ];

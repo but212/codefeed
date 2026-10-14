@@ -8,7 +8,7 @@ use ignore::WalkBuilder;
 
 use super::local_io::read_local_file;
 use super::output_exclusion::OutputFilter;
-use crate::core::decide::{Item, ItemPath, Probe, Selector};
+use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe, Selector};
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
 use crate::core::policy::{MAX_FILE_COUNT, PathClassification};
@@ -32,6 +32,11 @@ pub fn collect_local(
     let label = local_label(&canonical_root);
     let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
     let mut selector = Selector::new(format);
+
+    if candidates.len() > MAX_FILE_COUNT {
+        CandidateBudget::check_limit(candidates.iter().map(|c| c.item_path.as_utf8_str()))?;
+        unreachable!("candidate count exceeds MAX_FILE_COUNT");
+    }
 
     for candidate in candidates {
         let probe = match candidate.probe {
@@ -363,6 +368,34 @@ mod tests {
                 window[0].path,
                 window[1].path
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_overflow_does_not_read_file_bodies() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::core::policy::MAX_FILE_COUNT;
+
+        #[cfg(windows)]
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let root = temp_dir("candidate_overflow_no_read")?;
+        for i in 0..=MAX_FILE_COUNT {
+            fs::write(root.join(format!("file_{i:05}.txt")), b"")?;
+        }
+
+        #[cfg(windows)]
+        let _lock = fs::OpenOptions::new()
+            .write(true)
+            .share_mode(0)
+            .open(root.join("file_00000.txt"))?;
+
+        let err = collect_local(&root, &OutputTarget::Stdout, DigestFormat::Text).unwrap_err();
+        match err {
+            IngestError::CandidateLimitExceeded(msg) => {
+                assert!(msg.contains("repository contains more than 10000 files"));
+            }
+            other => panic!("expected CandidateLimitExceeded, got {other:?}"),
         }
         Ok(())
     }

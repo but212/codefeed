@@ -3,7 +3,7 @@ mod trie;
 mod xml;
 
 pub use trie::BudgetTrie;
-pub use xml::{escaped_metrics, write_xml_escaped, xml_escape};
+pub use xml::{write_xml_escaped, xml_escape};
 
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
@@ -56,9 +56,8 @@ impl DigestFormat {
         W: std::io::Write + ?Sized,
         I: IntoIterator<Item = FileRecord<'a>>,
     {
-        let mut ordered_files: Vec<(&str, FileRecord<'a>)> =
-            files.into_iter().map(|f| (f.path, f)).collect();
-        ordered_files.sort_unstable_by_key(|(path, _)| *path);
+        let mut ordered_files: Vec<FileRecord<'a>> = files.into_iter().collect();
+        ordered_files.sort_unstable_by_key(|f| f.path);
 
         match self {
             Self::Text => text::render(writer, label, revision, &ordered_files, skipped, trie),
