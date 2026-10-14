@@ -4,7 +4,8 @@
 
 Convert a local directory or public GitHub repository into one LLM-friendly
 text digest. Public behavior, limits, and CLI contract are documented in
-`README.md`; this file fixes domain terms and the functional-core /
+`README.md`; coding standards and Rust API conventions are defined in
+`docs/coding_convention.md`; this file fixes domain terms and the functional-core /
 imperative-shell boundary.
 
 ## Entities and value objects

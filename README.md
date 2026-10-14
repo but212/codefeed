@@ -106,3 +106,8 @@ Credentials are sent as `Authorization: Bearer <token>` strictly to exact-origin
   - Archive transfer: bounded whole-archive transfer timeout (`ARCHIVE_MAX_SECS`).
 - **Network Resilience**: Retries transient transport errors (`Io`, `Timeout`, `ConnectionFailed`) and HTTP 429/5xx with exponential backoff and jitter up to 3 total attempts. Fails immediately on non-transient transport errors and 4xx client errors.
 - **Central Policy**: Operational constants, budgets, and patterns reside in `src/core/policy.rs`.
+
+## Documentation
+
+- [Coding Conventions](docs/coding_convention.md) — Rust API Guidelines (`C-CONV`, `C-CASE`), FCIS boundary, memory arena layout, safety rules, and verification matrix.
+- [Internal Benchmarks](docs/internal_bench_result.md) — Performance baselines and throughput measurements.
