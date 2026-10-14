@@ -222,9 +222,10 @@ impl OutputFilter {
         }
 
         if let Some(canonical) = &self.canonical_target
-            && paths_match(candidate_path.as_ref(), canonical) {
-                return true;
-            }
+            && paths_match(candidate_path.as_ref(), canonical)
+        {
+            return true;
+        }
 
         false
     }
