@@ -11,7 +11,7 @@ imperative-shell boundary.
 
 - `Source` — `Local(PathBuf)` or `GitHub { owner, repo, reference }`. Encapsulates reference validation and assignment via `Source::with_reference`.
 - `RunConfig` — execution configuration unifying `source`, `output`, and `format`.
-- `Item` — one observed candidate entry handed to the pure core: `path` (`ItemPath::Utf8 | NonUtf8`) and `probe` (`Probe::Bytes | Missing | TooLarge`). Shell collectors filter noise and sensitive paths pre-candidate (`PathClassification::Ignored`).
+- `Item` — one observed candidate entry handed to the pure core: `path` (`ItemPath::Utf8 | NonUtf8`) and `probe` (`Probe::Bytes | Missing | TooLarge`). Pure evaluation maps `Item` into `ItemDecision` (`Included { path, content } | Skipped { path }`) without intermediate string allocations. Shell collectors filter noise and sensitive paths pre-candidate (`PathClassification::Ignored`).
 - `FileSpan` — 16-byte POD indexing path and content byte spans (`path_offset`, `path_len`, `content_offset`, `content_len`).
 - `FileStorage` — continuous append-only arena buffer with private arenas (`path_arena`, `content_arena`, `spans`) eliminating per-file heap fragmentation while preserving invariant safety and supporting in-place span sorting (`sort_by_path`).
 - `FileRecord<'a>` — zero-copy borrowed digest entry view: `path: &'a str`, `content: &'a str`.
@@ -55,7 +55,7 @@ imperative-shell boundary.
   2. Bounded, containment-checked file reads via `local_io::read_local_file` (`openat2(RESOLVE_BENEATH)` / non-blocking Win32 handles) feed observations into `Selector`.
 - Digest cap (`MAX_OUTPUT_SIZE`) is strictly enforced on bytes actually written to the output stream via `BoundedEstimatingWriter`, preventing framing/metadata overflow.
 - Token count is estimated on the same writer stream pass over rendered bytes.
-- `BudgetTrie` stores nodes in a flat continuous arena (`Vec<BudgetTrieNode>`) with indexed child tracking (`Vec<u32>`) and compact `Box<str>` labels, with a unified root directory node at index 0. It is format-neutral; XML entity and newline escaping occurs on-the-fly during `render_to_writer(writer, escape_xml)`.
+- `BudgetTrie` stores nodes in a flat continuous 16-byte Left-Child Right-Sibling (LCRS) arena (`Vec<BudgetTrieNode>`) with compact contiguous labels in `label_arena: String`, with a unified root directory node at index 0. It is format-neutral; XML entity and newline escaping occurs on-the-fly during `render_to_writer(writer, escape_xml)`.
 - CLI arguments are parsed linearly into options and source in pure core (`core::cli`), supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters.
 - Candidate budget uses run-length encoding (`dir_runs: Vec<(String, usize)>`) on contiguous directory entries during collection, avoiding `HashMap` overhead on the happy path while preserving deterministic overflow diagnostics sorted by count descending then directory ascending.
 - Digest budget is tracked directly in `Selector` and is error-terminal: limit breach constructs complete `IngestError::OutputTooLarge` diagnostics without internal transactional rollback.

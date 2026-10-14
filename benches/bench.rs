@@ -10,9 +10,9 @@ use std::io::Write;
 use std::time::Instant;
 
 use codefeed::__bench::{
-    BudgetTrie, CollectionResult, DigestFormat, FileStorage, Item, ItemPath, LocalStream,
-    OutputTarget, Probe, Selector, collect_stream, estimate_tokens, render_digest_to_writer,
-    text_content, write_xml_escaped, xml_escape,
+    BudgetTrie, CandidateBudget, CollectionResult, DigestFormat, FileStorage, Item, ItemPath,
+    LocalStream, OutputTarget, Probe, Selector, collect_stream, escape_header, estimate_tokens,
+    render_digest_to_writer, text_content, write_xml_escaped, xml_escape,
 };
 
 pub struct VoidWriter;
@@ -275,6 +275,8 @@ mod suites {
         bench_xml_primitives(runner);
         bench_token_estimation(runner);
         bench_text_content(runner);
+        bench_candidate_budget(runner);
+        bench_file_storage(runner);
         bench_selector_decide(runner);
         bench_local_collect(runner);
     }
@@ -313,6 +315,17 @@ mod suites {
                 black_box(trie);
             });
         }
+
+        let presorted_paths: Vec<String> = (0..10_000)
+            .map(|i| format!("src/dir_{:02}/file_{i:05}.rs", i / 500))
+            .collect();
+        runner.bench("trie_presorted_10000", 5, 10, None, || {
+            let mut trie = BudgetTrie::new();
+            for p in &presorted_paths {
+                trie.insert(p);
+            }
+            black_box(trie);
+        });
     }
 
     fn bench_trie_render(runner: &mut Runner) {
@@ -398,6 +411,43 @@ mod suites {
             write_xml_escaped(&mut writer, &payload).expect("write xml");
             black_box(&mut writer);
         });
+
+        let clean_chunk = "pub fn compute(a: usize, b: usize) -> usize { a + b * 42 }\n";
+        let clean_repeats = (100_000 / clean_chunk.len()).max(1);
+        let clean_payload = clean_chunk.repeat(clean_repeats);
+        let clean_bytes = clean_payload.len() as u64;
+
+        runner.bench("xml_escape_clean_100k", 10, 50, Some(clean_bytes), || {
+            let escaped = xml_escape(&clean_payload);
+            black_box(escaped);
+        });
+
+        runner.bench(
+            "header_escape_clean_100k",
+            10,
+            50,
+            Some(clean_bytes),
+            || {
+                let escaped = escape_header(&clean_payload);
+                black_box(escaped);
+            },
+        );
+
+        let dirty_header = "path/with/\nnew\\lines\rand\ncarriage/returns.rs\n";
+        let dirty_repeats = (100_000 / dirty_header.len()).max(1);
+        let dirty_payload = dirty_header.repeat(dirty_repeats);
+        let dirty_bytes = dirty_payload.len() as u64;
+
+        runner.bench(
+            "header_escape_dirty_100k",
+            10,
+            50,
+            Some(dirty_bytes),
+            || {
+                let escaped = escape_header(&dirty_payload);
+                black_box(escaped);
+            },
+        );
     }
 
     fn bench_token_estimation(runner: &mut Runner) {
@@ -498,6 +548,64 @@ mod suites {
         runner.bench("text_content_mixed_100k", 10, 50, Some(mixed_len), || {
             let res = text_content(mixed_bytes.clone());
             black_box(res);
+        });
+    }
+
+    fn bench_candidate_budget(runner: &mut Runner) {
+        let interleaved_paths: Vec<String> = (0..10_000)
+            .map(|i| {
+                if i % 2 == 0 {
+                    format!("src/file_{i}.rs")
+                } else {
+                    format!("root_{i}.txt")
+                }
+            })
+            .collect();
+
+        runner.bench("candidate_budget_interleaved_10000", 3, 10, None, || {
+            let mut budget = CandidateBudget::default();
+            for p in &interleaved_paths {
+                let _ = budget.add(Some(p));
+            }
+            black_box(budget);
+        });
+
+        let contiguous_paths: Vec<String> = (0..10_000)
+            .map(|i| format!("dir_{:02}/file_{i}.rs", i / 1_000))
+            .collect();
+
+        runner.bench("candidate_budget_contiguous_10000", 3, 10, None, || {
+            let mut budget = CandidateBudget::default();
+            for p in &contiguous_paths {
+                let _ = budget.add(Some(p));
+            }
+            black_box(budget);
+        });
+    }
+
+    fn bench_file_storage(runner: &mut Runner) {
+        let content = "pub fn code() { println!(\"test\"); }\n";
+        let presorted: Vec<String> = (0..1_000).map(|i| format!("src/file_{i:05}.rs")).collect();
+
+        runner.bench("storage_push_sort_presorted_1000", 10, 50, None, || {
+            let mut storage = FileStorage::new();
+            for p in &presorted {
+                storage.push(p, content);
+            }
+            storage.sort_by_path();
+            black_box(storage.len());
+        });
+
+        let mut reverse = presorted.clone();
+        reverse.reverse();
+
+        runner.bench("storage_push_sort_reverse_1000", 10, 50, None, || {
+            let mut storage = FileStorage::new();
+            for p in &reverse {
+                storage.push(p, content);
+            }
+            storage.sort_by_path();
+            black_box(storage.len());
         });
     }
 

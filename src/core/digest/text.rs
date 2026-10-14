@@ -33,19 +33,21 @@ const fn header_escape_str(b: u8) -> &'static str {
     }
 }
 
-pub(crate) fn escape_header(value: &str) -> Cow<'_, str> {
+pub fn escape_header(value: &str) -> Cow<'_, str> {
     let bytes = value.as_bytes();
-    if !bytes.iter().any(|&b| needs_header_escape(b)) {
+    let Some(first) = bytes.iter().position(|&b| needs_header_escape(b)) else {
         return Cow::Borrowed(value);
-    }
+    };
 
     let mut out = String::with_capacity(value.len() + 8);
-    let mut last = 0;
-    for (i, &b) in bytes.iter().enumerate() {
+    out.push_str(&value[..first]);
+    let mut last = first;
+    for (i, &b) in bytes[first..].iter().enumerate() {
+        let abs_i = first + i;
         if needs_header_escape(b) {
-            out.push_str(&value[last..i]);
+            out.push_str(&value[last..abs_i]);
             out.push_str(header_escape_str(b));
-            last = i + 1;
+            last = abs_i + 1;
         }
     }
     out.push_str(&value[last..]);

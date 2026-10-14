@@ -37,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Decoupled item evaluation and storage accumulation in `src/core/decide.rs` by extracting pure `ItemDecision` contract (`Included`, `Skipped`), enabling zero-copy UTF-8/NUL evaluation via `Item::evaluate` and direct accumulation via `Selector::accumulate`.
+- Propagated collection stream size hints from `LocalStream` (`ExactSizeIterator`) into `Selector::from_size_hint` in `src/shell/orchestrate.rs`, pre-sizing storage arenas according to upstream candidate counts.
+- Optimized `BudgetTrie` in `src/core/digest/trie.rs` into a 16-byte fixed-size Left-Child Right-Sibling (LCRS) node arena and contiguous `label_arena: String`, reducing node size from 48B to 16B and eliminating per-node heap allocations.
+- Removed 4 KiB static `ESCAPE_TABLE` in `src/core/digest/xml.rs` in favor of inline pattern matching over `SPECIAL_BITSET`, and refactored `xml_escape` and `escape_header` to single-pass `.position()` scanning.
+- Prevented unbounded `String` heap allocations in `CandidateBudget::record_dir_run` (`src/core/decide.rs`) on interleaved directory inputs by probing recent slots.
+- Added capacity pre-reservation to `FileStorage` and short-circuited `sort_by_path()` on already-sorted inputs.
+- Slimmed `LocalCandidate` in `src/shell/local.rs` from 88B to 56B by replacing `Option<Probe>` with `skip_read: bool`.
+- Buffered small streaming writes in `BoundedEstimatingWriter` (`src/core/digest/mod.rs`) via an internal 8 KiB chunk buffer, batching dynamic dispatch and token estimation.
 - Explicitly configured `redirect_auth_headers(RedirectAuthHeaders::Never)` in `GithubClient::new` (`src/shell/github_client.rs`), pinning the security contract against header propagation during cross-origin redirects with regression tests.
 - Replaced `to_string_lossy()` calls in Windows `is_strictly_beneath` (`src/shell/local_io.rs`) with `OsStr::eq_ignore_ascii_case`, eliminating heap allocations for wide/non-UTF-8 paths.
 - Added `debug_assert!` bounds checks to `FileStorage::push` (`src/core/model.rs`) guarding against `u32` offset truncation.

@@ -9,9 +9,10 @@ pub use shell::orchestrate::ingest;
 
 #[doc(hidden)]
 pub mod __bench {
-    pub use crate::core::decide::{Item, ItemPath, Probe, Selector, text_content};
+    pub use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe, Selector, text_content};
     pub use crate::core::digest::{
-        BudgetTrie, estimate_tokens, render_digest_to_writer, write_xml_escaped, xml_escape,
+        BudgetTrie, escape_header, estimate_tokens, render_digest_to_writer, write_xml_escaped,
+        xml_escape,
     };
     pub use crate::core::model::{
         CollectionResult, DigestFormat, FileRecord, FileStorage, OutputTarget,

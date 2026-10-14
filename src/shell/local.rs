@@ -17,7 +17,7 @@ use crate::core::policy::{MAX_FILE_COUNT, PathClassification};
 struct LocalCandidate {
     path: PathBuf,
     item_path: ItemPath,
-    probe: Option<Probe>,
+    skip_read: bool,
 }
 
 pub struct LocalStream {
@@ -60,19 +60,27 @@ impl Iterator for LocalStream {
 
     fn next(&mut self) -> Option<Self::Item> {
         let candidate = self.candidates.next()?;
-        let probe = match candidate.probe {
-            Some(p) => p,
-            None => match read_local_file(&self.root, &candidate.path) {
+        let probe = if candidate.skip_read {
+            Probe::Missing
+        } else {
+            match read_local_file(&self.root, &candidate.path) {
                 Ok(p) => p,
                 Err(err) => return Some(Err(err)),
-            },
+            }
         };
         Some(Ok(Item {
             path: candidate.item_path,
             probe,
         }))
     }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.candidates.size_hint()
+    }
 }
+
+impl ExactSizeIterator for LocalStream {}
 
 impl SourceStream for LocalStream {
     fn label(&self) -> &str {
@@ -126,19 +134,19 @@ fn walk_candidates(
             .map_err(|err| IngestError::InvalidMetadata(err.to_string()))?;
         let item_path = normalize_relative_path(relative);
 
-        let probe = match &item_path {
-            ItemPath::NonUtf8 => Some(Probe::Missing),
+        let skip_read = match &item_path {
+            ItemPath::NonUtf8 => true,
             ItemPath::Utf8(path) => match PathClassification::classify(path) {
                 PathClassification::Ignored => continue,
-                PathClassification::PreclassifiedBinary => Some(Probe::Missing),
-                PathClassification::NeedsContent => None,
+                PathClassification::PreclassifiedBinary => true,
+                PathClassification::NeedsContent => false,
             },
         };
 
         candidates.push(LocalCandidate {
             path: entry_path.to_path_buf(),
             item_path,
-            probe,
+            skip_read,
         });
 
         if candidates.len() > MAX_FILE_COUNT {
@@ -431,5 +439,10 @@ mod tests {
             other => panic!("expected CandidateLimitExceeded, got {other:?}"),
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_local_candidate_size_is_under_cache_line() {
+        assert!(std::mem::size_of::<LocalCandidate>() <= 64);
     }
 }

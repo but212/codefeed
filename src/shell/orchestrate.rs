@@ -13,7 +13,7 @@ pub trait SourceStream: Iterator<Item = Result<Item, IngestError>> {
 }
 
 pub fn collect_stream<S: SourceStream>(mut stream: S) -> Result<CollectionResult, IngestError> {
-    let mut selector = Selector::new();
+    let mut selector = Selector::from_size_hint(stream.size_hint());
     for item_res in stream.by_ref() {
         selector.decide(item_res?)?;
     }
