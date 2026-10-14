@@ -4,6 +4,7 @@
 //! core in one direction.
 
 pub(crate) mod archive;
+pub(crate) mod cli;
 pub(crate) mod decide;
 pub(crate) mod digest;
 pub(crate) mod error;

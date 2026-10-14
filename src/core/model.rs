@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::core::error::IngestError;
+
 /// Ingestion source location.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -14,6 +16,33 @@ pub enum Source {
         /// Optional GitHub branch, tag, or commit SHA.
         reference: Option<String>,
     },
+}
+
+impl Source {
+    pub fn with_reference(self, reference: Option<String>) -> Result<Self, IngestError> {
+        if reference
+            .as_ref()
+            .is_some_and(|r| r.trim_ascii().is_empty())
+        {
+            return Err(IngestError::InvalidSource("--ref cannot be empty".into()));
+        }
+        match self {
+            Self::GitHub { owner, repo, .. } => Ok(Self::GitHub {
+                owner,
+                repo,
+                reference,
+            }),
+            Self::Local(_) => {
+                if reference.is_some() {
+                    Err(IngestError::InvalidSource(
+                        "--ref is only valid for GitHub sources".into(),
+                    ))
+                } else {
+                    Ok(self)
+                }
+            }
+        }
+    }
 }
 
 /// Where the digest is delivered. Distinguishes a filesystem path from the
@@ -36,24 +65,6 @@ pub enum DigestFormat {
     Xml,
 }
 
-/// Ingestion options controlling destination and serialization format.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Options {
-    /// Target destination for the rendered digest. Defaults to `digest.txt`.
-    pub output: OutputTarget,
-    /// Serialization format for the digest. Defaults to plain text.
-    pub format: DigestFormat,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            output: OutputTarget::File(PathBuf::from("digest.txt")),
-            format: DigestFormat::Text,
-        }
-    }
-}
-
 /// Execution configuration unifying source, output destination, and format.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunConfig {
@@ -73,14 +84,6 @@ impl RunConfig {
             format,
         }
     }
-
-    pub fn from_source_and_options(source: Source, options: Options) -> Self {
-        Self {
-            source,
-            output: options.output,
-            format: options.format,
-        }
-    }
 }
 
 /// Summary report emitted upon successful digest generation.
@@ -96,11 +99,116 @@ pub struct IngestReport {
     pub estimated_tokens: usize,
 }
 
-/// One digest entry. Owned by the domain core; rendered by `digest`.
-#[derive(Debug, Clone)]
-pub struct FileRecord {
-    pub path: String,
-    pub content: String,
+/// 16-byte POD indexing a file path and content slice in [`FileStorage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FileSpan {
+    pub(crate) path_offset: u32,
+    pub(crate) path_len: u32,
+    pub(crate) content_offset: u32,
+    pub(crate) content_len: u32,
+}
+
+/// Continuous arena storage for file paths and contents.
+/// Eliminates per-file heap allocations and preserves cache locality.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileStorage {
+    spans: Vec<FileSpan>,
+    path_arena: String,
+    content_arena: String,
+}
+
+impl FileStorage {
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.spans.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.spans.is_empty()
+    }
+
+    /// Sorts spans lexicographically by path in-place within the path arena.
+    pub fn sort_by_path(&mut self) {
+        let path_arena = &self.path_arena;
+        self.spans.sort_unstable_by(|a, b| {
+            let pa = &path_arena[a.path_offset as usize..(a.path_offset + a.path_len) as usize];
+            let pb = &path_arena[b.path_offset as usize..(b.path_offset + b.path_len) as usize];
+            pa.cmp(pb)
+        });
+    }
+
+    /// Appends path and content to the arenas and records a [`FileSpan`].
+    pub fn push(&mut self, path: &str, content: &str) -> FileSpan {
+        let path_offset = self.path_arena.len() as u32;
+        let path_len = path.len() as u32;
+        self.path_arena.push_str(path);
+
+        let content_offset = self.content_arena.len() as u32;
+        let content_len = content.len() as u32;
+        self.content_arena.push_str(content);
+
+        let span = FileSpan {
+            path_offset,
+            path_len,
+            content_offset,
+            content_len,
+        };
+        self.spans.push(span);
+        span
+    }
+
+    /// Resolves a [`FileSpan`] into a borrowed [`FileRecord`].
+    #[inline]
+    pub fn get(&self, span: FileSpan) -> FileRecord<'_> {
+        let p_start = span.path_offset as usize;
+        let p_end = p_start + span.path_len as usize;
+        let c_start = span.content_offset as usize;
+        let c_end = c_start + span.content_len as usize;
+
+        FileRecord {
+            path: &self.path_arena[p_start..p_end],
+            content: &self.content_arena[c_start..c_end],
+        }
+    }
+
+    /// Resolves a span by index into a borrowed [`FileRecord`].
+    #[inline]
+    pub fn get_at(&self, index: usize) -> Option<FileRecord<'_>> {
+        self.spans.get(index).map(|&span| self.get(span))
+    }
+
+    /// Iterator yielding borrowed [`FileRecord`] views over the arena.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = FileRecord<'_>> {
+        self.spans.iter().map(move |&span| self.get(span))
+    }
+    /// Test-only inspector for continuous arena storage.
+    #[cfg(test)]
+    pub(crate) fn arenas(&self) -> (&str, &str) {
+        (&self.path_arena, &self.content_arena)
+    }
+}
+
+impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
+    fn from_iter<T: IntoIterator<Item = FileRecord<'a>>>(iter: T) -> Self {
+        let mut storage = Self::new();
+        for record in iter {
+            storage.push(record.path, record.content);
+        }
+        storage
+    }
+}
+
+/// Zero-copy borrowed view into a file record stored within [`FileStorage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileRecord<'a> {
+    pub path: &'a str,
+    pub content: &'a str,
 }
 
 /// Raw files and metadata collected by the shell before digest rendering.
@@ -108,8 +216,107 @@ pub struct FileRecord {
 pub struct CollectionResult {
     pub label: String,
     pub revision: Option<String>,
-    pub files: Vec<FileRecord>,
+    pub files: FileStorage,
     pub skipped: usize,
     pub trie: crate::core::digest::BudgetTrie,
-    pub format: DigestFormat,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_storage_maintains_continuous_arena_and_zero_copy_views() {
+        let mut storage = FileStorage::new();
+        assert!(storage.is_empty());
+        assert_eq!(storage.len(), 0);
+
+        let span1 = storage.push("path/to/first.rs", "pub fn first() {}");
+        let span2 = storage.push("second.txt", "second content\n");
+
+        assert_eq!(storage.len(), 2);
+        assert!(!storage.is_empty());
+
+        let rec1 = storage.get(span1);
+        assert_eq!(rec1.path, "path/to/first.rs");
+        assert_eq!(rec1.content, "pub fn first() {}");
+
+        let rec2 = storage.get(span2);
+        assert_eq!(rec2.path, "second.txt");
+        assert_eq!(rec2.content, "second content\n");
+
+        assert_eq!(storage.get_at(0), Some(rec1));
+        assert_eq!(storage.get_at(1), Some(rec2));
+        assert_eq!(storage.get_at(2), None);
+
+        let collected: Vec<FileRecord<'_>> = storage.iter().collect();
+        assert_eq!(collected, vec![rec1, rec2]);
+
+        // Arena contents verification
+        let (path_arena, content_arena) = storage.arenas();
+        assert_eq!(path_arena, "path/to/first.rssecond.txt");
+        assert_eq!(content_arena, "pub fn first() {}second content\n");
+
+        // FromIterator verification
+        let reconstructed: FileStorage = collected.into_iter().collect();
+        assert_eq!(reconstructed, storage);
+    }
+
+    #[test]
+    fn file_storage_sorts_by_path_in_place() {
+        let mut storage = FileStorage::new();
+        storage.push("z/file.rs", "content_z");
+        storage.push("a/file.rs", "content_a");
+        storage.push("m/file.rs", "content_m");
+
+        storage.sort_by_path();
+
+        let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
+        assert_eq!(paths, vec!["a/file.rs", "m/file.rs", "z/file.rs"]);
+    }
+
+    #[test]
+    fn source_with_reference_validates_and_updates_reference() {
+        let gh = Source::GitHub {
+            owner: "rust-lang".into(),
+            repo: "rust".into(),
+            reference: None,
+        };
+        let updated = gh.with_reference(Some("main".into())).unwrap();
+        assert_eq!(
+            updated,
+            Source::GitHub {
+                owner: "rust-lang".into(),
+                repo: "rust".into(),
+                reference: Some("main".into()),
+            }
+        );
+
+        let cleared = updated.with_reference(None).unwrap();
+        assert_eq!(
+            cleared,
+            Source::GitHub {
+                owner: "rust-lang".into(),
+                repo: "rust".into(),
+                reference: None,
+            }
+        );
+
+        let empty_err = cleared
+            .clone()
+            .with_reference(Some("   ".into()))
+            .unwrap_err();
+        assert!(
+            matches!(empty_err, IngestError::InvalidSource(msg) if msg.contains("--ref cannot be empty"))
+        );
+
+        let local = Source::Local(PathBuf::from("."));
+        let local_ok = local.clone().with_reference(None).unwrap();
+        assert_eq!(local_ok, local);
+
+        let local_err = local.with_reference(Some("main".into())).unwrap_err();
+        assert!(
+            matches!(local_err, IngestError::InvalidSource(msg) if msg.contains("--ref is only valid for GitHub sources"))
+        );
+    }
 }

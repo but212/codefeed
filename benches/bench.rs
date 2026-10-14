@@ -10,8 +10,8 @@ use std::io::Write;
 use std::time::Instant;
 
 use codefeed::__bench::{
-    BudgetTrie, CollectionResult, DigestFormat, FileRecord, Item, ItemPath, OutputTarget, Probe,
-    Selector, collect_local, escaped_metrics, estimate_tokens, render_digest_to_writer,
+    BudgetTrie, CollectionResult, DigestFormat, FileStorage, Item, ItemPath, LocalStream,
+    OutputTarget, Probe, Selector, collect_stream, estimate_tokens, render_digest_to_writer,
     text_content, write_xml_escaped, xml_escape,
 };
 
@@ -113,64 +113,53 @@ mod engine {
 mod fixture {
     use super::*;
 
-    pub fn generate_flat_files(count: usize, file_size: usize) -> Vec<FileRecord> {
+    pub fn generate_flat_files(count: usize, file_size: usize) -> FileStorage {
         let line = "pub fn sample() -> i32 { 42 }\n";
         let repeats = (file_size / line.len()).max(1);
         let content = line.repeat(repeats);
 
-        (0..count)
-            .map(|i| FileRecord {
-                path: format!("src/file_{i:05}.rs"),
-                content: content.clone(),
-            })
-            .collect()
+        let mut storage = FileStorage::new();
+        for i in 0..count {
+            let path = format!("src/file_{i:05}.rs");
+            storage.push(&path, &content);
+        }
+        storage
     }
 
-    pub fn generate_deep_files(
-        count: usize,
-        max_depth: usize,
-        file_size: usize,
-    ) -> Vec<FileRecord> {
+    pub fn generate_deep_files(count: usize, max_depth: usize, file_size: usize) -> FileStorage {
         let line = "const DEPTH_VAL: usize = 100;\n";
         let repeats = (file_size / line.len()).max(1);
         let content = line.repeat(repeats);
 
-        (0..count)
-            .map(|i| {
-                let mut path = String::new();
-                for d in 0..max_depth {
-                    path.push_str(&format!("level_{d}/"));
-                }
-                path.push_str(&format!("node_{i:05}.rs"));
-                FileRecord {
-                    path,
-                    content: content.clone(),
-                }
-            })
-            .collect()
+        let mut storage = FileStorage::new();
+        for i in 0..count {
+            let mut path = String::new();
+            for d in 0..max_depth {
+                path.push_str(&format!("level_{d}/"));
+            }
+            path.push_str(&format!("node_{i:05}.rs"));
+            storage.push(&path, &content);
+        }
+        storage
     }
 
-    pub fn generate_xml_heavy_files(count: usize, file_size: usize) -> Vec<FileRecord> {
+    pub fn generate_xml_heavy_files(count: usize, file_size: usize) -> FileStorage {
         let line = "if (a < b && c > d) { let s = \"'quotes' & <tags>\"; }\n";
         let repeats = (file_size / line.len()).max(1);
         let content = line.repeat(repeats);
 
-        (0..count)
-            .map(|i| FileRecord {
-                path: format!("src/xml_{i:05}.rs"),
-                content: content.clone(),
-            })
-            .collect()
+        let mut storage = FileStorage::new();
+        for i in 0..count {
+            let path = format!("src/xml_{i:05}.rs");
+            storage.push(&path, &content);
+        }
+        storage
     }
 
-    pub fn build_collection(
-        label: &str,
-        files: Vec<FileRecord>,
-        format: DigestFormat,
-    ) -> CollectionResult {
-        let mut trie = BudgetTrie::new(matches!(format, DigestFormat::Xml));
-        for file in &files {
-            trie.insert(&file.path);
+    pub fn build_collection(label: &str, files: FileStorage) -> CollectionResult {
+        let mut trie = BudgetTrie::new();
+        for file in files.iter() {
+            trie.insert(file.path);
         }
         CollectionResult {
             label: label.to_string(),
@@ -178,7 +167,6 @@ mod fixture {
             files,
             skipped: 0,
             trie,
-            format,
         }
     }
 
@@ -318,7 +306,7 @@ mod suites {
             };
 
             runner.bench(name, warmup, iterations, None, || {
-                let mut trie = BudgetTrie::new(false);
+                let mut trie = BudgetTrie::new();
                 for p in &paths {
                     trie.insert(p);
                 }
@@ -329,7 +317,7 @@ mod suites {
 
     fn bench_trie_render(runner: &mut Runner) {
         let flat_paths: Vec<String> = (0..1_000).map(|i| format!("src/file_{i:05}.rs")).collect();
-        let mut flat_trie = BudgetTrie::new(false);
+        let mut flat_trie = BudgetTrie::new();
         for p in &flat_paths {
             flat_trie.insert(p);
         }
@@ -337,7 +325,7 @@ mod suites {
         runner.bench("trie_render_flat_1000", 20, 50, None, || {
             let mut writer = VoidWriter;
             flat_trie
-                .render_to_writer(&mut writer)
+                .render_to_writer(&mut writer, false)
                 .expect("render trie");
             black_box(&mut writer);
         });
@@ -352,7 +340,7 @@ mod suites {
                 p
             })
             .collect();
-        let mut deep_trie = BudgetTrie::new(false);
+        let mut deep_trie = BudgetTrie::new();
         for p in &deep_paths {
             deep_trie.insert(p);
         }
@@ -360,7 +348,7 @@ mod suites {
         runner.bench("trie_render_deep_1000", 20, 50, None, || {
             let mut writer = VoidWriter;
             deep_trie
-                .render_to_writer(&mut writer)
+                .render_to_writer(&mut writer, false)
                 .expect("render trie");
             black_box(&mut writer);
         });
@@ -382,11 +370,11 @@ mod suites {
                 .iter()
                 .map(|f| (f.path.len() + f.content.len()) as u64)
                 .sum();
-            let collection = build_collection("bench_repo", files, format);
+            let collection = build_collection("bench_repo", files);
 
             runner.bench(name, 5, 20, Some(approx_bytes), || {
                 let mut sink = Vec::with_capacity(2 * 1024 * 1024);
-                let tokens = render_digest_to_writer(&mut sink, &collection)
+                let tokens = render_digest_to_writer(&mut sink, &collection, format)
                     .expect("rendering should succeed");
                 black_box(tokens);
                 black_box(sink.len());
@@ -405,15 +393,10 @@ mod suites {
             black_box(escaped);
         });
 
-        runner.bench("xml_metrics_100k", 10, 50, Some(payload_bytes), || {
-            let (len, nl) = escaped_metrics(&payload);
-            black_box((len, nl));
-        });
-
         runner.bench("xml_stream_write_100k", 10, 50, Some(payload_bytes), || {
             let mut writer = VoidWriter;
-            let nl = write_xml_escaped(&mut writer, &payload).expect("write xml");
-            black_box(nl);
+            write_xml_escaped(&mut writer, &payload).expect("write xml");
+            black_box(&mut writer);
         });
     }
 
@@ -457,8 +440,8 @@ mod suites {
                     probe: Probe::Missing,
                 }),
                 2 => items.push(Item {
-                    path: ItemPath::Utf8("Cargo.lock".to_string()),
-                    probe: Probe::Ignored,
+                    path: ItemPath::Utf8(format!("src/big_{i}.bin")),
+                    probe: Probe::TooLarge,
                 }),
                 3 => items.push(Item {
                     path: ItemPath::Utf8(format!("secret_{i}.key")),
@@ -487,7 +470,7 @@ mod suites {
 
         runner.bench(name, warmup, iterations, None, || {
             let items = batches.pop().expect("batch should be available");
-            let mut selector = Selector::new(DigestFormat::Text);
+            let mut selector = Selector::new();
             for item in items {
                 let _ = selector.decide(item);
             }
@@ -527,8 +510,9 @@ mod suites {
         let (_guard, temp_root) = setup_temp_hierarchy(1_000);
 
         runner.bench(name, 2, 10, None, || {
-            let res = collect_local(&temp_root, &OutputTarget::Stdout, DigestFormat::Text)
-                .expect("collect_local should succeed");
+            let stream = LocalStream::new(&temp_root, &OutputTarget::Stdout)
+                .expect("LocalStream::new should succeed");
+            let res = collect_stream(stream).expect("collect_stream should succeed");
             black_box(res.files.len());
         });
     }
@@ -598,15 +582,20 @@ fn run_self_tests() {
 
     let flat = fixture::generate_flat_files(10, 50);
     assert_eq!(flat.len(), 10);
-    assert!(flat[0].path.starts_with("src/file_"));
+    assert!(flat.get_at(0).unwrap().path.starts_with("src/file_"));
 
     let deep = fixture::generate_deep_files(5, 4, 50);
     assert_eq!(deep.len(), 5);
-    assert!(deep[0].path.starts_with("level_0/level_1/level_2/level_3/"));
+    assert!(
+        deep.get_at(0)
+            .unwrap()
+            .path
+            .starts_with("level_0/level_1/level_2/level_3/")
+    );
 
     let xml = fixture::generate_xml_heavy_files(3, 50);
     assert_eq!(xml.len(), 3);
-    assert!(xml[0].content.contains("<tags>"));
+    assert!(xml.get_at(0).unwrap().content.contains("<tags>"));
 }
 
 fn main() {

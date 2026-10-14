@@ -38,7 +38,7 @@ fn read_bounded_content(file: fs::File) -> io::Result<Probe> {
         return Ok(Probe::TooLarge);
     }
 
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
     let mut handle = file.take(MAX_FILE_SIZE.saturating_add(1));
     handle.read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_FILE_SIZE {

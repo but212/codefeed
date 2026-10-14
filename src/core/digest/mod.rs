@@ -1,22 +1,19 @@
+pub(crate) mod budget;
 mod text;
+pub mod token;
 mod trie;
 mod xml;
 
+pub(crate) use budget::largest_files;
+pub use token::{TokenEstimator, estimate_tokens};
 pub use trie::BudgetTrie;
-pub use xml::{escaped_metrics, write_xml_escaped, xml_escape};
+pub use xml::{write_xml_escaped, xml_escape};
 
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
 use crate::core::policy::MAX_OUTPUT_SIZE;
 
 impl DigestFormat {
-    pub(crate) const fn escape_tree_xml(self) -> bool {
-        match self {
-            Self::Text => false,
-            Self::Xml => true,
-        }
-    }
-
     pub(crate) fn render<'a, W, I>(
         self,
         writer: &mut W,
@@ -28,155 +25,20 @@ impl DigestFormat {
     ) -> Result<(), IngestError>
     where
         W: std::io::Write + ?Sized,
-        I: IntoIterator<Item = &'a FileRecord>,
+        I: IntoIterator<Item = FileRecord<'a>>,
+        I::IntoIter: ExactSizeIterator,
     {
-        let mut ordered_files: Vec<(&str, &FileRecord)> =
-            files.into_iter().map(|f| (f.path.as_str(), f)).collect();
-        ordered_files.sort_unstable_by_key(|(path, _)| *path);
-
         match self {
-            Self::Text => text::render(writer, label, revision, &ordered_files, skipped, trie),
-            Self::Xml => xml::render(writer, label, revision, &ordered_files, trie),
+            Self::Text => text::render(writer, label, revision, files, skipped, trie),
+            Self::Xml => xml::render(writer, label, revision, files, trie),
         }
     }
-}
-
-/// Accounting budget for digest size.
-#[derive(Debug, Clone)]
-pub(crate) struct DigestBudget {
-    pub(crate) format: DigestFormat,
-    pub(crate) content_bytes: u64,
-    pub(crate) skipped: usize,
-    pub(crate) trie: BudgetTrie,
-}
-
-impl DigestBudget {
-    pub(crate) fn new(format: DigestFormat) -> Self {
-        Self {
-            format,
-            content_bytes: 0,
-            skipped: 0,
-            trie: BudgetTrie::new(format.escape_tree_xml()),
-        }
-    }
-
-    pub(crate) fn add(&mut self, file: &FileRecord) -> Result<(), IngestError> {
-        let file_bytes = (file.path.len() + file.content.len()) as u64;
-        let new_total = self.content_bytes.saturating_add(file_bytes);
-        if new_total > MAX_OUTPUT_SIZE {
-            return Err(IngestError::OutputTooLarge {
-                largest_files: Vec::new(),
-            });
-        }
-        self.trie.insert(&file.path);
-        self.content_bytes = new_total;
-        Ok(())
-    }
-
-    pub(crate) fn skip(&mut self) {
-        self.skipped = self.skipped.saturating_add(1);
-    }
-
-    pub(crate) fn skipped(&self) -> usize {
-        self.skipped
-    }
-}
-
-pub(crate) fn largest_files<'a>(
-    files: impl IntoIterator<Item = &'a FileRecord>,
-) -> Vec<(String, usize)> {
-    let mut top: Vec<(&'a str, usize)> = Vec::with_capacity(6);
-
-    for file in files {
-        let size = file.content.len();
-        if top.len() == 5 && size <= top.last().unwrap().1 {
-            continue;
-        }
-
-        let idx = top
-            .iter()
-            .position(|probe| probe.1 < size)
-            .unwrap_or(top.len());
-        if idx < 5 {
-            top.insert(idx, (file.path.as_str(), size));
-            top.truncate(5);
-        }
-    }
-
-    top.into_iter()
-        .map(|(path, size)| (path.to_string(), size))
-        .collect()
-}
-
-/// State machine tracking token count heuristics across character streams.
-#[derive(Default, Debug, Clone)]
-pub struct TokenEstimator {
-    tokens: usize,
-    in_word: bool,
-    word_len: usize,
-    saw_input: bool,
-}
-
-impl TokenEstimator {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn process_char(&mut self, ch: char) {
-        self.saw_input = true;
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            self.in_word = true;
-            self.word_len += 1;
-            let full_word = (self.word_len >= 4) as usize;
-            self.tokens += full_word;
-            self.word_len *= 1 - full_word;
-        } else {
-            let was_in_word = std::mem::take(&mut self.in_word) as usize;
-            self.tokens += was_in_word;
-            self.word_len = 0;
-
-            let is_ws = ch.is_ascii_whitespace();
-            let is_nl = (ch == '\n') as usize;
-            let non_ws_weight = (!is_ws) as usize * (1 + (!ch.is_ascii()) as usize);
-            self.tokens += non_ws_weight + is_nl;
-        }
-    }
-
-    pub fn process_str(&mut self, text: &str) {
-        for ch in text.chars() {
-            self.process_char(ch);
-        }
-    }
-
-    pub fn add_fallback_tokens(&mut self, count: usize) {
-        self.saw_input = true;
-        self.tokens += count;
-    }
-
-    pub fn finish(mut self) -> usize {
-        if self.in_word {
-            self.tokens += 1;
-        }
-        if self.tokens == 0 && !self.saw_input {
-            0
-        } else {
-            self.tokens.max(1)
-        }
-    }
-}
-
-pub fn estimate_tokens(text: &str) -> usize {
-    let mut estimator = TokenEstimator::new();
-    estimator.process_str(text);
-    estimator.finish()
 }
 
 struct BoundedEstimatingWriter<'a, W: std::io::Write + ?Sized> {
     inner: &'a mut W,
     written: u64,
     estimator: TokenEstimator,
-    pending: [u8; 4],
-    pending_len: usize,
     overflowed: bool,
 }
 
@@ -186,16 +48,11 @@ impl<'a, W: std::io::Write + ?Sized> BoundedEstimatingWriter<'a, W> {
             inner,
             written: 0,
             estimator: TokenEstimator::new(),
-            pending: [0; 4],
-            pending_len: 0,
             overflowed: false,
         }
     }
 
-    fn finish(mut self) -> usize {
-        if self.pending_len > 0 {
-            self.estimator.add_fallback_tokens(2);
-        }
+    fn finish(self) -> usize {
         self.estimator.finish()
     }
 }
@@ -210,44 +67,7 @@ impl<W: std::io::Write + ?Sized> std::io::Write for BoundedEstimatingWriter<'_, 
 
         self.inner.write_all(buf)?;
         self.written = new_written;
-
-        let mut input = buf;
-        if self.pending_len > 0 {
-            while !input.is_empty() && self.pending_len < 4 {
-                self.pending[self.pending_len] = input[0];
-                self.pending_len += 1;
-                input = &input[1..];
-                if let Ok(s) = std::str::from_utf8(&self.pending[..self.pending_len]) {
-                    let ch = s.chars().next().expect("valid utf8 has at least one char");
-                    self.pending_len = 0;
-                    self.estimator.process_char(ch);
-                    break;
-                }
-            }
-        }
-
-        if !input.is_empty() {
-            match std::str::from_utf8(input) {
-                Ok(text) => {
-                    self.estimator.process_str(text);
-                }
-                Err(e) => {
-                    let valid_len = e.valid_up_to();
-                    if valid_len > 0 {
-                        let valid_str = match std::str::from_utf8(&input[..valid_len]) {
-                            Ok(s) => s,
-                            Err(_) => unreachable!(),
-                        };
-                        self.estimator.process_str(valid_str);
-                    }
-                    if e.error_len().is_none() {
-                        let remaining = &input[valid_len..];
-                        self.pending[..remaining.len()].copy_from_slice(remaining);
-                        self.pending_len = remaining.len();
-                    }
-                }
-            }
-        }
+        self.estimator.process_bytes(buf);
 
         Ok(buf.len())
     }
@@ -260,20 +80,21 @@ impl<W: std::io::Write + ?Sized> std::io::Write for BoundedEstimatingWriter<'_, 
 pub fn render_digest_to_writer<W: std::io::Write + ?Sized>(
     writer: &mut W,
     collection: &CollectionResult,
+    format: DigestFormat,
 ) -> Result<usize, IngestError> {
     let mut estimating_writer = BoundedEstimatingWriter::new(writer);
-    let render_res = collection.format.render(
+    let render_res = format.render(
         &mut estimating_writer,
         &collection.label,
         collection.revision.as_deref(),
-        &collection.files,
+        collection.files.iter(),
         collection.skipped,
         &collection.trie,
     );
 
     if estimating_writer.overflowed {
         return Err(IngestError::OutputTooLarge {
-            largest_files: largest_files(&collection.files),
+            largest_files: largest_files(collection.files.iter()),
         });
     }
 
@@ -285,13 +106,13 @@ pub fn render_digest_to_writer<W: std::io::Write + ?Sized>(
 mod tests {
     use super::*;
     use crate::core::error::IngestError;
-    use crate::core::model::FileRecord;
+    use crate::core::model::{FileRecord, FileStorage};
     use crate::core::policy::MAX_OUTPUT_SIZE;
 
-    fn test_trie(files: &[FileRecord], escape_xml: bool) -> BudgetTrie {
-        let mut trie = BudgetTrie::new(escape_xml);
+    fn test_trie<'a>(files: impl IntoIterator<Item = FileRecord<'a>>) -> BudgetTrie {
+        let mut trie = BudgetTrie::new();
         for file in files {
-            trie.insert(&file.path);
+            trie.insert(file.path);
         }
         trie
     }
@@ -299,20 +120,21 @@ mod tests {
     fn render_digest(
         label: &str,
         revision: Option<&str>,
-        files: &[FileRecord],
+        files: &[FileRecord<'_>],
         skipped: usize,
     ) -> Result<String, IngestError> {
-        let trie = test_trie(files, false);
+        let mut storage: FileStorage = files.iter().copied().collect();
+        storage.sort_by_path();
+        let trie = test_trie(storage.iter());
         let collection = CollectionResult {
             label: label.to_string(),
             revision: revision.map(str::to_string),
-            files: files.to_vec(),
+            files: storage,
             skipped,
             trie,
-            format: DigestFormat::Text,
         };
         let mut buffer = Vec::new();
-        render_digest_to_writer(&mut buffer, &collection)?;
+        render_digest_to_writer(&mut buffer, &collection, DigestFormat::Text)?;
         String::from_utf8(buffer).map_err(|error| IngestError::Io(std::io::Error::other(error)))
     }
 
@@ -320,12 +142,12 @@ mod tests {
     fn renders_files_in_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
         let files = vec![
             FileRecord {
-                path: "z.txt".into(),
-                content: "z".into(),
+                path: "z.txt",
+                content: "z",
             },
             FileRecord {
-                path: "a.txt".into(),
-                content: "a".into(),
+                path: "a.txt",
+                content: "a",
             },
         ];
         let digest = render_digest("repo", Some("abc"), &files, 1)?;
@@ -356,26 +178,27 @@ mod tests {
 
     #[test]
     fn streaming_matches_string_render() -> Result<(), Box<dyn std::error::Error>> {
-        let files = vec![
+        let files = [
             FileRecord {
-                path: "b.txt".into(),
-                content: "hello\n".into(),
+                path: "b.txt",
+                content: "hello\n",
             },
             FileRecord {
-                path: "a.txt".into(),
-                content: "world".into(),
+                path: "a.txt",
+                content: "world",
             },
         ];
+        let mut storage: FileStorage = files.into_iter().collect();
+        storage.sort_by_path();
         let collection = CollectionResult {
             label: "my-repo".into(),
             revision: Some("v1.0".into()),
-            files: files.clone(),
+            files: storage,
             skipped: 2,
-            trie: test_trie(&files, false),
-            format: DigestFormat::Text,
+            trie: test_trie(files),
         };
         let mut streamed = Vec::new();
-        render_digest_to_writer(&mut streamed, &collection)?;
+        render_digest_to_writer(&mut streamed, &collection, DigestFormat::Text)?;
         let streamed_str = std::str::from_utf8(&streamed)?;
 
         let expected = "\
@@ -410,22 +233,25 @@ hello\n\
     fn renders_from_arbitrary_iterator() -> Result<(), Box<dyn std::error::Error>> {
         let files = [
             FileRecord {
-                path: "b.txt".into(),
-                content: "content_b\n".into(),
+                path: "b.txt",
+                content: "content_b\n",
             },
             FileRecord {
-                path: "excluded.txt".into(),
-                content: "skip_me\n".into(),
+                path: "excluded.txt",
+                content: "skip_me\n",
             },
             FileRecord {
-                path: "a.txt".into(),
-                content: "content_a\n".into(),
+                path: "a.txt",
+                content: "content_a\n",
             },
         ];
-        let trie = test_trie(&[files[0].clone(), files[2].clone()], false);
+        let trie = test_trie([files[0], files[2]]);
         let mut buf = Vec::new();
-        let filtered_iter = files.iter().filter(|f| f.path != "excluded.txt");
-        DigestFormat::Text.render(&mut buf, "repo", None, filtered_iter, 1, &trie)?;
+        let filtered: Vec<_> = files
+            .into_iter()
+            .filter(|f| f.path != "excluded.txt")
+            .collect();
+        DigestFormat::Text.render(&mut buf, "repo", None, filtered, 1, &trie)?;
         let rendered = std::str::from_utf8(&buf)?;
         assert!(rendered.contains("Files: 2"));
         assert!(rendered.contains("FILE: a.txt"));
@@ -436,33 +262,34 @@ hello\n\
 
     #[test]
     fn rejects_digest_before_storing_over_budget_content() {
-        let candidate = FileRecord {
-            path: "large.txt".into(),
-            content: "x".repeat(MAX_OUTPUT_SIZE as usize + 1),
-        };
-        let mut budget = DigestBudget::new(DigestFormat::Text);
-        match budget.add(&candidate) {
-            Err(IngestError::OutputTooLarge { .. }) => {}
-            other => panic!("expected OutputTooLarge, got {other:?}"),
-        }
+        use crate::core::decide::{Item, ItemPath, Probe, Selector};
+        let content = vec![b'x'; MAX_OUTPUT_SIZE as usize + 1];
+        let mut selector = Selector::new();
+        let res = selector.decide(Item {
+            path: ItemPath::Utf8("large.txt".into()),
+            probe: Probe::Bytes(content),
+        });
+        assert!(res.is_err());
     }
 
     #[test]
     fn render_digest_to_writer_enforces_output_size_cap() {
+        let content = "x".repeat(MAX_OUTPUT_SIZE as usize);
         let candidate = FileRecord {
-            path: "large.txt".into(),
-            content: "x".repeat(MAX_OUTPUT_SIZE as usize),
+            path: "large.txt",
+            content: &content,
         };
+        let mut storage = FileStorage::new();
+        storage.push(candidate.path, candidate.content);
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,
-            files: vec![candidate],
+            files: storage,
             skipped: 0,
-            trie: BudgetTrie::new(false),
-            format: DigestFormat::Text,
+            trie: BudgetTrie::new(),
         };
         let mut sink = Vec::new();
-        match render_digest_to_writer(&mut sink, &collection) {
+        match render_digest_to_writer(&mut sink, &collection, DigestFormat::Text) {
             Err(IngestError::OutputTooLarge { largest_files }) => {
                 assert_eq!(largest_files.len(), 1);
                 assert_eq!(largest_files[0].0, "large.txt");
@@ -473,26 +300,27 @@ hello\n\
 
     #[test]
     fn renders_xml_in_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
-        let files = vec![
+        let files = [
             FileRecord {
-                path: "z.txt".into(),
-                content: "z < 10".into(),
+                path: "z.txt",
+                content: "z < 10",
             },
             FileRecord {
-                path: "a.txt".into(),
-                content: "a & b".into(),
+                path: "a.txt",
+                content: "a & b",
             },
         ];
+        let mut storage: FileStorage = files.into_iter().collect();
+        storage.sort_by_path();
         let collection = CollectionResult {
             label: "my-repo".into(),
             revision: Some("v1.0".into()),
-            files: files.clone(),
+            files: storage,
             skipped: 1,
-            trie: test_trie(&files, true),
-            format: DigestFormat::Xml,
+            trie: test_trie(files),
         };
         let mut out = Vec::new();
-        render_digest_to_writer(&mut out, &collection)?;
+        render_digest_to_writer(&mut out, &collection, DigestFormat::Xml)?;
         let xml_str = std::str::from_utf8(&out)?;
         let expected = "\
 <repository name=\"my-repo\" revision=\"v1.0\">
@@ -518,9 +346,9 @@ z &lt; 10
     fn control_character_policy_preserves_raw_text_and_sanitizes_xml()
     -> Result<(), Box<dyn std::error::Error>> {
         let raw_ansi = "\x1b[31mRed Alert\x1b[0m\tTabbed\r\nNewline";
-        let files = vec![FileRecord {
-            path: "ansi.txt".into(),
-            content: raw_ansi.into(),
+        let files = [FileRecord {
+            path: "ansi.txt",
+            content: raw_ansi,
         }];
 
         let text_rendered = render_digest("repo", None, &files, 0)?;
@@ -532,13 +360,12 @@ z &lt; 10
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,
-            files: files.clone(),
+            files: files.into_iter().collect(),
             skipped: 0,
-            trie: test_trie(&files, true),
-            format: DigestFormat::Xml,
+            trie: test_trie(files),
         };
         let mut xml_out = Vec::new();
-        render_digest_to_writer(&mut xml_out, &collection)?;
+        render_digest_to_writer(&mut xml_out, &collection, DigestFormat::Xml)?;
         let xml_str = std::str::from_utf8(&xml_out)?;
         assert!(
             !xml_str.contains("\x1b"),
@@ -550,56 +377,5 @@ z &lt; 10
         );
 
         Ok(())
-    }
-
-    #[test]
-    fn largest_files_selects_top_five_with_stability() {
-        let files = vec![
-            FileRecord {
-                path: "f1.txt".into(),
-                content: "1".into(),
-            },
-            FileRecord {
-                path: "f2.txt".into(),
-                content: "22".into(),
-            },
-            FileRecord {
-                path: "f3.txt".into(),
-                content: "333".into(),
-            },
-            FileRecord {
-                path: "f4.txt".into(),
-                content: "4444".into(),
-            },
-            FileRecord {
-                path: "f5_a.txt".into(),
-                content: "55555".into(),
-            },
-            FileRecord {
-                path: "f5_b.txt".into(),
-                content: "55555".into(),
-            },
-            FileRecord {
-                path: "f6.txt".into(),
-                content: "666666".into(),
-            },
-        ];
-        let result = largest_files(&files);
-        assert_eq!(result.len(), 5);
-        assert_eq!(result[0], ("f6.txt".into(), 6));
-        assert_eq!(result[1], ("f5_a.txt".into(), 5));
-        assert_eq!(result[2], ("f5_b.txt".into(), 5));
-        assert_eq!(result[3], ("f4.txt".into(), 4));
-        assert_eq!(result[4], ("f3.txt".into(), 3));
-    }
-
-    #[test]
-    fn test_estimate_tokens_counts() {
-        assert_eq!(estimate_tokens(""), 0);
-        assert_eq!(estimate_tokens("hello"), 2);
-        assert!(estimate_tokens("let mut x = 123;") >= 4);
-        assert!(estimate_tokens("fn main() {\n    println!(\"Hello, world!\");\n}\n") >= 8);
-        assert!(estimate_tokens("한글 텍스트 테스트") >= 4);
-        assert!(estimate_tokens("word1 word2...word3\nword4") >= 5);
     }
 }

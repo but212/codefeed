@@ -2,7 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use crate::core::error::IngestError;
-use crate::core::model::{DigestFormat, Options, OutputTarget, RunConfig, Source};
+use crate::core::model::{DigestFormat, OutputTarget, RunConfig};
 use crate::core::source::parse_source_os;
 
 const HELP: &str =
@@ -71,7 +71,8 @@ where
 
     let mut source_slot: Option<OsString> = None;
     let mut parsed_reference: Option<String> = None;
-    let mut options = Options::default();
+    let mut output = OutputTarget::File(PathBuf::from("digest.txt"));
+    let mut format = DigestFormat::Text;
     let mut after_delimiter = false;
 
     while let Some(arg) = args.next() {
@@ -97,7 +98,7 @@ where
                 match key {
                     "--output" | "-o" => {
                         let val = next_val(&mut args, inline_val, "--output requires a path")?;
-                        options.output = parse_output_target(&val);
+                        output = parse_output_target(&val);
                     }
                     "--ref" | "-r" => {
                         let val = next_val(
@@ -120,8 +121,8 @@ where
                             return Err(usage("--format requires a UTF-8 value"));
                         };
                         match s.to_ascii_lowercase().as_str() {
-                            "text" => options.format = DigestFormat::Text,
-                            "xml" => options.format = DigestFormat::Xml,
+                            "text" => format = DigestFormat::Text,
+                            "xml" => format = DigestFormat::Xml,
                             other => {
                                 return Err(usage(&format!(
                                     "invalid format: {other} (expected text, xml)"
@@ -144,37 +145,12 @@ where
         source_slot = Some(arg);
     }
 
-    if parsed_reference
-        .as_ref()
-        .is_some_and(|r| r.trim_ascii().is_empty())
-    {
-        return Err(IngestError::InvalidSource("--ref cannot be empty".into()));
-    }
-
     let Some(source_value) = source_slot else {
         return Err(usage("missing source"));
     };
-    let mut source = parse_source_os(&source_value)?;
+    let source = parse_source_os(&source_value)?.with_reference(parsed_reference)?;
 
-    if let Some(reference) = parsed_reference {
-        match &mut source {
-            Source::GitHub {
-                reference: ref_slot,
-                ..
-            } => {
-                *ref_slot = Some(reference);
-            }
-            Source::Local(_) => {
-                return Err(IngestError::InvalidSource(
-                    "--ref is only valid for GitHub sources".into(),
-                ));
-            }
-        }
-    }
-
-    Ok(CliAction::Run(RunConfig::from_source_and_options(
-        source, options,
-    )))
+    Ok(CliAction::Run(RunConfig::new(source, output, format)))
 }
 
 fn usage(message: &str) -> IngestError {
@@ -184,6 +160,7 @@ fn usage(message: &str) -> IngestError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::model::Source;
     use std::path::PathBuf;
 
     #[test]

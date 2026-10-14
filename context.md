@@ -9,17 +9,17 @@ imperative-shell boundary.
 
 ## Entities and value objects
 
-- `Source` — `Local(PathBuf)` or `GitHub { owner, repo, reference }`.
+- `Source` — `Local(PathBuf)` or `GitHub { owner, repo, reference }`. Encapsulates reference validation and assignment via `Source::with_reference`.
 - `RunConfig` — execution configuration unifying `source`, `output`, and `format`.
-- `Item` — one observed entry handed to the pure core: `path`
-  (`ItemPath::Utf8 | NonUtf8`) and `probe`
-  (`Probe::Bytes | Missing | TooLarge | Ignored`). Shell collectors filter ignored paths pre-candidate (`PathClassification::Ignored`), while pure core supports `Probe::Ignored` as a no-op variant.
-- `FileRecord` — digest entry: `path`, `content`.
-- `CollectionResult` — uniform collection record: `label`, optional `revision`, `files`, `skipped`, `trie`, `format`.
+- `Item` — one observed candidate entry handed to the pure core: `path` (`ItemPath::Utf8 | NonUtf8`) and `probe` (`Probe::Bytes | Missing | TooLarge`). Shell collectors filter noise and sensitive paths pre-candidate (`PathClassification::Ignored`).
+- `FileSpan` — 16-byte POD indexing path and content byte spans (`path_offset`, `path_len`, `content_offset`, `content_len`).
+- `FileStorage` — continuous append-only arena buffer with private arenas (`path_arena`, `content_arena`, `spans`) eliminating per-file heap fragmentation while preserving invariant safety and supporting in-place span sorting (`sort_by_path`).
+- `FileRecord<'a>` — zero-copy borrowed digest entry view: `path: &'a str`, `content: &'a str`.
+- `CollectionResult` — uniform collection record: `label`, optional `revision`, `files: FileStorage`, `skipped`, `trie`. Format-neutral and decoupled from presentation.
 - `IngestReport` — `output`, `included_files`, `skipped_files`, `estimated_tokens`.
 - `OutputTarget` — digest destination: `File(PathBuf)` or `Stdout`.
 - `DigestFormat` — output serialization format: `Text` or `Xml`.
-- Budgets — `CandidateBudget` (candidate count), `DigestBudget` (content bytes and skipped count, tracking `MAX_OUTPUT_SIZE`).
+- Budgets — `CandidateBudget` (candidate count with run-length encoded directory tracking fast-path), tracking candidate limits and diagnostic reporting.
 - Policy — centralised tunables, thresholds, noise lists, sensitive patterns, and extension sets
   (`policy.rs`).
 
@@ -27,11 +27,11 @@ imperative-shell boundary.
 
 ### Filtering & Accounting
 
-- Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and conventional sensitive files by case-insensitive filename prefix (`.env*`, `id_rsa*`, `id_ed25519*`, `credentials*`) and extension (`*.key`/`*.pem`, `*.p12`/`*.pkcs12`, `*.credentials`) before candidate accounting (conventional pattern filter, not a content-based secret scanner). They are neither candidates nor `skipped`.
+- Excludes `.git`, hidden entries (empty path segments from redundant delimiters are filtered to prevent false positives), symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and conventional sensitive files by case-insensitive filename prefix (`.env*`, `id_rsa*`, `id_ed25519*`, `credentials*`) and extension (`*.key`/`*.pem`, `*.p12`/`*.pkcs12`, `*.credentials`) before candidate accounting (conventional pattern filter, not a content-based secret scanner). They are neither candidates nor `skipped`.
 - Consumes candidate slots before evaluating content, size, or encoding.
 - `skipped` counts candidates rejected for content, size, or encoding. Ignored paths are never counted in `skipped`.
 - Rejects content exceeding `MAX_OUTPUT_SIZE`; overflow content is never emitted.
-- Known binary extensions (`BINARY_EXT`) are classified as `Probe::Missing` before remote download to save bandwidth while preserving candidate and skipped accounting.
+- Known binary extensions (`BINARY_EXT`) are classified as `Probe::Missing` before reading content or remote downloading to save I/O while preserving candidate and skipped accounting.
 - Diagnostic largest files reporting (`largest_files`) uses bounded Top-5 selection with linear position lookup, avoiding full-collection cloning or $O(N \log N)$ sorting while preserving insertion stability for tie-breakers.
 
 ### Rendering & Formats
@@ -40,25 +40,25 @@ imperative-shell boundary.
 - Heuristic token estimation runs via state machine `TokenEstimator`, exposed through pure function `estimate_tokens(&str)` and `BoundedEstimatingWriter`, reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
 - Plain text serialization (`--format text`) preserves all valid UTF-8 file content verbatim (rejecting only NUL bytes) to maintain raw fidelity for LLM prompts; headers and paths are escaped, but file bodies are unmutated (viewing raw digests in interactive terminals may affect emulator state if files contain ANSI escape codes).
 - XML serialization (`--format xml`) structures output into `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`) and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`.
-- File-path ordering is strictly lexicographical and owned solely by `DigestFormat::render`, sorted once into key-projected `(&str, &FileRecord)` slices to eliminate double heap indirection. Format sub-renderers (`text::render`, `xml::render`) consume the ordered slice directly without re-sorting or re-allocating.
+- File-path ordering is strictly lexicographical, established in-place on 16-byte `spans` via `FileStorage::sort_by_path()` during `Selector::finish()`. Format renderers consume `ExactSizeIterator<Item = FileRecord<'_>>` directly with zero heap re-allocation or re-sorting.
 - Local digest headers use root directory basename (`Repository: <basename>`), omitting absolute paths and system prefixes.
 
 ### I/O & Output Target Contracts
 
-- File target writes atomically via RAII guard (`AtomicFile`): temporary file creation, streaming write, disk sync, explicit handle release, atomic rename, and automatic drop cleanup on error or panic.
+- File target writes atomically via RAII guard (`AtomicFile`): target path directory verification, temporary file creation, streaming write, disk sync, explicit handle release, atomic rename, and automatic drop cleanup on error or panic.
 - Stdout target writes directly to stdout with no temporary file or filesystem sync.
 - Completion messages emit to stdout for file targets and stderr for stdout targets.
 - Broken downstream pipe (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0.
-- Local walk excludes the output file by device/inode and path identity (`output_exclusion::OutputFilter`).
+- Local walk excludes existing output files by device/inode (Unix) and normalized path identity (`output_exclusion::OutputFilter`). If the target output does not exist on disk prior to ingestion, `OutputFilter::new` returns `None`, dissolving path comparison checks entirely.
 - Local walk uses a 2-step linear pipeline with TOCTOU-resistant containment checks:
-  1. `ignore::WalkBuilder` with `follow_links(false)` collects candidate paths into a deterministically sorted list.
+  1. `ignore::WalkBuilder` with `follow_links(false)` and `.sort_by_file_name(|a, b| a.cmp(b))` collects candidate paths into a deterministically sorted list, with pre-flight batch candidate budget verification (`CandidateBudget::check_limit`) to fail fast before reading file bodies.
   2. Bounded, containment-checked file reads via `local_io::read_local_file` (`openat2(RESOLVE_BENEATH)` / non-blocking Win32 handles) feed observations into `Selector`.
 - Digest cap (`MAX_OUTPUT_SIZE`) is strictly enforced on bytes actually written to the output stream via `BoundedEstimatingWriter`, preventing framing/metadata overflow.
 - Token count is estimated on the same writer stream pass over rendered bytes.
-- `BudgetTrie` stores nodes in a flat continuous arena (`Vec<BudgetTrieNode>`) with indexed child tracking (`Vec<u32>`) and compact `Box<str>` labels; insertion uses iterative descent with fast-path sibling comparison (`find_child_idx`), avoiding stack exhaustion and recursive heap pointer chasing.
-- CLI arguments are parsed linearly into options and source without third-party dependencies, supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters.
-- Candidate budget uses `HashMap` with `extract_dir_slice`, formatting overflow diagnostics from observed candidates at termination sorted deterministically by count descending then directory ascending.
-- Digest budget is error-terminal: limit breach immediately errors and aborts without internal transactional rollback.
+- `BudgetTrie` stores nodes in a flat continuous arena (`Vec<BudgetTrieNode>`) with indexed child tracking (`Vec<u32>`) and compact `Box<str>` labels, with a unified root directory node at index 0. It is format-neutral; XML entity and newline escaping occurs on-the-fly during `render_to_writer(writer, escape_xml)`.
+- CLI arguments are parsed linearly into options and source in pure core (`core::cli`), supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters.
+- Candidate budget uses run-length encoding (`dir_runs: Vec<(String, usize)>`) on contiguous directory entries during collection, avoiding `HashMap` overhead on the happy path while preserving deterministic overflow diagnostics sorted by count descending then directory ascending.
+- Digest budget is tracked directly in `Selector` and is error-terminal: limit breach constructs complete `IngestError::OutputTooLarge` diagnostics without internal transactional rollback.
 
 ### Network & GitHub
 
@@ -87,26 +87,30 @@ Boundary rule: pure core code performs no I/O, clock, network, or entropy and
 never depends on shell code; shell code depends on the core in one direction.
 
 - Pure core (`src/core/`):
+  - `cli.rs`: Pure CLI argument parsing, help detection, and `CliAction` generation (`parse_cli`).
   - `policy.rs`: all operational limits, noise patterns, sensitive patterns, binary extensions, and
     their predicates (`is_noise_path`, `is_sensitive_path`, `has_binary_extension`).
   - `source.rs`: source string and OS-string parsing.
   - `model.rs`: domain value types (`Source`, `FileRecord`, `CollectionResult`,
-    `IngestReport`, `RunConfig`, `Options`, `OutputTarget`, `DigestFormat`).
-  - `error.rs`: domain error enum `IngestError` with structured diagnostic payload.
-  - `decide.rs`: `Selector::decide`, `Selector::finish`, `CandidateBudget`, item evaluation via `slice::contains`, and
+    `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`, `FileStorage`).
+  - `error.rs`: domain error enum `IngestError` with structured diagnostic payload (`CandidateLimitExceeded`, `OutputTooLarge`).
+  - `decide.rs`: `Selector::decide`, `Selector::finish`, `CandidateBudget`, `CandidateBudget::check_limit`, item evaluation via `slice::contains`, and
     candidate overflow diagnostics.
-  - `digest/`: `DigestBudget`, size check, deterministic
-    digest rendering (`render_digest_to_writer`), format implementations (`text.rs`, `xml.rs`), trie representation (`trie.rs`), and token estimation (`TokenEstimator`, `estimate_tokens`).
+  - `digest/`:
+    - `budget.rs`: `largest_files` diagnostic selection.
+    - `token.rs`: `TokenEstimator` heuristic token state machine and `estimate_tokens`.
+    - `trie.rs`: Format-neutral ASCII hierarchy tree (`BudgetTrie`).
+    - `text.rs` / `xml.rs`: Format-specific streaming serializers.
+    - `mod.rs`: `DigestFormat::render`, `render_digest_to_writer`, and streaming `BoundedEstimatingWriter`.
   - `github_url.rs`: Pure `std` URL construction with RFC 3986 percent-encoding and origin credential scoping.
   - `archive.rs`: Pax header comment extraction and archive root stripping.
 - Imperative shell (`src/shell/`):
-  - `shell/cli.rs`: Pure CLI argument parsing, help detection, and `CliAction` generation.
-  - `shell/orchestrate.rs`: Pipeline orchestration (`ingest`) directly dispatching collection, emission, and digest rendering.
   - `src/main.rs`: binary entry point and user-facing CLI completion report formatting.
-  - `shell/local.rs`: 2-step linear filesystem walking and collection (`collect_local`).
+  - `shell/orchestrate.rs`: Pipeline orchestration (`ingest`) and unified streaming collection driver (`SourceStream`, `collect_stream`).
+  - `shell/local.rs`: 2-step linear filesystem candidate discovery and streaming reader (`LocalStream`).
   - `shell/local_io.rs`: TOCTOU-resistant file opening and root containment enforcement (`openat2` / Win32 handle resolution).
   - `shell/output_exclusion.rs`: Output file identity tracking (`OutputFilter`) using device and inode checks.
-  - `shell/github_client.rs`: HTTP transport, retry logging via `log`, body bounding, and token resolution.
-  - `shell/github.rs`: streaming archive GitHub collection (`collect_github`).
-  - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`) or standard output stream emission.
-  - `shell/mod.rs`: shell module declarations and scoped test fixture isolation (`TempDirGuard`).
+  - `shell/github_client.rs`: HTTP transport, retry diagnostics, body bounding, and token resolution.
+  - `shell/github.rs`: streaming archive tarball entry iterator (`GitHubStream`).
+  - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`) or standard output stream emission; missing output file names map to `IngestError::Usage`.
+  - `shell/mod.rs`: shell module declarations, centralized `current_epoch_nanos()`, and scoped test fixture isolation (`TempDirGuard`).

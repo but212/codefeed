@@ -18,31 +18,33 @@ const FILE_BLOCK_SUFFIX: &str = "\n=============================================
 const NEWLINE: &str = "\n";
 const METADATA_SUFFIX: &str = "\n\n";
 
-const fn make_header_escape_table() -> [Option<&'static str>; 256] {
-    let mut table = [None; 256];
-    table[b'\\' as usize] = Some("\\\\");
-    table[b'\r' as usize] = Some("\\r");
-    table[b'\n' as usize] = Some("\\n");
-    table
+#[inline]
+const fn needs_header_escape(b: u8) -> bool {
+    matches!(b, b'\\' | b'\r' | b'\n')
 }
 
-const HEADER_ESCAPE_TABLE: [Option<&'static str>; 256] = make_header_escape_table();
+#[inline]
+const fn header_escape_str(b: u8) -> &'static str {
+    match b {
+        b'\\' => "\\\\",
+        b'\r' => "\\r",
+        b'\n' => "\\n",
+        _ => "",
+    }
+}
 
 pub(crate) fn escape_header(value: &str) -> Cow<'_, str> {
     let bytes = value.as_bytes();
-    if !bytes
-        .iter()
-        .any(|&b| HEADER_ESCAPE_TABLE[b as usize].is_some())
-    {
+    if !bytes.iter().any(|&b| needs_header_escape(b)) {
         return Cow::Borrowed(value);
     }
 
     let mut out = String::with_capacity(value.len() + 8);
     let mut last = 0;
     for (i, &b) in bytes.iter().enumerate() {
-        if let Some(escaped) = HEADER_ESCAPE_TABLE[b as usize] {
+        if needs_header_escape(b) {
             out.push_str(&value[last..i]);
-            out.push_str(escaped);
+            out.push_str(header_escape_str(b));
             last = i + 1;
         }
     }
@@ -50,16 +52,18 @@ pub(crate) fn escape_header(value: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-pub(crate) fn render<W>(
+pub(crate) fn render<'a, W, I>(
     writer: &mut W,
     label: &str,
     revision: Option<&str>,
-    ordered_files: &[(&str, &FileRecord)],
+    ordered_files: I,
     skipped: usize,
     trie: &BudgetTrie,
 ) -> Result<(), IngestError>
 where
     W: Write + ?Sized,
+    I: IntoIterator<Item = FileRecord<'a>>,
+    I::IntoIter: ExactSizeIterator,
 {
     writer.write_all(REPOSITORY_PREFIX.as_bytes())?;
     writer.write_all(escape_header(label).as_bytes())?;
@@ -69,24 +73,23 @@ where
         writer.write_all(escape_header(revision).as_bytes())?;
         writer.write_all(NEWLINE.as_bytes())?;
     }
+    let iter = ordered_files.into_iter();
     writer.write_all(FILES_PREFIX.as_bytes())?;
-    writer.write_all(ordered_files.len().to_string().as_bytes())?;
+    write!(writer, "{}", iter.len())?;
     writer.write_all(SKIPPED_PREFIX.as_bytes())?;
-    writer.write_all(skipped.to_string().as_bytes())?;
+    write!(writer, "{}", skipped)?;
     writer.write_all(METADATA_SUFFIX.as_bytes())?;
     writer.write_all(DIRECTORY_HEADER.as_bytes())?;
-    trie.render_to_writer(writer)?;
+    trie.render_to_writer(writer, false)?;
     writer.write_all(FILES_HEADER.as_bytes())?;
-
-    for (_, file) in ordered_files {
+    for file in iter {
+        const TAIL: [&[u8]; 2] = [b"\n", b"\n\n"];
+        let needs_extra_nl = (!file.content.ends_with('\n')) as usize;
         writer.write_all(FILE_BLOCK_PREFIX.as_bytes())?;
-        writer.write_all(escape_header(&file.path).as_bytes())?;
+        writer.write_all(escape_header(file.path).as_bytes())?;
         writer.write_all(FILE_BLOCK_SUFFIX.as_bytes())?;
         writer.write_all(file.content.as_bytes())?;
-        if !file.content.ends_with('\n') {
-            writer.write_all(NEWLINE.as_bytes())?;
-        }
-        writer.write_all(NEWLINE.as_bytes())?;
+        writer.write_all(TAIL[needs_extra_nl])?;
     }
 
     Ok(())

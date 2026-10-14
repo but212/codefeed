@@ -3,7 +3,6 @@
 //! Shell modules perform all effects and feed observations to the functional
 //! core in `crate::core`.
 
-pub(crate) mod cli;
 pub(crate) mod github;
 pub(crate) mod github_client;
 pub(crate) mod local;
@@ -12,6 +11,13 @@ pub(crate) mod orchestrate;
 pub(crate) mod output;
 pub(crate) mod output_exclusion;
 
+pub(crate) fn current_epoch_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 #[derive(Debug)]
 pub(crate) struct TempDirGuard(std::path::PathBuf);
@@ -19,8 +25,7 @@ pub(crate) struct TempDirGuard(std::path::PathBuf);
 #[cfg(test)]
 impl TempDirGuard {
     pub(crate) fn new(label: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let nanos = current_epoch_nanos();
         let path = std::env::temp_dir().join(format!("local_ingest_{label}_{nanos}"));
         std::fs::create_dir_all(&path)?;
         Ok(Self(std::fs::canonicalize(&path)?))

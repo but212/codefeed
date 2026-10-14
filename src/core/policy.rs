@@ -56,8 +56,7 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
 /// and extensions in [`SENSITIVE_EXT`] (`*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.credentials`).
 pub(crate) fn is_sensitive_path(path: &str) -> bool {
     let file_name = path.rsplit('/').next().unwrap_or(path);
-    if starts_with_ignore_ascii_case(file_name, ".env")
-        || starts_with_ignore_ascii_case(file_name, "id_rsa")
+    if starts_with_ignore_ascii_case(file_name, "id_rsa")
         || starts_with_ignore_ascii_case(file_name, "id_ed25519")
         || starts_with_ignore_ascii_case(file_name, "credentials")
     {
@@ -80,7 +79,8 @@ pub(crate) fn has_binary_extension(path: &str) -> bool {
 /// Returns `true` if `path` contains hidden directory or file components (starting with `.`).
 pub(crate) fn is_hidden_path(path: &str) -> bool {
     path.split('/')
-        .any(|part| part.starts_with('.') || part.is_empty())
+        .filter(|part| !part.is_empty())
+        .any(|part| part.starts_with('.'))
 }
 
 /// Pre-ingestion classification of a relative path candidate.
@@ -107,21 +107,27 @@ impl PathClassification {
 }
 
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
+#[inline]
 pub(crate) const fn is_retryable_status(status_code: u16) -> bool {
-    matches!(status_code, 429 | 500..=599)
+    (status_code == 429) | (status_code.wrapping_sub(500) <= 99)
 }
 
 /// Calculates bounded exponential backoff duration with jitter for the given attempt.
+#[inline]
 pub(crate) const fn retry_delay(attempt: usize, entropy: u64) -> std::time::Duration {
-    let multiplier = match 1_u64.checked_shl(attempt as u32) {
-        Some(m) => m,
-        None => u64::MAX,
-    };
+    let shift = if attempt < 63 { attempt as u32 } else { 63 };
+    let multiplier = 1_u64 << shift;
+
     let exponential = RETRY_INITIAL_DELAY_MS.saturating_mul(multiplier);
     let jitter = entropy % (RETRY_JITTER_MAX_MS + 1);
     let base = exponential.saturating_add(jitter);
-    let diff = base.saturating_sub(RETRY_MAX_DELAY_MS);
-    let millis = base - diff;
+
+    let millis = if base < RETRY_MAX_DELAY_MS {
+        base
+    } else {
+        RETRY_MAX_DELAY_MS
+    };
+
     std::time::Duration::from_millis(millis)
 }
 
@@ -190,6 +196,8 @@ mod tests {
             ("image.PNG", PathClassification::PreclassifiedBinary),
             ("assets/font.woff2", PathClassification::PreclassifiedBinary),
             ("src/main.rs", PathClassification::NeedsContent),
+            ("src//main.rs", PathClassification::NeedsContent),
+            ("/src/main.rs", PathClassification::NeedsContent),
             ("Cargo.toml", PathClassification::NeedsContent),
             ("Makefile", PathClassification::NeedsContent),
         ];
