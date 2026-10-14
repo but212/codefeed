@@ -86,13 +86,7 @@ impl BudgetTrie {
 
         while let Some(part) = parts.next() {
             let is_dir = parts.peek().is_some();
-            let matched_node_idx = self.get_or_insert_child(current_node_idx, part, is_dir);
-
-            if is_dir {
-                current_node_idx = matched_node_idx;
-            } else {
-                break;
-            }
+            current_node_idx = self.get_or_insert_child(current_node_idx, part, is_dir);
         }
     }
 

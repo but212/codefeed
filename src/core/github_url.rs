@@ -26,9 +26,14 @@ pub(crate) fn tarball_url(owner: &str, repo: &str, reference: Option<&str>) -> S
     url
 }
 
-#[inline]
+#[inline(always)]
 const fn is_unreserved(b: u8) -> bool {
-    matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~')
+    ((b | 32).wrapping_sub(b'a') < 26)
+        | (b.wrapping_sub(b'0') < 10)
+        | (b == b'-')
+        | (b == b'.')
+        | (b == b'_')
+        | (b == b'~')
 }
 
 fn push_encoded_segment(url: &mut String, segment: &str) {

@@ -97,12 +97,14 @@ pub(crate) enum PathClassification {
 
 impl PathClassification {
     pub(crate) fn classify(path: &str) -> Self {
+        const CANDIDATE_KIND: [PathClassification; 2] = [
+            PathClassification::NeedsContent,
+            PathClassification::PreclassifiedBinary,
+        ];
         if is_hidden_path(path) || is_noise_path(path) || is_sensitive_path(path) {
             Self::Ignored
-        } else if has_binary_extension(path) {
-            Self::PreclassifiedBinary
         } else {
-            Self::NeedsContent
+            CANDIDATE_KIND[has_binary_extension(path) as usize]
         }
     }
 }

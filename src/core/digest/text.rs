@@ -18,19 +18,15 @@ const FILE_BLOCK_SUFFIX: &str = "\n=============================================
 const NEWLINE: &str = "\n";
 const METADATA_SUFFIX: &str = "\n\n";
 
-#[inline]
+#[inline(always)]
 const fn needs_header_escape(b: u8) -> bool {
-    matches!(b, b'\\' | b'\r' | b'\n')
+    (b == b'\\') | (b == b'\r') | (b == b'\n')
 }
 
-#[inline]
+#[inline(always)]
 const fn header_escape_str(b: u8) -> &'static str {
-    match b {
-        b'\\' => "\\\\",
-        b'\r' => "\\r",
-        b'\n' => "\\n",
-        _ => "",
-    }
+    const ESCAPES: [&str; 4] = ["\\\\", "\\r", "\\n", ""];
+    ESCAPES[(b & 3) as usize]
 }
 
 pub fn escape_header(value: &str) -> Cow<'_, str> {

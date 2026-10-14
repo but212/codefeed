@@ -42,7 +42,10 @@ pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
 }
 
 fn is_valid_commit_sha(sha: &str) -> bool {
-    (sha.len() == 40 || sha.len() == 64) && sha.chars().all(|c| c.is_ascii_hexdigit())
+    ((sha.len() == 40) | (sha.len() == 64))
+        && sha
+            .bytes()
+            .all(|b| (b.wrapping_sub(b'0') < 10) | ((b | 32).wrapping_sub(b'a') < 6))
 }
 
 #[cfg(test)]

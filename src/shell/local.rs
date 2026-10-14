@@ -133,11 +133,13 @@ fn walk_candidates(
 
         let skip_read = match &item_path {
             ItemPath::NonUtf8 => true,
-            ItemPath::Utf8(path) => match PathClassification::classify(path) {
-                PathClassification::Ignored => continue,
-                PathClassification::PreclassifiedBinary => true,
-                PathClassification::NeedsContent => false,
-            },
+            ItemPath::Utf8(path) => {
+                let classification = PathClassification::classify(path);
+                if classification == PathClassification::Ignored {
+                    continue;
+                }
+                classification == PathClassification::PreclassifiedBinary
+            }
         };
 
         candidates.push(LocalCandidate {

@@ -16,8 +16,7 @@ const XML_FILES_START: &str = "<files>\n";
 const XML_FILES_END: &str = "</files>\n";
 const XML_REPO_END: &str = "</repository>\n";
 const XML_FILE_START: &str = "<file path=\"";
-const XML_FILE_END: &str = "</file>\n";
-const NEWLINE: &str = "\n";
+const FILE_TAILS: [&[u8]; 2] = [b"</file>\n", b"\n</file>\n"];
 const SPECIAL_BITSET: [u64; 4] = {
     let mut mask = [0u64; 4];
     let mut i = 0;
@@ -46,21 +45,28 @@ fn is_special_byte(b: u8) -> bool {
     (word & (1u64 << (b & 63))) != 0
 }
 
+const XML_ESCAPES: [&str; 6] = ["\u{FFFD}", "&quot;", "&amp;", "&apos;", "&lt;", "&gt;"];
+const ASCII_ESC_IDX: [u8; 64] = {
+    let mut t = [0u8; 64];
+    t[b'"' as usize] = 1;
+    t[b'&' as usize] = 2;
+    t[b'\'' as usize] = 3;
+    t[b'<' as usize] = 4;
+    t[b'>' as usize] = 5;
+    t
+};
+
 #[inline(always)]
 fn xml_special(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
-    match bytes[i] {
-        b'&' => Some((1, "&amp;")),
-        b'<' => Some((1, "&lt;")),
-        b'>' => Some((1, "&gt;")),
-        b'"' => Some((1, "&quot;")),
-        b'\'' => Some((1, "&apos;")),
-        0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F => Some((1, "\u{FFFD}")),
-        0xEF if i + 2 < bytes.len() => {
-            let tail = ((bytes[i + 1] as u32) << 8) | (bytes[i + 2] as u32);
-            ((tail & !1) == 0xBFBE).then_some((3, "\u{FFFD}"))
-        }
-        _ => None,
+    let b = bytes[i];
+    if b < 64 {
+        return Some((1, XML_ESCAPES[ASCII_ESC_IDX[b as usize] as usize]));
     }
+    if b == 0xEF && i + 2 < bytes.len() {
+        let tail = ((bytes[i + 1] as u32) << 8) | (bytes[i + 2] as u32);
+        return ((tail & !1) == 0xBFBE).then_some((3, "\u{FFFD}"));
+    }
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +94,7 @@ pub struct XmlChunks<'a> {
     value: &'a str,
     bytes: &'a [u8],
     cursor: usize,
+    pending: Option<&'static str>,
 }
 
 impl<'a> XmlChunks<'a> {
@@ -103,6 +110,7 @@ impl<'a> XmlChunks<'a> {
             value,
             bytes: value.as_bytes(),
             cursor: offset,
+            pending: None,
         }
     }
 }
@@ -111,6 +119,10 @@ impl<'a> Iterator for XmlChunks<'a> {
     type Item = XmlChunk<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(esc) = self.pending.take() {
+            return Some(XmlChunk::Escaped(esc));
+        }
+
         if self.cursor >= self.bytes.len() {
             return None;
         }
@@ -121,7 +133,10 @@ impl<'a> Iterator for XmlChunks<'a> {
                 && let Some((consumed, esc)) = xml_special(self.bytes, self.cursor)
             {
                 if self.cursor > start {
-                    return Some(XmlChunk::Raw(&self.value[start..self.cursor]));
+                    let raw = &self.value[start..self.cursor];
+                    self.cursor += consumed;
+                    self.pending = Some(esc);
+                    return Some(XmlChunk::Raw(raw));
                 }
                 self.cursor += consumed;
                 return Some(XmlChunk::Escaped(esc));
@@ -143,7 +158,7 @@ pub fn xml_escape(value: &str) -> Cow<'_, str> {
     let first = bytes
         .iter()
         .enumerate()
-        .position(|(i, &b)| is_special_byte(b) && xml_special(bytes, i).is_some());
+        .position(|(i, &b)| is_special_byte(b) && (b != 0xEF || xml_special(bytes, i).is_some()));
 
     let Some(first) = first else {
         return Cow::Borrowed(value);
@@ -163,7 +178,7 @@ pub fn write_xml_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std:
     let first = bytes
         .iter()
         .enumerate()
-        .position(|(i, &b)| is_special_byte(b) && xml_special(bytes, i).is_some());
+        .position(|(i, &b)| is_special_byte(b) && (b != 0xEF || xml_special(bytes, i).is_some()));
 
     let Some(first) = first else {
         return writer.write_all(bytes);
@@ -205,10 +220,8 @@ where
         writer.write_all(xml_escape(file.path).as_bytes())?;
         writer.write_all(XML_TAG_CLOSE.as_bytes())?;
         write_xml_escaped(writer, file.content)?;
-        if !file.content.ends_with('\n') {
-            writer.write_all(NEWLINE.as_bytes())?;
-        }
-        writer.write_all(XML_FILE_END.as_bytes())?;
+        let needs_nl = (!file.content.ends_with('\n')) as usize;
+        writer.write_all(FILE_TAILS[needs_nl])?;
     }
     writer.write_all(XML_FILES_END.as_bytes())?;
     writer.write_all(XML_REPO_END.as_bytes())?;

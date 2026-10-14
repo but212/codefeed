@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Eliminated duplicate `xml_special` evaluations in `XmlChunks` by caching pending escape sequences and streamlined preflight special byte detection in `src/core/digest/xml.rs`.
+- Refactored hot and warm path routines (XML/text header escaping, trie insertion, SHA and name validation, and path classification) to branchless bitwise operations and constant lookup tables.
 - Consolidated `OutputFilter`, path identity resolution, and lexical `normalize_path` from `src/shell/output_exclusion.rs` directly into `src/shell/output.rs`, encapsulated destination matching via `OutputFilter::from_target(&OutputTarget)`, and eliminated `output_exclusion.rs`.
 - Decoupled item evaluation and storage accumulation in `src/core/decide.rs` by extracting pure `ItemDecision` contract (`Included`, `Skipped`), enabling zero-copy UTF-8/NUL evaluation via `Item::evaluate` and direct accumulation via `Selector::accumulate`.
 - Propagated collection stream size hints from `LocalStream` (`ExactSizeIterator`) into `Selector::from_size_hint` in `src/shell/orchestrate.rs`, pre-sizing storage arenas according to upstream candidate counts.

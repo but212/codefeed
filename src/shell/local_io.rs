@@ -108,11 +108,10 @@ fn open_local_file_components(mut directory: OwnedFd, relative: &Path) -> io::Re
     loop {
         let name = component.as_os_str();
         let is_file = components.peek().is_none();
-        let flags = if is_file {
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK
-        } else {
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY | OFlags::NOFOLLOW
-        };
+        let flags = [
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        ][is_file as usize];
         let opened = rustix::fs::openat(&directory, name, flags, Mode::empty())?;
         if is_file {
             return Ok(fs::File::from(opened));
