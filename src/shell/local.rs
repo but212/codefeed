@@ -9,7 +9,7 @@ use ignore::WalkBuilder;
 use super::local_io::read_local_file;
 use super::orchestrate::SourceStream;
 use super::output::OutputFilter;
-use crate::core::decide::{Item, ItemPath, Probe, Selector};
+use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe};
 use crate::core::error::IngestError;
 use crate::core::model::OutputTarget;
 use crate::core::policy::{MAX_FILE_COUNT, PathClassification};
@@ -21,7 +21,6 @@ struct LocalCandidate {
 }
 
 pub struct LocalStream {
-    root: PathBuf,
     label: String,
     candidates: std::vec::IntoIter<LocalCandidate>,
 }
@@ -29,7 +28,6 @@ pub struct LocalStream {
 impl std::fmt::Debug for LocalStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocalStream")
-            .field("root", &self.root)
             .field("label", &self.label)
             .finish()
     }
@@ -50,10 +48,9 @@ impl LocalStream {
         let label = local_label(&canonical_root);
         let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
 
-        Selector::check_candidate_limit(candidates.iter().map(|c| c.item_path.as_utf8_str()))?;
+        CandidateBudget::check_limit(candidates.iter().map(|c| c.item_path.as_utf8_str()))?;
 
         Ok(Self {
-            root: canonical_root,
             label,
             candidates: candidates.into_iter(),
         })

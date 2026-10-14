@@ -50,14 +50,14 @@ where
     }
 }
 
-struct AtomicFile<'a> {
-    target: &'a Path,
-    temporary: Option<std::path::PathBuf>,
+struct AtomicFile {
+    target: PathBuf,
+    temporary: Option<PathBuf>,
     writer: Option<io::BufWriter<fs::File>>,
 }
 
-impl<'a> AtomicFile<'a> {
-    fn create(target: &'a Path) -> Result<Self, IngestError> {
+impl AtomicFile {
+    fn create(target: &Path) -> Result<Self, IngestError> {
         let Some(raw_name) = target.file_name() else {
             return Err(IngestError::Usage("output path has no filename".into()));
         };
@@ -77,7 +77,8 @@ impl<'a> AtomicFile<'a> {
         let timestamp = super::current_epoch_nanos();
         let (temporary, file) = loop {
             let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let temporary = parent.join(format!(".{file_name}.{timestamp}.{counter}.tmp"));
+            let temporary =
+                normalized_parent.join(format!(".{file_name}.{timestamp}.{counter}.tmp"));
             match OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -90,7 +91,7 @@ impl<'a> AtomicFile<'a> {
         };
 
         Ok(Self {
-            target,
+            target: normalized_parent.join(raw_name),
             temporary: Some(temporary),
             writer: Some(io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, file)),
         })
@@ -106,13 +107,13 @@ impl<'a> AtomicFile<'a> {
         }
 
         let temp_path = self.temporary.as_ref().expect("temporary path exists");
-        fs::rename(temp_path, self.target)?;
+        fs::rename(temp_path, &self.target)?;
         self.temporary = None;
         Ok(())
     }
 }
 
-impl io::Write for AtomicFile<'_> {
+impl io::Write for AtomicFile {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match &mut self.writer {
             Some(w) => w.write(buf),
@@ -128,7 +129,7 @@ impl io::Write for AtomicFile<'_> {
     }
 }
 
-impl Drop for AtomicFile<'_> {
+impl Drop for AtomicFile {
     fn drop(&mut self) {
         drop(self.writer.take());
         if let Some(temp_path) = self.temporary.take() {
@@ -337,6 +338,22 @@ mod tests {
         let path = Path::new("/a/b/../c/./d");
         let normalized = normalize_path(path);
         assert_eq!(normalized, Path::new("/a/c/d"));
+    }
+
+    #[test]
+    fn atomic_write_normalizes_parent_with_aliases() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("atomic_aliases")?;
+        let output = root.join("missing").join("..").join("digest.txt");
+
+        write_atomic(&output, |w| {
+            w.write_all(b"digest content")?;
+            Ok(())
+        })?;
+
+        let expected_file = root.join("digest.txt");
+        assert!(expected_file.exists());
+        assert_eq!(fs::read_to_string(&expected_file)?, "digest content");
+        Ok(())
     }
 
     #[test]

@@ -26,12 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Decoupled inner stream flushing from `BoundedEstimatingWriter::finish` (`src/core/digest/mod.rs`), preserving computed `estimated_tokens` on downstream `BrokenPipe` during stdout streaming and eliminating redundant duplicate flushing for atomic file targets.
-- Prioritized `fs::canonicalize(output)` directly in `OutputFilter::new` (`src/shell/output_exclusion.rs`) before lexical traversal fallback, and normalized parent paths before `fs::create_dir_all` in `AtomicFile::create` (`src/shell/output.rs`) to prevent phantom directory creation from relative parent aliases.
+- Decoupled inner stream flushing from `BoundedEstimatingWriter::finish` (`src/core/digest/mod.rs`), eliminating redundant duplicate flushing for atomic file targets and preserving computed `estimated_tokens` when writer flush encounters downstream `BrokenPipe`.
+- Prioritized `fs::canonicalize(output)` directly in `OutputFilter::new` (`src/shell/output.rs`) before lexical traversal fallback, and normalized parent paths for temporary creation and commit renaming in `AtomicFile` (`src/shell/output.rs`) to prevent `ENOENT` failures from uncollapsed relative parent aliases.
 - Stripped tar archive root and filtered hidden entries on raw path bytes prior to candidate slot allocation in `probe_tar_entry` (`src/shell/github.rs`), validated paths with `text_str` to reject embedded NUL bytes, and escaped `0x00` to `\u{FFFD}` in `xml_escape` and `write_xml_escaped` (`src/core/digest/xml.rs`).
 - Short-circuited canonical path checks and eliminated redundant `names_match` and `fs::canonicalize` fallback syscalls on Unix in `OutputFilter::is_excluded`.
 - Enforced deterministic filesystem traversal order in `collect_local` via `WalkBuilder::sort_by_file_name`, guaranteeing reproducible `CandidateLimitExceeded` diagnostic output across different operating systems and filesystems.
-- Dissolved nonexistent output file filtering by returning `Ok(None)` from `OutputFilter::new` when the output path does not exist on disk prior to walking, eliminating redundant path normalization and comparisons.
+- Normalized nonexistent output file target paths lexically in `OutputFilter::new` (`src/shell/output.rs`), ensuring consistent exclusion of destination paths containing uncollapsed relative components.
 - Checked `entry.file_type().is_file()` before output exclusion checks in `collect_local`, and used `fs::symlink_metadata` on Unix to prevent following symlinks.
 - Rejected directory target paths immediately with `io::ErrorKind::IsADirectory` in `AtomicFile::create` prior to temporary file creation.
 - Filtered redundant empty path components (`//`) in `is_hidden_path` (`src/core/policy.rs`) to prevent non-hidden paths with duplicate delimiters from being misclassified as hidden.
@@ -44,13 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Migrated CLI argument parsing in `src/core/cli.rs` to `clap` (derive), eliminating manual token iteration and ad-hoc error reporting while preserving POSIX delimiters and help formatting.
 - Encapsulated stream construction and archive decompression in `src/shell/local.rs` (`collect_local`) and `src/shell/github.rs` (`collect_github`), simplifying `orchestrate::ingest` to a clean collection-to-emission pipeline.
-- Consolidated candidate count limit verification under `Selector::check_candidate_limit`.
+- Consolidated candidate count limit verification directly under `CandidateBudget::check_limit`, removing the redundant `Selector` pass-through wrapper.
 - Replaced platform-specific TOCTOU containment checks (`openat2`, Win32 reparse flags) in `src/shell/local_io.rs` with standard `fs::symlink_metadata` and `fs::File::open`.
 - Replaced dev/inode comparisons and multi-layer fallback in `OutputFilter` (`src/shell/output.rs`) with zero-syscall in-memory lexical matching and parent-canonical normalization.
 - Eliminated duplicate `xml_special` evaluations in `XmlChunks` by caching pending escape sequences and streamlined preflight special byte detection in `src/core/digest/xml.rs`.
 
 ### Removed
 
+- Removed unused `root: PathBuf` field and its allocation from `LocalStream` in `src/shell/local.rs`.
+- Removed obsolete lifetime parameter `'a` from `AtomicFile` in `src/shell/output.rs`.
 - Removed `rustix` dependency and platform-specific FFI hooks.
 - Refactored hot and warm path routines (XML/text header escaping, trie insertion, SHA and name validation, and path classification) to branchless bitwise operations and constant lookup tables.
 - Consolidated `OutputFilter`, path identity resolution, and lexical `normalize_path` from `src/shell/output_exclusion.rs` directly into `src/shell/output.rs`, encapsulated destination matching via `OutputFilter::from_target(&OutputTarget)`, and eliminated `output_exclusion.rs`.

@@ -45,14 +45,14 @@ imperative-shell boundary.
 
 ### I/O & Output Target Contracts
 
-- File target writes atomically via RAII guard (`AtomicFile`): target path directory verification, temporary file creation, streaming write, disk sync, explicit handle release, atomic rename, and automatic drop cleanup on error or panic.
+- File target writes atomically via RAII guard (`AtomicFile`): target parent path lexical normalization (`normalize_path`), parent directory verification and creation, temporary file creation under the normalized parent directory, streaming write, disk sync, explicit handle release, atomic rename to the normalized target path, and automatic drop cleanup on error or panic.
 - Stdout target writes directly to stdout with no temporary file or filesystem sync.
 - Completion messages emit to stdout for file targets and stderr for stdout targets.
-- Broken downstream pipe (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0.
-- Local walk excludes existing output files via normalized path comparison (`output::OutputFilter`). The output target is normalized once at initialization (resolving parent symlinks when the file does not exist yet); walk candidates are compared directly without syscalls during traversal.
+- Broken downstream pipe (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0 (preserving estimated tokens when encountered on buffer flush; defaulting to 0 on early mid-stream write termination).
+- Local walk excludes existing output files via normalized path comparison (`output::OutputFilter`). The output target is normalized once at initialization (resolving parent symlinks when canonicalizable or falling back to lexical normalization); walk candidates are compared directly without syscalls during traversal.
 - Local walk uses a 2-step linear pipeline:
   1. `ignore::WalkBuilder` with `follow_links(false)` and `.sort_by_file_name(|a, b| a.cmp(b))` collects candidate paths into a deterministically sorted list, with pre-flight batch candidate budget verification (`CandidateBudget::check_limit`) to fail fast before reading file bodies.
-  2. Bounded sequential reads via `local_io::read_local_file` (verifying regular non-symlink metadata before opening) feed observations into `Selector`.
+  2. Bounded sequential reads via `local_io::read_local_file` (verifying regular non-symlink metadata before opening) feed observations into `Selector`. Stream state in `LocalStream` holds only the root label and candidate iterator without retaining redundant root path allocations.
 - Digest cap (`MAX_OUTPUT_SIZE`) is strictly enforced on bytes actually written to the output stream via `BoundedEstimatingWriter`, preventing framing/metadata overflow.
 - Token count is estimated on the same writer stream pass over rendered bytes.
 - `BudgetTrie` stores nodes in a flat continuous 16-byte Left-Child Right-Sibling (LCRS) arena (`Vec<BudgetTrieNode>`) with compact contiguous labels in `label_arena: String`, with a unified root directory node at index 0. It is format-neutral; XML entity and newline escaping occurs on-the-fly during `render_to_writer(writer, escape_xml)`.

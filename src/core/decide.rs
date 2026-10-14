@@ -99,14 +99,6 @@ impl Selector {
         }
     }
 
-    #[inline]
-    pub fn check_candidate_limit<'a, I>(paths: I) -> Result<(), IngestError>
-    where
-        I: IntoIterator<Item = Option<&'a str>>,
-    {
-        CandidateBudget::check_limit(paths)
-    }
-
     pub fn from_size_hint(hint: (usize, Option<usize>)) -> Self {
         let estimated = hint.1.unwrap_or(hint.0);
         if estimated == 0 {
