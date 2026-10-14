@@ -145,6 +145,11 @@ impl FileStorage {
 
     /// Appends path and content to the arenas and records a [`FileSpan`].
     pub fn push(&mut self, path: &str, content: &str) -> FileSpan {
+        debug_assert!(u32::try_from(self.path_arena.len()).is_ok());
+        debug_assert!(u32::try_from(path.len()).is_ok());
+        debug_assert!(u32::try_from(self.content_arena.len()).is_ok());
+        debug_assert!(u32::try_from(content.len()).is_ok());
+
         let path_offset = self.path_arena.len() as u32;
         let path_len = path.len() as u32;
         self.path_arena.push_str(path);

@@ -202,20 +202,13 @@ fn is_strictly_beneath(root: &Path, file: &Path) -> bool {
     loop {
         match (root_comps.next(), file_comps.next()) {
             (Some(Component::Prefix(p1)), Some(Component::Prefix(p2))) => {
-                if !p1
-                    .as_os_str()
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case(&p2.as_os_str().to_string_lossy())
-                {
+                if !p1.as_os_str().eq_ignore_ascii_case(p2.as_os_str()) {
                     return false;
                 }
             }
             (Some(Component::RootDir), Some(Component::RootDir)) => {}
             (Some(Component::Normal(n1)), Some(Component::Normal(n2))) => {
-                if !n1
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case(&n2.to_string_lossy())
-                {
+                if !n1.eq_ignore_ascii_case(n2) {
                     return false;
                 }
             }
@@ -353,6 +346,10 @@ mod tests {
         assert!(!is_strictly_beneath(
             root,
             Path::new(r"\\?\C:\other\file.txt")
+        ));
+        assert!(is_strictly_beneath(
+            Path::new(r"\\?\C:\프로젝트\REPO"),
+            Path::new(r"\\?\c:\프로젝트\repo\sub\file.txt")
         ));
     }
 

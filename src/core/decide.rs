@@ -42,6 +42,16 @@ enum ItemResolution {
     Skipped(Option<String>),
 }
 
+impl ItemResolution {
+    #[inline]
+    fn path(&self) -> Option<&str> {
+        match self {
+            Self::Included(path, _) => Some(path.as_str()),
+            Self::Skipped(path) => path.as_deref(),
+        }
+    }
+}
+
 impl Item {
     fn resolve(self) -> ItemResolution {
         match (self.path, self.probe) {
@@ -81,13 +91,11 @@ impl Selector {
     }
 
     pub fn decide(&mut self, item: Item) -> Result<(), IngestError> {
-        match item.resolve() {
-            ItemResolution::Included(path, content) => {
-                self.candidates.add(Some(path.as_str()))?;
-                self.add_file(&path, &content)
-            }
-            ItemResolution::Skipped(path) => {
-                self.candidates.add(path.as_deref())?;
+        let resolution = item.resolve();
+        self.candidates.add(resolution.path())?;
+        match resolution {
+            ItemResolution::Included(path, content) => self.add_file(&path, &content),
+            ItemResolution::Skipped(_) => {
                 self.skipped = self.skipped.saturating_add(1);
                 Ok(())
             }
@@ -160,8 +168,15 @@ impl CandidateBudget {
             .count
             .checked_add(1)
             .ok_or_else(|| IngestError::InvalidMetadata("file count overflow".into()))?;
-        let dir_slice = extract_dir_slice(path);
+        self.record_dir_run(extract_dir_slice(path));
 
+        if self.count > MAX_FILE_COUNT {
+            return Err(self.overflow_error());
+        }
+        Ok(())
+    }
+
+    fn record_dir_run(&mut self, dir_slice: &str) {
         if let Some(last) = self.dir_runs.last_mut()
             && last.0 == dir_slice
         {
@@ -169,18 +184,17 @@ impl CandidateBudget {
         } else {
             self.dir_runs.push((dir_slice.to_owned(), 1));
         }
+    }
 
-        if self.count > MAX_FILE_COUNT {
-            let mut aggregated: HashMap<String, usize> = HashMap::new();
-            for (dir, count) in &self.dir_runs {
-                *aggregated.entry(dir.clone()).or_insert(0) += count;
-            }
-            return Err(IngestError::CandidateLimitExceeded {
-                limit: MAX_FILE_COUNT,
-                largest_directories: top_overflow_directories(&aggregated),
-            });
+    fn overflow_error(&self) -> IngestError {
+        let mut aggregated: HashMap<String, usize> = HashMap::new();
+        for (dir, count) in &self.dir_runs {
+            *aggregated.entry(dir.clone()).or_insert(0) += count;
         }
-        Ok(())
+        IngestError::CandidateLimitExceeded {
+            limit: MAX_FILE_COUNT,
+            largest_directories: top_overflow_directories(&aggregated),
+        }
     }
 }
 

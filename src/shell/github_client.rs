@@ -4,6 +4,7 @@ use std::io::{BufReader, Read};
 use std::time::Duration;
 
 use ureq::Agent;
+use ureq::config::RedirectAuthHeaders;
 use ureq::http::StatusCode;
 use ureq::tls::{RootCerts, TlsConfig};
 
@@ -11,7 +12,7 @@ use crate::core::error::IngestError;
 use crate::core::github_url::{is_github_api_origin, tarball_url};
 use crate::core::policy::{ARCHIVE_MAX_SECS, MAX_RETRIES, is_retryable_status, retry_delay};
 
-const GITHUB_USER_AGENT: &str = "codefeed/0.1";
+const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 const GITHUB_TIMEOUT_SECS: u64 = 30;
 
 pub(crate) struct GithubClient {
@@ -26,6 +27,7 @@ impl GithubClient {
             .build();
         let config = Agent::config_builder()
             .user_agent(GITHUB_USER_AGENT)
+            .redirect_auth_headers(RedirectAuthHeaders::Never)
             .timeout_recv_response(Some(Duration::from_secs(GITHUB_TIMEOUT_SECS)))
             .timeout_recv_body(Some(Duration::from_secs(ARCHIVE_MAX_SECS)))
             .http_status_as_error(false)
@@ -335,5 +337,63 @@ mod tests {
 
         handle.join().expect("server thread finish");
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn user_agent_matches_cargo_package_version() {
+        assert_eq!(
+            GITHUB_USER_AGENT,
+            concat!("codefeed/", env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[test]
+    fn strips_authorization_header_on_redirect() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept 1");
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).expect("read 1");
+            let req1 = String::from_utf8_lossy(&buf[..n]);
+            assert!(
+                req1.to_ascii_lowercase()
+                    .contains("authorization: bearer test-token"),
+                "first request must contain authorization header: {req1}"
+            );
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/dest\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(response.as_bytes());
+
+            let (mut stream, _) = listener.accept().expect("accept 2");
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).expect("read 2");
+            let req2 = String::from_utf8_lossy(&buf[..n]);
+            assert!(
+                !req2.to_ascii_lowercase().contains("authorization"),
+                "redirected request must not contain authorization header: {req2}"
+            );
+            let response =
+                "HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess";
+            let _ = stream.write_all(response.as_bytes());
+        });
+
+        let client = GithubClient::new();
+        let url = format!("http://127.0.0.1:{port}/start");
+        let resp = client
+            .agent
+            .get(&url)
+            .header("Authorization", "Bearer test-token")
+            .call()
+            .expect("call should follow redirect and succeed");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        handle.join().expect("server thread finish");
     }
 }

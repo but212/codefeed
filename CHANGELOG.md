@@ -32,8 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Filtered redundant empty path components (`//`) in `is_hidden_path` (`src/core/policy.rs`) to prevent non-hidden paths with duplicate delimiters from being misclassified as hidden.
 - Mapped invalid output file paths lacking a file name component to `IngestError::Usage` in `src/shell/output.rs`.
 - Enforced candidate count limits prior to reading file contents from disk in local walk (`src/shell/local.rs`) via `CandidateBudget::check_limit`, preventing unbounded I/O when file counts exceed `MAX_FILE_COUNT`.
+- Enforced case-insensitive `.env*` prefix check in `is_sensitive_path` (`src/core/policy.rs`), harmonizing implementation with documentation.
+- Replaced hardcoded `"codefeed/0.1"` user agent with `concat!("codefeed/", env!("CARGO_PKG_VERSION"))` in `src/shell/github_client.rs`.
 
 ### Changed
+
+- Explicitly configured `redirect_auth_headers(RedirectAuthHeaders::Never)` in `GithubClient::new` (`src/shell/github_client.rs`), pinning the security contract against header propagation during cross-origin redirects with regression tests.
+- Replaced `to_string_lossy()` calls in Windows `is_strictly_beneath` (`src/shell/local_io.rs`) with `OsStr::eq_ignore_ascii_case`, eliminating heap allocations for wide/non-UTF-8 paths.
+- Added `debug_assert!` bounds checks to `FileStorage::push` (`src/core/model.rs`) guarding against `u32` offset truncation.
+- Deduplicated candidate budget accounting in `Selector::decide` via `ItemResolution::path`, and extracted `CandidateBudget::record_dir_run` and `overflow_error` helper methods in `src/core/decide.rs`.
 
 - Replaced `CandidateBudget` happy-path `HashMap` allocations with run-length encoded directory tracking (`dir_runs: Vec<(String, usize)>`), deferring aggregation until candidate overflow diagnostics are formatted.
 - Unified `BudgetTrie` tree root at `nodes[0]`, eliminating `root_children: Vec<u32>` and redundant `Option<u32>` branch checks in `get_or_insert_child`.
