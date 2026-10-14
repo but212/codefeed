@@ -15,7 +15,7 @@ Fast CLI that converts a local directory or GitHub repository into an LLM-friend
 - Local directory paths (`./path/to/project`).
 - HTTPS GitHub repository URLs (`https://github.com/{owner}/{repo}`).
 
-`codefeed` does not invoke the `git` binary, manage temporary disk clones, or parse non-GitHub remote URLs (`git@`, `ssh://`, GitLab, Bitbucket). For unsupported remote repositories, clone locally first:
+`codefeed` does not invoke the `git` binary, create temporary disk clones, or parse non-GitHub remote URLs (`git@`, `ssh://`, GitLab, Bitbucket). For other remotes, clone locally first:
 
 ```bash
 git clone --depth 1 <URL> ./repo && codefeed ./repo
@@ -27,7 +27,7 @@ git clone --depth 1 <URL> ./repo && codefeed ./repo
 codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]
 ```
 
-`codefeed` accepts options before or after the `<SOURCE>` argument, supports short aliases (`-o`, `-f`, `-r`, `-h`), and accepts `=` separators (`--format=xml`, `-o=output.txt`).
+Options may appear before or after `<SOURCE>`, support short flags (`-o`, `-f`, `-r`, `-h`), and accept `=` syntax (`--format=xml`, `-o=output.txt`).
 
 ### Examples
 
@@ -77,9 +77,9 @@ cargo build --release
 
 ## Output and Exit Contracts
 
-- **File output (`--output <PATH>`)**: Writes to a temporary file, syncs to disk, and atomically renames. Emits `<PATH> (<N> files, <N> skipped, ~<N> tokens)` to stdout. Preserves existing files on failure.
-- **Stream output (`--output -`)**: Writes raw digest to stdout; emits the completion summary to stderr.
-- **Format fidelity**: Plain text (`--format text`) preserves valid UTF-8 file content verbatim (rejecting NUL bytes); ANSI sequences in source files are preserved as-is. XML (`--format xml`) sanitizes disallowed XML control characters to `\u{FFFD}`.
+- **File output (`--output <PATH>`)**: Writes to a temporary file, syncs to disk, and atomically renames. Prints `<PATH> (<N> files, <N> skipped, ~<N> tokens)` to stdout. Preserves existing files on failure.
+- **Stream output (`--output -`)**: Writes raw digest to stdout and completion summary to stderr.
+- **Format fidelity**: Plain text (`--format text`) preserves valid UTF-8 file content verbatim (rejecting NUL bytes); ANSI sequences remain intact. XML (`--format xml`) sanitizes disallowed XML 1.0 control characters to `\u{FFFD}`.
 - **Pipe termination**: Downstream pipe closure (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0.
 - **Errors**: Invalid CLI arguments and ingest errors print to stderr and exit non-zero.
 
@@ -88,14 +88,14 @@ cargo build --release
 Public GitHub repositories require no credentials. For private repositories or higher rate limits, set:
 
 - `GITHUB_TOKEN` — Checked first.
-- `GH_TOKEN` — Fallback if `GITHUB_TOKEN` is unset or empty.
+- `GH_TOKEN` — Fallback when `GITHUB_TOKEN` is unset or empty.
 
-Credentials are sent as `Authorization: Bearer <token>` strictly to exact-origin `https://api.github.com`. Redirects to foreign hosts never receive authorization headers.
+Credentials are sent as `Authorization: Bearer <token>` strictly to exact-origin `https://api.github.com`. Redirects to other hosts never receive authorization headers.
 
 ## Filtering and Budgets
 
 - **Hierarchy**: Renders directory structure as an ASCII tree (`├── `, `└── `, `│   `).
-- **Exclusions**: Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and case-insensitive sensitive patterns (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.credentials`, `id_rsa*`, `id_ed25519*`, `credentials*`). Sensitive filtering matches path conventions, not deep content. Excluded files consume neither candidate slots nor skipped counts.
+- **Exclusions**: Excludes `.git`, hidden entries, symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and case-insensitive sensitive patterns (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.credentials`, `id_rsa*`, `id_ed25519*`, `credentials*`). Sensitive filtering matches path conventions, not file content. Excluded files consume neither candidate slots nor skipped counts.
 - **Gitignore**: Applies `.gitignore` rules in local sources without Git state. Ignores `.ignore` files.
 - **Traversal**: Traverses local filesystems via `ignore::WalkBuilder` (`follow_links(false)`) with deterministic sorting, sequential reads, non-symlink metadata validation, and normalized output path exclusion.
 - **Remote Ingestion**: Streams GitHub repository archives (`/repos/{owner}/{repo}/tarball/{ref}`) in a single HTTP request via `flate2` and `tar` directly into the selection pipeline with zero intermediate disk files. Extracts commit SHA from `pax_global_header`.
