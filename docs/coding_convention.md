@@ -4,18 +4,59 @@ Project-wide coding standards and API design principles for `codefeed`. Combines
 
 ---
 
-## 1. Naming & Case Conventions (Rust API Guidelines: `C-CASE`, `C-IDENT`)
+## 1. Naming & Case Conventions (Rust API Guidelines: `C-CASE`, `C-GETTER`, `C-CTOR`, `C-ITER`)
 
-Adhere to standard Rust casing across all code:
+### Case Conventions (`C-CASE`, RFC 430)
 
 | Item | Convention | Example |
 | :--- | :--- | :--- |
-| Crates, modules, files | `snake_case` | `local_io`, `candidate_budget` |
-| Types, traits, enums | `UpperCamelCase` | `FileRecord`, `BudgetTrieNode` |
+| Crates | `snake_case` (prefer single word) | `codefeed` |
+| Modules, files | `snake_case` | `local_io`, `candidate_budget` |
+| Types, traits, enums, variants | `UpperCamelCase` | `FileRecord`, `Option::Some` |
 | Functions, methods, variables | `snake_case` | `render_text`, `path_arena` |
 | Static items, constants | `SCREAMING_SNAKE_CASE` | `MAX_FILE_COUNT`, `MAX_OUTPUT_SIZE` |
 | Type parameters | Concise `UpperCamelCase` | `T`, `W: Write` |
+| Lifetimes | Short `lowercase` | `'a`, `'de` |
 | Features | `kebab-case` | `platform-verifier` |
+
+### Fine Points from RFC 430
+
+- **Acronyms and Initialisms:**
+  - In `UpperCamelCase`, acronyms count as a single word (e.g., `Uuid`, `HttpServer`, `XmlChunks` — never `UUID`, `HTTPServer`, `XMLChunks`).
+  - In `snake_case`, acronyms are completely lowercased (e.g., `is_xid_start`, `sha`).
+- **Single-Letter Words:**
+  - In `snake_case` or `SCREAMING_SNAKE_CASE`, a word should never consist of a single letter unless it is the final word (e.g., `btree_map` over `b_tree_map`, but `PI_2` over `PI2`).
+
+### Idiomatic Method & Function Naming
+
+- **Getters & Setters (`C-GETTER`):**
+  - Do not prefix getters with `get_`. Use the field name directly: `field(&self) -> &Field`.
+  - Mutable borrow getters use `_mut` suffix: `field_mut(&mut self) -> &mut Field`.
+  - Prefix with `get_` only when returning an element that requires a key or runtime lookup (e.g., `get(&self, key)`).
+  - Prefix setters with `set_`: `set_field(&mut self, val: Field)`.
+
+- **Constructors & Builders (`C-CTOR`, RFC 430):**
+  - Default constructor is `new(...) -> Self`.
+  - Additional constructors take descriptive prefixes: `with_capacity(...)`, `with_more_details(...)`.
+  - Conversion constructors follow `from_...(...)`: `from_raw(...)`, `from_utf8(...)`.
+  - Fluent builder configuration methods take `with_` or verb/adjective names directly without redundant prefixes.
+
+- **Unwrapping & Panic-Free Extraction (RFC 430):**
+  - Reserve `unwrap()` strictly for assertions on `Option` and `Result` where failure explicitly panics.
+  - Non-panicking resource/inner extraction must use `into_inner()` (wrapper types) or `into_foo()` (concrete target types), never `unwrap()`.
+
+- **Iterators (`C-ITER`):**
+  - Shared reference iterator: `iter(&self) -> Iter`.
+  - Mutable reference iterator: `iter_mut(&mut self) -> IterMut`.
+  - Consuming iterator: `into_iter(self) -> IntoIter` (via `IntoIterator`).
+
+- **Predicates & Booleans:**
+  - Prefer descriptive boolean prefixes: `is_empty()`, `has_children()`, `can_read()`.
+  - Avoid negative forms in identifiers (`is_not_empty` $\rightarrow$ `!is_empty()`).
+
+- **Standard Abbreviations:**
+  - Keep standard domain abbreviations concise: `id`, `url`, `len`, `src`, `dst`, `err`.
+  - Prefer established Rust naming idioms (`len()` over `length()`, `iter()` over `iterator()`).
 
 ---
 
