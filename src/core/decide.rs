@@ -91,9 +91,10 @@ impl Selector {
     }
 
     pub fn with_capacity(spans_cap: usize, path_bytes: usize, content_bytes: usize) -> Self {
+        let dir_runs_cap = (spans_cap / 16).clamp(16, 256);
         Self {
             storage: FileStorage::with_capacity(spans_cap, path_bytes, content_bytes),
-            candidates: CandidateBudget::default(),
+            candidates: CandidateBudget::with_capacity(dir_runs_cap),
             content_bytes: 0,
             skipped: 0,
         }
@@ -165,14 +166,57 @@ impl Default for Selector {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CompactDir {
+    Inline { len: u8, buf: [u8; 22] },
+    Heap(Box<str>),
+}
+
+impl CompactDir {
+    pub(crate) fn from_str(s: &str) -> Self {
+        if s.len() <= 22 {
+            let mut buf = [0u8; 22];
+            buf[..s.len()].copy_from_slice(s.as_bytes());
+            Self::Inline {
+                len: s.len() as u8,
+                buf,
+            }
+        } else {
+            Self::Heap(s.into())
+        }
+    }
+
+    #[inline]
+    pub(crate) fn as_str(&self) -> &str {
+        match self {
+            Self::Inline { len, buf } => std::str::from_utf8(&buf[..*len as usize]).unwrap_or(""),
+            Self::Heap(s) => s.as_ref(),
+        }
+    }
+}
+
 /// Candidate-count budget owned by the selector that consumes it.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct CandidateBudget {
     count: usize,
-    dir_runs: Vec<(String, usize)>,
+    dir_runs: Vec<(CompactDir, usize)>,
 }
 
 impl CandidateBudget {
+    pub fn new() -> Self {
+        Self {
+            count: 0,
+            dir_runs: Vec::new(),
+        }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            count: 0,
+            dir_runs: Vec::with_capacity(capacity),
+        }
+    }
+
     pub fn check_limit<'a, I>(paths: I) -> Result<(), IngestError>
     where
         I: IntoIterator<Item = Option<&'a str>>,
@@ -207,18 +251,18 @@ impl CandidateBudget {
             .iter_mut()
             .rev()
             .take(16)
-            .find(|(dir, _)| dir == dir_slice)
+            .find(|(dir, _)| dir.as_str() == dir_slice)
         {
             entry.1 += 1;
         } else {
-            self.dir_runs.push((dir_slice.to_owned(), 1));
+            self.dir_runs.push((CompactDir::from_str(dir_slice), 1));
         }
     }
 
     fn overflow_error(&self) -> IngestError {
         let mut aggregated: HashMap<String, usize> = HashMap::new();
         for (dir, count) in &self.dir_runs {
-            *aggregated.entry(dir.clone()).or_insert(0) += count;
+            *aggregated.entry(dir.as_str().to_string()).or_insert(0) += count;
         }
         IngestError::CandidateLimitExceeded {
             limit: MAX_FILE_COUNT,
@@ -523,5 +567,21 @@ mod tests {
         let res = selector.finish("test".to_string(), None);
         assert_eq!(res.files.len(), 1);
         assert_eq!(res.skipped, 1);
+    }
+
+    #[test]
+    fn test_compact_dir_layout_and_parity() {
+        assert!(std::mem::size_of::<CompactDir>() <= 24);
+        assert!(std::mem::size_of::<(CompactDir, usize)>() <= 32);
+
+        let short_dir = CompactDir::from_str("src/");
+        assert_eq!(short_dir.as_str(), "src/");
+
+        let long_str = "deeply/nested/directory/structure/path/";
+        let long_dir = CompactDir::from_str(long_str);
+        assert_eq!(long_dir.as_str(), long_str);
+
+        assert_eq!(short_dir, CompactDir::from_str("src/"));
+        assert_ne!(short_dir, long_dir);
     }
 }

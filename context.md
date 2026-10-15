@@ -58,7 +58,7 @@ imperative-shell boundary.
 - Token count is estimated on the same writer stream pass over rendered bytes.
 - `BudgetTrie` stores nodes in a flat continuous 16-byte Left-Child Right-Sibling (LCRS) arena (`Vec<BudgetTrieNode>`) with compact contiguous labels in `label_arena: String`, with a unified root directory node at index 0. It is format-neutral; XML entity and newline escaping occurs on-the-fly during `render_to_writer(writer, escape_xml)`.
 - CLI arguments are parsed linearly into options and source in pure core (`core::cli`), supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters.
-- Candidate budget uses run-length encoding (`dir_runs: Vec<(String, usize)>`) on contiguous directory entries during collection, avoiding `HashMap` overhead on the happy path while preserving deterministic overflow diagnostics sorted by count descending then directory ascending.
+- Candidate budget uses run-length encoding (`dir_runs: Vec<(CompactDir, usize)>`) on contiguous directory entries during collection with zero-allocation 24-byte inline strings (`CompactDir`), avoiding `HashMap` overhead on the happy path while preserving deterministic overflow diagnostics sorted by count descending then directory ascending.
 - Digest budget is tracked directly in `Selector` and is error-terminal: limit breach constructs complete `IngestError::OutputTooLarge` diagnostics without internal transactional rollback.
 
 ### Network & GitHub
