@@ -5,12 +5,12 @@ use clap::{Parser, ValueEnum};
 
 use crate::core::error::IngestError;
 use crate::core::model::{DigestFormat, OutputTarget, RunConfig};
-use crate::core::source::parse_source_os;
+use crate::core::source::parse_os;
 
 const HELP: &str =
     "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]";
 
-pub fn help_text() -> &'static str {
+pub const fn help_text() -> &'static str {
     HELP
 }
 
@@ -59,7 +59,7 @@ struct Opts {
     format: FormatArg,
 }
 
-pub fn parse_cli<I, T>(args: I) -> Result<CliAction, IngestError>
+pub fn parse<I, T>(args: I) -> Result<CliAction, IngestError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
@@ -79,7 +79,7 @@ where
         return Err(IngestError::Usage(format!("missing source\n\n{HELP}")));
     };
 
-    let output = if source_value != "-" && opts.output == "-" {
+    let output = if opts.output == "-" {
         OutputTarget::Stdout
     } else {
         OutputTarget::File(PathBuf::from(opts.output))
@@ -90,7 +90,7 @@ where
         FormatArg::Xml => DigestFormat::Xml,
     };
 
-    let source = parse_source_os(&source_value)?.with_reference(opts.reference)?;
+    let source = parse_os(&source_value)?.with_reference(opts.reference)?;
 
     Ok(CliAction::Run(RunConfig::new(source, output, format)))
 }
@@ -102,11 +102,10 @@ mod tests {
 
     #[test]
     fn cli_parses_valid_invocations() {
-        assert_eq!(parse_cli(["codefeed", "--help"]).unwrap(), CliAction::Help);
-        assert_eq!(parse_cli(["codefeed", ".", "-h"]).unwrap(), CliAction::Help);
+        assert_eq!(parse(["codefeed", "--help"]).unwrap(), CliAction::Help);
+        assert_eq!(parse(["codefeed", ".", "-h"]).unwrap(), CliAction::Help);
 
-        let run_standard =
-            parse_cli(["codefeed", ".", "--format", "xml", "--output", "-"]).unwrap();
+        let run_standard = parse(["codefeed", ".", "--format", "xml", "--output", "-"]).unwrap();
         match run_standard {
             CliAction::Run(config) => {
                 assert!(matches!(config.source, Source::Local(_)));
@@ -116,7 +115,7 @@ mod tests {
             CliAction::Help => panic!("expected Run action"),
         }
 
-        let run_short = parse_cli(["codefeed", "-f", "xml", "-o", "-", "."]).unwrap();
+        let run_short = parse(["codefeed", "-f", "xml", "-o", "-", "."]).unwrap();
         match run_short {
             CliAction::Run(config) => {
                 assert!(matches!(config.source, Source::Local(_)));
@@ -126,7 +125,7 @@ mod tests {
             CliAction::Help => panic!("expected Run action"),
         }
 
-        let run_eq = parse_cli(["codefeed", "--format=xml", "-o=-", "."]).unwrap();
+        let run_eq = parse(["codefeed", "--format=xml", "-o=-", "."]).unwrap();
         match run_eq {
             CliAction::Run(config) => {
                 assert!(matches!(config.source, Source::Local(_)));
@@ -136,7 +135,7 @@ mod tests {
             CliAction::Help => panic!("expected Run action"),
         }
 
-        let run_delimiter = parse_cli(["codefeed", "--", "-weird-path"]).unwrap();
+        let run_delimiter = parse(["codefeed", "--", "-weird-path"]).unwrap();
         match run_delimiter {
             CliAction::Run(config) => {
                 assert_eq!(config.source, Source::Local(PathBuf::from("-weird-path")));
@@ -144,7 +143,16 @@ mod tests {
             CliAction::Help => panic!("expected Run action"),
         }
 
-        let run_gh = parse_cli([
+        let run_dash = parse(["codefeed", "-o", "-", "--", "-"]).unwrap();
+        match run_dash {
+            CliAction::Run(config) => {
+                assert_eq!(config.source, Source::Local(PathBuf::from("-")));
+                assert_eq!(config.output, OutputTarget::Stdout);
+            }
+            CliAction::Help => panic!("expected Run action"),
+        }
+
+        let run_gh = parse([
             "codefeed",
             "https://github.com/rust-lang/cargo",
             "--ref",
@@ -155,7 +163,7 @@ mod tests {
             CliAction::Run(config) => {
                 assert_eq!(
                     config.source,
-                    Source::GitHub {
+                    Source::Github {
                         owner: "rust-lang".into(),
                         repo: "cargo".into(),
                         reference: Some("main".into()),
@@ -187,7 +195,7 @@ mod tests {
         ];
         for args in invalid_cases {
             assert!(
-                parse_cli(args.iter().copied()).is_err(),
+                parse(args.iter().copied()).is_err(),
                 "expected error for: {args:?}"
             );
         }

@@ -10,9 +10,9 @@ use std::io::Write;
 use std::time::Instant;
 
 use codefeed::__bench::{
-    BudgetTrie, CandidateBudget, CollectionResult, DigestFormat, FileStorage, Item, ItemPath,
-    LocalStream, OutputTarget, Probe, Selector, collect_stream, escape_header, estimate_tokens,
-    render_digest_to_writer, text_str, write_xml_escaped, xml_escape,
+    BudgetTrie, CandidateBudget, CollectionResult, DigestFormat, FileStorage, Item, LocalStream,
+    OutputTarget, Probe, Selector, collect_stream, escape_header, estimate_tokens,
+    render_to_writer, text_str, write_escaped, xml_escape,
 };
 
 pub struct VoidWriter;
@@ -387,7 +387,7 @@ mod suites {
 
             runner.bench(name, 5, 20, Some(approx_bytes), || {
                 let mut sink = Vec::with_capacity(2 * 1024 * 1024);
-                let tokens = render_digest_to_writer(&mut sink, &collection, format)
+                let tokens = render_to_writer(&mut sink, &collection, format)
                     .expect("rendering should succeed");
                 black_box(tokens);
                 black_box(sink.len());
@@ -408,7 +408,7 @@ mod suites {
 
         runner.bench("xml_stream_write_100k", 10, 50, Some(payload_bytes), || {
             let mut writer = VoidWriter;
-            write_xml_escaped(&mut writer, &payload).expect("write xml");
+            write_escaped(&mut writer, &payload).expect("write xml");
             black_box(&mut writer);
         });
 
@@ -475,31 +475,31 @@ mod suites {
         }
     }
 
-    fn generate_selector_items(count: usize) -> Vec<Item> {
+    fn generate_selector_items(count: usize) -> Vec<Item<'static>> {
         let mut items = Vec::with_capacity(count);
         let sample_bytes = b"pub fn hello() -> &'static str { \"world\" }\n".to_vec();
 
         for i in 0..count {
             match i % 5 {
                 0 => items.push(Item {
-                    path: ItemPath::Utf8(format!("src/file_{i}.rs")),
-                    probe: Probe::Bytes(sample_bytes.clone()),
+                    path: format!("src/file_{i}.rs").into(),
+                    probe: Probe::Bytes(sample_bytes.clone().into()),
                 }),
                 1 => items.push(Item {
-                    path: ItemPath::Utf8(format!("src/image_{i}.png")),
+                    path: format!("src/image_{i}.png").into(),
                     probe: Probe::Missing,
                 }),
                 2 => items.push(Item {
-                    path: ItemPath::Utf8(format!("src/big_{i}.bin")),
+                    path: format!("src/big_{i}.bin").into(),
                     probe: Probe::TooLarge,
                 }),
                 3 => items.push(Item {
-                    path: ItemPath::Utf8(format!("secret_{i}.key")),
+                    path: format!("secret_{i}.key").into(),
                     probe: Probe::Missing,
                 }),
                 _ => items.push(Item {
-                    path: ItemPath::Utf8(format!("src/valid_{i}.rs")),
-                    probe: Probe::Bytes(sample_bytes.clone()),
+                    path: format!("src/valid_{i}.rs").into(),
+                    probe: Probe::Bytes(sample_bytes.clone().into()),
                 }),
             }
         }
@@ -610,14 +610,21 @@ mod suites {
     }
 
     fn bench_local_collect(runner: &mut Runner) {
-        let name = "local_collect_hierarchical_1000";
-        if !runner.should_run(name) {
+        let walk_name = "local_walk_hierarchical_1000";
+        let collect_name = "local_collect_hierarchical_1000";
+        if !runner.should_run(walk_name) && !runner.should_run(collect_name) {
             return;
         }
 
         let (_guard, temp_root) = setup_temp_hierarchy(1_000);
 
-        runner.bench(name, 2, 10, None, || {
+        runner.bench(walk_name, 3, 20, None, || {
+            let stream = LocalStream::new(&temp_root, &OutputTarget::Stdout)
+                .expect("LocalStream::new should succeed");
+            black_box(stream);
+        });
+
+        runner.bench(collect_name, 2, 10, None, || {
             let stream = LocalStream::new(&temp_root, &OutputTarget::Stdout)
                 .expect("LocalStream::new should succeed");
             let res = collect_stream(stream).expect("collect_stream should succeed");
@@ -640,14 +647,14 @@ mod cli {
         let mut filter: Option<String> = None;
         let mut self_test = false;
 
-        let mut idx = 0;
-        while idx < args.len() {
-            match args[idx].as_str() {
+        let mut index = 0;
+        while index < args.len() {
+            match args[index].as_str() {
                 "--json" => format = OutputFormat::Json,
                 "--filter" => {
-                    idx += 1;
-                    if idx < args.len() {
-                        filter = Some(args[idx].clone());
+                    index += 1;
+                    if index < args.len() {
+                        filter = Some(args[index].clone());
                     }
                 }
                 "--test" | "tests" | "--self-test" => {
@@ -662,7 +669,7 @@ mod cli {
                 }
                 _ => {}
             }
-            idx += 1;
+            index += 1;
         }
 
         Some(CliConfig {

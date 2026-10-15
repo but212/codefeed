@@ -114,7 +114,7 @@ impl GithubClient {
     }
 }
 
-fn is_retryable_transport_error(error: &ureq::Error) -> bool {
+const fn is_retryable_transport_error(error: &ureq::Error) -> bool {
     matches!(
         error,
         ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed

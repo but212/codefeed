@@ -40,7 +40,7 @@ const SPECIAL_BITSET: [u64; 4] = {
 };
 
 #[inline(always)]
-fn is_special_byte(b: u8) -> bool {
+const fn is_special_byte(b: u8) -> bool {
     let word = SPECIAL_BITSET[(b >> 6) as usize];
     (word & (1u64 << (b & 63))) != 0
 }
@@ -77,7 +77,7 @@ pub enum XmlChunk<'a> {
 
 impl<'a> XmlChunk<'a> {
     #[inline]
-    pub fn as_str(&self) -> &'a str {
+    pub const fn as_str(&self) -> &'a str {
         match *self {
             XmlChunk::Raw(s) => s,
             XmlChunk::Escaped(s) => s,
@@ -85,7 +85,7 @@ impl<'a> XmlChunk<'a> {
     }
 
     #[inline]
-    pub fn as_bytes(&self) -> &'a [u8] {
+    pub const fn as_bytes(&self) -> &'a [u8] {
         self.as_str().as_bytes()
     }
 }
@@ -98,14 +98,8 @@ pub struct XmlChunks<'a> {
 }
 
 impl<'a> XmlChunks<'a> {
-    #[cfg(test)]
     #[inline]
-    pub fn new(value: &'a str) -> Self {
-        Self::from_offset(value, 0)
-    }
-
-    #[inline]
-    pub fn from_offset(value: &'a str, offset: usize) -> Self {
+    pub const fn from_offset(value: &'a str, offset: usize) -> Self {
         Self {
             value,
             bytes: value.as_bytes(),
@@ -152,15 +146,17 @@ impl<'a> Iterator for XmlChunks<'a> {
     }
 }
 
-pub fn xml_escape(value: &str) -> Cow<'_, str> {
-    let bytes = value.as_bytes();
-
-    let first = bytes
+#[inline(always)]
+pub(crate) fn first_special_index(bytes: &[u8]) -> Option<usize> {
+    bytes
         .iter()
         .enumerate()
-        .position(|(i, &b)| is_special_byte(b) && (b != 0xEF || xml_special(bytes, i).is_some()));
+        .position(|(i, &b)| is_special_byte(b) && (b != 0xEF || xml_special(bytes, i).is_some()))
+}
 
-    let Some(first) = first else {
+pub fn xml_escape(value: &str) -> Cow<'_, str> {
+    let bytes = value.as_bytes();
+    let Some(first) = first_special_index(bytes) else {
         return Cow::Borrowed(value);
     };
 
@@ -172,15 +168,9 @@ pub fn xml_escape(value: &str) -> Cow<'_, str> {
     Cow::Owned(result)
 }
 
-pub fn write_xml_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
+pub fn write_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
     let bytes = value.as_bytes();
-
-    let first = bytes
-        .iter()
-        .enumerate()
-        .position(|(i, &b)| is_special_byte(b) && (b != 0xEF || xml_special(bytes, i).is_some()));
-
-    let Some(first) = first else {
+    let Some(first) = first_special_index(bytes) else {
         return writer.write_all(bytes);
     };
 
@@ -219,7 +209,7 @@ where
         writer.write_all(XML_FILE_START.as_bytes())?;
         writer.write_all(xml_escape(file.path).as_bytes())?;
         writer.write_all(XML_TAG_CLOSE.as_bytes())?;
-        write_xml_escaped(writer, file.content)?;
+        write_escaped(writer, file.content)?;
         let needs_nl = (!file.content.ends_with('\n')) as usize;
         writer.write_all(FILE_TAILS[needs_nl])?;
     }
@@ -266,7 +256,7 @@ mod tests {
             );
 
             let mut streamed = Vec::new();
-            write_xml_escaped(&mut streamed, text).unwrap();
+            write_escaped(&mut streamed, text).unwrap();
             assert_eq!(
                 String::from_utf8(streamed).unwrap(),
                 escaped.as_ref(),
@@ -278,7 +268,7 @@ mod tests {
     #[test]
     fn xml_chunks_iterator_yields_expected_sequence() {
         let input = "hello <world> & 'test'";
-        let chunks: Vec<_> = XmlChunks::new(input).collect();
+        let chunks: Vec<_> = XmlChunks::from_offset(input, 0).collect();
         assert_eq!(
             chunks,
             vec![
@@ -299,7 +289,7 @@ mod tests {
     #[test]
     fn test_xml_chunks_handles_non_escaping_ef_lead_bytes() {
         let input = "prefix \u{FFFD} & <\u{FEFF}> middle \u{FF01} suffix";
-        let chunks: Vec<_> = XmlChunks::new(input).collect();
+        let chunks: Vec<_> = XmlChunks::from_offset(input, 0).collect();
         assert_eq!(
             chunks,
             vec![

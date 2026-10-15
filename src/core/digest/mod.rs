@@ -5,10 +5,10 @@ mod trie;
 mod xml;
 
 pub(crate) use budget::largest_files;
-pub use text::escape_header;
+pub use text::{escape_header, unescape_header};
 pub use token::{TokenEstimator, estimate_tokens};
 pub use trie::BudgetTrie;
-pub use xml::{write_xml_escaped, xml_escape};
+pub use xml::{write_escaped, xml_escape};
 
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
@@ -109,7 +109,7 @@ impl<W: std::io::Write + ?Sized> std::io::Write for BoundedEstimatingWriter<'_, 
     }
 }
 
-pub fn render_digest_to_writer<W: std::io::Write + ?Sized>(
+pub fn render_to_writer<W: std::io::Write + ?Sized>(
     writer: &mut W,
     collection: &CollectionResult,
     format: DigestFormat,
@@ -166,7 +166,7 @@ mod tests {
             trie,
         };
         let mut buffer = Vec::new();
-        render_digest_to_writer(&mut buffer, &collection, DigestFormat::Text)?;
+        render_to_writer(&mut buffer, &collection, DigestFormat::Text)?;
         String::from_utf8(buffer).map_err(|error| IngestError::Io(std::io::Error::other(error)))
     }
 
@@ -230,7 +230,7 @@ mod tests {
             trie: test_trie(files),
         };
         let mut streamed = Vec::new();
-        render_digest_to_writer(&mut streamed, &collection, DigestFormat::Text)?;
+        render_to_writer(&mut streamed, &collection, DigestFormat::Text)?;
         let streamed_str = std::str::from_utf8(&streamed)?;
 
         let expected = "\
@@ -299,13 +299,13 @@ hello\n\
         let mut selector = Selector::new();
         let res = selector.decide(Item {
             path: ItemPath::Utf8("large.txt".into()),
-            probe: Probe::Bytes(content),
+            probe: Probe::Bytes(content.into()),
         });
         assert!(res.is_err());
     }
 
     #[test]
-    fn render_digest_to_writer_enforces_output_size_cap() {
+    fn render_to_writer_enforces_output_size_cap() {
         let content = "x".repeat(MAX_OUTPUT_SIZE as usize);
         let candidate = FileRecord {
             path: "large.txt",
@@ -321,7 +321,7 @@ hello\n\
             trie: BudgetTrie::new(),
         };
         let mut sink = Vec::new();
-        match render_digest_to_writer(&mut sink, &collection, DigestFormat::Text) {
+        match render_to_writer(&mut sink, &collection, DigestFormat::Text) {
             Err(IngestError::OutputTooLarge { largest_files }) => {
                 assert_eq!(largest_files.len(), 1);
                 assert_eq!(largest_files[0].0, "large.txt");
@@ -352,7 +352,7 @@ hello\n\
             trie: test_trie(files),
         };
         let mut out = Vec::new();
-        render_digest_to_writer(&mut out, &collection, DigestFormat::Xml)?;
+        render_to_writer(&mut out, &collection, DigestFormat::Xml)?;
         let xml_str = std::str::from_utf8(&out)?;
         let expected = "\
 <repository name=\"my-repo\" revision=\"v1.0\">
@@ -397,7 +397,7 @@ z &lt; 10
             trie: test_trie(files),
         };
         let mut xml_out = Vec::new();
-        render_digest_to_writer(&mut xml_out, &collection, DigestFormat::Xml)?;
+        render_to_writer(&mut xml_out, &collection, DigestFormat::Xml)?;
         let xml_str = std::str::from_utf8(&xml_out)?;
         assert!(
             !xml_str.contains("\x1b"),

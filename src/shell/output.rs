@@ -222,9 +222,10 @@ impl OutputFilter {
         }
 
         if let Some(canonical) = &self.canonical_target
-            && paths_match(candidate_path.as_ref(), canonical) {
-                return true;
-            }
+            && paths_match(candidate_path.as_ref(), canonical)
+        {
+            return true;
+        }
 
         false
     }
@@ -237,6 +238,9 @@ fn paths_match(candidate: &Path, target: &Path) -> bool {
     }
     #[cfg(any(windows, target_os = "macos"))]
     {
+        if candidate.as_os_str().len() != target.as_os_str().len() {
+            return false;
+        }
         paths_equal_ignore_case(candidate, target)
     }
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -264,9 +268,16 @@ pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     for component in path.components() {
         match component {
             Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
+            Component::ParentDir => match normalized.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    normalized.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                Some(Component::ParentDir) | None => {
+                    normalized.push("..");
+                }
+                Some(Component::CurDir) => unreachable!(),
+            },
             Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
                 normalized.push(component.as_os_str());
             }
@@ -383,6 +394,25 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_relative_parent_dir_components_and_is_idempotent() {
+        let cases = [
+            ("../a", "../a"),
+            ("a/../../b", "../b"),
+            ("a/b/../../c", "c"),
+            ("/..", "/"),
+            ("/a/../../b", "/b"),
+            ("./a/../b", "b"),
+        ];
+        for (input, expected) in cases {
+            let path = Path::new(input);
+            let normalized = normalize_path(path);
+            assert_eq!(normalized, Path::new(expected), "failed for {input}");
+            let idempotent = normalize_path(&normalized);
+            assert_eq!(idempotent, normalized, "idempotency failed for {input}");
+        }
+    }
+
+    #[test]
     fn atomic_write_normalizes_parent_with_aliases() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("atomic_aliases")?;
         let output = root.join("missing").join("..").join("digest.txt");
@@ -479,5 +509,12 @@ mod tests {
         assert!(filter.is_excluded(&output_via_real));
         assert!(filter.is_excluded(&output_via_link));
         Ok(())
+    }
+
+    #[test]
+    fn test_paths_match_length_mismatch_fast_path() {
+        let path_a = Path::new("short.txt");
+        let path_b = Path::new("very_long_path_name.txt");
+        assert!(!paths_match(path_a, path_b));
     }
 }

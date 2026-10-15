@@ -5,35 +5,39 @@ use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, IngestReport, RunConfig, Source};
 use crate::shell;
 
-pub trait SourceStream: Iterator<Item = Result<Item, IngestError>> {
-    fn label(&self) -> &str;
-    fn revision(&self) -> Option<&str> {
-        None
-    }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamInfo {
+    pub label: String,
+    pub revision: Option<String>,
 }
 
-pub fn collect_stream<S: SourceStream>(mut stream: S) -> Result<CollectionResult, IngestError> {
-    let mut selector = Selector::from_size_hint(stream.size_hint());
-    for item_res in stream.by_ref() {
-        selector.decide(item_res?)?;
+pub trait SourceStream {
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, None)
     }
-    let label = stream.label().to_string();
-    let revision = stream.revision().map(str::to_string);
-    Ok(selector.finish(label, revision))
+    fn for_each_item<F>(self, callback: F) -> Result<StreamInfo, IngestError>
+    where
+        F: FnMut(Item<'_>) -> Result<(), IngestError>;
+}
+
+pub fn collect_stream<S: SourceStream>(stream: S) -> Result<CollectionResult, IngestError> {
+    let mut selector = Selector::from_size_hint(stream.size_hint());
+    let info = stream.for_each_item(|item| selector.decide(item))?;
+    Ok(selector.finish(info.label, info.revision))
 }
 
 pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
     let collection = match &config.source {
-        Source::Local(path) => shell::local::collect_local(path, &config.output)?,
-        Source::GitHub {
+        Source::Local(path) => shell::local::collect(path, &config.output)?,
+        Source::Github {
             owner,
             repo,
             reference,
-        } => shell::github::collect_github(owner, repo, reference.as_deref())?,
+        } => shell::github::collect(owner, repo, reference.as_deref())?,
     };
 
     let estimated_tokens = shell::output::emit(&config.output, |writer| {
-        crate::core::digest::render_digest_to_writer(writer, &collection, config.format)
+        crate::core::digest::render_to_writer(writer, &collection, config.format)
     })?;
 
     Ok(IngestReport {

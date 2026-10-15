@@ -1,10 +1,8 @@
 //! Heuristic token count estimation over streaming bytes and strings.
 
-const FLAG_WORD: u8 = 1 << 0; // [0-9a-zA-Z_]
-const FLAG_WS: u8 = 1 << 1; // whitespace
-const FLAG_NL: u8 = 1 << 2; // \n
+const METRIC_WORD: u8 = 1 << 0; // [0-9a-zA-Z_]
 
-const CHAR_FLAGS: [u8; 256] = {
+const CHAR_METRIC: [u8; 256] = {
     let mut t = [0u8; 256];
     let mut b = 0usize;
     while b < 256 {
@@ -12,14 +10,24 @@ const CHAR_FLAGS: [u8; 256] = {
         let is_upper = b >= b'A' as usize && b <= b'Z' as usize;
         let is_lower = b >= b'a' as usize && b <= b'z' as usize;
         let is_under = b == b'_' as usize;
-        if is_num || is_upper || is_lower || is_under {
-            t[b] |= FLAG_WORD;
-        }
-        if b == b' ' as usize || b == b'\t' as usize || b == b'\r' as usize || b == 0x0C {
-            t[b] |= FLAG_WS;
-        }
-        if b == b'\n' as usize {
-            t[b] |= FLAG_WS | FLAG_NL;
+        let is_word = is_num || is_upper || is_lower || is_under;
+
+        if is_word {
+            t[b] = METRIC_WORD;
+        } else {
+            let is_ws =
+                b == b' ' as usize || b == b'\t' as usize || b == b'\r' as usize || b == 0x0C;
+            let is_nl = b == b'\n' as usize;
+            let lambda = if (b as i8) < -64 {
+                0
+            } else if (b as i8) >= 0 {
+                1
+            } else {
+                2
+            };
+            let non_ws_weight = (!is_ws && !is_nl) as u8 * lambda;
+            let w_b = non_ws_weight + (is_nl as u8);
+            t[b] = w_b << 1;
         }
         b += 1;
     }
@@ -43,27 +51,18 @@ impl TokenEstimator {
     #[inline(always)]
     pub fn process_byte(&mut self, b: u8) {
         self.saw_input = true;
-        let flags = CHAR_FLAGS[b as usize];
-
-        let is_word = (flags & FLAG_WORD) as usize; // 0 or 1
-        let is_ws = ((flags & FLAG_WS) >> 1) as usize; // 0 or 1
-        let is_nl = ((flags & FLAG_NL) >> 2) as usize; // 0 or 1
+        let metric = CHAR_METRIC[b as usize] as usize;
+        let omega = metric & (METRIC_WORD as usize);
+        let w_b = metric >> 1;
 
         let prev_in_word = self.in_word as usize;
-        self.in_word = is_word != 0;
+        self.in_word = omega != 0;
 
-        let next_word_len = (self.word_len + 1) * is_word;
-        let full_word = (next_word_len >= 4) as usize;
-        self.word_len = next_word_len * (1 - full_word);
+        let next_word_len = (self.word_len + 1) * omega;
+        let delta_word = next_word_len / 4;
+        self.word_len = next_word_len % 4;
 
-        let is_cont = ((b & 0xC0) == 0x80) as usize;
-        let is_lead = 1 - is_cont;
-        let is_non_ascii_lead = ((b >= 0x80) as usize) & is_lead;
-
-        let non_ws_weight = (1 - is_ws) * (is_lead + is_non_ascii_lead);
-        let non_word_tokens = (1 - is_word) * (prev_in_word + non_ws_weight + is_nl);
-
-        self.tokens += full_word + non_word_tokens;
+        self.tokens += delta_word + (1 - omega) * prev_in_word + w_b;
     }
 
     #[inline]
@@ -77,10 +76,10 @@ impl TokenEstimator {
         self.process_bytes(text.as_bytes());
     }
 
-    pub fn finish(mut self) -> usize {
-        self.tokens += self.in_word as usize;
-        let non_empty = (self.tokens > 0) | self.saw_input;
-        self.tokens.max(non_empty as usize)
+    pub fn finish(&self) -> usize {
+        let tokens = self.tokens + self.in_word as usize;
+        let non_empty = (tokens > 0) | self.saw_input;
+        tokens.max(non_empty as usize)
     }
 }
 
@@ -102,6 +101,17 @@ mod tests {
         assert!(estimate_tokens("fn main() {\n    println!(\"Hello, world!\");\n}\n") >= 8);
         assert!(estimate_tokens("한글 텍스트 테스트") >= 4);
         assert!(estimate_tokens("word1 word2...word3\nword4") >= 5);
+    }
+
+    #[test]
+    fn test_finish_is_idempotent() {
+        let mut estimator = TokenEstimator::new();
+        estimator.process_str("hello world\nfn main() { let x = 42; }");
+        let first = estimator.finish();
+        let second = estimator.finish();
+        let third = estimator.finish();
+        assert_eq!(first, second);
+        assert_eq!(second, third);
     }
 
     #[test]

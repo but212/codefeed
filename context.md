@@ -4,7 +4,8 @@
 
 Convert a local directory or public GitHub repository into one LLM-friendly
 text digest. Public behavior, limits, and CLI contract are documented in
-`README.md`; this file fixes domain terms and the functional-core /
+`README.md`; coding standards and Rust API conventions are defined in
+`docs/coding_convention.md`; this file fixes domain terms and the functional-core /
 imperative-shell boundary.
 
 ## Entities and value objects
@@ -31,7 +32,7 @@ imperative-shell boundary.
 - Consumes candidate slots before evaluating content, size, or encoding.
 - `skipped` counts candidates rejected for content, size, or encoding. Ignored paths are never counted in `skipped`.
 - Rejects content exceeding `MAX_OUTPUT_SIZE`; overflow content is never emitted.
-- Known binary extensions (`BINARY_EXT`) are classified as `Probe::Missing` before reading content or remote downloading to save I/O while preserving candidate and skipped accounting.
+- Known binary extensions (`BINARY_EXTENSIONS`) are classified as `Probe::Missing` before reading content or remote downloading to save I/O while preserving candidate and skipped accounting.
 - Diagnostic largest files reporting (`largest_files`) uses bounded Top-5 selection with linear position lookup, avoiding full-collection cloning or $O(N \log N)$ sorting while preserving insertion stability for tie-breakers.
 
 ### Rendering & Formats
@@ -57,7 +58,7 @@ imperative-shell boundary.
 - Token count is estimated on the same writer stream pass over rendered bytes.
 - `BudgetTrie` stores nodes in a flat continuous 16-byte Left-Child Right-Sibling (LCRS) arena (`Vec<BudgetTrieNode>`) with compact contiguous labels in `label_arena: String`, with a unified root directory node at index 0. It is format-neutral; XML entity and newline escaping occurs on-the-fly during `render_to_writer(writer, escape_xml)`.
 - CLI arguments are parsed linearly into options and source in pure core (`core::cli`), supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters.
-- Candidate budget uses run-length encoding (`dir_runs: Vec<(String, usize)>`) on contiguous directory entries during collection, avoiding `HashMap` overhead on the happy path while preserving deterministic overflow diagnostics sorted by count descending then directory ascending.
+- Candidate budget uses run-length encoding (`dir_runs: Vec<(CompactDir, usize)>`) on contiguous directory entries during collection with zero-allocation 24-byte inline strings (`CompactDir`), avoiding `HashMap` overhead on the happy path while preserving deterministic overflow diagnostics sorted by count descending then directory ascending.
 - Digest budget is tracked directly in `Selector` and is error-terminal: limit breach constructs complete `IngestError::OutputTooLarge` diagnostics without internal transactional rollback.
 
 ### Network & GitHub
@@ -78,8 +79,8 @@ imperative-shell boundary.
 | `RETRY_INITIAL_DELAY_MS` | 250 ms | Base initial delay for exponential backoff |
 | `RETRY_MAX_DELAY_MS` | 5,000 ms | Maximum delay cap for exponential backoff |
 | `NOISE` | lockfiles | Conventional lockfiles excluded before candidate budget |
-| `SENSITIVE_EXT` | 5 extensions | Key, cert, and credential extensions (`*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.credentials`) excluded before candidate budget (note: `credentials*` is also matched as filename prefix) |
-| `BINARY_EXT` | 11 extensions | Known binary file extensions filtered pre-download |
+| `SENSITIVE_EXTENSIONS` | 5 extensions | Key, cert, and credential extensions (`*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.credentials`) excluded before candidate budget (note: `credentials*` is also matched as filename prefix) |
+| `BINARY_EXTENSIONS` | 11 extensions | Known binary file extensions filtered pre-download |
 
 ## Functional core / imperative shell boundary
 
@@ -87,9 +88,9 @@ Boundary rule: pure core code performs no I/O, clock, network, or entropy and
 never depends on shell code; shell code depends on the core in one direction.
 
 - Pure core (`src/core/`):
-  - `cli.rs`: Pure CLI argument parsing, help detection, and `CliAction` generation (`parse_cli`).
+  - `cli.rs`: Pure CLI argument parsing, help detection, and `CliAction` generation (`parse`).
   - `policy.rs`: all operational limits, noise patterns, sensitive patterns, binary extensions, and
-    their predicates (`is_noise_path`, `is_sensitive_path`, `has_binary_extension`).
+    classification predicate (`PathClassification::classify`).
   - `source.rs`: source string and OS-string parsing.
   - `model.rs`: domain value types (`Source`, `FileRecord`, `CollectionResult`,
     `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`, `FileStorage`).
@@ -101,7 +102,7 @@ never depends on shell code; shell code depends on the core in one direction.
     - `token.rs`: `TokenEstimator` heuristic token state machine and `estimate_tokens`.
     - `trie.rs`: Format-neutral ASCII hierarchy tree (`BudgetTrie`).
     - `text.rs` / `xml.rs`: Format-specific streaming serializers.
-    - `mod.rs`: `DigestFormat::render`, `render_digest_to_writer`, and streaming `BoundedEstimatingWriter`.
+    - `mod.rs`: `DigestFormat::render`, `render_to_writer`, and streaming `BoundedEstimatingWriter`.
   - `github_url.rs`: Pure `std` URL construction with RFC 3986 percent-encoding and origin credential scoping.
   - `archive.rs`: Pax header comment extraction and archive root stripping.
 - Imperative shell (`src/shell/`):
@@ -110,6 +111,6 @@ never depends on shell code; shell code depends on the core in one direction.
   - `shell/local.rs`: 2-step linear filesystem candidate discovery and streaming reader (`LocalStream`).
   - `shell/local_io.rs`: Non-symlink file metadata validation and bounded streaming reads.
   - `shell/github_client.rs`: HTTP transport, retry diagnostics, body bounding, and token resolution.
-  - `shell/github.rs`: streaming archive tarball entry iterator (`GitHubStream`).
+  - `shell/github.rs`: streaming archive tarball entry iterator (`GithubStream`).
   - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`), standard output stream emission, and lexical output path filtering (`OutputFilter`).
   - `shell/mod.rs`: shell module declarations, centralized `current_epoch_nanos()`, and scoped test fixture isolation (`TempDirGuard`).

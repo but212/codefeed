@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
 
-use super::local_io::read_local_file;
-use super::orchestrate::SourceStream;
+use super::local_io::read_local_file_into;
+use super::orchestrate::{SourceStream, StreamInfo};
 use super::output::OutputFilter;
 use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe};
 use crate::core::error::IngestError;
@@ -15,13 +15,14 @@ use crate::core::model::OutputTarget;
 use crate::core::policy::{MAX_FILE_COUNT, PathClassification};
 
 struct LocalCandidate {
-    path: PathBuf,
-    item_path: ItemPath,
+    item_path: ItemPath<'static>,
     skip_read: bool,
 }
 
 pub struct LocalStream {
     label: String,
+    root: PathBuf,
+    work_path: PathBuf,
     candidates: std::vec::IntoIter<LocalCandidate>,
 }
 
@@ -33,7 +34,7 @@ impl std::fmt::Debug for LocalStream {
     }
 }
 
-pub(crate) fn collect_local(
+pub(crate) fn collect(
     root: &Path,
     output: &OutputTarget,
 ) -> Result<crate::core::model::CollectionResult, IngestError> {
@@ -48,45 +49,49 @@ impl LocalStream {
         let label = local_label(&canonical_root);
         let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
 
-        CandidateBudget::check_limit(candidates.iter().map(|c| c.item_path.as_utf8_str()))?;
-
         Ok(Self {
             label,
+            root: canonical_root,
+            work_path: PathBuf::new(),
             candidates: candidates.into_iter(),
         })
     }
 }
 
-impl Iterator for LocalStream {
-    type Item = Result<Item, IngestError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let candidate = self.candidates.next()?;
-        let probe = if candidate.skip_read {
-            Probe::Missing
-        } else {
-            match read_local_file(&candidate.path) {
-                Ok(p) => p,
-                Err(err) => return Some(Err(err)),
-            }
-        };
-        Some(Ok(Item {
-            path: candidate.item_path,
-            probe,
-        }))
-    }
-
-    #[inline]
+impl SourceStream for LocalStream {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.candidates.size_hint()
     }
-}
 
-impl ExactSizeIterator for LocalStream {}
-
-impl SourceStream for LocalStream {
-    fn label(&self) -> &str {
-        &self.label
+    fn for_each_item<F>(mut self, mut callback: F) -> Result<StreamInfo, IngestError>
+    where
+        F: FnMut(Item<'_>) -> Result<(), IngestError>,
+    {
+        let mut scratch = Vec::with_capacity(32 * 1024);
+        for candidate in self.candidates.by_ref() {
+            let probe = if candidate.skip_read {
+                Probe::Missing
+            } else {
+                match &candidate.item_path {
+                    ItemPath::Utf8(rel) => {
+                        self.work_path.clear();
+                        self.work_path.push(&self.root);
+                        self.work_path.push(rel.as_ref());
+                        scratch.clear();
+                        read_local_file_into(&self.work_path, &mut scratch)?
+                    }
+                    ItemPath::NonUtf8 => Probe::Missing,
+                }
+            };
+            callback(Item {
+                path: candidate.item_path,
+                probe,
+            })?;
+        }
+        Ok(StreamInfo {
+            label: self.label,
+            revision: None,
+        })
     }
 }
 
@@ -148,7 +153,6 @@ fn walk_candidates(
         };
 
         candidates.push(LocalCandidate {
-            path: entry_path.to_path_buf(),
             item_path,
             skip_read,
         });
@@ -158,38 +162,40 @@ fn walk_candidates(
         }
     }
 
+    CandidateBudget::check_limit(candidates.iter().map(|c| c.item_path.as_utf8_str()))?;
+
     candidates.sort_unstable_by(|a, b| match (&a.item_path, &b.item_path) {
         (ItemPath::Utf8(left), ItemPath::Utf8(right)) => left.cmp(right),
         (ItemPath::Utf8(_), ItemPath::NonUtf8) => std::cmp::Ordering::Less,
         (ItemPath::NonUtf8, ItemPath::Utf8(_)) => std::cmp::Ordering::Greater,
-        (ItemPath::NonUtf8, ItemPath::NonUtf8) => a.path.cmp(&b.path),
+        (ItemPath::NonUtf8, ItemPath::NonUtf8) => std::cmp::Ordering::Equal,
     });
 
     Ok(candidates)
 }
 
-fn normalize_relative_path(relative: &Path) -> ItemPath {
+fn normalize_relative_path(relative: &Path) -> ItemPath<'static> {
     let mut parts = relative.components().peekable();
     let Some(first) = parts.next() else {
-        return ItemPath::Utf8(String::new());
+        return ItemPath::Utf8(std::borrow::Cow::Borrowed(""));
     };
     let Some(first_str) = first.as_os_str().to_str() else {
         return ItemPath::NonUtf8;
     };
     if parts.peek().is_none() {
-        return ItemPath::Utf8(first_str.to_owned());
+        return ItemPath::Utf8(std::borrow::Cow::Owned(first_str.to_owned()));
     }
 
-    let mut buf = String::with_capacity(relative.as_os_str().len());
-    buf.push_str(first_str);
+    let mut normalized_path = String::with_capacity(relative.as_os_str().len());
+    normalized_path.push_str(first_str);
     for part in parts {
         let Some(s) = part.as_os_str().to_str() else {
             return ItemPath::NonUtf8;
         };
-        buf.push('/');
-        buf.push_str(s);
+        normalized_path.push('/');
+        normalized_path.push_str(s);
     }
-    ItemPath::Utf8(buf)
+    ItemPath::Utf8(std::borrow::Cow::Owned(normalized_path))
 }
 
 fn local_label(root: &Path) -> String {
@@ -395,9 +401,9 @@ mod tests {
         let root = temp_dir("parallel_order")?;
         for dir in ["b_dir", "a_dir", "c_dir"] {
             fs::create_dir_all(root.join(dir))?;
-            for file_idx in 0..10 {
+            for file_index in 0..10 {
                 fs::write(
-                    root.join(dir).join(format!("file_{file_idx:02}.txt")),
+                    root.join(dir).join(format!("file_{file_index:02}.txt")),
                     "content",
                 )?;
             }
@@ -451,6 +457,6 @@ mod tests {
 
     #[test]
     fn test_local_candidate_size_is_under_cache_line() {
-        assert!(std::mem::size_of::<LocalCandidate>() <= 64);
+        assert!(std::mem::size_of::<LocalCandidate>() <= 32);
     }
 }

@@ -8,7 +8,10 @@ use crate::core::decide::Probe;
 use crate::core::error::IngestError;
 use crate::core::policy::MAX_FILE_SIZE;
 
-pub(crate) fn read_local_file(path: &Path) -> Result<Probe, IngestError> {
+pub(crate) fn read_local_file_into<'b>(
+    path: &Path,
+    buf: &'b mut Vec<u8>,
+) -> Result<Probe<'b>, IngestError> {
     let meta = match fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Probe::Missing),
@@ -25,10 +28,10 @@ pub(crate) fn read_local_file(path: &Path) -> Result<Probe, IngestError> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Probe::Missing),
         Err(err) => return Err(IngestError::Io(err)),
     };
-    read_bounded_content(file).map_err(Into::into)
+    read_bounded_content_into(file, buf).map_err(Into::into)
 }
 
-fn read_bounded_content(file: fs::File) -> io::Result<Probe> {
+fn read_bounded_content_into<'b>(file: fs::File, buf: &'b mut Vec<u8>) -> io::Result<Probe<'b>> {
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Ok(Probe::Missing);
@@ -37,13 +40,12 @@ fn read_bounded_content(file: fs::File) -> io::Result<Probe> {
         return Ok(Probe::TooLarge);
     }
 
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
     let mut handle = file.take(MAX_FILE_SIZE.saturating_add(1));
-    handle.read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_FILE_SIZE {
+    handle.read_to_end(buf)?;
+    if buf.len() as u64 > MAX_FILE_SIZE {
         return Ok(Probe::TooLarge);
     }
-    Ok(Probe::Bytes(bytes))
+    Ok(Probe::Bytes(std::borrow::Cow::Borrowed(buf.as_slice())))
 }
 
 #[cfg(test)]
@@ -59,8 +61,16 @@ mod tests {
         fs::write(&exact_path, vec![b'x'; MAX_FILE_SIZE as usize])?;
         fs::write(&too_large_path, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
 
-        assert!(matches!(read_local_file(&exact_path)?, Probe::Bytes(_)));
-        assert!(matches!(read_local_file(&too_large_path)?, Probe::TooLarge));
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_local_file_into(&exact_path, &mut buf)?,
+            Probe::Bytes(_)
+        ));
+        buf.clear();
+        assert!(matches!(
+            read_local_file_into(&too_large_path, &mut buf)?,
+            Probe::TooLarge
+        ));
         Ok(())
     }
 
@@ -69,7 +79,11 @@ mod tests {
         let root = temp_dir("missing_file")?;
         let path = root.join("nonexistent.txt");
 
-        assert!(matches!(read_local_file(&path)?, Probe::Missing));
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_local_file_into(&path, &mut buf)?,
+            Probe::Missing
+        ));
         Ok(())
     }
 
@@ -84,7 +98,11 @@ mod tests {
         fs::write(&target, "content")?;
         symlink(&target, &link)?;
 
-        assert!(matches!(read_local_file(&link)?, Probe::Missing));
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_local_file_into(&link, &mut buf)?,
+            Probe::Missing
+        ));
         Ok(())
     }
 
@@ -99,7 +117,11 @@ mod tests {
         fs::write(&target, "content")?;
 
         if symlink_file(&target, &link).is_ok() {
-            assert!(matches!(read_local_file(&link)?, Probe::Missing));
+            let mut buf = Vec::new();
+            assert!(matches!(
+                read_local_file_into(&link, &mut buf)?,
+                Probe::Missing
+            ));
             let _ = fs::remove_file(&link);
         }
         Ok(())
