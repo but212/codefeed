@@ -22,10 +22,10 @@ pub const NOISE: &[&str] = &[
 ///
 /// Note: `credentials` is matched as an extension here (`*.credentials`, e.g., `aws.credentials`),
 /// and is also matched as a filename prefix in [`is_sensitive_path`] (`credentials*`, e.g., `credentials.json`).
-pub const SENSITIVE_EXT: &[&str] = &["pem", "key", "p12", "pkcs12", "credentials"];
+pub const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "credentials"];
 
 /// Known binary file extensions filtered prior to remote download.
-pub const BINARY_EXT: &[&str] = &[
+pub const BINARY_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "ico", "webp", "woff", "woff2", "ttf", "pdf", "zip",
 ];
 
@@ -50,7 +50,7 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
 }
 
 #[inline]
-pub(crate) fn is_sensitive_file(file_name: &str, ext: Option<&str>) -> bool {
+pub(crate) fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> bool {
     if starts_with_ignore_ascii_case(file_name, ".env")
         || starts_with_ignore_ascii_case(file_name, "id_rsa")
         || starts_with_ignore_ascii_case(file_name, "id_ed25519")
@@ -58,18 +58,22 @@ pub(crate) fn is_sensitive_file(file_name: &str, ext: Option<&str>) -> bool {
     {
         return true;
     }
-    let Some(ext) = ext else {
+    let Some(extension) = extension else {
         return false;
     };
-    SENSITIVE_EXT.iter().any(|&s| s.eq_ignore_ascii_case(ext))
+    SENSITIVE_EXTENSIONS
+        .iter()
+        .any(|&s| s.eq_ignore_ascii_case(extension))
 }
 
 #[inline]
-pub(crate) fn is_binary_ext(ext: Option<&str>) -> bool {
-    let Some(ext) = ext else {
+pub(crate) fn is_binary_extension(extension: Option<&str>) -> bool {
+    let Some(extension) = extension else {
         return false;
     };
-    BINARY_EXT.iter().any(|&b| b.eq_ignore_ascii_case(ext))
+    BINARY_EXTENSIONS
+        .iter()
+        .any(|&b| b.eq_ignore_ascii_case(extension))
 }
 
 /// Returns `true` if `path` contains hidden directory or file components (starting with `.`).
@@ -96,11 +100,11 @@ impl PathClassification {
         }
 
         let file_name = path.rsplit('/').next().unwrap_or(path);
-        let ext = file_name.rsplit_once('.').map(|(_, e)| e);
+        let extension = file_name.rsplit_once('.').map(|(_, e)| e);
 
-        if is_noise_file(file_name) || is_sensitive_file(file_name, ext) {
+        if is_noise_file(file_name) || is_sensitive_file(file_name, extension) {
             Self::Ignored
-        } else if is_binary_ext(ext) {
+        } else if is_binary_extension(extension) {
             Self::PreclassifiedBinary
         } else {
             Self::NeedsContent

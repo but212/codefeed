@@ -4,14 +4,14 @@ use std::path::PathBuf;
 use crate::core::error::IngestError;
 use crate::core::model::Source;
 
-pub(crate) fn parse_source_os(value: &OsStr) -> Result<Source, IngestError> {
+pub(crate) fn parse_os(value: &OsStr) -> Result<Source, IngestError> {
     match value.to_str() {
-        Some(value) => parse_source(value),
+        Some(value) => parse(value),
         None => Ok(Source::Local(PathBuf::from(value))),
     }
 }
 
-pub(crate) fn parse_source(value: &str) -> Result<Source, IngestError> {
+pub(crate) fn parse(value: &str) -> Result<Source, IngestError> {
     if value.starts_with("http://") || value.starts_with("https://") {
         return parse_github_url(value);
     }
@@ -69,7 +69,7 @@ fn parse_github_url(value: &str) -> Result<Source, IngestError> {
         ));
     }
 
-    Ok(Source::GitHub {
+    Ok(Source::Github {
         owner: (*owner).to_owned(),
         repo: repo.to_owned(),
         reference: None,
@@ -95,33 +95,24 @@ mod tests {
 
     #[test]
     fn parses_public_github_repository() -> Result<(), Box<dyn std::error::Error>> {
-        let expected = Source::GitHub {
+        let expected = Source::Github {
             owner: "rust-lang".into(),
             repo: "cargo".into(),
             reference: None,
         };
-        assert_eq!(
-            parse_source("https://github.com/rust-lang/cargo.git")?,
-            expected
-        );
-        let expected_repo = Source::GitHub {
+        assert_eq!(parse("https://github.com/rust-lang/cargo.git")?, expected);
+        let expected_repo = Source::Github {
             owner: "owner".into(),
             repo: "repo".into(),
             reference: None,
         };
-        assert_eq!(
-            parse_source("https://github.com:443/owner/repo")?,
-            expected_repo
-        );
-        assert_eq!(
-            parse_source("https://github.com:/owner/repo")?,
-            expected_repo
-        );
+        assert_eq!(parse("https://github.com:443/owner/repo")?, expected_repo);
+        assert_eq!(parse("https://github.com:/owner/repo")?, expected_repo);
         Ok(())
     }
 
     #[test]
-    fn parse_source_rejects_malformed_urls() {
+    fn parse_rejects_malformed_urls() {
         let invalid_cases = [
             "git@github.com:owner/repo.git",
             "https://gitlab.com/owner/repo",
@@ -134,7 +125,7 @@ mod tests {
             "https://github.com:abc/owner/repo",
         ];
         for url in invalid_cases {
-            assert!(parse_source(url).is_err(), "expected error for: {url}");
+            assert!(parse(url).is_err(), "expected error for: {url}");
         }
     }
 }

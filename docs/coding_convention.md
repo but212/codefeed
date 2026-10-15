@@ -22,7 +22,7 @@ Project-wide coding standards and API design principles for `codefeed`. Combines
 ### Fine Points from RFC 430
 
 - **Acronyms and Initialisms:**
-  - In `UpperCamelCase`, acronyms count as a single word (e.g., `Uuid`, `HttpServer`, `XmlChunks` — never `UUID`, `HTTPServer`, `XMLChunks`).
+  - In `UpperCamelCase`, acronyms and compound brand names count as a single word (e.g., `Uuid`, `HttpServer`, `XmlChunks`, `GithubClient`, `Source::Github` — never `UUID`, `HTTPServer`, `XMLChunks`, `GitHubClient`, `Source::GitHub`).
   - In `snake_case`, acronyms are completely lowercased (e.g., `is_xid_start`, `sha`).
 - **Single-Letter Words:**
   - In `snake_case` or `SCREAMING_SNAKE_CASE`, a word should never consist of a single letter unless it is the final word (e.g., `btree_map` over `b_tree_map`, but `PI_2` over `PI2`).
@@ -57,10 +57,11 @@ Project-wide coding standards and API design principles for `codefeed`. Combines
 - **Standard Abbreviations:**
   - Keep standard domain abbreviations concise: `id`, `url`, `len`, `src`, `dst`, `err`.
   - Prefer established Rust naming idioms (`len()` over `length()`, `iter()` over `iterator()`).
+  - Do not abbreviate domain terms outside the established list; write them out in full (e.g., `extension` / `extensions` over `ext`, such as `SENSITIVE_EXTENSIONS`, `BINARY_EXTENSIONS`, `is_binary_extension`).
 
 - **Brevity vs. Explicitness:**
   - **No Cryptic Truncation:** Never truncate identifiers to the point of losing domain semantics (e.g., avoid `chk_vld_pt()`, `cnt_buf`; use `is_valid_path()`, `buffer_count`). Reserve abbreviations strictly for standard, established domain terms.
-  - **No Redundant Verbosity:** Eliminate context already conveyed by the enclosing module, type, or scope (e.g., `file_record.file_record_path` $\rightarrow$ `file_record.path`, `config::parse_config()` $\rightarrow$ `config::parse()`).
+  - **No Redundant Verbosity:** Eliminate context already conveyed by the enclosing module, type, or scope (e.g., `file_record.file_record_path` $\rightarrow$ `file_record.path`, `cli::parse_cli()` $\rightarrow$ `cli::parse()`, `source::parse_source()` $\rightarrow$ `source::parse()`, `local::collect_local()` $\rightarrow$ `local::collect()`).
   - **Direct Intent:** Prefer concise, self-documenting identifiers over paragraph-style names or unnecessary helper wrappers.
 
 ---

@@ -32,7 +32,7 @@ Entry Discovered (Local Walk or Tar Stream)
    │     └── [Result: Dropped immediately. Not counted in candidate budget or skipped tally.]
    │
    ├── PreclassifiedBinary
-   │     └── Matches BINARY_EXT (.png, .jpg, .pdf, .zip, etc.)
+   │     └── Matches BINARY_EXTENSIONS (.png, .jpg, .pdf, .zip, etc.)
    │     └── [Result: Candidate slot consumed; body read/fetch skipped (Probe::Missing); counted in skipped.]
    │
    └── NeedsContent
@@ -64,7 +64,7 @@ Conventional package manager lockfiles contain redundant metadata that bloats pr
   - `id_rsa*` (e.g., `id_rsa`, `id_rsa.pub`)
   - `id_ed25519*` (e.g., `id_ed25519`, `id_ed25519.pub`)
   - `credentials*` (e.g., `credentials.json`, `credentials.ini`)
-- **Extensions in `SENSITIVE_EXT` (Case-Insensitive):**
+- **Extensions in `SENSITIVE_EXTENSIONS` (Case-Insensitive):**
   - `*.pem`
   - `*.key`
   - `*.p12`
@@ -95,7 +95,7 @@ Any path containing a component starting with a leading dot (`.`) is considered 
 ### Candidate vs. Skipped Accounting Rules
 
 - **Ignored paths:** Dropped during discovery. They consume **zero** candidate slots and do **not** appear in skipped counts.
-- **Binary extensions (`BINARY_EXT`):** Consume 1 candidate slot in `CandidateBudget`. Content download/read is skipped via `Probe::Missing`, incrementing `skipped_files`.
+- **Binary extensions (`BINARY_EXTENSIONS`):** Consume 1 candidate slot in `CandidateBudget`. Content download/read is skipped via `Probe::Missing`, incrementing `skipped_files`.
 - **Oversized / Non-UTF-8 / NUL-byte files:** Consume 1 candidate slot. Rejected during probe inspection, incrementing `skipped_files`.
 
 ---

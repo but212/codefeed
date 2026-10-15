@@ -24,12 +24,12 @@ pub fn collect_stream<S: SourceStream>(mut stream: S) -> Result<CollectionResult
 
 pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
     let collection = match &config.source {
-        Source::Local(path) => shell::local::collect_local(path, &config.output)?,
-        Source::GitHub {
+        Source::Local(path) => shell::local::collect(path, &config.output)?,
+        Source::Github {
             owner,
             repo,
             reference,
-        } => shell::github::collect_github(owner, repo, reference.as_deref())?,
+        } => shell::github::collect(owner, repo, reference.as_deref())?,
     };
 
     let estimated_tokens = shell::output::emit(&config.output, |writer| {

@@ -32,7 +32,7 @@ imperative-shell boundary.
 - Consumes candidate slots before evaluating content, size, or encoding.
 - `skipped` counts candidates rejected for content, size, or encoding. Ignored paths are never counted in `skipped`.
 - Rejects content exceeding `MAX_OUTPUT_SIZE`; overflow content is never emitted.
-- Known binary extensions (`BINARY_EXT`) are classified as `Probe::Missing` before reading content or remote downloading to save I/O while preserving candidate and skipped accounting.
+- Known binary extensions (`BINARY_EXTENSIONS`) are classified as `Probe::Missing` before reading content or remote downloading to save I/O while preserving candidate and skipped accounting.
 - Diagnostic largest files reporting (`largest_files`) uses bounded Top-5 selection with linear position lookup, avoiding full-collection cloning or $O(N \log N)$ sorting while preserving insertion stability for tie-breakers.
 
 ### Rendering & Formats
@@ -79,8 +79,8 @@ imperative-shell boundary.
 | `RETRY_INITIAL_DELAY_MS` | 250 ms | Base initial delay for exponential backoff |
 | `RETRY_MAX_DELAY_MS` | 5,000 ms | Maximum delay cap for exponential backoff |
 | `NOISE` | lockfiles | Conventional lockfiles excluded before candidate budget |
-| `SENSITIVE_EXT` | 5 extensions | Key, cert, and credential extensions (`*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.credentials`) excluded before candidate budget (note: `credentials*` is also matched as filename prefix) |
-| `BINARY_EXT` | 11 extensions | Known binary file extensions filtered pre-download |
+| `SENSITIVE_EXTENSIONS` | 5 extensions | Key, cert, and credential extensions (`*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.credentials`) excluded before candidate budget (note: `credentials*` is also matched as filename prefix) |
+| `BINARY_EXTENSIONS` | 11 extensions | Known binary file extensions filtered pre-download |
 
 ## Functional core / imperative shell boundary
 
@@ -88,7 +88,7 @@ Boundary rule: pure core code performs no I/O, clock, network, or entropy and
 never depends on shell code; shell code depends on the core in one direction.
 
 - Pure core (`src/core/`):
-  - `cli.rs`: Pure CLI argument parsing, help detection, and `CliAction` generation (`parse_cli`).
+  - `cli.rs`: Pure CLI argument parsing, help detection, and `CliAction` generation (`parse`).
   - `policy.rs`: all operational limits, noise patterns, sensitive patterns, binary extensions, and
     classification predicate (`PathClassification::classify`).
   - `source.rs`: source string and OS-string parsing.
@@ -111,6 +111,6 @@ never depends on shell code; shell code depends on the core in one direction.
   - `shell/local.rs`: 2-step linear filesystem candidate discovery and streaming reader (`LocalStream`).
   - `shell/local_io.rs`: Non-symlink file metadata validation and bounded streaming reads.
   - `shell/github_client.rs`: HTTP transport, retry diagnostics, body bounding, and token resolution.
-  - `shell/github.rs`: streaming archive tarball entry iterator (`GitHubStream`).
+  - `shell/github.rs`: streaming archive tarball entry iterator (`GithubStream`).
   - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`), standard output stream emission, and lexical output path filtering (`OutputFilter`).
   - `shell/mod.rs`: shell module declarations, centralized `current_epoch_nanos()`, and scoped test fixture isolation (`TempDirGuard`).

@@ -34,7 +34,7 @@ impl std::fmt::Debug for LocalStream {
     }
 }
 
-pub(crate) fn collect_local(
+pub(crate) fn collect(
     root: &Path,
     output: &OutputTarget,
 ) -> Result<crate::core::model::CollectionResult, IngestError> {

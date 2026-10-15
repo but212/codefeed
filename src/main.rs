@@ -3,10 +3,10 @@
 use std::env::args_os;
 use std::process;
 
-use codefeed::{CliAction, OutputTarget, help_text, ingest, parse_cli};
+use codefeed::{CliAction, OutputTarget, help_text, ingest, parse};
 
 fn main() {
-    let action = parse_cli(args_os()).unwrap_or_else(|error| {
+    let action = parse(args_os()).unwrap_or_else(|error| {
         eprintln!("error: {error}");
         process::exit(1);
     });

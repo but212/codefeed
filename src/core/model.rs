@@ -8,7 +8,7 @@ pub enum Source {
     /// Local filesystem directory.
     Local(PathBuf),
     /// Public or authenticated GitHub repository.
-    GitHub {
+    Github {
         /// Repository owner (user or organization).
         owner: String,
         /// Repository name.
@@ -27,7 +27,7 @@ impl Source {
             return Err(IngestError::InvalidSource("--ref cannot be empty".into()));
         }
         match self {
-            Self::GitHub { owner, repo, .. } => Ok(Self::GitHub {
+            Self::Github { owner, repo, .. } => Ok(Self::Github {
                 owner,
                 repo,
                 reference,
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn source_with_reference_validates_and_updates_reference() {
-        let gh = Source::GitHub {
+        let gh = Source::Github {
             owner: "rust-lang".into(),
             repo: "rust".into(),
             reference: None,
@@ -314,7 +314,7 @@ mod tests {
         let updated = gh.with_reference(Some("main".into())).unwrap();
         assert_eq!(
             updated,
-            Source::GitHub {
+            Source::Github {
                 owner: "rust-lang".into(),
                 repo: "rust".into(),
                 reference: Some("main".into()),
@@ -324,7 +324,7 @@ mod tests {
         let cleared = updated.with_reference(None).unwrap();
         assert_eq!(
             cleared,
-            Source::GitHub {
+            Source::Github {
                 owner: "rust-lang".into(),
                 repo: "rust".into(),
                 reference: None,

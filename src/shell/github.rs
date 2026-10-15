@@ -12,7 +12,7 @@ use crate::core::policy::{MAX_FILE_SIZE, PathClassification};
 
 use super::orchestrate::SourceStream;
 
-pub(crate) fn collect_github(
+pub(crate) fn collect(
     owner: &str,
     repo: &str,
     reference: Option<&str>,
@@ -20,11 +20,11 @@ pub(crate) fn collect_github(
     let client = super::github_client::GithubClient::new();
     let reader = client.tarball_stream(owner, repo, reference)?;
     let mut archive = Archive::new(GzDecoder::new(reader));
-    let stream = GitHubStream::new(&mut archive, owner, repo, reference)?;
+    let stream = GithubStream::new(&mut archive, owner, repo, reference)?;
     super::orchestrate::collect_stream(stream)
 }
 
-pub struct GitHubStream<'a, R: Read> {
+pub struct GithubStream<'a, R: Read> {
     label: String,
     reference: Option<String>,
     parsed_revision: Option<String>,
@@ -32,7 +32,7 @@ pub struct GitHubStream<'a, R: Read> {
     seen_items: bool,
 }
 
-impl<'a, R: Read> GitHubStream<'a, R> {
+impl<'a, R: Read> GithubStream<'a, R> {
     pub fn new(
         archive: &'a mut Archive<GzDecoder<R>>,
         owner: &str,
@@ -50,7 +50,7 @@ impl<'a, R: Read> GitHubStream<'a, R> {
     }
 }
 
-impl<'a, R: Read> Iterator for GitHubStream<'a, R> {
+impl<'a, R: Read> Iterator for GithubStream<'a, R> {
     type Item = Result<Item, IngestError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -80,7 +80,7 @@ impl<'a, R: Read> Iterator for GitHubStream<'a, R> {
     }
 }
 
-impl<'a, R: Read> SourceStream for GitHubStream<'a, R> {
+impl<'a, R: Read> SourceStream for GithubStream<'a, R> {
     fn label(&self) -> &str {
         &self.label
     }
@@ -221,7 +221,7 @@ mod tests {
         ]);
 
         let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
-        let stream = GitHubStream::new(&mut archive, "but212", "codefeed", None)
+        let stream = GithubStream::new(&mut archive, "but212", "codefeed", None)
             .expect("stream should open");
         let result =
             crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
@@ -252,7 +252,7 @@ mod tests {
         ]);
 
         let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
-        let stream = GitHubStream::new(&mut archive, "owner", "repo", Some("main"))
+        let stream = GithubStream::new(&mut archive, "owner", "repo", Some("main"))
             .expect("stream should open");
         let result =
             crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
@@ -272,7 +272,7 @@ mod tests {
 
         let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
         let stream =
-            GitHubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
+            GithubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
         let result =
             crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
 
@@ -311,7 +311,7 @@ mod tests {
 
         let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
         let stream =
-            GitHubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
+            GithubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
         let result =
             crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
 
@@ -338,7 +338,7 @@ mod tests {
 
         let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
         let stream =
-            GitHubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
+            GithubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
         let result =
             crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
 
@@ -359,7 +359,7 @@ mod tests {
 
         let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
         let stream =
-            GitHubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
+            GithubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
         let result = crate::shell::orchestrate::collect_stream(stream);
 
         assert!(matches!(

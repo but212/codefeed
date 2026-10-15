@@ -3,7 +3,7 @@
 pub(crate) mod core;
 pub(crate) mod shell;
 
-pub use core::cli::{CliAction, help_text, parse_cli};
+pub use core::cli::{CliAction, help_text, parse};
 pub use core::error::IngestError;
 pub use core::model::{DigestFormat, IngestReport, OutputTarget, RunConfig, Source};
 pub use shell::orchestrate::ingest;

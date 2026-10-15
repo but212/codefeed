@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Naming convention improvements per `docs/coding_convention.md`:
+  - Eliminated redundant verbosity in module functions: `core::cli::parse_cli` -> `cli::parse` (re-exported as `codefeed::parse`), `core::source::parse_source`/`parse_source_os` -> `source::parse`/`source::parse_os`, `shell::local::collect_local` -> `local::collect`, and `shell::github::collect_github` -> `github::collect`.
+  - Unified GitHub-related types to RFC 430 single-word capitalization: `Source::GitHub` -> `Source::Github`, `GitHubStream` -> `GithubStream`.
+  - Replaced extension abbreviations with full descriptive names in `src/core/policy.rs`: `SENSITIVE_EXT` -> `SENSITIVE_EXTENSIONS`, `BINARY_EXT` -> `BINARY_EXTENSIONS`, and `is_binary_ext` -> `is_binary_extension`.
 - `TokenEstimator` in `src/core/digest/token.rs`: replaced runtime bit-branching with a precomputed 256-byte lookup table (`CHAR_METRIC`) to accelerate per-byte token estimation, and changed `finish(&self)` to be non-destructive so token counts can be read repeatedly without mutating state.
 - `normalize_path` in `src/shell/output.rs`: fixed path truncation bugs where leading `..` in relative paths (such as `../a` or `a/../../b`) were dropped, ensuring correct target file resolution and output filter matching.
 - `PathClassification::classify` in `src/core/policy.rs`: unified multiple full-path scans into a single filename/extension extraction pass, eliminating redundant string traversals before candidate evaluation.
