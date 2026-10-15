@@ -31,4 +31,5 @@ Environment: Windows x86_64, release profile (`cargo bench`).
 | `storage_push_sort_presorted_1000` | 29.20 | 27.90 | 29.90 | 32.12 | - | - |
 | `storage_push_sort_reverse_1000` | 29.30 | 28.40 | 31.50 | 29.12 | - | - |
 | `selector_decide_10000` | 2,726.80 | 1,810.90 | 2,994.36 | 1,927.20 | - | - |
+| `local_walk_hierarchical_1000` | 14,054.80 | - | 15,752.81 | - | - | - |
 | `local_collect_hierarchical_1000` | 139,675.50 | 137,506.60 | 142,099.03 | 140,991.09 | - | - |

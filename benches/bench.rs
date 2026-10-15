@@ -610,14 +610,21 @@ mod suites {
     }
 
     fn bench_local_collect(runner: &mut Runner) {
-        let name = "local_collect_hierarchical_1000";
-        if !runner.should_run(name) {
+        let walk_name = "local_walk_hierarchical_1000";
+        let collect_name = "local_collect_hierarchical_1000";
+        if !runner.should_run(walk_name) && !runner.should_run(collect_name) {
             return;
         }
 
         let (_guard, temp_root) = setup_temp_hierarchy(1_000);
 
-        runner.bench(name, 2, 10, None, || {
+        runner.bench(walk_name, 3, 20, None, || {
+            let stream = LocalStream::new(&temp_root, &OutputTarget::Stdout)
+                .expect("LocalStream::new should succeed");
+            black_box(stream);
+        });
+
+        runner.bench(collect_name, 2, 10, None, || {
             let stream = LocalStream::new(&temp_root, &OutputTarget::Stdout)
                 .expect("LocalStream::new should succeed");
             let res = collect_stream(stream).expect("collect_stream should succeed");
