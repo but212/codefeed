@@ -110,4 +110,5 @@ Credentials are sent as `Authorization: Bearer <token>` strictly to exact-origin
 ## Documentation
 
 - [Coding Conventions](docs/coding_convention.md) — Rust API Guidelines (`C-CONV`, `C-CASE`), FCIS boundary, memory arena layout, safety rules, and verification matrix.
+- [Security and Filtering](docs/security_and_filtering.md) — Threat model, path classification rules, candidate accounting, filesystem safety, and credential isolation.
 - [Internal Benchmarks](docs/internal_bench_result.md) — Performance baselines and throughput measurements.

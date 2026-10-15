@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Read `context.md` and `README.md` before changing code. Do not duplicate domain terms, limits, or module maps here.
+Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_and_filtering.md` before changing code. Do not duplicate domain terms, limits, or module maps here.
 
 ## 1. Verify
 
