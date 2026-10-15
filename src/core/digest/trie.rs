@@ -69,6 +69,18 @@ fn tree_display<'a>(name: &'a str, escape_xml: bool) -> Cow<'a, str> {
     }
 }
 
+fn safe_component(part: &str) -> &str {
+    if part.len() > u16::MAX as usize {
+        let mut end = u16::MAX as usize;
+        while !part.is_char_boundary(end) {
+            end -= 1;
+        }
+        &part[..end]
+    } else {
+        part
+    }
+}
+
 impl BudgetTrie {
     pub fn new() -> Self {
         Self::default()
@@ -87,17 +99,19 @@ impl BudgetTrie {
         let mut current_node_index: u32 = 0;
 
         while let Some(part) = parts.next() {
+            let part = safe_component(part);
             let is_dir = parts.peek().is_some();
             current_node_index = self.get_or_insert_child(current_node_index, part, is_dir);
         }
     }
 
     fn push_node(&mut self, part: &str, is_dir: bool, next_sibling: u32) -> u32 {
+        let safe_part = safe_component(part);
         let new_index = u32::try_from(self.nodes.len()).expect("trie node count exceeds u32::MAX");
         let name_offset =
             u32::try_from(self.label_arena.len()).expect("trie arena exceeds u32::MAX");
-        let name_len = u16::try_from(part.len()).expect("part length exceeds u16::MAX");
-        self.label_arena.push_str(part);
+        let name_len = safe_part.len() as u16;
+        self.label_arena.push_str(safe_part);
         let mut node = BudgetTrieNode::new(name_offset, name_len, is_dir);
         node.next_sibling = next_sibling;
         self.nodes.push(node);
@@ -310,5 +324,16 @@ pub(crate) mod tests {
         assert!(!trie.nodes[2].is_dir);
         assert_eq!(trie.nodes[2].first_child, NO_NODE);
         assert_eq!(trie.nodes[2].next_sibling, NO_NODE);
+    }
+
+    #[test]
+    fn test_push_node_u16_overflow_protection() {
+        let mut trie = BudgetTrie::new();
+        let long_name = "a".repeat(70_000);
+        let path = format!("{long_name}/file.rs");
+        trie.insert(&path);
+        let child = trie.nodes[0].first_child;
+        let dir_name = trie.node_name(child);
+        assert_eq!(dir_name.len(), u16::MAX as usize);
     }
 }

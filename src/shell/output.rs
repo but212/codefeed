@@ -238,6 +238,9 @@ fn paths_match(candidate: &Path, target: &Path) -> bool {
     }
     #[cfg(any(windows, target_os = "macos"))]
     {
+        if candidate.as_os_str().len() != target.as_os_str().len() {
+            return false;
+        }
         paths_equal_ignore_case(candidate, target)
     }
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -506,5 +509,12 @@ mod tests {
         assert!(filter.is_excluded(&output_via_real));
         assert!(filter.is_excluded(&output_via_link));
         Ok(())
+    }
+
+    #[test]
+    fn test_paths_match_length_mismatch_fast_path() {
+        let path_a = Path::new("short.txt");
+        let path_b = Path::new("very_long_path_name.txt");
+        assert!(!paths_match(path_a, path_b));
     }
 }

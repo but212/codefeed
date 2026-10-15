@@ -10,8 +10,8 @@ use std::io::Write;
 use std::time::Instant;
 
 use codefeed::__bench::{
-    BudgetTrie, CandidateBudget, CollectionResult, DigestFormat, FileStorage, Item, ItemPath,
-    LocalStream, OutputTarget, Probe, Selector, collect_stream, escape_header, estimate_tokens,
+    BudgetTrie, CandidateBudget, CollectionResult, DigestFormat, FileStorage, Item, LocalStream,
+    OutputTarget, Probe, Selector, collect_stream, escape_header, estimate_tokens,
     render_to_writer, text_str, write_escaped, xml_escape,
 };
 
@@ -475,31 +475,31 @@ mod suites {
         }
     }
 
-    fn generate_selector_items(count: usize) -> Vec<Item> {
+    fn generate_selector_items(count: usize) -> Vec<Item<'static>> {
         let mut items = Vec::with_capacity(count);
         let sample_bytes = b"pub fn hello() -> &'static str { \"world\" }\n".to_vec();
 
         for i in 0..count {
             match i % 5 {
                 0 => items.push(Item {
-                    path: ItemPath::Utf8(format!("src/file_{i}.rs")),
-                    probe: Probe::Bytes(sample_bytes.clone()),
+                    path: format!("src/file_{i}.rs").into(),
+                    probe: Probe::Bytes(sample_bytes.clone().into()),
                 }),
                 1 => items.push(Item {
-                    path: ItemPath::Utf8(format!("src/image_{i}.png")),
+                    path: format!("src/image_{i}.png").into(),
                     probe: Probe::Missing,
                 }),
                 2 => items.push(Item {
-                    path: ItemPath::Utf8(format!("src/big_{i}.bin")),
+                    path: format!("src/big_{i}.bin").into(),
                     probe: Probe::TooLarge,
                 }),
                 3 => items.push(Item {
-                    path: ItemPath::Utf8(format!("secret_{i}.key")),
+                    path: format!("secret_{i}.key").into(),
                     probe: Probe::Missing,
                 }),
                 _ => items.push(Item {
-                    path: ItemPath::Utf8(format!("src/valid_{i}.rs")),
-                    probe: Probe::Bytes(sample_bytes.clone()),
+                    path: format!("src/valid_{i}.rs").into(),
+                    probe: Probe::Bytes(sample_bytes.clone().into()),
                 }),
             }
         }

@@ -299,7 +299,7 @@ hello\n\
         let mut selector = Selector::new();
         let res = selector.decide(Item {
             path: ItemPath::Utf8("large.txt".into()),
-            probe: Probe::Bytes(content),
+            probe: Probe::Bytes(content.into()),
         });
         assert!(res.is_err());
     }

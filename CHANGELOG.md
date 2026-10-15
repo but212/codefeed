@@ -9,33 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `unescape_header` in `src/core/digest/text.rs`: restores escaped digest header strings back to their original form for lossless roundtrip and parsing validation.
-- `CompactDir` in `src/core/decide.rs`: 24-byte inline directory descriptor holding up to 22 bytes inline with heap fallback for longer paths, eliminating heap allocations during candidate budget tracking.
-- `local_walk_hierarchical_1000` benchmark suite in `benches/bench.rs` to measure directory candidate walking, path normalization, sorting, and initial budget checking isolated from disk content reads.
+- `CompactDir::as_bytes` (`src/core/decide.rs`): zero-validation byte slice projection eliminating `std::str::from_utf8` re-validation in `CandidateBudget::record_dir_run`.
+- `CompactDir` (`src/core/decide.rs`): 24-byte inline directory descriptor holding up to 22 bytes inline, eliminating heap allocations during candidate budget tracking.
+- `ItemPath<'a>` (`src/core/decide.rs`): generalized to `Cow<'a, str>` supporting zero-copy borrowed paths across core/shell boundary.
+- `SourceStream::for_each_item` (`src/shell/orchestrate.rs`): streaming traversal returning `Result<StreamInfo, IngestError>`, unifying metadata lifecycle (label & revision) with stream completion.
+- `read_local_file_into` (`src/shell/local_io.rs`): buffer-reusing reader for bounded local file content reads into caller-provided scratch buffers.
+- `unescape_header` (`src/core/digest/text.rs`): restores escaped digest header strings for lossless roundtrip and parsing validation.
+- `local_walk_hierarchical_1000` (`benches/bench.rs`): benchmark measuring candidate walking, normalization, sorting, and budget checking isolated from disk reads.
 
 ### Changed
 
-- Naming convention improvements per `docs/coding_convention.md`:
-  - Eliminated redundant verbosity in module functions: `core::cli::parse_cli` -> `cli::parse` (re-exported as `codefeed::parse`), `core::source::parse_source`/`parse_source_os` -> `source::parse`/`source::parse_os`, `shell::local::collect_local` -> `local::collect`, and `shell::github::collect_github` -> `github::collect`.
-  - Unified GitHub-related types to RFC 430 single-word capitalization: `Source::GitHub` -> `Source::Github`, `GitHubStream` -> `GithubStream`.
-  - Replaced extension abbreviations with full descriptive names in `src/core/policy.rs`: `SENSITIVE_EXT` -> `SENSITIVE_EXTENSIONS`, `BINARY_EXT` -> `BINARY_EXTENSIONS`, and `is_binary_ext` -> `is_binary_extension`.
-- `TokenEstimator` in `src/core/digest/token.rs`: replaced runtime bit-branching with a precomputed 256-byte lookup table (`CHAR_METRIC`) to accelerate per-byte token estimation, and changed `finish(&self)` to be non-destructive so token counts can be read repeatedly without mutating state.
-- `normalize_path` in `src/shell/output.rs`: fixed path truncation bugs where leading `..` in relative paths (such as `../a` or `a/../../b`) were dropped, ensuring correct target file resolution and output filter matching.
-- `PathClassification::classify` in `src/core/policy.rs`: unified multiple full-path scans into a single filename/extension extraction pass, eliminating redundant string traversals before candidate evaluation.
-- `retry_delay` in `src/core/policy.rs`: bounded backoff delay strictly within 5,000 ms while preserving random jitter on high attempt counts to prevent thundering-herd retry collisions.
-- `BudgetTrie::get_or_insert_child` in `src/core/digest/trie.rs`: unified duplicate node allocation branches into a single `push_node` helper, preventing arena index synchronization bugs.
-- `strip_archive_root` in `src/core/archive.rs`: stripped consecutive slashes after root tarball prefixes to prevent leading slashes in relative paths.
-- `first_special_index` in `src/core/digest/xml.rs`: extracted shared special character search for `xml_escape` and `write_escaped` to eliminate duplicate scanning logic.
-- `CandidateBudget::overflow_error` in `src/core/decide.rs`: aggregated directory counts with `HashMap<&str, usize>` borrowing directly from `CompactDir`, eliminating heap allocations during candidate overflow reporting.
-- `FileSpan` in `src/core/model.rs`: added `path` and `content` projection methods, simplifying `FileStorage::sort_by_path` and `FileStorage::get` into clean, single-expression arena lookups.
-- `probe_tar_entry` in `src/shell/github.rs`: converted byte-level hidden path inspection into a zero-allocation single-pass scan via `starts_with(b".")` and `windows(2).any(|w| w == b"/.")`.
-- `CandidateBudget::dir_runs` in `src/core/decide.rs`: migrated from `Vec<(String, usize)>` to `Vec<(CompactDir, usize)>`, aligning entries to 32 bytes for cache-line density (2 entries per 64B cache line).
-- `LocalCandidate` in `src/shell/local.rs`: removed redundant `path: PathBuf` field, reducing struct size from 56 bytes to 32 bytes (2 entries per 64B cache line) and eliminating per-file `PathBuf` heap allocations during directory walking.
-- `LocalStream` in `src/shell/local.rs`: lazily resolves local file paths via a single reusable `work_path: PathBuf` buffer during iteration.
+- `BudgetTrie::push_node` (`src/core/digest/trie.rs`): added UTF-8 safe boundary truncation for path components exceeding `u16::MAX` (65,535 bytes) preventing panic on crafted deep paths while keeping the 16-byte POD node layout.
+- `BudgetTrie::get_or_insert_child` (`src/core/digest/trie.rs`): unified duplicate node allocation branches into a single `push_node` helper.
+- `paths_match` (`src/shell/output.rs`): added length pre-check fast path for Windows/macOS case-insensitive path comparisons, bypassing `to_string_lossy` for non-matching files in O(1).
+- `normalize_path` (`src/shell/output.rs`): fixed path truncation where leading `..` in relative paths was dropped.
+- `walk_candidates` (`src/shell/local.rs`): moved `CandidateBudget::check_limit` before `candidates.sort_unstable_by`, avoiding unnecessary sorting on overflow.
+- `LocalCandidate` (`src/shell/local.rs`): removed redundant `path: PathBuf`, reducing struct size from 56B to 32B (2 entries per 64B cache line).
+- `LocalStream` (`src/shell/local.rs`): lazily resolves local file paths via a single reusable `work_path: PathBuf` buffer during iteration.
+- `probe_tar_entry` (`src/shell/github.rs`): moved path classification ahead of `to_owned()` heap allocation, skipping string allocations for ignored tarball entries; converted byte-level hidden path inspection into a zero-allocation single-pass scan via `starts_with(b".")` and `windows(2).any(|w| w == b"/.")`.
+- `GithubStream` (`src/shell/github.rs`): propagated I/O errors during PAX global header reads and enforced strict ordering rejection of trailing PAX headers after any archive entry.
+- `strip_archive_root` (`src/core/archive.rs`): stripped consecutive slashes after root tarball prefixes.
+- `CandidateBudget::record_dir_run` (`src/core/decide.rs`): switched slot comparison from `dir.as_str() == dir_slice` to `dir.as_bytes() == dir_slice.as_bytes()`.
+- `CandidateBudget::dir_runs` (`src/core/decide.rs`): migrated from `Vec<(String, usize)>` to `Vec<(CompactDir, usize)>`, aligning entries to 32 bytes for cache-line density.
+- `CandidateBudget::overflow_error` (`src/core/decide.rs`): aggregated directory counts with `HashMap<&str, usize>` borrowing directly from `CompactDir`.
+- `FileSpan` (`src/core/model.rs`): added `path` and `content` projection methods, simplifying `FileStorage::sort_by_path` and `FileStorage::get` into single-expression arena lookups.
+- `TokenEstimator` (`src/core/digest/token.rs`): replaced runtime bit-branching with a precomputed 256-byte lookup table (`CHAR_METRIC`), and made `finish(&self)` non-destructive.
+- `first_special_index` (`src/core/digest/xml.rs`): extracted shared special character search for `xml_escape` and `write_escaped`.
+- `PathClassification::classify` (`src/core/policy.rs`): unified multiple full-path scans into a single filename/extension extraction pass.
+- `retry_delay` (`src/core/policy.rs`): bounded backoff delay strictly within 5,000 ms while preserving random jitter.
+- Module naming and convention improvements per `docs/coding_convention.md`:
+  - `core::cli::parse_cli` -> `cli::parse` (re-exported as `codefeed::parse`), `core::source::parse_source`/`parse_source_os` -> `source::parse`/`source::parse_os`, `shell::local::collect_local` -> `local::collect`, `shell::github::collect_github` -> `github::collect`.
+  - RFC 430 capitalization: `Source::GitHub` -> `Source::Github`, `GitHubStream` -> `GithubStream`.
+  - Standard extension names: `SENSITIVE_EXT` -> `SENSITIVE_EXTENSIONS`, `BINARY_EXT` -> `BINARY_EXTENSIONS`, `is_binary_ext` -> `is_binary_extension`.
+
+### Fixed
+
+- `cli::parse` (`src/core/cli.rs`): fixed bug where specifying `-- - -o -` defaulted to a file named `"-"` instead of `OutputTarget::Stdout`.
 
 ### Removed
 
-- `is_noise_path`, `is_sensitive_path`, and `has_binary_extension` in `src/core/policy.rs`: removed unused legacy path wrapper functions in favor of `PathClassification::classify`.
+- Removed legacy duplicate `Iterator` and `ExactSizeIterator` implementations from `LocalStream` and `GithubStream`, consolidating all stream traversal onto `SourceStream::for_each_item`.
+- Removed dead and allocating wrapper functions `read_local_file` (`src/shell/local_io.rs`) and non-into `probe_tar_entry` (`src/shell/github.rs`).
+- Removed unused legacy path wrapper functions `is_noise_path`, `is_sensitive_path`, and `has_binary_extension` (`src/core/policy.rs`) in favor of `PathClassification::classify`.
 
 ## [0.2.3]
 

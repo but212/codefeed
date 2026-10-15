@@ -6,8 +6,8 @@ Environment: Windows x86_64, release profile (`cargo bench`).
 
 | Benchmark | Baseline Min (µs) | Optimized Min (µs) | Baseline Mean (µs) | Optimized Mean (µs) | Baseline Throughput | Optimized Throughput |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `candidate_budget_interleaved_10000` | 1,001.80 | 281.50 | 1,131.99 | 283.23 | - | - |
-| `candidate_budget_contiguous_10000` | 165.00 | 281.30 | 165.65 | 285.50 | - | - |
+| `candidate_budget_interleaved_10000` | 1,001.80 | 156.40 | 1,131.99 | 158.70 | - | - |
+| `candidate_budget_contiguous_10000` | 165.00 | 185.00 | 165.65 | 191.83 | - | - |
 | `trie_flat_100` | 15.10 | 7.50 | 16.26 | 7.73 | - | - |
 | `trie_flat_1000` | 169.10 | 58.10 | 173.83 | 58.74 | - | - |
 | `trie_flat_10000` | 1,555.20 | 793.80 | 1,685.14 | 836.31 | - | - |

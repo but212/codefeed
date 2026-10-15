@@ -79,7 +79,7 @@ where
         return Err(IngestError::Usage(format!("missing source\n\n{HELP}")));
     };
 
-    let output = if source_value != "-" && opts.output == "-" {
+    let output = if opts.output == "-" {
         OutputTarget::Stdout
     } else {
         OutputTarget::File(PathBuf::from(opts.output))
@@ -139,6 +139,15 @@ mod tests {
         match run_delimiter {
             CliAction::Run(config) => {
                 assert_eq!(config.source, Source::Local(PathBuf::from("-weird-path")));
+            }
+            CliAction::Help => panic!("expected Run action"),
+        }
+
+        let run_dash = parse(["codefeed", "-o", "-", "--", "-"]).unwrap();
+        match run_dash {
+            CliAction::Run(config) => {
+                assert_eq!(config.source, Source::Local(PathBuf::from("-")));
+                assert_eq!(config.output, OutputTarget::Stdout);
             }
             CliAction::Help => panic!("expected Run action"),
         }

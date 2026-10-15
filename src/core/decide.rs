@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::core::digest::BudgetTrie;
@@ -8,33 +9,58 @@ use crate::core::policy::{MAX_FILE_COUNT, MAX_OUTPUT_SIZE};
 /// Path text as observed by the imperative shell. Non-UTF-8 paths are still
 /// candidates and must be counted, then skipped.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum ItemPath {
-    Utf8(String),
+pub enum ItemPath<'a> {
+    Utf8(Cow<'a, str>),
     NonUtf8,
 }
 
-impl ItemPath {
+impl<'a> ItemPath<'a> {
     #[inline]
     pub fn as_utf8_str(&self) -> Option<&str> {
         match self {
-            Self::Utf8(s) => Some(s.as_str()),
+            Self::Utf8(s) => Some(s.as_ref()),
             Self::NonUtf8 => None,
         }
     }
 }
 
+impl<'a> From<&'a str> for ItemPath<'a> {
+    fn from(s: &'a str) -> Self {
+        Self::Utf8(Cow::Borrowed(s))
+    }
+}
+
+impl<'a> From<String> for ItemPath<'a> {
+    fn from(s: String) -> Self {
+        Self::Utf8(Cow::Owned(s))
+    }
+}
+
 /// Result of the shell's bounded resource acquisition. `TooLarge` and `Missing`
 /// carry no content and consume a candidate slot.
-#[derive(Clone)]
-pub enum Probe {
-    Bytes(Vec<u8>),
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Probe<'a> {
+    Bytes(Cow<'a, [u8]>),
     Missing,
     TooLarge,
 }
 
-pub struct Item {
-    pub path: ItemPath,
-    pub probe: Probe,
+impl<'a> From<&'a [u8]> for Probe<'a> {
+    fn from(b: &'a [u8]) -> Self {
+        Self::Bytes(Cow::Borrowed(b))
+    }
+}
+
+impl<'a> From<Vec<u8>> for Probe<'a> {
+    fn from(v: Vec<u8>) -> Self {
+        Self::Bytes(Cow::Owned(v))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Item<'a> {
+    pub path: ItemPath<'a>,
+    pub probe: Probe<'a>,
 }
 
 /// Pure decision result evaluating an observed candidate item against content,
@@ -55,21 +81,21 @@ impl<'a> ItemDecision<'a> {
     }
 }
 
-impl Item {
+impl<'a> Item<'a> {
     #[inline]
     pub(crate) fn evaluate(&self) -> ItemDecision<'_> {
         match (&self.path, &self.probe) {
-            (ItemPath::Utf8(path), Probe::Bytes(bytes)) => match text_str(bytes) {
+            (ItemPath::Utf8(path), Probe::Bytes(bytes)) => match text_str(bytes.as_ref()) {
                 Some(content) => ItemDecision::Included {
-                    path: path.as_str(),
+                    path: path.as_ref(),
                     content,
                 },
                 None => ItemDecision::Skipped {
-                    path: Some(path.as_str()),
+                    path: Some(path.as_ref()),
                 },
             },
             (ItemPath::Utf8(path), Probe::Missing | Probe::TooLarge) => ItemDecision::Skipped {
-                path: Some(path.as_str()),
+                path: Some(path.as_ref()),
             },
             (ItemPath::NonUtf8, _) => ItemDecision::Skipped { path: None },
         }
@@ -124,7 +150,7 @@ impl Selector {
         }
     }
 
-    pub fn decide(&mut self, item: Item) -> Result<(), IngestError> {
+    pub fn decide(&mut self, item: Item<'_>) -> Result<(), IngestError> {
         self.accumulate(item.evaluate())
     }
 
@@ -193,6 +219,14 @@ impl CompactDir {
             Self::Heap(s) => s.as_ref(),
         }
     }
+
+    #[inline]
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Inline { len, buf } => &buf[..*len as usize],
+            Self::Heap(s) => s.as_bytes(),
+        }
+    }
 }
 
 /// Candidate-count budget owned by the selector that consumes it.
@@ -246,12 +280,13 @@ impl CandidateBudget {
     }
 
     fn record_dir_run(&mut self, dir_slice: &str) {
+        let dir_bytes = dir_slice.as_bytes();
         if let Some(entry) = self
             .dir_runs
             .iter_mut()
             .rev()
             .take(16)
-            .find(|(dir, _)| dir.as_str() == dir_slice)
+            .find(|(dir, _)| dir.as_bytes() == dir_bytes)
         {
             entry.1 += 1;
         } else {
@@ -302,9 +337,13 @@ mod tests {
     use super::*;
     use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE};
 
-    fn decide_item(path: &str, probe: Probe) -> Item {
+    fn bytes_probe<'a>(bytes: impl Into<Cow<'a, [u8]>>) -> Probe<'a> {
+        Probe::Bytes(bytes.into())
+    }
+
+    fn decide_item<'a>(path: &'a str, probe: Probe<'a>) -> Item<'a> {
         Item {
-            path: ItemPath::Utf8(path.to_owned()),
+            path: ItemPath::Utf8(Cow::Borrowed(path)),
             probe,
         }
     }
@@ -352,14 +391,14 @@ mod tests {
     fn decide_classifies_text_binary_and_size_boundaries() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut selector = Selector::new();
-        selector.decide(decide_item("a.txt", Probe::Bytes(b"hello".to_vec())))?;
-        selector.decide(decide_item("bin.bin", Probe::Bytes(vec![0, 1, 2])))?;
-        selector.decide(decide_item("bad_utf8", Probe::Bytes(vec![0xff])))?;
+        selector.decide(decide_item("a.txt", bytes_probe(b"hello".to_vec())))?;
+        selector.decide(decide_item("bin.bin", bytes_probe(vec![0, 1, 2])))?;
+        selector.decide(decide_item("bad_utf8", bytes_probe(vec![0xff])))?;
         selector.decide(decide_item("big.txt", Probe::TooLarge))?;
         selector.decide(decide_item("missing.txt", Probe::Missing))?;
         selector.decide(decide_item(
             "exact.txt",
-            Probe::Bytes(vec![b'x'; MAX_FILE_SIZE as usize]),
+            bytes_probe(vec![b'x'; MAX_FILE_SIZE as usize]),
         ))?;
 
         let collection = selector.finish("test".into(), None);
@@ -374,7 +413,7 @@ mod tests {
     fn missing_probe_is_skipped() -> Result<(), Box<dyn std::error::Error>> {
         let mut selector = Selector::new();
         selector.decide(decide_item("missing.png", Probe::Missing))?;
-        selector.decide(decide_item("kept.txt", Probe::Bytes(b"kept".to_vec())))?;
+        selector.decide(decide_item("kept.txt", bytes_probe(b"kept".to_vec())))?;
         let collection = selector.finish("test".into(), None);
         assert_eq!(collection.files.len(), 1);
         assert_eq!(collection.skipped, 1);
@@ -394,7 +433,7 @@ mod tests {
 
         let included = Item {
             path: ItemPath::Utf8("included.txt".into()),
-            probe: Probe::Bytes(b"hello".to_vec()),
+            probe: bytes_probe(b"hello".to_vec()),
         };
         match included.evaluate() {
             ItemDecision::Included { path, content } => {
@@ -406,7 +445,7 @@ mod tests {
 
         let binary = Item {
             path: ItemPath::Utf8("binary.bin".into()),
-            probe: Probe::Bytes(vec![0, 1, 2]),
+            probe: bytes_probe(vec![0, 1, 2]),
         };
         match binary.evaluate() {
             ItemDecision::Skipped { path: Some(path) } => assert_eq!(path, "binary.bin"),
@@ -415,7 +454,7 @@ mod tests {
 
         let non_utf8 = Item {
             path: ItemPath::NonUtf8,
-            probe: Probe::Bytes(b"text".to_vec()),
+            probe: bytes_probe(b"text".to_vec()),
         };
         assert!(matches!(
             non_utf8.evaluate(),
@@ -427,10 +466,10 @@ mod tests {
     fn decide_counts_candidate_before_content() -> Result<(), Box<dyn std::error::Error>> {
         let mut selector = Selector::new();
         for _ in 0..MAX_FILE_COUNT {
-            selector.decide(decide_item("bin.txt", Probe::Bytes(vec![0])))?;
+            selector.decide(decide_item("bin.txt", bytes_probe(vec![0])))?;
         }
         assert!(matches!(
-            selector.decide(decide_item("extra.txt", Probe::Bytes(b"ok".to_vec()))),
+            selector.decide(decide_item("extra.txt", bytes_probe(b"ok".to_vec()))),
             Err(IngestError::CandidateLimitExceeded { .. })
         ));
         Ok(())
@@ -440,12 +479,12 @@ mod tests {
     fn output_overflow_includes_largest_files_diagnostic() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut selector = Selector::new();
-        selector.decide(decide_item("small.txt", Probe::Bytes(vec![b'a'; 100])))?;
-        selector.decide(decide_item("medium.txt", Probe::Bytes(vec![b'b'; 50_000])))?;
+        selector.decide(decide_item("small.txt", bytes_probe(vec![b'a'; 100])))?;
+        selector.decide(decide_item("medium.txt", bytes_probe(vec![b'b'; 50_000])))?;
         let err = selector
             .decide(decide_item(
                 "large.txt",
-                Probe::Bytes(vec![b'x'; MAX_OUTPUT_SIZE as usize]),
+                bytes_probe(vec![b'x'; MAX_OUTPUT_SIZE as usize]),
             ))
             .unwrap_err();
         let message = err.to_string();
@@ -463,17 +502,17 @@ mod tests {
         for index in 0..8_000 {
             selector.decide(decide_item(
                 &format!("vendor/pkg_{index}.rs"),
-                Probe::Bytes(b"x".to_vec()),
+                bytes_probe(b"x".to_vec()),
             ))?;
         }
         for index in 0..2_000 {
             selector.decide(decide_item(
                 &format!("src/file_{index}.rs"),
-                Probe::Bytes(b"x".to_vec()),
+                bytes_probe(b"x".to_vec()),
             ))?;
         }
         let err = selector
-            .decide(decide_item("extra/one.rs", Probe::Bytes(b"x".to_vec())))
+            .decide(decide_item("extra/one.rs", bytes_probe(b"x".to_vec())))
             .unwrap_err();
         let message = err.to_string();
         assert!(message.contains("repository contains more than 10000 files"));
@@ -507,8 +546,8 @@ mod tests {
     #[test]
     fn item_evaluation_separates_decisions_without_heap_allocation() {
         let utf8_item = Item {
-            path: ItemPath::Utf8("src/lib.rs".to_string()),
-            probe: Probe::Bytes(b"pub fn run() {}".to_vec()),
+            path: ItemPath::Utf8(Cow::Borrowed("src/lib.rs")),
+            probe: bytes_probe(b"pub fn run() {}".to_vec()),
         };
         assert_eq!(
             utf8_item.evaluate(),
@@ -519,8 +558,8 @@ mod tests {
         );
 
         let binary_item = Item {
-            path: ItemPath::Utf8("assets/image.png".to_string()),
-            probe: Probe::Bytes(vec![0x89, 0x50, 0x00, 0x47]),
+            path: ItemPath::Utf8(Cow::Borrowed("assets/image.png")),
+            probe: bytes_probe(vec![0x89, 0x50, 0x00, 0x47]),
         };
         assert_eq!(
             binary_item.evaluate(),
@@ -530,7 +569,7 @@ mod tests {
         );
 
         let missing_item = Item {
-            path: ItemPath::Utf8("missing.txt".to_string()),
+            path: ItemPath::Utf8(Cow::Borrowed("missing.txt")),
             probe: Probe::Missing,
         };
         assert_eq!(
@@ -583,5 +622,15 @@ mod tests {
 
         assert_eq!(short_dir, CompactDir::from_str("src/"));
         assert_ne!(short_dir, long_dir);
+    }
+
+    #[test]
+    fn test_compact_dir_as_bytes() {
+        let short_dir = CompactDir::from_str("src/");
+        assert_eq!(short_dir.as_bytes(), b"src/");
+
+        let long_str = "deeply/nested/directory/structure/path/";
+        let long_dir = CompactDir::from_str(long_str);
+        assert_eq!(long_dir.as_bytes(), long_str.as_bytes());
     }
 }
