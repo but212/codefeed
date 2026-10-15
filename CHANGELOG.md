@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `CompactDir` in `src/core/decide.rs`: 24-byte inline directory descriptor holding up to 22 bytes inline with heap fallback for longer paths, eliminating heap allocations during candidate budget tracking.
+- `local_walk_hierarchical_1000` benchmark suite in `benches/bench.rs` to measure directory candidate walking, path normalization, sorting, and initial budget checking isolated from disk content reads.
+
+### Changed
+
+- `CandidateBudget::dir_runs` in `src/core/decide.rs`: migrated from `Vec<(String, usize)>` to `Vec<(CompactDir, usize)>`, aligning entries to 32 bytes for cache-line density (2 entries per 64B cache line).
+- `LocalCandidate` in `src/shell/local.rs`: removed redundant `path: PathBuf` field, reducing struct size from 56 bytes to 32 bytes (2 entries per 64B cache line) and eliminating per-file `PathBuf` heap allocations during directory walking.
+- `LocalStream` in `src/shell/local.rs`: lazily resolves local file paths via a single reusable `work_path: PathBuf` buffer during iteration.
+
 ## [0.2.3]
 
 ### Added

@@ -15,13 +15,14 @@ use crate::core::model::OutputTarget;
 use crate::core::policy::{MAX_FILE_COUNT, PathClassification};
 
 struct LocalCandidate {
-    path: PathBuf,
     item_path: ItemPath,
     skip_read: bool,
 }
 
 pub struct LocalStream {
     label: String,
+    root: PathBuf,
+    work_path: PathBuf,
     candidates: std::vec::IntoIter<LocalCandidate>,
 }
 
@@ -52,6 +53,8 @@ impl LocalStream {
 
         Ok(Self {
             label,
+            root: canonical_root,
+            work_path: PathBuf::new(),
             candidates: candidates.into_iter(),
         })
     }
@@ -65,9 +68,17 @@ impl Iterator for LocalStream {
         let probe = if candidate.skip_read {
             Probe::Missing
         } else {
-            match read_local_file(&candidate.path) {
-                Ok(p) => p,
-                Err(err) => return Some(Err(err)),
+            match &candidate.item_path {
+                ItemPath::Utf8(rel) => {
+                    self.work_path.clear();
+                    self.work_path.push(&self.root);
+                    self.work_path.push(rel);
+                    match read_local_file(&self.work_path) {
+                        Ok(p) => p,
+                        Err(err) => return Some(Err(err)),
+                    }
+                }
+                ItemPath::NonUtf8 => Probe::Missing,
             }
         };
         Some(Ok(Item {
@@ -148,7 +159,6 @@ fn walk_candidates(
         };
 
         candidates.push(LocalCandidate {
-            path: entry_path.to_path_buf(),
             item_path,
             skip_read,
         });
@@ -162,7 +172,7 @@ fn walk_candidates(
         (ItemPath::Utf8(left), ItemPath::Utf8(right)) => left.cmp(right),
         (ItemPath::Utf8(_), ItemPath::NonUtf8) => std::cmp::Ordering::Less,
         (ItemPath::NonUtf8, ItemPath::Utf8(_)) => std::cmp::Ordering::Greater,
-        (ItemPath::NonUtf8, ItemPath::NonUtf8) => a.path.cmp(&b.path),
+        (ItemPath::NonUtf8, ItemPath::NonUtf8) => std::cmp::Ordering::Equal,
     });
 
     Ok(candidates)
@@ -451,6 +461,6 @@ mod tests {
 
     #[test]
     fn test_local_candidate_size_is_under_cache_line() {
-        assert!(std::mem::size_of::<LocalCandidate>() <= 64);
+        assert!(std::mem::size_of::<LocalCandidate>() <= 32);
     }
 }
