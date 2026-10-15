@@ -108,6 +108,22 @@ pub struct FileSpan {
     pub(crate) content_len: u32,
 }
 
+impl FileSpan {
+    #[inline(always)]
+    pub(crate) fn path<'a>(&self, arena: &'a str) -> &'a str {
+        let start = self.path_offset as usize;
+        let end = start + self.path_len as usize;
+        &arena[start..end]
+    }
+
+    #[inline(always)]
+    pub(crate) fn content<'a>(&self, arena: &'a str) -> &'a str {
+        let start = self.content_offset as usize;
+        let end = start + self.content_len as usize;
+        &arena[start..end]
+    }
+}
+
 /// Continuous arena storage for file paths and contents.
 /// Eliminates per-file heap allocations and preserves cache locality.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -145,21 +161,15 @@ impl FileStorage {
     /// Sorts spans lexicographically by path in-place within the path arena.
     pub fn sort_by_path(&mut self) {
         let path_arena = &self.path_arena;
-        let is_sorted = self.spans.windows(2).all(|w| {
-            let pa =
-                &path_arena[w[0].path_offset as usize..(w[0].path_offset + w[0].path_len) as usize];
-            let pb =
-                &path_arena[w[1].path_offset as usize..(w[1].path_offset + w[1].path_len) as usize];
-            pa <= pb
-        });
+        let is_sorted = self
+            .spans
+            .windows(2)
+            .all(|w| w[0].path(path_arena) <= w[1].path(path_arena));
         if is_sorted {
             return;
         }
-        self.spans.sort_unstable_by(|a, b| {
-            let pa = &path_arena[a.path_offset as usize..(a.path_offset + a.path_len) as usize];
-            let pb = &path_arena[b.path_offset as usize..(b.path_offset + b.path_len) as usize];
-            pa.cmp(pb)
-        });
+        self.spans
+            .sort_unstable_by(|a, b| a.path(path_arena).cmp(b.path(path_arena)));
     }
 
     /// Appends path and content to the arenas and records a [`FileSpan`].
@@ -190,14 +200,9 @@ impl FileStorage {
     /// Resolves a [`FileSpan`] into a borrowed [`FileRecord`].
     #[inline]
     pub fn get(&self, span: FileSpan) -> FileRecord<'_> {
-        let p_start = span.path_offset as usize;
-        let p_end = p_start + span.path_len as usize;
-        let c_start = span.content_offset as usize;
-        let c_end = c_start + span.content_len as usize;
-
         FileRecord {
-            path: &self.path_arena[p_start..p_end],
-            content: &self.content_arena[c_start..c_end],
+            path: span.path(&self.path_arena),
+            content: span.content(&self.content_arena),
         }
     }
 

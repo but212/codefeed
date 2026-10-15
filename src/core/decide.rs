@@ -260,9 +260,9 @@ impl CandidateBudget {
     }
 
     fn overflow_error(&self) -> IngestError {
-        let mut aggregated: HashMap<String, usize> = HashMap::new();
+        let mut aggregated: HashMap<&str, usize> = HashMap::new();
         for (dir, count) in &self.dir_runs {
-            *aggregated.entry(dir.as_str().to_string()).or_insert(0) += count;
+            *aggregated.entry(dir.as_str()).or_insert(0) += count;
         }
         IngestError::CandidateLimitExceeded {
             limit: MAX_FILE_COUNT,
@@ -281,11 +281,11 @@ fn extract_dir_slice(path: Option<&str>) -> &str {
     }
 }
 
-fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String, usize)> {
-    let mut dirs: Vec<(String, usize)> = dir_counts.iter().map(|(d, c)| (d.clone(), *c)).collect();
-    dirs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+fn top_overflow_directories(dir_counts: &HashMap<&str, usize>) -> Vec<(String, usize)> {
+    let mut dirs: Vec<(&str, usize)> = dir_counts.iter().map(|(&d, &c)| (d, c)).collect();
+    dirs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     dirs.truncate(3);
-    dirs
+    dirs.into_iter().map(|(d, c)| (d.to_string(), c)).collect()
 }
 
 /// UTF-8 text predicate: NUL-free bytes only.

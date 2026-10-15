@@ -9,14 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `unescape_header` in `src/core/digest/text.rs`: restores escaped digest header strings back to their original form for lossless roundtrip and parsing validation.
 - `CompactDir` in `src/core/decide.rs`: 24-byte inline directory descriptor holding up to 22 bytes inline with heap fallback for longer paths, eliminating heap allocations during candidate budget tracking.
 - `local_walk_hierarchical_1000` benchmark suite in `benches/bench.rs` to measure directory candidate walking, path normalization, sorting, and initial budget checking isolated from disk content reads.
 
 ### Changed
 
+- `TokenEstimator` in `src/core/digest/token.rs`: replaced runtime bit-branching with a precomputed 256-byte lookup table (`CHAR_METRIC`) to accelerate per-byte token estimation, and changed `finish(&self)` to be non-destructive so token counts can be read repeatedly without mutating state.
+- `normalize_path` in `src/shell/output.rs`: fixed path truncation bugs where leading `..` in relative paths (such as `../a` or `a/../../b`) were dropped, ensuring correct target file resolution and output filter matching.
+- `PathClassification::classify` in `src/core/policy.rs`: unified multiple full-path scans into a single filename/extension extraction pass, eliminating redundant string traversals before candidate evaluation.
+- `retry_delay` in `src/core/policy.rs`: bounded backoff delay strictly within 5,000 ms while preserving random jitter on high attempt counts to prevent thundering-herd retry collisions.
+- `BudgetTrie::get_or_insert_child` in `src/core/digest/trie.rs`: unified duplicate node allocation branches into a single `push_node` helper, preventing arena index synchronization bugs.
+- `strip_archive_root` in `src/core/archive.rs`: stripped consecutive slashes after root tarball prefixes to prevent leading slashes in relative paths.
+- `first_special_index` in `src/core/digest/xml.rs`: extracted shared special character search for `xml_escape` and `write_escaped` to eliminate duplicate scanning logic.
+- `CandidateBudget::overflow_error` in `src/core/decide.rs`: aggregated directory counts with `HashMap<&str, usize>` borrowing directly from `CompactDir`, eliminating heap allocations during candidate overflow reporting.
+- `FileSpan` in `src/core/model.rs`: added `path` and `content` projection methods, simplifying `FileStorage::sort_by_path` and `FileStorage::get` into clean, single-expression arena lookups.
+- `probe_tar_entry` in `src/shell/github.rs`: converted byte-level hidden path inspection into a zero-allocation single-pass scan via `starts_with(b".")` and `windows(2).any(|w| w == b"/.")`.
 - `CandidateBudget::dir_runs` in `src/core/decide.rs`: migrated from `Vec<(String, usize)>` to `Vec<(CompactDir, usize)>`, aligning entries to 32 bytes for cache-line density (2 entries per 64B cache line).
 - `LocalCandidate` in `src/shell/local.rs`: removed redundant `path: PathBuf` field, reducing struct size from 56 bytes to 32 bytes (2 entries per 64B cache line) and eliminating per-file `PathBuf` heap allocations during directory walking.
 - `LocalStream` in `src/shell/local.rs`: lazily resolves local file paths via a single reusable `work_path: PathBuf` buffer during iteration.
+
+### Removed
+
+- `is_noise_path`, `is_sensitive_path`, and `has_binary_extension` in `src/core/policy.rs`: removed unused legacy path wrapper functions in favor of `PathClassification::classify`.
 
 ## [0.2.3]
 

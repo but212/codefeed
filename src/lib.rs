@@ -12,7 +12,8 @@ pub use shell::orchestrate::ingest;
 pub mod __bench {
     pub use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe, Selector, text_str};
     pub use crate::core::digest::{
-        BudgetTrie, escape_header, estimate_tokens, render_to_writer, write_escaped, xml_escape,
+        BudgetTrie, escape_header, estimate_tokens, render_to_writer, unescape_header,
+        write_escaped, xml_escape,
     };
     pub use crate::core::model::{
         CollectionResult, DigestFormat, FileRecord, FileStorage, OutputTarget,

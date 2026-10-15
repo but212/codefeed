@@ -124,10 +124,8 @@ fn probe_tar_entry<R: Read>(entry: &mut tar::Entry<R>) -> Result<ArchiveEntryOut
     };
 
     if rel_bytes.is_empty()
-        || rel_bytes
-            .split(|&b| b == b'/')
-            .filter(|part| !part.is_empty())
-            .any(|part| part.starts_with(b"."))
+        || rel_bytes.starts_with(b".")
+        || rel_bytes.windows(2).any(|w| w == b"/.")
     {
         return Ok(ArchiveEntryOutcome::Ignored);
     }

@@ -15,8 +15,9 @@ pub(crate) fn strip_archive_root(raw_bytes: &[u8]) -> Option<&[u8]> {
         .map_or(start, |i| i + 1);
     let normalized = &raw_bytes[start..end];
     let slash_index = normalized.iter().position(|&b| b == b'/')?;
-    let rest = &normalized[slash_index + 1..];
-    if rest.is_empty() { None } else { Some(rest) }
+    let after_root = &normalized[slash_index + 1..];
+    let rest_start = after_root.iter().position(|&b| b != b'/')?;
+    Some(&after_root[rest_start..])
 }
 
 /// Parses a 40-character commit SHA from PAX global header comment bytes.
@@ -59,10 +60,15 @@ mod tests {
             Some(&b"src/main.rs"[..])
         );
         assert_eq!(
-            strip_archive_root(b"repo-root/deep/nested/file.txt"),
+            strip_archive_root(b"repo-root//src/main.rs"),
+            Some(&b"src/main.rs"[..])
+        );
+        assert_eq!(
+            strip_archive_root(b"repo-root///deep/nested/file.txt"),
             Some(&b"deep/nested/file.txt"[..])
         );
         assert_eq!(strip_archive_root(b"but212-codefeed-c1863c8/"), None);
+        assert_eq!(strip_archive_root(b"but212-codefeed-c1863c8///"), None);
         assert_eq!(strip_archive_root(b"but212-codefeed-c1863c8"), None);
         assert_eq!(strip_archive_root(b""), None);
     }

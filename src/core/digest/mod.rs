@@ -5,7 +5,7 @@ mod trie;
 mod xml;
 
 pub(crate) use budget::largest_files;
-pub use text::escape_header;
+pub use text::{escape_header, unescape_header};
 pub use token::{TokenEstimator, estimate_tokens};
 pub use trie::BudgetTrie;
 pub use xml::{write_escaped, xml_escape};

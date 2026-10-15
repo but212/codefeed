@@ -56,14 +56,16 @@ impl Default for BudgetTrie {
 }
 
 fn tree_display<'a>(name: &'a str, escape_xml: bool) -> Cow<'a, str> {
+    if !escape_xml {
+        return escape_header(name);
+    }
     let escaped = escape_header(name);
-    if escape_xml {
-        match escaped {
-            Cow::Borrowed(b) => xml_escape(b),
-            Cow::Owned(ref o) => Cow::Owned(xml_escape(o).into_owned()),
-        }
-    } else {
-        escaped
+    match escaped {
+        Cow::Borrowed(b) => xml_escape(b),
+        Cow::Owned(o) => match xml_escape(&o) {
+            Cow::Borrowed(_) => Cow::Owned(o),
+            Cow::Owned(xml_str) => Cow::Owned(xml_str),
+        },
     }
 }
 
@@ -90,6 +92,19 @@ impl BudgetTrie {
         }
     }
 
+    fn push_node(&mut self, part: &str, is_dir: bool, next_sibling: u32) -> u32 {
+        let new_index = u32::try_from(self.nodes.len()).expect("trie node count exceeds u32::MAX");
+        let name_offset =
+            u32::try_from(self.label_arena.len()).expect("trie arena exceeds u32::MAX");
+        let name_len = u16::try_from(part.len()).expect("part length exceeds u16::MAX");
+        self.label_arena.push_str(part);
+        let mut node = BudgetTrieNode::new(name_offset, name_len, is_dir);
+        node.next_sibling = next_sibling;
+        self.nodes.push(node);
+        self.last_children.push(NO_NODE);
+        new_index
+    }
+
     fn get_or_insert_child(&mut self, parent_index: u32, part: &str, is_dir: bool) -> u32 {
         let parent_node = parent_index as usize;
         let last_child_index = self.last_children[parent_node];
@@ -106,32 +121,14 @@ impl BudgetTrie {
             }
             if ordering == std::cmp::Ordering::Less {
                 // Sequential append (presorted fast path): append after last_child
-                let new_index =
-                    u32::try_from(self.nodes.len()).expect("trie node count exceeds u32::MAX");
-                let name_offset =
-                    u32::try_from(self.label_arena.len()).expect("trie arena exceeds u32::MAX");
-                let name_len = u16::try_from(part.len()).expect("part length exceeds u16::MAX");
-                self.label_arena.push_str(part);
-                self.nodes
-                    .push(BudgetTrieNode::new(name_offset, name_len, is_dir));
-                self.last_children.push(NO_NODE);
-
+                let new_index = self.push_node(part, is_dir, NO_NODE);
                 self.nodes[last_child_index as usize].next_sibling = new_index;
                 self.last_children[parent_node] = new_index;
                 return new_index;
             }
         } else {
             // First child for parent
-            let new_index =
-                u32::try_from(self.nodes.len()).expect("trie node count exceeds u32::MAX");
-            let name_offset =
-                u32::try_from(self.label_arena.len()).expect("trie arena exceeds u32::MAX");
-            let name_len = u16::try_from(part.len()).expect("part length exceeds u16::MAX");
-            self.label_arena.push_str(part);
-            self.nodes
-                .push(BudgetTrieNode::new(name_offset, name_len, is_dir));
-            self.last_children.push(NO_NODE);
-
+            let new_index = self.push_node(part, is_dir, NO_NODE);
             self.nodes[parent_node].first_child = new_index;
             self.last_children[parent_node] = new_index;
             return new_index;
@@ -158,16 +155,7 @@ impl BudgetTrie {
             }
         }
 
-        let new_index = u32::try_from(self.nodes.len()).expect("trie node count exceeds u32::MAX");
-        let name_offset =
-            u32::try_from(self.label_arena.len()).expect("trie arena exceeds u32::MAX");
-        let name_len = u16::try_from(part.len()).expect("part length exceeds u16::MAX");
-        self.label_arena.push_str(part);
-        let mut new_node = BudgetTrieNode::new(name_offset, name_len, is_dir);
-        new_node.next_sibling = curr;
-        self.nodes.push(new_node);
-        self.last_children.push(NO_NODE);
-
+        let new_index = self.push_node(part, is_dir, curr);
         if prev == NO_NODE {
             self.nodes[parent_node].first_child = new_index;
         } else {

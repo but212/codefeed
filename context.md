@@ -90,7 +90,7 @@ never depends on shell code; shell code depends on the core in one direction.
 - Pure core (`src/core/`):
   - `cli.rs`: Pure CLI argument parsing, help detection, and `CliAction` generation (`parse_cli`).
   - `policy.rs`: all operational limits, noise patterns, sensitive patterns, binary extensions, and
-    their predicates (`is_noise_path`, `is_sensitive_path`, `has_binary_extension`).
+    classification predicate (`PathClassification::classify`).
   - `source.rs`: source string and OS-string parsing.
   - `model.rs`: domain value types (`Source`, `FileRecord`, `CollectionResult`,
     `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`, `FileStorage`).

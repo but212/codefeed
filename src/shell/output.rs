@@ -265,9 +265,16 @@ pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     for component in path.components() {
         match component {
             Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
+            Component::ParentDir => match normalized.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    normalized.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                Some(Component::ParentDir) | None => {
+                    normalized.push("..");
+                }
+                Some(Component::CurDir) => unreachable!(),
+            },
             Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
                 normalized.push(component.as_os_str());
             }
@@ -381,6 +388,25 @@ mod tests {
         let path = Path::new("/a/b/../c/./d");
         let normalized = normalize_path(path);
         assert_eq!(normalized, Path::new("/a/c/d"));
+    }
+
+    #[test]
+    fn normalizes_relative_parent_dir_components_and_is_idempotent() {
+        let cases = [
+            ("../a", "../a"),
+            ("a/../../b", "../b"),
+            ("a/b/../../c", "c"),
+            ("/..", "/"),
+            ("/a/../../b", "/b"),
+            ("./a/../b", "b"),
+        ];
+        for (input, expected) in cases {
+            let path = Path::new(input);
+            let normalized = normalize_path(path);
+            assert_eq!(normalized, Path::new(expected), "failed for {input}");
+            let idempotent = normalize_path(&normalized);
+            assert_eq!(idempotent, normalized, "idempotency failed for {input}");
+        }
     }
 
     #[test]

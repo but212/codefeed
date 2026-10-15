@@ -25,8 +25,12 @@ const fn needs_header_escape(b: u8) -> bool {
 
 #[inline(always)]
 const fn header_escape_str(b: u8) -> &'static str {
-    const ESCAPES: [&str; 4] = ["\\\\", "\\r", "\\n", ""];
-    ESCAPES[(b & 3) as usize]
+    match b {
+        b'\\' => "\\\\",
+        b'\r' => "\\r",
+        b'\n' => "\\n",
+        _ => "",
+    }
 }
 
 pub fn escape_header(value: &str) -> Cow<'_, str> {
@@ -47,6 +51,49 @@ pub fn escape_header(value: &str) -> Cow<'_, str> {
         }
     }
     out.push_str(&value[last..]);
+    Cow::Owned(out)
+}
+
+/// Left-inverse of `escape_header` satisfying `unescape_header(escape_header(s)) == s`.
+pub fn unescape_header(value: &str) -> Cow<'_, str> {
+    let bytes = value.as_bytes();
+    let Some(first) = bytes.iter().position(|&b| b == b'\\') else {
+        return Cow::Borrowed(value);
+    };
+
+    let mut out = String::with_capacity(value.len());
+    out.push_str(&value[..first]);
+
+    let mut i = first;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            match bytes[i + 1] {
+                b'\\' => {
+                    out.push('\\');
+                    i += 2;
+                }
+                b'r' => {
+                    out.push('\r');
+                    i += 2;
+                }
+                b'n' => {
+                    out.push('\n');
+                    i += 2;
+                }
+                _ => {
+                    out.push('\\');
+                    i += 1;
+                }
+            }
+        } else {
+            let start = i;
+            while i < bytes.len() && bytes[i] != b'\\' {
+                i += 1;
+            }
+            out.push_str(&value[start..i]);
+        }
+    }
+
     Cow::Owned(out)
 }
 
@@ -111,5 +158,27 @@ pub(crate) mod tests {
         let input = "a\\b\rc\nd\\\\e\r\n";
         let expected = "a\\\\b\\rc\\nd\\\\\\\\e\\r\\n";
         assert_eq!(escape_header(input).as_ref(), expected);
+    }
+
+    #[test]
+    fn unescape_header_roundtrip_is_left_inverse() {
+        let samples = [
+            "",
+            "clean_path/src/main.rs",
+            "path\\with\\backslashes",
+            "path\nwith\nnewlines",
+            "path\r\nwith\r\ncrlf",
+            "complex\\path\nwith\rall\\kinds\r\nof\\\\escapes",
+            "lone\\trailing\\",
+        ];
+        for sample in samples {
+            let escaped = escape_header(sample);
+            let unescaped = unescape_header(&escaped);
+            assert_eq!(
+                unescaped.as_ref(),
+                sample,
+                "roundtrip failed for sample {sample:?}"
+            );
+        }
     }
 }

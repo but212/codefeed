@@ -146,15 +146,17 @@ impl<'a> Iterator for XmlChunks<'a> {
     }
 }
 
-pub fn xml_escape(value: &str) -> Cow<'_, str> {
-    let bytes = value.as_bytes();
-
-    let first = bytes
+#[inline(always)]
+pub(crate) fn first_special_index(bytes: &[u8]) -> Option<usize> {
+    bytes
         .iter()
         .enumerate()
-        .position(|(i, &b)| is_special_byte(b) && (b != 0xEF || xml_special(bytes, i).is_some()));
+        .position(|(i, &b)| is_special_byte(b) && (b != 0xEF || xml_special(bytes, i).is_some()))
+}
 
-    let Some(first) = first else {
+pub fn xml_escape(value: &str) -> Cow<'_, str> {
+    let bytes = value.as_bytes();
+    let Some(first) = first_special_index(bytes) else {
         return Cow::Borrowed(value);
     };
 
@@ -168,13 +170,7 @@ pub fn xml_escape(value: &str) -> Cow<'_, str> {
 
 pub fn write_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
     let bytes = value.as_bytes();
-
-    let first = bytes
-        .iter()
-        .enumerate()
-        .position(|(i, &b)| is_special_byte(b) && (b != 0xEF || xml_special(bytes, i).is_some()));
-
-    let Some(first) = first else {
+    let Some(first) = first_special_index(bytes) else {
         return writer.write_all(bytes);
     };
 

@@ -38,9 +38,8 @@ pub const RETRY_MAX_DELAY_MS: u64 = 5_000;
 /// Maximum random jitter in milliseconds added to backoff delay.
 pub const RETRY_JITTER_MAX_MS: u64 = 50;
 
-/// Returns `true` if `path` matches any conventional noise lockfile.
-pub(crate) fn is_noise_path(path: &str) -> bool {
-    let file_name = path.rsplit('/').next().unwrap_or(path);
+#[inline]
+pub(crate) fn is_noise_file(file_name: &str) -> bool {
     NOISE.contains(&file_name)
 }
 
@@ -50,12 +49,8 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
-/// Returns `true` if `path` matches conventional sensitive files (.env, keys, credentials).
-///
-/// Matches filename prefixes (`.env*`, `id_rsa*`, `id_ed25519*`, `credentials*`)
-/// and extensions in [`SENSITIVE_EXT`] (`*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.credentials`).
-pub(crate) fn is_sensitive_path(path: &str) -> bool {
-    let file_name = path.rsplit('/').next().unwrap_or(path);
+#[inline]
+pub(crate) fn is_sensitive_file(file_name: &str, ext: Option<&str>) -> bool {
     if starts_with_ignore_ascii_case(file_name, ".env")
         || starts_with_ignore_ascii_case(file_name, "id_rsa")
         || starts_with_ignore_ascii_case(file_name, "id_ed25519")
@@ -63,25 +58,24 @@ pub(crate) fn is_sensitive_path(path: &str) -> bool {
     {
         return true;
     }
-    let Some((_, ext)) = file_name.rsplit_once('.') else {
+    let Some(ext) = ext else {
         return false;
     };
     SENSITIVE_EXT.iter().any(|&s| s.eq_ignore_ascii_case(ext))
 }
 
-/// Returns `true` if `path` has a known binary file extension (case-insensitive).
-pub(crate) fn has_binary_extension(path: &str) -> bool {
-    let Some((_, ext)) = path.rsplit_once('.') else {
+#[inline]
+pub(crate) fn is_binary_ext(ext: Option<&str>) -> bool {
+    let Some(ext) = ext else {
         return false;
     };
     BINARY_EXT.iter().any(|&b| b.eq_ignore_ascii_case(ext))
 }
 
 /// Returns `true` if `path` contains hidden directory or file components (starting with `.`).
+#[inline]
 pub(crate) fn is_hidden_path(path: &str) -> bool {
-    path.split('/')
-        .filter(|part| !part.is_empty())
-        .any(|part| part.starts_with('.'))
+    path.starts_with('.') || path.contains("/.")
 }
 
 /// Pre-ingestion classification of a relative path candidate.
@@ -97,14 +91,19 @@ pub(crate) enum PathClassification {
 
 impl PathClassification {
     pub(crate) fn classify(path: &str) -> Self {
-        const CANDIDATE_KIND: [PathClassification; 2] = [
-            PathClassification::NeedsContent,
-            PathClassification::PreclassifiedBinary,
-        ];
-        if is_hidden_path(path) || is_noise_path(path) || is_sensitive_path(path) {
+        if is_hidden_path(path) {
+            return Self::Ignored;
+        }
+
+        let file_name = path.rsplit('/').next().unwrap_or(path);
+        let ext = file_name.rsplit_once('.').map(|(_, e)| e);
+
+        if is_noise_file(file_name) || is_sensitive_file(file_name, ext) {
             Self::Ignored
+        } else if is_binary_ext(ext) {
+            Self::PreclassifiedBinary
         } else {
-            CANDIDATE_KIND[has_binary_extension(path) as usize]
+            Self::NeedsContent
         }
     }
 }
@@ -118,18 +117,15 @@ pub(crate) const fn is_retryable_status(status_code: u16) -> bool {
 /// Calculates bounded exponential backoff duration with jitter for the given attempt.
 #[inline]
 pub(crate) const fn retry_delay(attempt: usize, entropy: u64) -> std::time::Duration {
-    let shift = if attempt < 63 { attempt as u32 } else { 63 };
-    let multiplier = 1_u64 << shift;
-
-    let exponential = RETRY_INITIAL_DELAY_MS.saturating_mul(multiplier);
-    let jitter = entropy % (RETRY_JITTER_MAX_MS + 1);
-    let base = exponential.saturating_add(jitter);
-
-    let millis = if base < RETRY_MAX_DELAY_MS {
-        base
+    let shift = if attempt < 5 { attempt as u32 } else { 5 };
+    let exponential = RETRY_INITIAL_DELAY_MS.saturating_mul(1_u64 << shift);
+    let capped_exponential = if exponential < RETRY_MAX_DELAY_MS - RETRY_JITTER_MAX_MS {
+        exponential
     } else {
-        RETRY_MAX_DELAY_MS
+        RETRY_MAX_DELAY_MS - RETRY_JITTER_MAX_MS
     };
+    let jitter = entropy % (RETRY_JITTER_MAX_MS + 1);
+    let millis = capped_exponential + jitter;
 
     std::time::Duration::from_millis(millis)
 }
@@ -160,16 +156,18 @@ mod tests {
     fn calculates_bounded_exponential_backoff() {
         const {
             assert!(retry_delay(0, 0).as_millis() == 250);
-            assert!(retry_delay(10, 0).as_millis() == 5000);
+            assert!(retry_delay(10, 0).as_millis() == 4950);
+            assert!(retry_delay(10, 50).as_millis() == 5000);
         }
         assert_eq!(retry_delay(0, 0).as_millis(), 250);
         assert_eq!(retry_delay(1, 0).as_millis(), 500);
         assert_eq!(retry_delay(2, 0).as_millis(), 1000);
-        assert_eq!(retry_delay(10, 0).as_millis(), 5000);
+        assert_eq!(retry_delay(10, 0).as_millis(), 4950);
+        assert_eq!(retry_delay(10, 25).as_millis(), 4975);
+        assert_eq!(retry_delay(10, 50).as_millis(), 5000);
 
         assert_eq!(retry_delay(0, 42).as_millis(), 292);
         assert_eq!(retry_delay(0, 50).as_millis(), 300);
-        assert_eq!(retry_delay(10, 50).as_millis(), 5000);
     }
 
     #[test]
@@ -215,10 +213,25 @@ mod tests {
 
     #[test]
     fn is_sensitive_path_matches_env_prefixes() {
-        assert!(is_sensitive_path(".env"));
-        assert!(is_sensitive_path(".env.local"));
-        assert!(is_sensitive_path("nested/.ENV.production"));
-        assert!(is_sensitive_path(".envrc"));
-        assert!(!is_sensitive_path("environment.rs"));
+        assert_eq!(
+            PathClassification::classify(".env"),
+            PathClassification::Ignored
+        );
+        assert_eq!(
+            PathClassification::classify(".env.local"),
+            PathClassification::Ignored
+        );
+        assert_eq!(
+            PathClassification::classify("nested/.ENV.production"),
+            PathClassification::Ignored
+        );
+        assert_eq!(
+            PathClassification::classify(".envrc"),
+            PathClassification::Ignored
+        );
+        assert_eq!(
+            PathClassification::classify("environment.rs"),
+            PathClassification::NeedsContent
+        );
     }
 }
