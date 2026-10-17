@@ -6,6 +6,8 @@ pub const MAX_FILE_SIZE: u64 = 1024 * 1024;
 pub const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
 /// Maximum candidate files evaluated before candidate budget overflows (10,000 files).
 pub const MAX_FILE_COUNT: usize = 10_000;
+/// Maximum path component length in bytes supported by the trie arena (65,535 bytes).
+pub const MAX_COMPONENT_LEN: usize = u16::MAX as usize;
 /// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
 pub const ARCHIVE_MAX_SECS: u64 = 300;
 
@@ -41,6 +43,19 @@ pub const RETRY_JITTER_MAX_MS: u64 = 50;
 #[inline]
 pub(crate) fn is_noise_file(file_name: &str) -> bool {
     NOISE.contains(&file_name)
+}
+
+/// Returns the byte length of the first path component exceeding [`MAX_COMPONENT_LEN`].
+#[inline]
+pub(crate) fn find_overlong_component(path: &str) -> Option<usize> {
+    if path.len() > MAX_COMPONENT_LEN {
+        path.split('/')
+            .filter(|s| !s.is_empty())
+            .find(|s| s.len() > MAX_COMPONENT_LEN)
+            .map(|s| s.len())
+    } else {
+        None
+    }
 }
 
 fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {

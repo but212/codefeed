@@ -7,7 +7,7 @@ mod xml;
 pub(crate) use budget::largest_files;
 pub use text::{escape_header, unescape_header};
 pub use token::{TokenEstimator, estimate_tokens};
-pub use trie::BudgetTrie;
+pub use trie::{BudgetTrie, InsertError};
 pub use xml::{write_escaped, xml_escape};
 
 use crate::core::error::IngestError;
@@ -144,7 +144,7 @@ mod tests {
     fn test_trie<'a>(files: impl IntoIterator<Item = FileRecord<'a>>) -> BudgetTrie {
         let mut trie = BudgetTrie::new();
         for file in files {
-            trie.insert(file.path);
+            trie.insert(file.path).unwrap();
         }
         trie
     }

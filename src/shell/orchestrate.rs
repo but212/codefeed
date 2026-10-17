@@ -23,7 +23,7 @@ pub trait SourceStream {
 pub fn collect_stream<S: SourceStream>(stream: S) -> Result<CollectionResult, IngestError> {
     let mut selector = Selector::from_size_hint(stream.size_hint());
     let info = stream.for_each_item(|item| selector.decide(item))?;
-    Ok(selector.finish(info.label, info.revision))
+    selector.finish(info.label, info.revision)
 }
 
 pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {

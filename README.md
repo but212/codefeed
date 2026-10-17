@@ -102,6 +102,7 @@ Credentials are sent as `Authorization: Bearer <token>` strictly to exact-origin
 - **Limits**:
   - Candidate files: bounded candidate budget; aborts on overflow with deterministically sorted largest-directory diagnostics from observed candidates at termination.
   - Per-file size: individual file cap (`MAX_FILE_SIZE`); exceeding files increment `skipped`.
+  - Path component length: maximum path component length (`MAX_COMPONENT_LEN`, 65,535 bytes); exceeding components return an error and abort digest construction.
   - Digest size: strictly enforced total digest cap; aborts with largest-file diagnostics on overflow.
   - Archive transfer: bounded whole-archive transfer timeout (`ARCHIVE_MAX_SECS`).
 - **Network Resilience**: Retries transient transport errors (`Io`, `Timeout`, `ConnectionFailed`) and HTTP 429/5xx with exponential backoff and jitter up to 3 total attempts. Fails immediately on non-transient transport errors and 4xx client errors.

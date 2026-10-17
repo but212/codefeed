@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `MAX_COMPONENT_LEN` (`src/core/policy.rs`): centralized 65,535-byte path component limit for trie node labels.
+- `find_overlong_component` (`src/core/policy.rs`): shared validation helper.
+- `IngestError::PathComponentTooLong` (`src/core/error.rs`): explicit error variant for oversized path components, surfaced during ingestion and tree construction.
+- `InsertError` (`src/core/digest/mod.rs`, `src/core/digest/trie.rs`): trie insertion error implementing `std::error::Error`.
+
+### Changed
+
+- `BudgetTrieNode` (`src/core/digest/trie.rs`): packed directory status into `flags: u16` (`FLAG_DIR = 1 << 0`) while maintaining 16-byte fixed node layout.
+- `Selector::add_file` (`src/core/decide.rs`): validates component lengths upfront during ingestion (fail-fast) before adding files to storage.
+- `Selector::finish` (`src/core/decide.rs`): returns `Result<CollectionResult, IngestError>`, eliminating unhandled panics by propagating component limit violations.
+- `collect_stream` (`src/shell/orchestrate.rs`): propagates `Selector::finish` errors directly through the streaming pipeline.
+
+### Removed
+
+- `safe_component` (`src/core/digest/trie.rs`): removed dead-code truncation in favor of atomic insertion pre-validation.
+
 ## [0.2.3]
 
 ### Added

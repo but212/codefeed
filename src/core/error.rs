@@ -32,6 +32,15 @@ pub enum IngestError {
         /// Up to five largest files contributing to the digest overflow.
         largest_files: Vec<(String, usize)>,
     },
+    /// Path component length exceeds maximum allowed limit.
+    PathComponentTooLong {
+        /// File path containing the oversized component.
+        path: String,
+        /// Actual byte length of the oversized component.
+        len: usize,
+        /// Maximum allowed component byte length.
+        max: usize,
+    },
 }
 
 impl Display for IngestError {
@@ -68,6 +77,12 @@ impl Display for IngestError {
                     }
                 }
                 Ok(())
+            }
+            Self::PathComponentTooLong { path, len, max } => {
+                write!(
+                    f,
+                    "path component in '{path}' is {len} bytes; maximum is {max}"
+                )
             }
         }
     }
