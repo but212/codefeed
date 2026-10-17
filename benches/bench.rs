@@ -159,7 +159,7 @@ mod fixture {
     pub fn build_collection(label: &str, files: FileStorage) -> CollectionResult {
         let mut trie = BudgetTrie::new();
         for file in files.iter() {
-            trie.insert(file.path).unwrap();
+            trie.insert(file.path);
         }
         CollectionResult {
             label: label.to_string(),
@@ -310,7 +310,7 @@ mod suites {
             runner.bench(name, warmup, iterations, None, || {
                 let mut trie = BudgetTrie::new();
                 for p in &paths {
-                    trie.insert(p).unwrap();
+                    trie.insert(p);
                 }
                 black_box(trie);
             });
@@ -322,7 +322,7 @@ mod suites {
         runner.bench("trie_presorted_10000", 5, 10, None, || {
             let mut trie = BudgetTrie::new();
             for p in &presorted_paths {
-                trie.insert(p).unwrap();
+                trie.insert(p);
             }
             black_box(trie);
         });
@@ -332,7 +332,7 @@ mod suites {
         let flat_paths: Vec<String> = (0..1_000).map(|i| format!("src/file_{i:05}.rs")).collect();
         let mut flat_trie = BudgetTrie::new();
         for p in &flat_paths {
-            flat_trie.insert(p).unwrap();
+            flat_trie.insert(p);
         }
 
         runner.bench("trie_render_flat_1000", 20, 50, None, || {
@@ -355,7 +355,7 @@ mod suites {
             .collect();
         let mut deep_trie = BudgetTrie::new();
         for p in &deep_paths {
-            deep_trie.insert(p).unwrap();
+            deep_trie.insert(p);
         }
 
         runner.bench("trie_render_deep_1000", 20, 50, None, || {
@@ -524,9 +524,7 @@ mod suites {
             for item in items {
                 let _ = selector.decide(item);
             }
-            let res = selector
-                .finish("bench".into(), None)
-                .expect("bench collection");
+            let res = selector.finish("bench".into(), None);
             black_box((res.files.len(), res.skipped));
         });
     }

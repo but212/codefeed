@@ -4,10 +4,8 @@ use super::budget::CandidateBudget;
 use super::item::{Item, ItemDecision};
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, FileRecord, FileStorage};
-use crate::core::policy::{
-    MAX_COMPONENT_LEN, MAX_FILE_COUNT, MAX_OUTPUT_SIZE, find_overlong_component,
-};
-use crate::core::tree::{BudgetTrie, InsertError};
+use crate::core::policy::{MAX_FILE_COUNT, MAX_OUTPUT_SIZE};
+use crate::core::tree::BudgetTrie;
 
 /// Pure per-item selection and budget accounting. Owns no I/O; the shell feeds
 /// observations and reads the outcome through [`Selector::finish`].
@@ -62,10 +60,6 @@ impl Selector {
     }
 
     fn add_file(&mut self, path: &str, content: &str) -> Result<(), IngestError> {
-        if let Some(len) = find_overlong_component(path) {
-            return Err(component_too_long_error(path, len));
-        }
-
         let file_bytes = (path.len() + content.len()) as u64;
         let new_total = self.content_bytes.saturating_add(file_bytes);
         if new_total > MAX_OUTPUT_SIZE {
@@ -85,32 +79,20 @@ impl Selector {
         ))
     }
 
-    pub fn finish(
-        mut self,
-        label: String,
-        revision: Option<String>,
-    ) -> Result<CollectionResult, IngestError> {
+    pub fn finish(mut self, label: String, revision: Option<String>) -> CollectionResult {
         self.storage.sort_by_path();
         let mut trie = BudgetTrie::new();
-        self.storage.iter().try_for_each(|file| {
-            trie.insert(file.path).map_err(|err| match err {
-                InsertError::ComponentTooLong { len } => component_too_long_error(file.path, len),
-            })
-        })?;
-        Ok(CollectionResult {
+        for file in self.storage.iter() {
+            trie.insert(file.path);
+        }
+        CollectionResult {
             label,
             revision,
             files: self.storage,
             skipped: self.skipped,
             trie,
-        })
+        }
     }
-}
-
-#[cold]
-#[inline(never)]
-fn component_too_long_error(path: &str, len: usize) -> IngestError {
-    IngestError::path_component_too_long(path, len, MAX_COMPONENT_LEN)
 }
 
 impl Default for Selector {
@@ -179,7 +161,7 @@ mod tests {
             bytes_probe(vec![b'x'; MAX_FILE_SIZE as usize]),
         ))?;
 
-        let collection = selector.finish("test".into(), None)?;
+        let collection = selector.finish("test".into(), None);
         assert_eq!(collection.files.len(), 2);
         assert_eq!(collection.files.get_at(0).unwrap().path, "a.txt");
         assert_eq!(collection.files.get_at(1).unwrap().path, "exact.txt");
@@ -192,7 +174,7 @@ mod tests {
         let mut selector = Selector::new();
         selector.decide(decide_item("missing.png", Probe::Missing))?;
         selector.decide(decide_item("kept.txt", bytes_probe(b"kept".to_vec())))?;
-        let collection = selector.finish("test".into(), None)?;
+        let collection = selector.finish("test".into(), None);
         assert_eq!(collection.files.len(), 1);
         assert_eq!(collection.skipped, 1);
         Ok(())
@@ -245,47 +227,26 @@ mod tests {
                 path: Some("b.bin"),
             })
             .unwrap();
-        let res = selector.finish("test".to_string(), None).unwrap();
+        let res = selector.finish("test".to_string(), None);
         assert_eq!(res.files.len(), 1);
         assert_eq!(res.skipped, 1);
     }
 
     #[test]
-    fn selector_decide_fails_fast_on_overlong_path_component() {
+    fn selector_decide_and_finish_accepts_overlong_path_component() {
         let mut selector = Selector::new();
-        let too_long = MAX_COMPONENT_LEN + 1;
-        let path = format!("{}/file.rs", "a".repeat(too_long));
-        let err = selector
+        let long_len = 70_000;
+        let path = format!("{}/file.rs", "a".repeat(long_len));
+        selector
             .accumulate(ItemDecision::Included {
                 path: &path,
                 content: "fn main() {}",
             })
-            .unwrap_err();
-        match err {
-            IngestError::PathComponentTooLong(err) => {
-                assert_eq!(err.path, path);
-                assert_eq!(err.len, too_long);
-                assert_eq!(err.max, MAX_COMPONENT_LEN);
-            }
-            other => panic!("expected PathComponentTooLong, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn selector_finish_rejects_overlong_path_in_storage() {
-        let mut selector = Selector::new();
-        let too_long = MAX_COMPONENT_LEN + 1;
-        let path = format!("{}/file.rs", "a".repeat(too_long));
-        selector.storage.push(&path, "fn main() {}");
-        let err = selector.finish("test".to_string(), None).unwrap_err();
-        match err {
-            IngestError::PathComponentTooLong(err) => {
-                assert_eq!(err.path, path);
-                assert_eq!(err.len, too_long);
-                assert_eq!(err.max, MAX_COMPONENT_LEN);
-            }
-            other => panic!("expected PathComponentTooLong, got {other:?}"),
-        }
+            .unwrap();
+        let res = selector.finish("test".to_string(), None);
+        assert_eq!(res.files.len(), 1);
+        let child = res.trie.nodes[0].first_child;
+        assert_eq!(res.trie.node_name(child).len(), long_len);
     }
 
     #[test]

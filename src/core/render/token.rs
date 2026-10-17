@@ -68,17 +68,6 @@ impl TokenEstimator {
         Self::default()
     }
 
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub fn process_byte(&mut self, b: u8) {
-        self.saw_input = true;
-        let (tokens, in_word, word_len) =
-            step_byte(b, self.tokens, self.in_word as usize, self.word_len);
-        self.tokens = tokens;
-        self.in_word = in_word != 0;
-        self.word_len = word_len;
-    }
-
     #[inline]
     pub fn process_bytes(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
@@ -211,12 +200,6 @@ mod tests {
         let mut full_est = TokenEstimator::new();
         full_est.process_bytes(input);
         let full_result = full_est.finish();
-
-        let mut byte_est = TokenEstimator::new();
-        for &b in input {
-            byte_est.process_byte(b);
-        }
-        assert_eq!(byte_est.finish(), full_result);
 
         for chunk_size in [1, 2, 3, 5, 7, 16, 32] {
             let mut chunk_est = TokenEstimator::new();

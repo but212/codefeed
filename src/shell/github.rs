@@ -126,14 +126,10 @@ fn probe_tar_entry<'a, R: Read>(
         return Ok(ArchiveEntryOutcome::Ignored);
     };
 
-    if rel_bytes.is_empty()
-        || rel_bytes.starts_with(b".")
-        || rel_bytes.windows(2).any(|w| w == b"/.")
-    {
-        return Ok(ArchiveEntryOutcome::Ignored);
-    }
-
     let Some(rel_str) = crate::core::decide::text_str(rel_bytes) else {
+        if crate::core::policy::is_hidden_bytes(rel_bytes) {
+            return Ok(ArchiveEntryOutcome::Ignored);
+        }
         return Ok(ArchiveEntryOutcome::Item(Item {
             path: ItemPath::NonUtf8,
             probe: Probe::Missing,

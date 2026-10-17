@@ -23,10 +23,12 @@ pub trait SourceStream {
 pub fn collect_stream<S: SourceStream>(stream: S) -> Result<CollectionResult, IngestError> {
     let mut selector = Selector::from_size_hint(stream.size_hint());
     let info = stream.for_each_item(|item| selector.decide(item))?;
-    selector.finish(info.label, info.revision)
+    Ok(selector.finish(info.label, info.revision))
 }
 
 pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
+    shell::output::validate_target(&config.output)?;
+
     let collection = match &config.source {
         Source::Local(path) => shell::local::collect(path, &config.output)?,
         Source::Github {
@@ -36,9 +38,7 @@ pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
         } => shell::github::collect(owner, repo, reference.as_deref())?,
     };
 
-    let estimated_tokens = shell::output::emit(&config.output, |writer| {
-        crate::core::render::render_to_writer(writer, &collection, config.format)
-    })?;
+    let estimated_tokens = shell::output::emit(&config.output, &collection, config.format)?;
 
     Ok(IngestReport {
         output: config.output.clone(),

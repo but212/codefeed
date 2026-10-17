@@ -1,14 +1,33 @@
-use std::borrow::Cow;
-use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::core::error::IngestError;
-use crate::core::model::OutputTarget;
+use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn validate_output_path(target: &Path) -> Result<PathBuf, IngestError> {
+    let normalized = normalize_path(target);
+    if normalized.file_name().is_none() {
+        return Err(IngestError::usage("output path has no filename"));
+    }
+    if normalized.is_dir() {
+        return Err(IngestError::Io(io::Error::new(
+            io::ErrorKind::IsADirectory,
+            "output path is a directory",
+        )));
+    }
+    Ok(normalized)
+}
+
+pub(crate) fn validate_target(target: &OutputTarget) -> Result<(), IngestError> {
+    if let OutputTarget::File(path) = target {
+        validate_output_path(path)?;
+    }
+    Ok(())
+}
 
 /// Delivers the rendered digest to its target. A file target is written
 /// atomically; the stdout target writes the buffer to the stream directly,
@@ -17,23 +36,26 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// A broken pipe on the stdout target is a normal early close by the consumer
 /// (`codefeed . --output - | head -1`), not an I/O failure: the consumer took
 /// what it asked for, and stdout emission leaves no partial state behind.
-pub(crate) fn emit<R, F>(target: &OutputTarget, write_fn: F) -> Result<R, IngestError>
-where
-    R: Default,
-    F: FnOnce(&mut dyn io::Write) -> Result<R, IngestError>,
-{
+pub(crate) fn emit(
+    target: &OutputTarget,
+    collection: &CollectionResult,
+    format: DigestFormat,
+) -> Result<usize, IngestError> {
     match target {
-        OutputTarget::File(path) => write_atomic(path, write_fn),
-        OutputTarget::Stdout => write_stdout(write_fn),
+        OutputTarget::File(path) => write_atomic(path, |file| {
+            crate::core::render::render_to_writer(file, collection, format)
+        }),
+        OutputTarget::Stdout => {
+            write_stdout(|writer| crate::core::render::render_to_writer(writer, collection, format))
+        }
     }
 }
 
 const BUF_WRITER_CAPACITY: usize = 64 * 1024;
 
-fn write_stdout<R, F>(write_fn: F) -> Result<R, IngestError>
+fn write_stdout<R: Default, F>(write_fn: F) -> Result<R, IngestError>
 where
-    R: Default,
-    F: FnOnce(&mut dyn io::Write) -> Result<R, IngestError>,
+    F: FnOnce(&mut io::BufWriter<io::StdoutLock<'_>>) -> Result<R, IngestError>,
 {
     let stdout = io::stdout();
     let mut writer = io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, stdout.lock());
@@ -59,21 +81,13 @@ struct AtomicFile {
 
 impl AtomicFile {
     fn create(target: &Path) -> Result<Self, IngestError> {
-        let Some(raw_name) = target.file_name() else {
-            return Err(IngestError::usage("output path has no filename"));
-        };
-        if target.is_dir() {
-            return Err(IngestError::Io(io::Error::new(
-                io::ErrorKind::IsADirectory,
-                "output path is a directory",
-            )));
-        }
-        let parent = target
+        let normalized_target = validate_output_path(target)?;
+        let raw_name = normalized_target.file_name().expect("validated");
+        let normalized_parent = normalized_target
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let normalized_parent = normalize_path(parent);
-        fs::create_dir_all(&normalized_parent)?;
+        fs::create_dir_all(normalized_parent)?;
         let file_name = raw_name.to_string_lossy();
         let timestamp = super::current_epoch_nanos();
         let (temporary, file) = loop {
@@ -92,7 +106,7 @@ impl AtomicFile {
         };
 
         Ok(Self {
-            target: normalized_parent.join(raw_name),
+            target: normalized_target,
             temporary: Some(temporary),
             writer: Some(io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, file)),
         })
@@ -141,7 +155,7 @@ impl Drop for AtomicFile {
 
 fn write_atomic<R, F>(output: &Path, write_fn: F) -> Result<R, IngestError>
 where
-    F: FnOnce(&mut dyn io::Write) -> Result<R, IngestError>,
+    F: FnOnce(&mut AtomicFile) -> Result<R, IngestError>,
 {
     let mut file = AtomicFile::create(output)?;
     let value = write_fn(&mut file)?;
@@ -151,8 +165,7 @@ where
 
 #[derive(Debug, Clone)]
 pub(crate) struct OutputFilter {
-    normalized_target: PathBuf,
-    canonical_target: Option<PathBuf>,
+    canonical_target: PathBuf,
 }
 
 impl OutputFilter {
@@ -164,102 +177,15 @@ impl OutputFilter {
     }
 
     pub(crate) fn new(output: &Path) -> Result<Option<Self>, IngestError> {
-        let absolute = if output.is_absolute() {
-            output.to_path_buf()
-        } else {
-            env::current_dir()?.join(output)
-        };
-        let normalized_target = normalize_path(&absolute);
-
-        let canonical_target = if let Ok(canonical) = fs::canonicalize(&normalized_target) {
-            if canonical != normalized_target {
-                Some(canonical)
-            } else {
-                None
-            }
-        } else {
-            let parent = normalized_target.parent().unwrap_or(Path::new("."));
-            let file_name = normalized_target.file_name().ok_or_else(|| {
-                IngestError::usage(format!("invalid output path: {}", output.display()))
-            })?;
-            if let Ok(canon_parent) = fs::canonicalize(parent) {
-                let canonical = canon_parent.join(file_name);
-                if canonical != normalized_target {
-                    Some(canonical)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
-
-        Ok(Some(Self {
-            normalized_target,
-            canonical_target,
-        }))
+        let normalized = validate_output_path(output)?;
+        Ok(fs::canonicalize(normalized)
+            .ok()
+            .map(|canonical_target| Self { canonical_target }))
     }
 
     #[inline]
     pub(crate) fn is_excluded(&self, candidate: &Path) -> bool {
-        let candidate_path = if candidate.is_relative() {
-            if let Ok(cwd) = env::current_dir() {
-                Cow::Owned(normalize_path(&cwd.join(candidate)))
-            } else {
-                Cow::Borrowed(candidate)
-            }
-        } else if candidate
-            .components()
-            .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
-        {
-            Cow::Owned(normalize_path(candidate))
-        } else {
-            Cow::Borrowed(candidate)
-        };
-
-        if paths_match(candidate_path.as_ref(), &self.normalized_target) {
-            return true;
-        }
-
-        if let Some(canonical) = &self.canonical_target
-            && paths_match(candidate_path.as_ref(), canonical)
-        {
-            return true;
-        }
-
-        false
-    }
-}
-
-#[inline]
-fn paths_match(candidate: &Path, target: &Path) -> bool {
-    if candidate == target {
-        return true;
-    }
-    #[cfg(any(windows, target_os = "macos"))]
-    {
-        if candidate.as_os_str().len() != target.as_os_str().len() {
-            return false;
-        }
-        paths_equal_ignore_case(candidate, target)
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        false
-    }
-}
-
-#[cfg(any(windows, target_os = "macos"))]
-fn paths_equal_ignore_case(a: &Path, b: &Path) -> bool {
-    let a_str = a.to_string_lossy();
-    let b_str = b.to_string_lossy();
-    if a_str.is_ascii() && b_str.is_ascii() {
-        a_str.eq_ignore_ascii_case(&b_str)
-    } else {
-        a_str
-            .chars()
-            .flat_map(char::to_lowercase)
-            .eq(b_str.chars().flat_map(char::to_lowercase))
+        candidate == self.canonical_target
     }
 }
 
@@ -387,6 +313,23 @@ mod tests {
     }
 
     #[test]
+    fn rejects_normalized_directory_alias_immediately() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("output_dir_alias_test")?;
+        let existing_dir = root.join("existing_subdir");
+        fs::create_dir(&existing_dir)?;
+
+        let alias = root.join("missing").join("..").join("existing_subdir");
+        let result = write_atomic(&alias, |_w| Ok(()));
+        match result {
+            Err(IngestError::Io(err)) => {
+                assert_eq!(err.kind(), io::ErrorKind::IsADirectory);
+            }
+            other => panic!("expected IngestError::Io(IsADirectory), got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
     fn normalizes_parent_and_current_dir_components() {
         let path = Path::new("/a/b/../c/./d");
         let normalized = normalize_path(path);
@@ -429,11 +372,10 @@ mod tests {
     }
 
     #[test]
-    fn nonexistent_output_normalizes_parent() -> Result<(), Box<dyn std::error::Error>> {
+    fn nonexistent_output_returns_none() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("output_nonexistent")?;
         let output = root.join("missing_file.txt");
-        let filter = OutputFilter::new(&output)?.expect("filter created for nonexistent file");
-        assert!(filter.is_excluded(&output));
+        assert!(OutputFilter::new(&output)?.is_none());
         Ok(())
     }
 
@@ -443,8 +385,15 @@ mod tests {
         let filter = OutputFilter::from_target(&OutputTarget::Stdout)?;
         assert!(filter.is_none());
 
-        let file_target =
-            OutputFilter::from_target(&OutputTarget::File(PathBuf::from("test_output.txt")))?;
+        let missing = OutputFilter::from_target(&OutputTarget::File(PathBuf::from(
+            "nonexistent_test_output.txt",
+        )))?;
+        assert!(missing.is_none());
+
+        let root = temp_dir("output_target_test")?;
+        let existing = root.join("existing_output.txt");
+        fs::write(&existing, "existing")?;
+        let file_target = OutputFilter::from_target(&OutputTarget::File(existing))?;
         assert!(file_target.is_some());
         Ok(())
     }
@@ -457,9 +406,9 @@ mod tests {
         let file_a = root.join("вывод.txt");
         fs::write(&file_a, "test")?;
         let file_b = root.join("ВЫВОД.TXT");
-        let filter = OutputFilter::new(&file_a)?.expect("filter exists");
-        let same = filter.is_excluded(&file_b);
-        assert!(same);
+        let filter = OutputFilter::new(&file_b)?.expect("filter exists");
+        let canonical_a = fs::canonicalize(&file_a)?;
+        assert!(filter.is_excluded(&canonical_a));
         Ok(())
     }
 
@@ -480,13 +429,21 @@ mod tests {
         fs::create_dir_all(root.join("subdir"))?;
         let output = root.join("digest.txt");
         fs::write(&output, "output")?;
+        let canonical_output = fs::canonicalize(&output)?;
 
         let filter = OutputFilter::new(&output)?.expect("filter exists");
-        assert!(filter.is_excluded(&output));
-        assert!(filter.is_excluded(&root.join("subdir").join("..").join("digest.txt")));
+        assert!(filter.is_excluded(&canonical_output));
+
+        let alias_output = root.join("subdir").join("..").join("digest.txt");
+        let alias_filter = OutputFilter::new(&alias_output)?.expect("alias filter exists");
+        assert!(alias_filter.is_excluded(&canonical_output));
 
         #[cfg(any(windows, target_os = "macos"))]
-        assert!(filter.is_excluded(&root.join("DIGEST.TXT")));
+        {
+            let cased_output = root.join("DIGEST.TXT");
+            let cased_filter = OutputFilter::new(&cased_output)?.expect("cased filter exists");
+            assert!(cased_filter.is_excluded(&canonical_output));
+        }
 
         Ok(())
     }
@@ -504,17 +461,11 @@ mod tests {
 
         let output_via_link = link_dir.join("digest.txt");
         let output_via_real = real_dir.join("digest.txt");
+        fs::write(&output_via_real, "test")?;
 
         let filter = OutputFilter::new(&output_via_link)?.expect("filter exists");
-        assert!(filter.is_excluded(&output_via_real));
-        assert!(filter.is_excluded(&output_via_link));
+        let canonical_real = fs::canonicalize(&output_via_real)?;
+        assert!(filter.is_excluded(&canonical_real));
         Ok(())
-    }
-
-    #[test]
-    fn test_paths_match_length_mismatch_fast_path() {
-        let path_a = Path::new("short.txt");
-        let path_b = Path::new("very_long_path_name.txt");
-        assert!(!paths_match(path_a, path_b));
     }
 }

@@ -7,66 +7,52 @@
 use std::borrow::Cow;
 use std::io::Write;
 
-use crate::core::policy::{MAX_COMPONENT_LEN, find_overlong_component};
-
 const TREE_BRANCH: &str = "├── ";
 const TREE_LAST: &str = "└── ";
 const TREE_VERT: &str = "│   ";
 const TREE_SPACE: &str = "    ";
-const FLAG_DIR: u16 = 1 << 0;
+const FLAG_DIR: u32 = 1 << 31;
+const LEN_MASK: u32 = !FLAG_DIR;
 
 const _: () = assert!(std::mem::size_of::<BudgetTrieNode>() == 16);
 
 pub(crate) const NO_NODE: u32 = u32::MAX;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InsertError {
-    ComponentTooLong { len: usize },
-}
-
-impl std::fmt::Display for InsertError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ComponentTooLong { len } => write!(
-                f,
-                "path component is {len} bytes; maximum is {MAX_COMPONENT_LEN}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for InsertError {}
 
 /// 16-byte fixed-size trie node in a Left-Child Right-Sibling (LCRS) flat arena.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BudgetTrieNode {
     pub(crate) name_offset: u32,
-    pub(crate) name_len: u16,
-    pub(crate) flags: u16,
+    pub(crate) len_and_flags: u32,
     pub(crate) first_child: u32,  // NO_NODE means None
     pub(crate) next_sibling: u32, // NO_NODE means None
 }
 
 impl BudgetTrieNode {
-    pub(crate) const fn new(name_offset: u32, name_len: u16, is_dir: bool) -> Self {
+    pub(crate) fn new(name_offset: u32, name_len: u32, is_dir: bool) -> Self {
+        assert!(name_len <= LEN_MASK, "component length overflow");
         Self {
             name_offset,
-            name_len,
-            flags: if is_dir { FLAG_DIR } else { 0 },
+            len_and_flags: name_len | if is_dir { FLAG_DIR } else { 0 },
             first_child: NO_NODE,
             next_sibling: NO_NODE,
         }
     }
 
+    #[inline(always)]
     pub(crate) const fn is_dir(&self) -> bool {
-        (self.flags & FLAG_DIR) != 0
+        (self.len_and_flags & FLAG_DIR) != 0
+    }
+
+    #[inline(always)]
+    pub(crate) const fn name_len(&self) -> usize {
+        (self.len_and_flags & LEN_MASK) as usize
     }
 
     #[inline(always)]
     pub(crate) fn name_bytes<'a>(&self, arena: &'a [u8]) -> &'a [u8] {
         let start = self.name_offset as usize;
-        let end = start + self.name_len as usize;
+        let end = start + self.name_len();
         &arena[start..end]
     }
 }
@@ -97,7 +83,7 @@ impl BudgetTrie {
     pub(crate) fn node_name(&self, index: u32) -> &str {
         let node = &self.nodes[index as usize];
         let start = node.name_offset as usize;
-        let end = start + node.name_len as usize;
+        let end = start + node.name_len();
         &self.label_arena[start..end]
     }
 
@@ -108,11 +94,7 @@ impl BudgetTrie {
         node.name_bytes(self.label_arena.as_bytes())
     }
 
-    pub fn insert(&mut self, path: &str) -> Result<(), InsertError> {
-        if let Some(len) = find_overlong_component(path) {
-            return Err(InsertError::ComponentTooLong { len });
-        }
-
+    pub fn insert(&mut self, path: &str) {
         let mut parts = path.split('/').filter(|s| !s.is_empty()).peekable();
         let mut current_node_index: u32 = 0;
 
@@ -120,14 +102,13 @@ impl BudgetTrie {
             let is_dir = parts.peek().is_some();
             current_node_index = self.get_or_insert_child(current_node_index, part, is_dir);
         }
-        Ok(())
     }
 
     fn push_node(&mut self, part: &str, is_dir: bool, next_sibling: u32) -> u32 {
         let new_index = u32::try_from(self.nodes.len()).expect("trie node count exceeds u32::MAX");
         let name_offset =
             u32::try_from(self.label_arena.len()).expect("trie arena exceeds u32::MAX");
-        let name_len = part.len() as u16;
+        let name_len = u32::try_from(part.len()).expect("component length exceeds u32::MAX");
         self.label_arena.push_str(part);
         let mut node = BudgetTrieNode::new(name_offset, name_len, is_dir);
         node.next_sibling = next_sibling;
@@ -262,7 +243,7 @@ pub(crate) mod tests {
     fn renders_ascii_tree_correctly() -> Result<(), Box<dyn std::error::Error>> {
         let mut trie = BudgetTrie::new();
         for path in ["Cargo.toml", "src/core/a.rs", "src/lib.rs"] {
-            trie.insert(path).unwrap();
+            trie.insert(path);
         }
         let mut buf = Vec::new();
         trie.render_to_writer(&mut buf, |s| Cow::Borrowed(s))?;
@@ -281,7 +262,7 @@ pub(crate) mod tests {
     #[test]
     fn formats_tree_nodes_custom_formatter() -> std::io::Result<()> {
         let mut trie = BudgetTrie::new();
-        trie.insert("dir_name/file_name.txt").unwrap();
+        trie.insert("dir_name/file_name.txt");
         let mut out = Vec::new();
         trie.render_to_writer(&mut out, |name| Cow::Owned(name.to_uppercase()))?;
         let s = String::from_utf8_lossy(&out);
@@ -295,12 +276,12 @@ pub(crate) mod tests {
         assert_eq!(std::mem::size_of::<BudgetTrieNode>(), 16);
 
         let mut trie = BudgetTrie::new();
-        trie.insert("clean/dir/file.rs").unwrap();
+        trie.insert("clean/dir/file.rs");
         let clean_dir_index = trie.nodes[0].first_child;
         assert_eq!(trie.node_name(clean_dir_index), "clean");
 
         let mut trie_esc = BudgetTrie::new();
-        trie_esc.insert("a & b/c.rs").unwrap();
+        trie_esc.insert("a & b/c.rs");
         let esc_dir_index = trie_esc.nodes[0].first_child;
         assert_eq!(trie_esc.node_name(esc_dir_index), "a & b");
     }
@@ -309,7 +290,7 @@ pub(crate) mod tests {
     fn test_flat_arena_links() {
         assert_eq!(std::mem::size_of::<BudgetTrieNode>(), 16);
         let mut trie = BudgetTrie::new();
-        trie.insert("src/lib.rs").unwrap();
+        trie.insert("src/lib.rs");
         assert_eq!(trie.nodes.len(), 3);
         assert_eq!(trie.nodes[0].first_child, 1);
         assert_eq!(trie.node_name(1), "src");
@@ -323,29 +304,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_insert_rejects_overlong_component() {
+    fn test_insert_accepts_overlong_component() {
         let mut trie = BudgetTrie::new();
-        let too_long = u16::MAX as usize + 1;
-        let path = format!("{}/file.rs", "a".repeat(too_long));
-
-        let err = trie.insert(&path).unwrap_err();
-        assert_eq!(err, InsertError::ComponentTooLong { len: too_long });
-        assert_eq!(trie.nodes.len(), 1);
-    }
-
-    #[test]
-    fn test_insert_accepts_max_length_component() {
-        let mut trie = BudgetTrie::new();
-        let max = "a".repeat(MAX_COMPONENT_LEN);
-        trie.insert(&format!("{max}/file.rs")).unwrap();
+        let long_len = 70_000;
+        let long_name = "a".repeat(long_len);
+        let path = format!("{long_name}/file.rs");
+        trie.insert(&path);
         let child = trie.nodes[0].first_child;
-        assert_eq!(trie.node_name(child).len(), MAX_COMPONENT_LEN);
+        assert_eq!(trie.node_name(child).len(), long_len);
     }
 
     #[test]
     fn test_trie_node_name_bytes_parity() {
         let mut trie = BudgetTrie::new();
-        trie.insert("foo/bar.rs").unwrap();
+        trie.insert("foo/bar.rs");
         let child = trie.nodes[0].first_child;
         assert_eq!(
             trie.node_name_bytes(child),

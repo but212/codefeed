@@ -9,7 +9,7 @@ pub(crate) mod text;
 pub(crate) mod token;
 pub(crate) mod xml;
 
-pub use text::{escape_header, unescape_header};
+pub use text::escape_header;
 pub use token::{TokenEstimator, estimate_tokens};
 pub use xml::{write_escaped, xml_escape};
 
@@ -159,7 +159,7 @@ pub(crate) mod tests {
     fn test_trie<'a>(files: impl IntoIterator<Item = FileRecord<'a>>) -> BudgetTrie {
         let mut trie = BudgetTrie::new();
         for file in files {
-            trie.insert(file.path).unwrap();
+            trie.insert(file.path);
         }
         trie
     }

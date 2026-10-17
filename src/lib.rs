@@ -4,7 +4,7 @@ pub(crate) mod core;
 pub(crate) mod shell;
 
 pub use core::cli::{CliAction, help_text, parse};
-pub use core::error::{CandidateLimitExceededError, IngestError, PathComponentTooLongError};
+pub use core::error::{CandidateLimitExceededError, IngestError};
 pub use core::model::{DigestFormat, IngestReport, OutputTarget, RunConfig, Source};
 pub use shell::orchestrate::ingest;
 
@@ -15,8 +15,7 @@ pub mod __bench {
         CollectionResult, DigestFormat, FileRecord, FileStorage, OutputTarget,
     };
     pub use crate::core::render::{
-        escape_header, estimate_tokens, render_to_writer, unescape_header, write_escaped,
-        xml_escape,
+        escape_header, estimate_tokens, render_to_writer, write_escaped, xml_escape,
     };
     pub use crate::core::tree::BudgetTrie;
     pub use crate::shell::local::LocalStream;

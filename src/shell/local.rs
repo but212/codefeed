@@ -164,13 +164,6 @@ fn walk_candidates(
 
     CandidateBudget::check_limit(candidates.iter().map(|c| c.item_path.as_utf8_str()))?;
 
-    candidates.sort_unstable_by(|a, b| match (&a.item_path, &b.item_path) {
-        (ItemPath::Utf8(left), ItemPath::Utf8(right)) => left.cmp(right),
-        (ItemPath::Utf8(_), ItemPath::NonUtf8) => std::cmp::Ordering::Less,
-        (ItemPath::NonUtf8, ItemPath::Utf8(_)) => std::cmp::Ordering::Greater,
-        (ItemPath::NonUtf8, ItemPath::NonUtf8) => std::cmp::Ordering::Equal,
-    });
-
     Ok(candidates)
 }
 

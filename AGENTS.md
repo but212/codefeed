@@ -23,7 +23,7 @@ Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_
 
 - Store file paths and contents in `FileStorage` arenas (`path_arena`, `content_arena`) indexed by `FileSpan`; iterate via zero-copy `FileRecord<'a>`. Never allocate per-file `String` structs.
 - Keep `BudgetTrie` (`Vec<BudgetTrieNode>`, `u32` indices) and `CandidateBudget` (`dir_runs` RLE) flat. Avoid pointer trees or happy-path `HashMap`s.
-- Stream output directly to `impl Write + ?Sized` using `Cow<'_, str>` or `XmlChunks`.
+- Stream output directly to `impl Write + ?Sized` using `Cow<'_, str>` or single-pass `write_escaped`.
 - Default to `std` first. Add an external crate only if implementing or maintaining the logic in-tree introduces disproportionate complexity or security risk (e.g., `.gitignore` parsing via `ignore`, HTTP via `ureq`). Document the rationale as an inline comment in `Cargo.toml`.
 
 ### OS & Network Safety

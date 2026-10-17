@@ -288,3 +288,20 @@ fn accepts_double_dash_delimiter() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.is_empty());
 }
+
+#[test]
+fn ingest_fails_fast_on_directory_output_target() {
+    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+        .args(["--output", ".", "."])
+        .output()
+        .expect("CLI process should start");
+
+    assert!(!output.status.success(), "output: {output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("output path has no filename")
+            || stderr.contains("output path is a directory")
+            || stderr.contains("Is a directory"),
+        "unexpected stderr: {stderr}"
+    );
+}

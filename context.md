@@ -54,9 +54,9 @@ imperative-shell boundary.
 - Local walk uses a 2-step linear pipeline:
   1. `ignore::WalkBuilder` with `follow_links(false)` and `.sort_by_file_name(|a, b| a.cmp(b))` collects candidate paths into a deterministically sorted list, with pre-flight batch candidate budget verification (`CandidateBudget::check_limit`) to fail fast before reading file bodies.
   2. Bounded sequential reads via `local_io::read_local_file` (verifying regular non-symlink metadata before opening) feed observations into `Selector`. Stream state in `LocalStream` holds only the root label and candidate iterator without retaining redundant root path allocations.
-- Digest cap (`MAX_OUTPUT_SIZE`) is strictly enforced on bytes actually written to the output stream via `BoundedEstimatingWriter`, preventing framing/metadata overflow.
+- Digest cap (`MAX_OUTPUT_SIZE`) is strictly enforced on bytes actually written to the output stream via `BoundedEstimatingWriter`, preventing framing/metadata overflow (atomic file rollback removes partial output; stdout stream terminates immediately at `MAX_OUTPUT_SIZE`).
 - Token count is estimated on the same writer stream pass over rendered bytes.
-- `BudgetTrie` stores nodes in a flat continuous 16-byte Left-Child Right-Sibling (LCRS) arena (`Vec<BudgetTrieNode>`) with compact contiguous labels in `label_arena: String`, packed bitwise flags (`FLAG_DIR`), and a unified root directory node at index 0. It is format-neutral; XML entity and newline escaping occurs on-the-fly during `render_to_writer(writer, escape_xml)`. Path components exceeding `MAX_COMPONENT_LEN` (65,535 bytes) are rejected atomically during insertion, returning `IngestError::PathComponentTooLong` through `Selector::finish()`.
+- `BudgetTrie` stores nodes in a flat continuous 16-byte Left-Child Right-Sibling (LCRS) arena (`Vec<BudgetTrieNode>`) with compact contiguous labels in `label_arena: String`, packed 31-bit length and flags (`FLAG_DIR`), and a unified root directory node at index 0. It is format-neutral; XML entity and newline escaping occurs on-the-fly during `render_to_writer(writer, escape_xml)`.
 - CLI arguments are parsed linearly into options and source in pure core (`core::cli`), supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters.
 - Candidate budget uses run-length encoding (`dir_runs: Vec<(CompactDir, usize)>`) on contiguous directory entries during collection with zero-allocation 24-byte inline strings (`CompactDir`), avoiding `HashMap` overhead on the happy path while preserving deterministic overflow diagnostics sorted by count descending then directory ascending.
 - Digest budget is tracked directly in `Selector` and is error-terminal: limit breach constructs complete `IngestError::OutputTooLarge` diagnostics without internal transactional rollback.
@@ -94,10 +94,10 @@ never depends on shell code; shell code depends on the core in one direction.
   - `source.rs`: source string and OS-string parsing.
   - `model.rs`: domain value types (`Source`, `FileRecord`, `CollectionResult`,
     `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`, `FileStorage`).
-  - `error.rs`: domain error enum `IngestError` packed into 16 bytes for register-return ABI (`rax`/`rdx`), with boxed diagnostic payloads (`CandidateLimitExceededError`, `PathComponentTooLongError`).
+  - `error.rs`: domain error enum `IngestError` packed into 16 bytes for register-return ABI (`rax`/`rdx`), with boxed diagnostic payloads (`CandidateLimitExceededError`).
   - `decide/` (`mod.rs`, `item.rs`, `budget.rs`, `selector.rs`): candidate observation, candidate budget RLE accounting, `Selector` storage accumulation, and `largest_files` diagnostic selection.
-  - `tree.rs`: Format-neutral ASCII hierarchy tree (`BudgetTrie`, `BudgetTrieNode`, `InsertError`) in flat 16-byte LCRS arena.
-  - `render/` (`mod.rs`, `text.rs`, `xml.rs`, `token.rs`): Format-specific streaming serializers (Text/XML), escaping (`escape_header`, `xml_escape`), `TokenEstimator` heuristic token state machine, `render_to_writer`, and streaming `BoundedEstimatingWriter`.
+  - `tree.rs`: Format-neutral ASCII hierarchy tree (`BudgetTrie`, `BudgetTrieNode`) in flat 16-byte LCRS arena.
+  - `render/` (`mod.rs`, `text.rs`, `xml.rs`, `token.rs`): Format-specific streaming serializers (Text/XML), single-pass escaping (`escape_header`, `xml_escape`, `write_escaped`), `TokenEstimator` heuristic token state machine, `render_to_writer`, and streaming `BoundedEstimatingWriter`.
   - `github_url.rs`: Pure `std` URL construction with RFC 3986 percent-encoding and origin credential scoping.
   - `archive.rs`: Pax header comment extraction and archive root stripping.
 - Imperative shell (`src/shell/`):

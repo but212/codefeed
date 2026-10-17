@@ -9,11 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `CandidateLimitExceededError` & `PathComponentTooLongError` (`src/core/error.rs`): Boxed diagnostic payloads sizing `IngestError` and `Result<(), IngestError>` to 16 bytes for two-register ABI returns (`rax`/`rdx`).
+- `CandidateLimitExceededError` (`src/core/error.rs`): Boxed diagnostic payload sizing `IngestError` and `Result<(), IngestError>` to 16 bytes for two-register ABI returns (`rax`/`rdx`).
 - `FileSpan::path_bytes` (`src/core/model.rs`) & `BudgetTrieNode::name_bytes` (`src/core/tree.rs`): Zero-copy byte-slice accessors for branchless path comparisons.
-- `MAX_COMPONENT_LEN` & `find_overlong_component` (`src/core/policy.rs`): 65,535-byte path component limit and validation helper.
-- `IngestError::PathComponentTooLong` (`src/core/error.rs`): Error variant for oversized path components during ingestion and tree insertion.
-- `InsertError` (`src/core/tree.rs`): Trie insertion error implementing `std::error::Error`.
+- `is_hidden_bytes` (`src/core/policy.rs`): Byte-level hidden path inspection for non-UTF-8 archive entries without degrading UTF-8 search throughput.
+- `validate_output_path` & `validate_target` (`src/shell/output.rs`): Fail-fast lexical output path and directory target validation before ingestion collection.
 
 ### Changed
 
@@ -22,24 +21,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Cold path isolation (`src/core/decide/budget.rs`, `src/core/decide/selector.rs`, `src/core/render/mod.rs`): Extracted overflow error formatting into `#[cold] #[inline(never)]` functions to eliminate hot-path prologue spills.
   - Register hoisting (`src/core/render/token.rs`): Hoisted `TokenEstimator` loop state (`tokens`, `in_word`, `word_len`) into CPU registers; set `saw_input` once per slice.
   - Panic branch elimination (`src/core/model.rs`, `src/core/tree.rs`): Replaced UTF-8 path comparisons in `sort_by_path` and `get_or_insert_child` with `&[u8]` slice checks, removing `is_char_boundary` landing pads in safe Rust.
-  - Auto-vectorization (`src/core/render/xml.rs`, `src/core/render/text.rs`): Refactored escape scanning in `XmlChunks`, `first_special_index`, and `escape_header` to `as_chunks::<16>()` two-stage bitset matching.
+  - `BudgetTrieNode` (`src/core/tree.rs`): Packed 31-bit length and `FLAG_DIR` into `len_and_flags: u32`, eliminating component length limits up to 2 GiB while preserving 16-byte node POD layout and making `BudgetTrie::insert` infallible.
+- **Rendering Throughput & Output**:
+  - `xml_escape` & `write_escaped` (`src/core/render/xml.rs`): Single-pass linear escaping and streaming without repeated 16-byte chunk re-scanning on special characters, restoring XML write throughput.
+  - `output::emit` (`src/shell/output.rs`): Static dispatch over `CollectionResult` and `DigestFormat`, eliminating `&mut dyn io::Write` vtable overhead while preserving 8 KiB buffer batching in `BoundedEstimatingWriter`.
+  - `OutputFilter` (`src/shell/output.rs`): Simplified to single canonical target path comparison against canonical `WalkBuilder` disk entries.
 - **Architecture & Modularity**:
   - `src/core/decide/` (`mod.rs`, `item.rs`, `budget.rs`, `selector.rs`): Decomposed monolithic `decide.rs` into submodules with colocated unit tests while preserving public re-exports.
   - `src/core/render/` (`mod.rs`, `text.rs`, `xml.rs`, `token.rs`): Decomposed digest rendering into submodules with colocated unit tests.
-  - `src/core/tree.rs`: Extracted `BudgetTrie`, `BudgetTrieNode`, and `InsertError` into a dedicated module with 16-byte POD nodes and `FLAG_DIR`.
+  - `src/core/tree.rs`: Extracted `BudgetTrie` and `BudgetTrieNode` into a dedicated module with 16-byte POD nodes and `FLAG_DIR`.
   - Core DAG: Enforced acyclic `tree` -> `model` -> `decide` -> `render` dependency order; moved `largest_files` to `src/core/decide/selector.rs`.
 - **Zero-Allocation & Performance**:
+  - `walk_candidates` (`src/shell/local.rs`): Eliminated redundant candidate vector sort.
   - `GithubStream` & `probe_tar_entry` (`src/shell/github.rs`): Reused `path_scratch: &mut String` with `content_scratch: &mut Vec<u8>` to stream candidate paths without per-file heap allocations.
   - `HEADER_ESCAPE_MASK` (`src/core/render/text.rs`): Compact 32-byte bitset (`[u64; 4]`) with branchless mask checking.
 - **Idioms & Reliability**:
   - `usage_str!` (`src/core/cli.rs`): Unified CLI usage strings via compile-time `concat!`.
   - `CompactDir` (`src/core/decide/budget.rs`): Replaced `from_str` with `From<&str>`.
-  - `CandidateBudget::check_limit` & `Selector::finish` (`src/core/decide/`): Replaced loops with `Iterator::try_for_each`.
-  - `Selector::add_file` (`src/core/decide/selector.rs`): Fail-fast path component length validation before storage push.
-  - `Selector::finish` (`src/core/decide/selector.rs`) & `collect_stream` (`src/shell/orchestrate.rs`): Propagate component length and tree construction errors without panics.
+  - `CandidateBudget::check_limit` & `Selector::finish` (`src/core/decide/`): Replaced `check_limit` loop with `Iterator::try_for_each` and simplified `Selector::finish` to infallible `CollectionResult`.
 
 ### Removed
 
+- `XmlChunk` and `XmlChunks` (`src/core/render/xml.rs`): Retired iterator state machine in favor of single-pass linear streaming.
+- `unescape_header` (`src/core/render/text.rs`): Removed unused roundtrip helper.
+- `TokenEstimator::process_byte` (`src/core/render/token.rs`): Removed dead single-byte processing helper.
+- `PathComponentTooLong`, `MAX_COMPONENT_LEN`, `find_overlong_component`, `InsertError` (`src/core/`): Eliminated synthetic 65,535-byte length limits and errors.
 - `src/core/digest/`: Legacy directory module and submodules (`budget.rs`, `text.rs`, `token.rs`, `trie.rs`, `xml.rs`, `mod.rs`).
 - `safe_component` (`src/core/digest/trie.rs`): Removed lossy truncation in favor of fail-fast errors.
 

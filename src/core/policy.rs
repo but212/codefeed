@@ -6,8 +6,6 @@ pub const MAX_FILE_SIZE: u64 = 1024 * 1024;
 pub const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
 /// Maximum candidate files evaluated before candidate budget overflows (10,000 files).
 pub const MAX_FILE_COUNT: usize = 10_000;
-/// Maximum path component length in bytes supported by the trie arena (65,535 bytes).
-pub const MAX_COMPONENT_LEN: usize = u16::MAX as usize;
 /// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
 pub const ARCHIVE_MAX_SECS: u64 = 300;
 
@@ -43,18 +41,6 @@ pub const RETRY_JITTER_MAX_MS: u64 = 50;
 #[inline]
 pub(crate) fn is_noise_file(file_name: &str) -> bool {
     NOISE.contains(&file_name)
-}
-
-/// Returns the byte length of the first path component exceeding [`MAX_COMPONENT_LEN`].
-#[inline]
-pub(crate) fn find_overlong_component(path: &str) -> Option<usize> {
-    if path.len() > MAX_COMPONENT_LEN {
-        path.split('/')
-            .find(|s| s.len() > MAX_COMPONENT_LEN)
-            .map(|s| s.len())
-    } else {
-        None
-    }
 }
 
 fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
@@ -94,6 +80,12 @@ pub(crate) fn is_binary_extension(extension: Option<&str>) -> bool {
 #[inline]
 pub(crate) fn is_hidden_path(path: &str) -> bool {
     path.starts_with('.') || path.contains("/.")
+}
+
+/// Returns `true` if raw byte path contains hidden directory or file components.
+#[inline]
+pub(crate) fn is_hidden_bytes(path: &[u8]) -> bool {
+    path.starts_with(b".") || path.windows(2).any(|w| w == b"/.")
 }
 
 /// Pre-ingestion classification of a relative path candidate.
@@ -251,5 +243,21 @@ mod tests {
             PathClassification::classify("environment.rs"),
             PathClassification::NeedsContent
         );
+    }
+
+    #[test]
+    fn test_is_hidden_bytes_matches_is_hidden_path() {
+        let cases = [
+            (".hidden", true),
+            ("dir/.hidden", true),
+            ("a/b/.c/d", true),
+            ("not_hidden", false),
+            ("dir/not_hidden.txt", false),
+            ("ends_with_dot.", false),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(is_hidden_path(path), expected);
+            assert_eq!(is_hidden_bytes(path.as_bytes()), expected);
+        }
     }
 }

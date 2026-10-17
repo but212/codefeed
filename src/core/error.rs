@@ -12,17 +12,6 @@ pub struct CandidateLimitExceededError {
     pub largest_directories: Vec<(String, usize)>,
 }
 
-/// Diagnostic details for overlong path components.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PathComponentTooLongError {
-    /// File path containing the oversized component.
-    pub path: String,
-    /// Actual byte length of the oversized component.
-    pub len: usize,
-    /// Maximum allowed component byte length.
-    pub max: usize,
-}
-
 /// Domain error encountered during ingestion or CLI execution.
 #[derive(Debug)]
 pub enum IngestError {
@@ -44,8 +33,6 @@ pub enum IngestError {
     InvalidMetadata(Box<String>),
     /// Rendered digest exceeds the maximum allowed output size.
     OutputTooLarge(Box<Vec<(String, usize)>>),
-    /// Path component length exceeds maximum allowed limit.
-    PathComponentTooLong(Box<PathComponentTooLongError>),
 }
 
 const _: () = assert!(std::mem::size_of::<IngestError>() <= 16);
@@ -97,15 +84,6 @@ impl IngestError {
     pub fn output_too_large(largest_files: Vec<(String, usize)>) -> Self {
         Self::OutputTooLarge(Box::new(largest_files))
     }
-
-    #[inline]
-    pub fn path_component_too_long(path: impl Into<String>, len: usize, max: usize) -> Self {
-        Self::PathComponentTooLong(Box::new(PathComponentTooLongError {
-            path: path.into(),
-            len,
-            max,
-        }))
-    }
 }
 
 impl Display for IngestError {
@@ -140,13 +118,6 @@ impl Display for IngestError {
                     }
                 }
                 Ok(())
-            }
-            Self::PathComponentTooLong(err) => {
-                write!(
-                    f,
-                    "path component in '{}' is {} bytes; maximum is {}",
-                    err.path, err.len, err.max
-                )
             }
         }
     }

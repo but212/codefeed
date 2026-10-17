@@ -32,14 +32,9 @@ pub(crate) fn read_local_file_into<'b>(
 }
 
 fn read_bounded_content_into<'b>(file: fs::File, buf: &'b mut Vec<u8>) -> io::Result<Probe<'b>> {
-    let metadata = file.metadata()?;
-    if !metadata.is_file() {
+    if !file.metadata()?.is_file() {
         return Ok(Probe::Missing);
     }
-    if metadata.len() > MAX_FILE_SIZE {
-        return Ok(Probe::TooLarge);
-    }
-
     let mut handle = file.take(MAX_FILE_SIZE.saturating_add(1));
     handle.read_to_end(buf)?;
     if buf.len() as u64 > MAX_FILE_SIZE {

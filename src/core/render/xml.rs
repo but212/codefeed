@@ -71,46 +71,6 @@ fn xml_special(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     None
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum XmlChunk<'a> {
-    Raw(&'a str),
-    Escaped(&'static str),
-}
-
-impl<'a> XmlChunk<'a> {
-    #[inline]
-    pub const fn as_str(&self) -> &'a str {
-        match *self {
-            XmlChunk::Raw(s) => s,
-            XmlChunk::Escaped(s) => s,
-        }
-    }
-
-    #[inline]
-    pub const fn as_bytes(&self) -> &'a [u8] {
-        self.as_str().as_bytes()
-    }
-}
-
-pub struct XmlChunks<'a> {
-    value: &'a str,
-    bytes: &'a [u8],
-    cursor: usize,
-    pending: Option<&'static str>,
-}
-
-impl<'a> XmlChunks<'a> {
-    #[inline]
-    pub const fn from_offset(value: &'a str, offset: usize) -> Self {
-        Self {
-            value,
-            bytes: value.as_bytes(),
-            cursor: offset,
-            pending: None,
-        }
-    }
-}
-
 #[inline(always)]
 fn chunk_has_special(chunk: &[u8; 16]) -> bool {
     let mut has = 0u8;
@@ -118,43 +78,6 @@ fn chunk_has_special(chunk: &[u8; 16]) -> bool {
         has |= is_special_byte(b) as u8;
     }
     has != 0
-}
-
-impl<'a> Iterator for XmlChunks<'a> {
-    type Item = XmlChunk<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(esc) = self.pending.take() {
-            return Some(XmlChunk::Escaped(esc));
-        }
-
-        if self.cursor >= self.bytes.len() {
-            return None;
-        }
-
-        let rem = &self.bytes[self.cursor..];
-        match first_special_index(rem) {
-            Some(0) => {
-                let (consumed, esc) = xml_special(self.bytes, self.cursor)?;
-                self.cursor += consumed;
-                Some(XmlChunk::Escaped(esc))
-            }
-            Some(offset) => {
-                let raw = &self.value[self.cursor..self.cursor + offset];
-                self.cursor += offset;
-                if let Some((consumed, esc)) = xml_special(self.bytes, self.cursor) {
-                    self.cursor += consumed;
-                    self.pending = Some(esc);
-                }
-                Some(XmlChunk::Raw(raw))
-            }
-            None => {
-                let raw = &self.value[self.cursor..];
-                self.cursor = self.bytes.len();
-                Some(XmlChunk::Raw(raw))
-            }
-        }
-    }
 }
 
 #[inline(always)]
@@ -192,9 +115,21 @@ pub fn xml_escape(value: &str) -> Cow<'_, str> {
 
     let mut result = String::with_capacity(value.len() + 16);
     result.push_str(&value[..first]);
-    for chunk in XmlChunks::from_offset(value, first) {
-        result.push_str(chunk.as_str());
+    let mut last = first;
+    let mut i = first;
+    while i < bytes.len() {
+        if is_special_byte(bytes[i])
+            && let Some((consumed, esc)) = xml_special(bytes, i)
+        {
+            result.push_str(&value[last..i]);
+            result.push_str(esc);
+            i += consumed;
+            last = i;
+            continue;
+        }
+        i += 1;
     }
+    result.push_str(&value[last..]);
     Cow::Owned(result)
 }
 
@@ -204,11 +139,24 @@ pub fn write_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io:
         return writer.write_all(bytes);
     };
 
-    if first > 0 {
-        writer.write_all(&bytes[..first])?;
+    let mut last = 0;
+    let mut i = first;
+    while i < bytes.len() {
+        if is_special_byte(bytes[i])
+            && let Some((consumed, esc)) = xml_special(bytes, i)
+        {
+            if last < i {
+                writer.write_all(&bytes[last..i])?;
+            }
+            writer.write_all(esc.as_bytes())?;
+            i += consumed;
+            last = i;
+            continue;
+        }
+        i += 1;
     }
-    for chunk in XmlChunks::from_offset(value, first) {
-        writer.write_all(chunk.as_bytes())?;
+    if last < bytes.len() {
+        writer.write_all(&bytes[last..])?;
     }
     Ok(())
 }
@@ -305,51 +253,20 @@ mod tests {
     }
 
     #[test]
-    fn xml_chunks_iterator_yields_expected_sequence() {
-        let input = "hello <world> & 'test'";
-        let chunks: Vec<_> = XmlChunks::from_offset(input, 0).collect();
-        assert_eq!(
-            chunks,
-            vec![
-                XmlChunk::Raw("hello "),
-                XmlChunk::Escaped("&lt;"),
-                XmlChunk::Raw("world"),
-                XmlChunk::Escaped("&gt;"),
-                XmlChunk::Raw(" "),
-                XmlChunk::Escaped("&amp;"),
-                XmlChunk::Raw(" "),
-                XmlChunk::Escaped("&apos;"),
-                XmlChunk::Raw("test"),
-                XmlChunk::Escaped("&apos;"),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_xml_chunks_handles_non_escaping_ef_lead_bytes() {
-        let input = "prefix \u{FFFD} & <\u{FEFF}> middle \u{FF01} suffix";
-        let chunks: Vec<_> = XmlChunks::from_offset(input, 0).collect();
-        assert_eq!(
-            chunks,
-            vec![
-                XmlChunk::Raw("prefix \u{FFFD} "),
-                XmlChunk::Escaped("&amp;"),
-                XmlChunk::Raw(" "),
-                XmlChunk::Escaped("&lt;"),
-                XmlChunk::Raw("\u{FEFF}"),
-                XmlChunk::Escaped("&gt;"),
-                XmlChunk::Raw(" middle \u{FF01} suffix"),
-            ]
-        );
+    fn test_xml_escape_and_streaming_handles_non_escaping_ef_lead_bytes() {
+        let input = "prefix \u{FFFD} & <\u{FEFF}> middle \u{FF01} suffix \u{FFFE} and \u{FFFF}";
         let escaped = xml_escape(input);
         assert_eq!(
             escaped.as_ref(),
-            "prefix \u{FFFD} &amp; &lt;\u{FEFF}&gt; middle \u{FF01} suffix"
+            "prefix \u{FFFD} &amp; &lt;\u{FEFF}&gt; middle \u{FF01} suffix \u{FFFD} and \u{FFFD}"
         );
+        let mut streamed = Vec::new();
+        write_escaped(&mut streamed, input).unwrap();
+        assert_eq!(String::from_utf8(streamed).unwrap(), escaped.as_ref());
     }
 
     #[test]
-    fn test_first_special_index_and_chunks_boundary_alignment() {
+    fn test_first_special_index_boundary_alignment() {
         for len in 0..=48 {
             let clean = "a".repeat(len);
             assert_eq!(first_special_index(clean.as_bytes()), None);
