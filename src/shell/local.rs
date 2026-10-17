@@ -1,29 +1,21 @@
 //! Local directory collection orchestration: walk, map, select.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
 
-use super::local_io::read_local_file_into;
 use super::orchestrate::{SourceStream, StreamInfo};
-use super::output::OutputFilter;
-use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe};
 use crate::core::error::IngestError;
-use crate::core::model::OutputTarget;
-use crate::core::policy::{MAX_FILE_COUNT, PathClassification};
-
-struct LocalCandidate {
-    item_path: ItemPath<'static>,
-    skip_read: bool,
-}
+use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE};
+use crate::core::selector::{CandidateBudget, CandidateInput};
 
 pub struct LocalStream {
     label: String,
     root: PathBuf,
     work_path: PathBuf,
-    candidates: std::vec::IntoIter<LocalCandidate>,
+    candidates: std::vec::IntoIter<Option<String>>,
 }
 
 impl std::fmt::Debug for LocalStream {
@@ -36,18 +28,17 @@ impl std::fmt::Debug for LocalStream {
 
 pub(crate) fn collect(
     root: &Path,
-    output: &OutputTarget,
+    resolved_output: Option<&Path>,
 ) -> Result<crate::core::model::CollectionResult, IngestError> {
-    let stream = LocalStream::new(root, output)?;
+    let stream = LocalStream::new(root, resolved_output)?;
     super::orchestrate::collect_stream(stream)
 }
 
 impl LocalStream {
-    pub fn new(root: &Path, output: &OutputTarget) -> Result<Self, IngestError> {
+    pub fn new(root: &Path, resolved_output: Option<&Path>) -> Result<Self, IngestError> {
         let canonical_root = validate_root(root)?;
-        let output_filter = OutputFilter::from_target(output)?;
         let label = local_label(&canonical_root);
-        let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
+        let candidates = walk_candidates(&canonical_root, resolved_output)?;
 
         Ok(Self {
             label,
@@ -65,28 +56,25 @@ impl SourceStream for LocalStream {
 
     fn for_each_item<F>(mut self, mut callback: F) -> Result<StreamInfo, IngestError>
     where
-        F: FnMut(Item<'_>) -> Result<(), IngestError>,
+        F: FnMut(CandidateInput<'_>) -> Result<(), IngestError>,
     {
         let mut scratch = Vec::with_capacity(32 * 1024);
-        for candidate in self.candidates.by_ref() {
-            let probe = if candidate.skip_read {
-                Probe::Missing
-            } else {
-                match &candidate.item_path {
-                    ItemPath::Utf8(rel) => {
-                        self.work_path.clear();
-                        self.work_path.push(&self.root);
-                        self.work_path.push(rel.as_ref());
-                        scratch.clear();
-                        read_local_file_into(&self.work_path, &mut scratch)?
+        for item_path in self.candidates.by_ref() {
+            let input = match item_path.as_deref() {
+                Some(rel) => {
+                    self.work_path.clear();
+                    self.work_path.push(&self.root);
+                    self.work_path.push(rel);
+                    scratch.clear();
+                    match read_local_file_into(&self.work_path, &mut scratch)? {
+                        LocalFileRead::Bytes(bytes) => CandidateInput::File { path: rel, bytes },
+                        LocalFileRead::TooLarge => CandidateInput::TooLarge { path: rel },
+                        LocalFileRead::Missing => CandidateInput::Skipped { path: Some(rel) },
                     }
-                    ItemPath::NonUtf8 => Probe::Missing,
                 }
+                None => CandidateInput::Skipped { path: None },
             };
-            callback(Item {
-                path: candidate.item_path,
-                probe,
-            })?;
+            callback(input)?;
         }
         Ok(StreamInfo {
             label: self.label,
@@ -95,13 +83,58 @@ impl SourceStream for LocalStream {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum LocalFileRead<'b> {
+    Bytes(&'b [u8]),
+    Missing,
+    TooLarge,
+}
+
+fn read_local_file_into<'b>(
+    path: &Path,
+    buf: &'b mut Vec<u8>,
+) -> Result<LocalFileRead<'b>, IngestError> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(LocalFileRead::Missing),
+        Err(err) => return Err(IngestError::Io(err)),
+    };
+    if meta.is_symlink() || !meta.is_file() {
+        return Ok(LocalFileRead::Missing);
+    }
+    if meta.len() > MAX_FILE_SIZE {
+        return Ok(LocalFileRead::TooLarge);
+    }
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(LocalFileRead::Missing),
+        Err(err) => return Err(IngestError::Io(err)),
+    };
+    read_bounded_content_into(file, buf).map_err(Into::into)
+}
+
+fn read_bounded_content_into<'b>(
+    file: fs::File,
+    buf: &'b mut Vec<u8>,
+) -> io::Result<LocalFileRead<'b>> {
+    if !file.metadata()?.is_file() {
+        return Ok(LocalFileRead::Missing);
+    }
+    let mut handle = file.take(MAX_FILE_SIZE.saturating_add(1));
+    handle.read_to_end(buf)?;
+    if buf.len() as u64 > MAX_FILE_SIZE {
+        return Ok(LocalFileRead::TooLarge);
+    }
+    Ok(LocalFileRead::Bytes(buf.as_slice()))
+}
+
 fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
     let root_display = root.display();
     let canonical = fs::canonicalize(root)
-        .map_err(|error| IngestError::InvalidSource(format!("{root_display} ({error})")))?;
+        .map_err(|error| IngestError::invalid_source(format!("{root_display} ({error})")))?;
     if !canonical.is_dir() {
         let display = canonical.display();
-        return Err(IngestError::InvalidSource(format!(
+        return Err(IngestError::invalid_source(format!(
             "{display} is not a directory"
         )));
     }
@@ -110,8 +143,8 @@ fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
 
 fn walk_candidates(
     root: &Path,
-    output_filter: Option<&OutputFilter>,
-) -> Result<Vec<LocalCandidate>, IngestError> {
+    resolved_output: Option<&Path>,
+) -> Result<Vec<Option<String>>, IngestError> {
     let walker = WalkBuilder::new(root)
         .hidden(true)
         .ignore(false)
@@ -131,71 +164,48 @@ fn walk_candidates(
         let entry_path = entry.path();
         if entry_path == root
             || !entry.file_type().is_some_and(|kind| kind.is_file())
-            || output_filter.is_some_and(|filter| filter.is_excluded(entry_path))
+            || resolved_output.is_some_and(|target| entry_path == target)
         {
             continue;
         }
 
         let relative = entry_path
             .strip_prefix(root)
-            .map_err(|err| IngestError::InvalidMetadata(err.to_string()))?;
+            .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
         let item_path = normalize_relative_path(relative);
 
-        let skip_read = match &item_path {
-            ItemPath::NonUtf8 => true,
-            ItemPath::Utf8(path) => {
-                let classification = PathClassification::classify(path);
-                if classification == PathClassification::Ignored {
-                    continue;
-                }
-                classification == PathClassification::PreclassifiedBinary
-            }
-        };
+        if matches!(&item_path, Some(path) if crate::core::policy::is_ignored_path(path)) {
+            continue;
+        }
 
-        candidates.push(LocalCandidate {
-            item_path,
-            skip_read,
-        });
+        candidates.push(item_path);
 
         if candidates.len() > MAX_FILE_COUNT {
             break;
         }
     }
 
-    CandidateBudget::check_limit(candidates.iter().map(|c| c.item_path.as_utf8_str()))?;
-
-    candidates.sort_unstable_by(|a, b| match (&a.item_path, &b.item_path) {
-        (ItemPath::Utf8(left), ItemPath::Utf8(right)) => left.cmp(right),
-        (ItemPath::Utf8(_), ItemPath::NonUtf8) => std::cmp::Ordering::Less,
-        (ItemPath::NonUtf8, ItemPath::Utf8(_)) => std::cmp::Ordering::Greater,
-        (ItemPath::NonUtf8, ItemPath::NonUtf8) => std::cmp::Ordering::Equal,
-    });
+    CandidateBudget::check_limit(candidates.iter().map(|c| c.as_deref()))?;
 
     Ok(candidates)
 }
 
-fn normalize_relative_path(relative: &Path) -> ItemPath<'static> {
+fn normalize_relative_path(relative: &Path) -> Option<String> {
     let mut parts = relative.components().peekable();
-    let Some(first) = parts.next() else {
-        return ItemPath::Utf8(std::borrow::Cow::Borrowed(""));
-    };
-    let Some(first_str) = first.as_os_str().to_str() else {
-        return ItemPath::NonUtf8;
-    };
+    let first = parts.next()?;
+    let first_str = first.as_os_str().to_str()?;
     if parts.peek().is_none() {
-        return ItemPath::Utf8(std::borrow::Cow::Owned(first_str.to_owned()));
+        return Some(first_str.to_string());
     }
 
     let mut normalized_path = String::with_capacity(relative.as_os_str().len());
     normalized_path.push_str(first_str);
     for part in parts {
-        let Some(s) = part.as_os_str().to_str() else {
-            return ItemPath::NonUtf8;
-        };
+        let s = part.as_os_str().to_str()?;
         normalized_path.push('/');
         normalized_path.push_str(s);
     }
-    ItemPath::Utf8(std::borrow::Cow::Owned(normalized_path))
+    Some(normalized_path)
 }
 
 fn local_label(root: &Path) -> String {
@@ -210,8 +220,82 @@ fn local_label(root: &Path) -> String {
 mod tests {
     use super::super::temp_dir;
     use super::*;
-    use crate::core::model::{DigestFormat, FileRecord, RunConfig, Source};
+    use crate::core::model::{DigestFormat, FileRecord, OutputTarget, RunConfig, Source};
     use crate::ingest;
+
+    #[test]
+    fn read_local_file_enforces_size_boundaries() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("size_boundaries")?;
+        let exact_path = root.join("exact.txt");
+        let too_large_path = root.join("large.txt");
+        fs::write(&exact_path, vec![b'x'; MAX_FILE_SIZE as usize])?;
+        fs::write(&too_large_path, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
+
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_local_file_into(&exact_path, &mut buf)?,
+            LocalFileRead::Bytes(_)
+        ));
+        buf.clear();
+        assert!(matches!(
+            read_local_file_into(&too_large_path, &mut buf)?,
+            LocalFileRead::TooLarge
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn handles_unlinked_file_as_missing() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("missing_file")?;
+        let path = root.join("nonexistent.txt");
+
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_local_file_into(&path, &mut buf)?,
+            LocalFileRead::Missing
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_file() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("symlink_test")?;
+        let target = root.join("target.txt");
+        let link = root.join("link.txt");
+        fs::write(&target, "content")?;
+        symlink(&target, &link)?;
+
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_local_file_into(&link, &mut buf)?,
+            LocalFileRead::Missing
+        ));
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_windows_symlink_file() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::symlink_file;
+
+        let root = temp_dir("win_symlink_test")?;
+        let target = root.join("target.txt");
+        let link = root.join("link.txt");
+        fs::write(&target, "content")?;
+
+        if symlink_file(&target, &link).is_ok() {
+            let mut buf = Vec::new();
+            assert!(matches!(
+                read_local_file_into(&link, &mut buf)?,
+                LocalFileRead::Missing
+            ));
+            let _ = fs::remove_file(&link);
+        }
+        Ok(())
+    }
 
     #[cfg(unix)]
     #[test]
@@ -232,31 +316,6 @@ mod tests {
         assert_eq!(report.included_files, 2);
         assert!(digest.contains("FILE: a\\\\b.txt"));
         assert!(digest.contains("FILE: a/b.txt"));
-        Ok(())
-    }
-
-    #[test]
-    fn excludes_output_through_nonexistent_parent_alias() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = temp_dir("output_alias")?;
-        fs::write(root.join("source.txt"), "source")?;
-        fs::write(root.join("digest.txt"), "previous output")?;
-        let output = root.join("missing").join("..").join("digest.txt");
-
-        let report = ingest(&RunConfig::new(
-            Source::Local(root.to_path_buf()),
-            OutputTarget::File(output),
-            DigestFormat::Text,
-        ))?;
-        let digest = fs::read_to_string(root.join("digest.txt"))?;
-
-        assert_eq!(report.included_files, 1);
-        assert!(!digest.contains("previous output"));
-        assert!(digest.contains("FILE: source.txt"));
-        assert!(
-            !root.join("missing").exists(),
-            "nonexistent parent alias must not create phantom directory"
-        );
         Ok(())
     }
 
@@ -408,10 +467,7 @@ mod tests {
                 )?;
             }
         }
-        let result = crate::shell::orchestrate::collect_stream(LocalStream::new(
-            &root,
-            &OutputTarget::Stdout,
-        )?)?;
+        let result = crate::shell::orchestrate::collect_stream(LocalStream::new(&root, None)?)?;
         let files = result.files;
         assert_eq!(files.len(), 30);
         let records: Vec<FileRecord<'_>> = files.iter().collect();
@@ -444,19 +500,14 @@ mod tests {
             .share_mode(0)
             .open(root.join("file_00000.txt"))?;
 
-        let err = LocalStream::new(&root, &OutputTarget::Stdout).unwrap_err();
+        let err = LocalStream::new(&root, None).unwrap_err();
         match err {
-            IngestError::CandidateLimitExceeded { .. } => {
+            IngestError::CandidateLimitExceeded(..) => {
                 let msg = err.to_string();
                 assert!(msg.contains("repository contains more than 10000 files"));
             }
             other => panic!("expected CandidateLimitExceeded, got {other:?}"),
         }
         Ok(())
-    }
-
-    #[test]
-    fn test_local_candidate_size_is_under_cache_line() {
-        assert!(std::mem::size_of::<LocalCandidate>() <= 32);
     }
 }

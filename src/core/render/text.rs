@@ -1,9 +1,8 @@
-//! Plain text format specification and escaping.
+//! Text format specification, escaping, and layout rendering.
 
 use std::borrow::Cow;
 use std::io::Write;
 
-use super::trie::BudgetTrie;
 use crate::core::error::IngestError;
 use crate::core::model::FileRecord;
 
@@ -20,7 +19,7 @@ const METADATA_SUFFIX: &str = "\n\n";
 
 #[inline(always)]
 const fn needs_header_escape(b: u8) -> bool {
-    (b == b'\\') | (b == b'\r') | (b == b'\n')
+    matches!(b, b'\\' | b'\r' | b'\n')
 }
 
 #[inline(always)]
@@ -33,9 +32,14 @@ const fn header_escape_str(b: u8) -> &'static str {
     }
 }
 
+#[inline(always)]
+pub(crate) fn first_header_escape_index(bytes: &[u8]) -> Option<usize> {
+    bytes.iter().position(|&b| needs_header_escape(b))
+}
+
 pub fn escape_header(value: &str) -> Cow<'_, str> {
     let bytes = value.as_bytes();
-    let Some(first) = bytes.iter().position(|&b| needs_header_escape(b)) else {
+    let Some(first) = first_header_escape_index(bytes) else {
         return Cow::Borrowed(value);
     };
 
@@ -54,56 +58,13 @@ pub fn escape_header(value: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// Left-inverse of `escape_header` satisfying `unescape_header(escape_header(s)) == s`.
-pub fn unescape_header(value: &str) -> Cow<'_, str> {
-    let bytes = value.as_bytes();
-    let Some(first) = bytes.iter().position(|&b| b == b'\\') else {
-        return Cow::Borrowed(value);
-    };
-
-    let mut out = String::with_capacity(value.len());
-    out.push_str(&value[..first]);
-
-    let mut i = first;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 1 < bytes.len() {
-            match bytes[i + 1] {
-                b'\\' => {
-                    out.push('\\');
-                    i += 2;
-                }
-                b'r' => {
-                    out.push('\r');
-                    i += 2;
-                }
-                b'n' => {
-                    out.push('\n');
-                    i += 2;
-                }
-                _ => {
-                    out.push('\\');
-                    i += 1;
-                }
-            }
-        } else {
-            let start = i;
-            while i < bytes.len() && bytes[i] != b'\\' {
-                i += 1;
-            }
-            out.push_str(&value[start..i]);
-        }
-    }
-
-    Cow::Owned(out)
-}
-
-pub(crate) fn render<'a, W, I>(
+pub(crate) fn render_text<'a, W, I>(
     writer: &mut W,
     label: &str,
     revision: Option<&str>,
     ordered_files: I,
     skipped: usize,
-    trie: &BudgetTrie,
+    paths: &[&str],
 ) -> Result<(), IngestError>
 where
     W: Write + ?Sized,
@@ -125,7 +86,7 @@ where
     write!(writer, "{}", skipped)?;
     writer.write_all(METADATA_SUFFIX.as_bytes())?;
     writer.write_all(DIRECTORY_HEADER.as_bytes())?;
-    trie.render_to_writer(writer, false)?;
+    crate::core::tree::render_tree(writer, paths, escape_header)?;
     writer.write_all(FILES_HEADER.as_bytes())?;
     for file in iter {
         const TAIL: [&[u8]; 2] = [b"\n", b"\n\n"];
@@ -141,7 +102,7 @@ where
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     #[test]
@@ -161,24 +122,24 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn unescape_header_roundtrip_is_left_inverse() {
-        let samples = [
-            "",
-            "clean_path/src/main.rs",
-            "path\\with\\backslashes",
-            "path\nwith\nnewlines",
-            "path\r\nwith\r\ncrlf",
-            "complex\\path\nwith\rall\\kinds\r\nof\\\\escapes",
-            "lone\\trailing\\",
-        ];
-        for sample in samples {
-            let escaped = escape_header(sample);
-            let unescaped = unescape_header(&escaped);
-            assert_eq!(
-                unescaped.as_ref(),
-                sample,
-                "roundtrip failed for sample {sample:?}"
-            );
+    fn test_escape_header_boundary_alignment() {
+        for len in 0..=48 {
+            let clean = "a".repeat(len);
+            assert_eq!(first_header_escape_index(clean.as_bytes()), None);
+            assert!(matches!(escape_header(&clean), Cow::Borrowed(_)));
+
+            for special in ['\\', '\r', '\n'] {
+                for pos in 0..len {
+                    let mut text = clean.clone();
+                    text.replace_range(pos..pos + 1, &special.to_string());
+                    assert_eq!(
+                        first_header_escape_index(text.as_bytes()),
+                        Some(pos),
+                        "mismatch at len {len}, pos {pos}, special {special:?}"
+                    );
+                    assert!(matches!(escape_header(&text), Cow::Owned(_)));
+                }
+            }
         }
     }
 }

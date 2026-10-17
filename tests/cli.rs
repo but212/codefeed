@@ -1,4 +1,28 @@
+use std::path::PathBuf;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new(label: &str) -> Self {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("codefeed_cli_{label}_{suffix}"));
+        std::fs::create_dir_all(&path).expect("temporary directory should be created");
+        Self { path }
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
 
 fn run(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_codefeed"))
@@ -23,7 +47,7 @@ fn public_api_types_are_accessible() {
         estimated_tokens: 42,
     };
     assert_eq!(report.estimated_tokens, 42);
-    let _err = IngestError::Usage("test".into());
+    let _err = IngestError::usage("test");
 }
 
 #[test]
@@ -79,47 +103,30 @@ fn usage_error_formatting_does_not_prefix_invalid_source() {
 
 #[test]
 fn creates_default_output_without_subcommand() -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after the Unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("codefeed_cli_default_{suffix}"));
-    std::fs::create_dir_all(&root).expect("temporary directory should be created");
-    std::fs::write(root.join("visible.txt"), "visible").expect("source file should be written");
+    let root = TempDir::new("default");
+    std::fs::write(root.path.join("visible.txt"), "visible")?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .current_dir(&root)
+        .current_dir(&root.path)
         .arg(".")
-        .output()
-        .expect("CLI process should start");
+        .output()?;
 
     assert!(output.status.success(), "output: {output:?}");
-    assert!(root.join("digest.txt").is_file());
-    std::fs::remove_dir_all(root).expect("temporary directory should be removed");
+    assert!(root.path.join("digest.txt").is_file());
     Ok(())
 }
 
 #[test]
 fn writes_digest_only_to_stdout_for_dash_output() -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after the Unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("codefeed_cli_stdout_{suffix}"));
-    std::fs::create_dir_all(&root).expect("temporary directory should be created");
-    std::fs::write(root.join("visible.txt"), "visible").expect("source file should be written");
+    let root = TempDir::new("stdout");
+    std::fs::write(root.path.join("visible.txt"), "visible")?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .current_dir(&root)
+        .current_dir(&root.path)
         .arg(".")
         .arg("--output")
         .arg("-")
-        .output()
-        .expect("CLI process should start");
+        .output()?;
 
     assert!(output.status.success(), "output: {output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -131,29 +138,22 @@ fn writes_digest_only_to_stdout_for_dash_output() -> Result<(), Box<dyn std::err
         "stderr: {stderr}"
     );
     assert!(stderr.contains("tokens)"), "stderr: {stderr}");
-    assert!(!root.join("digest.txt").exists(), "no output file expected");
-    std::fs::remove_dir_all(root).expect("temporary directory should be removed");
+    assert!(
+        !root.path.join("digest.txt").exists(),
+        "no output file expected"
+    );
     Ok(())
 }
 
 #[test]
 fn reports_estimated_tokens_in_file_summary() -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after the Unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("codefeed_cli_tokens_{suffix}"));
-    std::fs::create_dir_all(&root).expect("temporary directory should be created");
-    std::fs::write(root.join("code.rs"), "pub fn test() -> i32 { 42 }")
-        .expect("source file should be written");
+    let root = TempDir::new("tokens");
+    std::fs::write(root.path.join("code.rs"), "pub fn test() -> i32 { 42 }")?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .current_dir(&root)
+        .current_dir(&root.path)
         .arg(".")
-        .output()
-        .expect("CLI process should start");
+        .output()?;
 
     assert!(output.status.success(), "output: {output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -162,32 +162,22 @@ fn reports_estimated_tokens_in_file_summary() -> Result<(), Box<dyn std::error::
         "stdout: {stdout}"
     );
     assert!(stdout.contains("tokens)"), "stdout: {stdout}");
-    std::fs::remove_dir_all(root).expect("temporary directory should be removed");
     Ok(())
 }
 
 #[test]
 fn outputs_xml_when_format_xml_specified() -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after the Unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("codefeed_cli_xml_{suffix}"));
-    std::fs::create_dir_all(&root).expect("temporary directory should be created");
-    std::fs::write(root.join("file.rs"), "fn main() { let x = 1 < 2; }")
-        .expect("file should be written");
+    let root = TempDir::new("xml");
+    std::fs::write(root.path.join("file.rs"), "fn main() { let x = 1 < 2; }")?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .current_dir(&root)
+        .current_dir(&root.path)
         .arg(".")
         .arg("--output")
         .arg("-")
         .arg("--format")
         .arg("xml")
-        .output()
-        .expect("CLI process should start");
+        .output()?;
 
     assert!(output.status.success(), "output: {output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -199,7 +189,6 @@ fn outputs_xml_when_format_xml_specified() -> Result<(), Box<dyn std::error::Err
     );
     assert!(stdout.contains("1 &lt; 2"), "stdout: {stdout}");
     assert!(stdout.contains("</repository>"), "stdout: {stdout}");
-    std::fs::remove_dir_all(root).expect("temporary directory should be removed");
     Ok(())
 }
 
@@ -229,14 +218,11 @@ fn help_after_non_utf8_source_exits_successfully() {
 fn accepts_non_utf8_local_source_path() {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after the Unix epoch")
-        .as_nanos();
-    let parent = std::env::temp_dir().join(format!("codefeed_cli_{suffix}"));
-    let source = parent.join(OsString::from_vec(b"source-\xff".to_vec()));
+    let parent = TempDir::new("non_utf8");
+    let source = parent
+        .path
+        .join(OsString::from_vec(b"source-\xff".to_vec()));
     let output = source.join("digest.txt");
     std::fs::create_dir_all(&source).expect("source directory should be created");
     std::fs::write(source.join("visible.txt"), "visible").expect("source file should be written");
@@ -250,7 +236,6 @@ fn accepts_non_utf8_local_source_path() {
 
     assert!(result.status.success(), "output: {result:?}");
     assert!(output.is_file());
-    std::fs::remove_dir_all(parent).expect("temporary directory should be removed");
 }
 
 #[test]
@@ -287,4 +272,21 @@ fn accepts_double_dash_delimiter() {
     assert!(output.status.success(), "output: {output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.is_empty());
+}
+
+#[test]
+fn ingest_fails_fast_on_directory_output_target() {
+    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+        .args(["--output", ".", "."])
+        .output()
+        .expect("CLI process should start");
+
+    assert!(!output.status.success(), "output: {output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("output path has no filename")
+            || stderr.contains("output path is a directory")
+            || stderr.contains("Is a directory"),
+        "unexpected stderr: {stderr}"
+    );
 }

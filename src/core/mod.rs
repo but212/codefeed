@@ -5,10 +5,11 @@
 
 pub(crate) mod archive;
 pub(crate) mod cli;
-pub(crate) mod decide;
-pub(crate) mod digest;
 pub(crate) mod error;
 pub(crate) mod github_url;
 pub(crate) mod model;
 pub(crate) mod policy;
+pub(crate) mod render;
+pub(crate) mod selector;
 pub(crate) mod source;
+pub(crate) mod tree;

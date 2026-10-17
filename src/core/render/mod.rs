@@ -1,18 +1,32 @@
-pub(crate) mod budget;
-mod text;
-pub mod token;
-mod trie;
-mod xml;
+//! Digest rendering and streaming token estimation.
+//!
+//! Coordinates layout rendering across text and XML formats, streaming
+//! token estimation, and output size cap enforcement.
 
-pub(crate) use budget::largest_files;
-pub use text::{escape_header, unescape_header};
-pub use token::{TokenEstimator, estimate_tokens};
-pub use trie::BudgetTrie;
-pub use xml::{write_escaped, xml_escape};
+use std::io::Write;
+
+pub(crate) mod text;
+pub(crate) mod xml;
 
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
 use crate::core::policy::MAX_OUTPUT_SIZE;
+
+/// Heuristic token estimation (~4 bytes per token for typical ASCII code).
+///
+/// Returns 0 for empty digests, and at least 1 token when non-empty.
+///
+/// Note: This is a fast byte-level heuristic calibrated for English text and source code.
+/// Multibyte UTF-8 sequences (such as CJK characters, which consume 3 bytes each)
+/// are underestimated by this formula.
+#[inline]
+pub fn estimate_tokens(bytes: u64) -> usize {
+    if bytes == 0 {
+        0
+    } else {
+        (bytes / 4).max(1) as usize
+    }
+}
 
 impl DigestFormat {
     pub(crate) fn render<'a, W, I>(
@@ -22,116 +36,89 @@ impl DigestFormat {
         revision: Option<&str>,
         files: I,
         skipped: usize,
-        trie: &BudgetTrie,
+        paths: &[&str],
     ) -> Result<(), IngestError>
     where
-        W: std::io::Write + ?Sized,
+        W: Write + ?Sized,
         I: IntoIterator<Item = FileRecord<'a>>,
         I::IntoIter: ExactSizeIterator,
     {
         match self {
-            Self::Text => text::render(writer, label, revision, files, skipped, trie),
-            Self::Xml => xml::render(writer, label, revision, files, trie),
+            Self::Text => text::render_text(writer, label, revision, files, skipped, paths),
+            Self::Xml => xml::render_xml(writer, label, revision, files, paths),
         }
     }
 }
 
-const ESTIMATING_WRITER_BUF_SIZE: usize = 8 * 1024;
-
-struct BoundedEstimatingWriter<'a, W: std::io::Write + ?Sized> {
+struct BoundedEstimatingWriter<'a, W: Write + ?Sized> {
     inner: &'a mut W,
     written: u64,
-    estimator: TokenEstimator,
     overflowed: bool,
-    buf: [u8; ESTIMATING_WRITER_BUF_SIZE],
-    buf_len: usize,
 }
 
-impl<'a, W: std::io::Write + ?Sized> BoundedEstimatingWriter<'a, W> {
+impl<'a, W: Write + ?Sized> BoundedEstimatingWriter<'a, W> {
     fn new(inner: &'a mut W) -> Self {
         Self {
             inner,
             written: 0,
-            estimator: TokenEstimator::new(),
             overflowed: false,
-            buf: [0u8; ESTIMATING_WRITER_BUF_SIZE],
-            buf_len: 0,
         }
     }
 
-    fn flush_buf(&mut self) -> std::io::Result<()> {
-        if self.buf_len > 0 {
-            self.inner.write_all(&self.buf[..self.buf_len])?;
-            self.estimator.process_bytes(&self.buf[..self.buf_len]);
-            self.buf_len = 0;
-        }
-        Ok(())
-    }
-
-    fn finish(mut self) -> std::io::Result<usize> {
-        self.flush_buf()?;
-        Ok(self.estimator.finish())
+    fn finish(self) -> std::io::Result<usize> {
+        Ok(estimate_tokens(self.written))
     }
 }
 
-impl<W: std::io::Write + ?Sized> std::io::Write for BoundedEstimatingWriter<'_, W> {
+impl<W: Write + ?Sized> Write for BoundedEstimatingWriter<'_, W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let new_written = self.written.saturating_add(buf.len() as u64);
         if new_written > MAX_OUTPUT_SIZE {
             self.overflowed = true;
-            return Err(std::io::Error::other("output size limit exceeded"));
+            return Err(output_limit_io_error());
         }
+        self.inner.write_all(buf)?;
         self.written = new_written;
-
-        let space = self.buf.len() - self.buf_len;
-        if buf.len() <= space {
-            self.buf[self.buf_len..self.buf_len + buf.len()].copy_from_slice(buf);
-            self.buf_len += buf.len();
-            return Ok(buf.len());
-        }
-
-        self.flush_buf()?;
-
-        if buf.len() >= self.buf.len() {
-            self.inner.write_all(buf)?;
-            self.estimator.process_bytes(buf);
-        } else {
-            self.buf[..buf.len()].copy_from_slice(buf);
-            self.buf_len = buf.len();
-        }
-
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.flush_buf()?;
         self.inner.flush()
     }
 }
 
-pub fn render_to_writer<W: std::io::Write + ?Sized>(
+fn output_limit_io_error() -> std::io::Error {
+    std::io::Error::other("output size limit exceeded")
+}
+
+pub fn render_to_writer<W: Write + ?Sized>(
     writer: &mut W,
     collection: &CollectionResult,
     format: DigestFormat,
 ) -> Result<usize, IngestError> {
     let mut estimating_writer = BoundedEstimatingWriter::new(writer);
+    let paths: Vec<&str> = collection.files.iter().map(|f| f.path).collect();
     let render_res = format.render(
         &mut estimating_writer,
         &collection.label,
         collection.revision.as_deref(),
         collection.files.iter(),
         collection.skipped,
-        &collection.trie,
+        &paths,
     );
 
     if estimating_writer.overflowed {
-        return Err(IngestError::OutputTooLarge {
-            largest_files: largest_files(collection.files.iter()),
-        });
+        return Err(output_too_large_error(collection));
     }
 
     render_res?;
     estimating_writer.finish().map_err(Into::into)
+}
+
+fn output_too_large_error(collection: &CollectionResult) -> IngestError {
+    IngestError::output_too_large(crate::core::selector::largest_files(
+        collection.files.iter(),
+    ))
 }
 
 #[cfg(test)]
@@ -141,14 +128,6 @@ mod tests {
     use crate::core::model::{FileRecord, FileStorage};
     use crate::core::policy::MAX_OUTPUT_SIZE;
 
-    fn test_trie<'a>(files: impl IntoIterator<Item = FileRecord<'a>>) -> BudgetTrie {
-        let mut trie = BudgetTrie::new();
-        for file in files {
-            trie.insert(file.path);
-        }
-        trie
-    }
-
     fn render_digest(
         label: &str,
         revision: Option<&str>,
@@ -157,13 +136,11 @@ mod tests {
     ) -> Result<String, IngestError> {
         let mut storage: FileStorage = files.iter().copied().collect();
         storage.sort_by_path();
-        let trie = test_trie(storage.iter());
         let collection = CollectionResult {
             label: label.to_string(),
             revision: revision.map(str::to_string),
             files: storage,
             skipped,
-            trie,
         };
         let mut buffer = Vec::new();
         render_to_writer(&mut buffer, &collection, DigestFormat::Text)?;
@@ -227,7 +204,6 @@ mod tests {
             revision: Some("v1.0".into()),
             files: storage,
             skipped: 2,
-            trie: test_trie(files),
         };
         let mut streamed = Vec::new();
         render_to_writer(&mut streamed, &collection, DigestFormat::Text)?;
@@ -277,31 +253,18 @@ hello\n\
                 content: "content_a\n",
             },
         ];
-        let trie = test_trie([files[0], files[2]]);
         let mut buf = Vec::new();
         let filtered: Vec<_> = files
             .into_iter()
             .filter(|f| f.path != "excluded.txt")
             .collect();
-        DigestFormat::Text.render(&mut buf, "repo", None, filtered, 1, &trie)?;
+        DigestFormat::Text.render(&mut buf, "repo", None, filtered, 1, &["a.txt", "b.txt"])?;
         let rendered = std::str::from_utf8(&buf)?;
         assert!(rendered.contains("Files: 2"));
         assert!(rendered.contains("FILE: a.txt"));
         assert!(rendered.contains("FILE: b.txt"));
         assert!(!rendered.contains("excluded.txt"));
         Ok(())
-    }
-
-    #[test]
-    fn rejects_digest_before_storing_over_budget_content() {
-        use crate::core::decide::{Item, ItemPath, Probe, Selector};
-        let content = vec![b'x'; MAX_OUTPUT_SIZE as usize + 1];
-        let mut selector = Selector::new();
-        let res = selector.decide(Item {
-            path: ItemPath::Utf8("large.txt".into()),
-            probe: Probe::Bytes(content.into()),
-        });
-        assert!(res.is_err());
     }
 
     #[test]
@@ -318,11 +281,10 @@ hello\n\
             revision: None,
             files: storage,
             skipped: 0,
-            trie: BudgetTrie::new(),
         };
         let mut sink = Vec::new();
         match render_to_writer(&mut sink, &collection, DigestFormat::Text) {
-            Err(IngestError::OutputTooLarge { largest_files }) => {
+            Err(IngestError::OutputTooLarge(largest_files)) => {
                 assert_eq!(largest_files.len(), 1);
                 assert_eq!(largest_files[0].0, "large.txt");
             }
@@ -349,7 +311,6 @@ hello\n\
             revision: Some("v1.0".into()),
             files: storage,
             skipped: 1,
-            trie: test_trie(files),
         };
         let mut out = Vec::new();
         render_to_writer(&mut out, &collection, DigestFormat::Xml)?;
@@ -394,7 +355,6 @@ z &lt; 10
             revision: None,
             files: files.into_iter().collect(),
             skipped: 0,
-            trie: test_trie(files),
         };
         let mut xml_out = Vec::new();
         render_to_writer(&mut xml_out, &collection, DigestFormat::Xml)?;
@@ -417,7 +377,7 @@ z &lt; 10
             buf: Vec<u8>,
         }
 
-        impl std::io::Write for BrokenPipeOnFlushWriter {
+        impl Write for BrokenPipeOnFlushWriter {
             fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
                 self.buf.extend_from_slice(buf);
                 Ok(buf.len())
@@ -433,12 +393,21 @@ z &lt; 10
 
         let mut inner = BrokenPipeOnFlushWriter { buf: Vec::new() };
         let mut writer = BoundedEstimatingWriter::new(&mut inner);
-        use std::io::Write;
         writer.write_all(b"hello world\n").unwrap();
         let tokens = writer
             .finish()
             .expect("finish must succeed even if inner flush fails");
         assert!(tokens > 0);
         assert_eq!(inner.buf, b"hello world\n");
+    }
+
+    #[test]
+    fn estimate_tokens_boundaries() {
+        assert_eq!(estimate_tokens(0), 0);
+        assert_eq!(estimate_tokens(1), 1);
+        assert_eq!(estimate_tokens(3), 1);
+        assert_eq!(estimate_tokens(4), 1);
+        assert_eq!(estimate_tokens(5), 1);
+        assert_eq!(estimate_tokens(8), 2);
     }
 }

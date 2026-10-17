@@ -1,13 +1,11 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
-
 use crate::core::error::IngestError;
 use crate::core::model::{DigestFormat, OutputTarget, RunConfig};
 use crate::core::source::parse_os;
 
-const HELP: &str =
+pub const HELP: &str =
     "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]";
 
 pub const fn help_text() -> &'static str {
@@ -20,79 +18,154 @@ pub enum CliAction {
     Run(RunConfig),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum FormatArg {
-    Text,
-    Xml,
-}
-
-#[derive(Parser, Debug)]
-#[command(
-    name = "codefeed",
-    override_usage = "codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]",
-    disable_help_flag = true
-)]
-struct Opts {
-    #[arg(short = 'h', long = "help", help = "Print help")]
-    help: bool,
-
-    #[arg(value_name = "SOURCE")]
-    source: Option<OsString>,
-
-    #[arg(
-        short = 'o',
-        long = "output",
-        default_value = "digest.txt",
-        value_name = "PATH|->"
-    )]
-    output: OsString,
-
-    #[arg(short = 'r', long = "ref", value_name = "REF")]
-    reference: Option<String>,
-
-    #[arg(
-        short = 'f',
-        long = "format",
-        default_value = "text",
-        value_name = "text|xml"
-    )]
-    format: FormatArg,
-}
-
 pub fn parse<I, T>(args: I) -> Result<CliAction, IngestError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
-    let args_vec: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let mut args_iter = args.into_iter().map(Into::into);
+    let _bin = args_iter.next(); // Skip binary name
 
-    let opts = match Opts::try_parse_from(&args_vec) {
-        Ok(opts) => opts,
-        Err(err) => return Err(IngestError::Usage(err.to_string())),
-    };
+    let mut source: Option<OsString> = None;
+    let mut output: Option<OsString> = None;
+    let mut reference: Option<String> = None;
+    let mut format = DigestFormat::Text;
+    let mut positional_only = false;
 
-    if opts.help {
-        return Ok(CliAction::Help);
+    while let Some(arg) = args_iter.next() {
+        if positional_only {
+            if source.is_some() {
+                return Err(IngestError::usage(format!(
+                    "unexpected argument '{}' found",
+                    arg.to_string_lossy()
+                )));
+            }
+            source = Some(arg);
+            continue;
+        }
+
+        let arg_str = arg.to_str();
+        if arg_str == Some("--") {
+            positional_only = true;
+            continue;
+        }
+
+        if let Some(s) = arg_str {
+            if s == "-h" || s == "--help" {
+                return Ok(CliAction::Help);
+            }
+            if s == "-o" || s == "--output" {
+                let val = match args_iter.next() {
+                    Some(v)
+                        if v.to_str()
+                            .is_none_or(|v_str| v_str == "-" || !v_str.starts_with('-')) =>
+                    {
+                        v
+                    }
+                    _ => {
+                        return Err(IngestError::usage(format!(
+                            "a value is required for '{s}' but none was supplied"
+                        )));
+                    }
+                };
+                output = Some(val);
+                continue;
+            }
+            if let Some(val) = s
+                .strip_prefix("-o=")
+                .or_else(|| s.strip_prefix("--output="))
+            {
+                output = Some(OsString::from(val));
+                continue;
+            }
+            if s == "-r" || s == "--ref" {
+                let val = match args_iter.next() {
+                    Some(v)
+                        if v.to_str()
+                            .is_none_or(|v_str| v_str == "-" || !v_str.starts_with('-')) =>
+                    {
+                        v
+                    }
+                    _ => {
+                        return Err(IngestError::usage(format!(
+                            "a value is required for '{s}' but none was supplied"
+                        )));
+                    }
+                };
+                let val_str = val
+                    .into_string()
+                    .map_err(|_| IngestError::usage("git reference must be valid utf-8"))?;
+                reference = Some(val_str);
+                continue;
+            }
+            if let Some(val) = s.strip_prefix("-r=").or_else(|| s.strip_prefix("--ref=")) {
+                reference = Some(val.to_string());
+                continue;
+            }
+            if s == "-f" || s == "--format" {
+                let val = match args_iter.next() {
+                    Some(v)
+                        if v.to_str()
+                            .is_none_or(|v_str| v_str == "-" || !v_str.starts_with('-')) =>
+                    {
+                        v
+                    }
+                    _ => {
+                        return Err(IngestError::usage(format!(
+                            "a value is required for '{s}' but none was supplied"
+                        )));
+                    }
+                };
+                format = parse_format(val.to_str().unwrap_or(""))?;
+                continue;
+            }
+            if let Some(val) = s
+                .strip_prefix("-f=")
+                .or_else(|| s.strip_prefix("--format="))
+            {
+                format = parse_format(val)?;
+                continue;
+            }
+            if s.starts_with('-') && s != "-" {
+                return Err(IngestError::usage(format!("unknown option: {s}")));
+            }
+        }
+
+        if source.is_some() {
+            return Err(IngestError::usage(format!(
+                "unexpected argument '{}' found",
+                arg.to_string_lossy()
+            )));
+        }
+        source = Some(arg);
     }
 
-    let Some(source_value) = opts.source else {
-        return Err(IngestError::Usage(format!("missing source\n\n{HELP}")));
+    let source_os = source.ok_or_else(|| {
+        IngestError::usage("the following required arguments were not provided:\n  <SOURCE>")
+    })?;
+
+    let output_target = match output {
+        Some(o) if o == "-" => OutputTarget::Stdout,
+        Some(o) => OutputTarget::File(PathBuf::from(o)),
+        None => OutputTarget::File(PathBuf::from("digest.txt")),
     };
 
-    let output = if opts.output == "-" {
-        OutputTarget::Stdout
-    } else {
-        OutputTarget::File(PathBuf::from(opts.output))
-    };
+    let resolved_source = parse_os(&source_os)?.with_reference(reference)?;
+    Ok(CliAction::Run(RunConfig::new(
+        resolved_source,
+        output_target,
+        format,
+    )))
+}
 
-    let format = match opts.format {
-        FormatArg::Text => DigestFormat::Text,
-        FormatArg::Xml => DigestFormat::Xml,
-    };
-
-    let source = parse_os(&source_value)?.with_reference(opts.reference)?;
-
-    Ok(CliAction::Run(RunConfig::new(source, output, format)))
+fn parse_format(val: &str) -> Result<DigestFormat, IngestError> {
+    match val {
+        "text" => Ok(DigestFormat::Text),
+        "xml" => Ok(DigestFormat::Xml),
+        _ => Err(IngestError::usage(format!(
+            "invalid value '{val}' for '--format <text|xml>'"
+        ))),
+    }
 }
 
 #[cfg(test)]

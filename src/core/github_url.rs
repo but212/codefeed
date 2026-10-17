@@ -51,33 +51,23 @@ fn push_encoded_segment(url: &mut String, segment: &str) {
 }
 
 #[cfg(test)]
-fn encode_path_segment(segment: &str) -> String {
-    let mut out = String::with_capacity(segment.len());
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    for &b in segment.as_bytes() {
-        if is_unreserved(b) {
-            out.push(b as char);
-        } else {
-            out.push('%');
-            out.push(HEX[(b >> 4) as usize] as char);
-            out.push(HEX[(b & 0xF) as usize] as char);
-        }
-    }
-    out
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
+    fn encode_segment(segment: &str) -> String {
+        let mut out = String::new();
+        push_encoded_segment(&mut out, segment);
+        out.strip_prefix('/').unwrap().to_string()
+    }
+
     #[test]
     fn percent_encodes_url_path_segments() {
-        assert_eq!(encode_path_segment("AZaz09-._~"), "AZaz09-._~");
-        assert_eq!(encode_path_segment("feature/x"), "feature%2Fx");
-        assert_eq!(encode_path_segment("a b"), "a%20b");
-        assert_eq!(encode_path_segment("100%"), "100%25");
-        assert_eq!(encode_path_segment("a#b?c"), "a%23b%3Fc");
-        assert_eq!(encode_path_segment("café"), "caf%C3%A9");
+        assert_eq!(encode_segment("AZaz09-._~"), "AZaz09-._~");
+        assert_eq!(encode_segment("feature/x"), "feature%2Fx");
+        assert_eq!(encode_segment("a b"), "a%20b");
+        assert_eq!(encode_segment("100%"), "100%25");
+        assert_eq!(encode_segment("a#b?c"), "a%23b%3Fc");
+        assert_eq!(encode_segment("café"), "caf%C3%A9");
     }
 
     #[test]

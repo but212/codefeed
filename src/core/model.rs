@@ -24,7 +24,7 @@ impl Source {
             .as_ref()
             .is_some_and(|r| r.trim_ascii().is_empty())
         {
-            return Err(IngestError::InvalidSource("--ref cannot be empty".into()));
+            return Err(IngestError::invalid_source("--ref cannot be empty"));
         }
         match self {
             Self::Github { owner, repo, .. } => Ok(Self::Github {
@@ -34,8 +34,8 @@ impl Source {
             }),
             Self::Local(_) => {
                 if reference.is_some() {
-                    Err(IngestError::InvalidSource(
-                        "--ref is only valid for GitHub sources".into(),
+                    Err(IngestError::invalid_source(
+                        "--ref is only valid for GitHub sources",
                     ))
                 } else {
                     Ok(self)
@@ -153,11 +153,6 @@ impl FileStorage {
         self.spans.len()
     }
 
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.spans.is_empty()
-    }
-
     /// Sorts spans lexicographically by path in-place within the path arena.
     pub fn sort_by_path(&mut self) {
         let path_arena = &self.path_arena;
@@ -206,20 +201,9 @@ impl FileStorage {
         }
     }
 
-    /// Resolves a span by index into a borrowed [`FileRecord`].
-    #[inline]
-    pub fn get_at(&self, index: usize) -> Option<FileRecord<'_>> {
-        self.spans.get(index).map(|&span| self.get(span))
-    }
-
     /// Iterator yielding borrowed [`FileRecord`] views over the arena.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = FileRecord<'_>> {
         self.spans.iter().map(move |&span| self.get(span))
-    }
-    /// Test-only inspector for continuous arena storage.
-    #[cfg(test)]
-    pub(crate) fn arenas(&self) -> (&str, &str) {
-        (&self.path_arena, &self.content_arena)
     }
 }
 
@@ -247,7 +231,6 @@ pub struct CollectionResult {
     pub revision: Option<String>,
     pub files: FileStorage,
     pub skipped: usize,
-    pub trie: crate::core::digest::BudgetTrie,
 }
 
 #[cfg(test)]
@@ -257,14 +240,12 @@ mod tests {
     #[test]
     fn file_storage_maintains_continuous_arena_and_zero_copy_views() {
         let mut storage = FileStorage::new();
-        assert!(storage.is_empty());
         assert_eq!(storage.len(), 0);
 
         let span1 = storage.push("path/to/first.rs", "pub fn first() {}");
         let span2 = storage.push("second.txt", "second content\n");
 
         assert_eq!(storage.len(), 2);
-        assert!(!storage.is_empty());
 
         let rec1 = storage.get(span1);
         assert_eq!(rec1.path, "path/to/first.rs");
@@ -274,17 +255,17 @@ mod tests {
         assert_eq!(rec2.path, "second.txt");
         assert_eq!(rec2.content, "second content\n");
 
-        assert_eq!(storage.get_at(0), Some(rec1));
-        assert_eq!(storage.get_at(1), Some(rec2));
-        assert_eq!(storage.get_at(2), None);
+        let mut iter = storage.iter();
+        assert_eq!(iter.next(), Some(rec1));
+        assert_eq!(iter.next(), Some(rec2));
+        assert_eq!(iter.next(), None);
 
         let collected: Vec<FileRecord<'_>> = storage.iter().collect();
         assert_eq!(collected, vec![rec1, rec2]);
 
         // Arena contents verification
-        let (path_arena, content_arena) = storage.arenas();
-        assert_eq!(path_arena, "path/to/first.rssecond.txt");
-        assert_eq!(content_arena, "pub fn first() {}second content\n");
+        assert_eq!(storage.path_arena, "path/to/first.rssecond.txt");
+        assert_eq!(storage.content_arena, "pub fn first() {}second content\n");
 
         // FromIterator verification
         let reconstructed: FileStorage = collected.into_iter().collect();

@@ -16,8 +16,8 @@ pub(crate) fn parse(value: &str) -> Result<Source, IngestError> {
         return parse_github_url(value);
     }
     if value.starts_with("git@") || value.starts_with("ssh://") {
-        return Err(IngestError::UnsupportedSource(
-            "only local paths and public HTTPS GitHub URLs are supported".into(),
+        return Err(IngestError::unsupported_source(
+            "only local paths and public HTTPS GitHub URLs are supported",
         ));
     }
     Ok(Source::Local(value.into()))
@@ -25,47 +25,47 @@ pub(crate) fn parse(value: &str) -> Result<Source, IngestError> {
 
 fn parse_github_url(value: &str) -> Result<Source, IngestError> {
     let remainder = value.strip_prefix("https://").ok_or_else(|| {
-        IngestError::UnsupportedSource("only https://github.com/{owner}/{repo} is supported".into())
+        IngestError::unsupported_source("only https://github.com/{owner}/{repo} is supported")
     })?;
     let (authority, path) = match remainder.find('/') {
         Some(index) => (&remainder[..index], &remainder[index..]),
         None => (remainder, ""),
     };
     if authority.is_empty() {
-        return Err(IngestError::InvalidSource(value.into()));
+        return Err(IngestError::invalid_source(value));
     }
     let host_port = authority.rsplit('@').next().unwrap_or(authority);
     let host = match host_port.split_once(':') {
         Some((host, port)) => {
             if !port.is_empty() && port.parse::<u16>().is_err() {
-                return Err(IngestError::InvalidSource(value.into()));
+                return Err(IngestError::invalid_source(value));
             }
             host
         }
         None => host_port,
     };
     if !host.eq_ignore_ascii_case("github.com") {
-        return Err(IngestError::UnsupportedSource(
-            "only https://github.com/{owner}/{repo} is supported".into(),
+        return Err(IngestError::unsupported_source(
+            "only https://github.com/{owner}/{repo} is supported",
         ));
     }
     if path.contains('?') || path.contains('#') {
-        return Err(IngestError::InvalidSource(
-            "repository URLs cannot contain a query or fragment".into(),
+        return Err(IngestError::invalid_source(
+            "repository URLs cannot contain a query or fragment",
         ));
     }
 
     let mut parts = path.split('/').filter(|part| !part.is_empty());
     let (Some(owner), Some(repo_segment), None) = (parts.next(), parts.next(), parts.next()) else {
-        return Err(IngestError::InvalidSource(
-            "expected https://github.com/{owner}/{repo}".into(),
+        return Err(IngestError::invalid_source(
+            "expected https://github.com/{owner}/{repo}",
         ));
     };
 
     let repo = repo_segment.strip_suffix(".git").unwrap_or(repo_segment);
     if repo.is_empty() || !valid_github_name(owner) || !valid_github_name(repo) {
-        return Err(IngestError::InvalidSource(
-            "owner and repository names contain invalid characters".into(),
+        return Err(IngestError::invalid_source(
+            "owner and repository names contain invalid characters",
         ));
     }
 

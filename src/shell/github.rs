@@ -1,27 +1,171 @@
-//! GitHub collection orchestration: single-request streaming tarball ingestion.
+//! GitHub collection orchestration: single-request streaming tarball ingestion and HTTP transport.
 
-use std::io::Read;
+use std::io::{BufReader, Read};
+use std::time::Duration;
 
 use flate2::read::GzDecoder;
 use tar::{Archive, EntryType};
+use ureq::Agent;
+use ureq::config::RedirectAuthHeaders;
+use ureq::http::StatusCode;
+use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::core::archive::{parse_pax_comment, strip_archive_root};
-use crate::core::decide::{Item, ItemPath, Probe};
 use crate::core::error::IngestError;
-use crate::core::policy::{MAX_FILE_SIZE, PathClassification};
+use crate::core::github_url::{is_github_api_origin, tarball_url};
+use crate::core::policy::{
+    ARCHIVE_MAX_SECS, MAX_FILE_SIZE, MAX_RETRIES, is_ignored_path, is_retryable_status, retry_delay,
+};
+use crate::core::selector::{CandidateInput, text_str};
 
 use super::orchestrate::{SourceStream, StreamInfo};
+
+const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
+const GITHUB_TIMEOUT_SECS: u64 = 30;
 
 pub(crate) fn collect(
     owner: &str,
     repo: &str,
     reference: Option<&str>,
 ) -> Result<crate::core::model::CollectionResult, IngestError> {
-    let client = super::github_client::GithubClient::new();
+    let client = GithubClient::new();
     let reader = client.tarball_stream(owner, repo, reference)?;
     let mut archive = Archive::new(GzDecoder::new(reader));
     let stream = GithubStream::new(&mut archive, owner, repo, reference)?;
     super::orchestrate::collect_stream(stream)
+}
+
+struct GithubClient {
+    agent: Agent,
+    auth_header: Option<String>,
+}
+
+impl GithubClient {
+    fn new() -> Self {
+        let tls = TlsConfig::builder()
+            .root_certs(RootCerts::PlatformVerifier)
+            .build();
+        let config = Agent::config_builder()
+            .user_agent(GITHUB_USER_AGENT)
+            .redirect_auth_headers(RedirectAuthHeaders::Never)
+            .timeout_recv_response(Some(Duration::from_secs(GITHUB_TIMEOUT_SECS)))
+            .timeout_recv_body(Some(Duration::from_secs(ARCHIVE_MAX_SECS)))
+            .http_status_as_error(false)
+            .tls_config(tls)
+            .build();
+
+        let auth_header = resolve_token_from_env().map(|token| format!("Bearer {token}"));
+
+        Self {
+            agent: Agent::new_with_config(config),
+            auth_header,
+        }
+    }
+
+    fn tarball_stream(
+        &self,
+        owner: &str,
+        repo: &str,
+        reference: Option<&str>,
+    ) -> Result<Box<dyn Read + Send>, IngestError> {
+        let url = tarball_url(owner, repo, reference);
+        self.stream_url(&url)
+    }
+
+    fn stream_url(&self, url: &str) -> Result<Box<dyn Read + Send>, IngestError> {
+        let mut attempt = 0;
+        loop {
+            let mut request = self.agent.get(url);
+
+            if is_github_api_origin(url) {
+                if let Some(auth) = &self.auth_header {
+                    request = request.header("Authorization", auth);
+                }
+                request = request.header("X-Github-Api-Version", "2022-11-28");
+            }
+
+            let retry = |attempt: &mut usize,
+                         reason: &dyn std::fmt::Display|
+             -> std::time::Duration {
+                *attempt += 1;
+                let delay = retry_delay(*attempt - 1);
+                eprintln!(
+                    "warning: {reason} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
+                );
+                std::thread::sleep(delay);
+                delay
+            };
+
+            let response = match request.call() {
+                Ok(resp) => resp,
+                Err(error) => {
+                    if is_retryable_transport_error(&error) && attempt + 1 < MAX_RETRIES {
+                        retry(
+                            &mut attempt,
+                            &format_args!("GitHub transport error: {error}"),
+                        );
+                        continue;
+                    }
+                    return Err(IngestError::http(error.to_string()));
+                }
+            };
+
+            let status = response.status();
+            if is_retryable_status(status.as_u16()) && attempt + 1 < MAX_RETRIES {
+                retry(&mut attempt, &format_args!("GitHub HTTP status {status}"));
+                continue;
+            }
+
+            if !status.is_success() {
+                let mut body_bytes = Vec::new();
+                let _ = response
+                    .into_body()
+                    .into_reader()
+                    .take(4096)
+                    .read_to_end(&mut body_bytes);
+                return Err(api_error(status, &body_bytes));
+            }
+
+            return Ok(Box::new(BufReader::with_capacity(
+                64 * 1024,
+                response.into_body().into_reader(),
+            )));
+        }
+    }
+}
+
+const fn is_retryable_transport_error(error: &ureq::Error) -> bool {
+    matches!(
+        error,
+        ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed
+    )
+}
+
+fn api_error(status: StatusCode, body_bytes: &[u8]) -> IngestError {
+    let detail = String::from_utf8_lossy(body_bytes).replace('\n', " ");
+    if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::FORBIDDEN {
+        IngestError::api(format!(
+            "HTTP {status}: {detail} (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
+        ))
+    } else {
+        IngestError::api(format!("HTTP {status}: {detail}"))
+    }
+}
+
+fn resolve_token_with<F>(mut lookup: F) -> Option<String>
+where
+    F: FnMut(&str) -> Result<String, std::env::VarError>,
+{
+    ["GITHUB_TOKEN", "GH_TOKEN"].into_iter().find_map(|key| {
+        lookup(key)
+            .ok()
+            .map(|t| t.trim_ascii().to_string())
+            .filter(|t| !t.is_empty())
+    })
+}
+
+fn resolve_token_from_env() -> Option<String> {
+    resolve_token_with(|k| std::env::var(k))
 }
 
 pub struct GithubStream<'a, R: Read> {
@@ -29,7 +173,6 @@ pub struct GithubStream<'a, R: Read> {
     reference: Option<String>,
     parsed_revision: Option<String>,
     entries: tar::Entries<'a, GzDecoder<R>>,
-    seen_entries: bool,
 }
 
 impl<'a, R: Read> GithubStream<'a, R> {
@@ -45,7 +188,6 @@ impl<'a, R: Read> GithubStream<'a, R> {
             reference: reference.map(str::to_string),
             parsed_revision: None,
             entries,
-            seen_entries: false,
         })
     }
 }
@@ -53,31 +195,27 @@ impl<'a, R: Read> GithubStream<'a, R> {
 impl<'a, R: Read> SourceStream for GithubStream<'a, R> {
     fn for_each_item<F>(mut self, mut callback: F) -> Result<StreamInfo, IngestError>
     where
-        F: FnMut(Item<'_>) -> Result<(), IngestError>,
+        F: FnMut(CandidateInput<'_>) -> Result<(), IngestError>,
     {
-        let mut scratch = Vec::with_capacity(32 * 1024);
+        let mut path_scratch = String::with_capacity(256);
+        let mut content_scratch = Vec::with_capacity(32 * 1024);
         for entry_res in self.entries.by_ref() {
             let mut entry = match entry_res {
                 Ok(e) => e,
                 Err(err) => return Err(IngestError::Io(err)),
             };
-            scratch.clear();
-            match probe_tar_entry(&mut entry, &mut scratch)? {
+            path_scratch.clear();
+            content_scratch.clear();
+            match probe_tar_entry(&mut entry, &mut path_scratch, &mut content_scratch)? {
                 ArchiveEntryOutcome::PaxHeader(sha) => {
-                    if self.seen_entries {
-                        return Err(IngestError::InvalidMetadata(
-                            "pax header after archive entries".into(),
-                        ));
+                    if self.parsed_revision.is_none() {
+                        self.parsed_revision = Some(sha);
                     }
-                    self.parsed_revision = Some(sha);
                 }
-                ArchiveEntryOutcome::Item(item) => {
-                    self.seen_entries = true;
-                    callback(item)?;
+                ArchiveEntryOutcome::Candidate(candidate) => {
+                    callback(candidate)?;
                 }
-                ArchiveEntryOutcome::Ignored => {
-                    self.seen_entries = true;
-                }
+                ArchiveEntryOutcome::Ignored => {}
             }
         }
         Ok(StreamInfo {
@@ -89,13 +227,14 @@ impl<'a, R: Read> SourceStream for GithubStream<'a, R> {
 
 enum ArchiveEntryOutcome<'a> {
     PaxHeader(String),
-    Item(Item<'a>),
+    Candidate(CandidateInput<'a>),
     Ignored,
 }
 
 fn probe_tar_entry<'a, R: Read>(
     entry: &mut tar::Entry<R>,
-    scratch: &'a mut Vec<u8>,
+    path_scratch: &'a mut String,
+    content_scratch: &'a mut Vec<u8>,
 ) -> Result<ArchiveEntryOutcome<'a>, IngestError> {
     let entry_type = entry.header().entry_type();
 
@@ -103,9 +242,9 @@ fn probe_tar_entry<'a, R: Read>(
     if entry_type == EntryType::XGlobalHeader {
         entry
             .take(1024)
-            .read_to_end(scratch)
+            .read_to_end(content_scratch)
             .map_err(IngestError::Io)?;
-        if let Some(sha) = parse_pax_comment(scratch) {
+        if let Some(sha) = parse_pax_comment(content_scratch) {
             return Ok(ArchiveEntryOutcome::PaxHeader(sha));
         }
         return Ok(ArchiveEntryOutcome::Ignored);
@@ -123,60 +262,46 @@ fn probe_tar_entry<'a, R: Read>(
         return Ok(ArchiveEntryOutcome::Ignored);
     };
 
-    if rel_bytes.is_empty()
-        || rel_bytes.starts_with(b".")
-        || rel_bytes.windows(2).any(|w| w == b"/.")
-    {
-        return Ok(ArchiveEntryOutcome::Ignored);
-    }
-
-    let Some(rel_str) = crate::core::decide::text_str(rel_bytes) else {
-        return Ok(ArchiveEntryOutcome::Item(Item {
-            path: ItemPath::NonUtf8,
-            probe: Probe::Missing,
+    let Some(rel_str) = text_str(rel_bytes) else {
+        if crate::core::policy::is_hidden_bytes(rel_bytes) {
+            return Ok(ArchiveEntryOutcome::Ignored);
+        }
+        return Ok(ArchiveEntryOutcome::Candidate(CandidateInput::Skipped {
+            path: None,
         }));
     };
 
-    // 4. Conventional filtering (noise, sensitive, hidden) before heap allocation
-    let classification = PathClassification::classify(rel_str);
-    if classification == PathClassification::Ignored {
+    // 4. Conventional filtering (noise, sensitive, hidden)
+    if is_ignored_path(rel_str) {
         return Ok(ArchiveEntryOutcome::Ignored);
     }
 
-    let rel_path = std::borrow::Cow::Owned(rel_str.to_owned());
+    path_scratch.push_str(rel_str);
+    let rel_path = path_scratch.as_str();
 
-    // 5. Known binary extension pre-filter (avoid body read)
-    if classification == PathClassification::PreclassifiedBinary {
-        return Ok(ArchiveEntryOutcome::Item(Item {
-            path: ItemPath::Utf8(rel_path),
-            probe: Probe::Missing,
-        }));
-    }
-
-    // 6. Content reading with MAX_FILE_SIZE limit
+    // 5. Content reading with MAX_FILE_SIZE limit
     let header_size = entry.header().size().unwrap_or(0);
     if header_size > MAX_FILE_SIZE {
-        return Ok(ArchiveEntryOutcome::Item(Item {
-            path: ItemPath::Utf8(rel_path),
-            probe: Probe::TooLarge,
+        return Ok(ArchiveEntryOutcome::Candidate(CandidateInput::TooLarge {
+            path: rel_path,
         }));
     }
 
     entry
         .take(MAX_FILE_SIZE.saturating_add(1))
-        .read_to_end(scratch)
+        .read_to_end(content_scratch)
         .map_err(IngestError::Io)?;
 
-    let probe = if scratch.len() as u64 > MAX_FILE_SIZE {
-        Probe::TooLarge
+    let candidate = if content_scratch.len() as u64 > MAX_FILE_SIZE {
+        CandidateInput::TooLarge { path: rel_path }
     } else {
-        Probe::Bytes(std::borrow::Cow::Borrowed(scratch.as_slice()))
+        CandidateInput::File {
+            path: rel_path,
+            bytes: content_scratch.as_slice(),
+        }
     };
 
-    Ok(ArchiveEntryOutcome::Item(Item {
-        path: ItemPath::Utf8(rel_path),
-        probe,
-    }))
+    Ok(ArchiveEntryOutcome::Candidate(candidate))
 }
 
 #[cfg(test)]
@@ -184,7 +309,248 @@ mod tests {
     use super::*;
     use flate2::Compression;
     use flate2::write::GzEncoder;
+    use std::collections::HashMap;
+    use std::env::VarError;
     use tar::Builder;
+
+    #[test]
+    fn resolves_token_with_correct_precedence_and_trimming() {
+        let mock_env = |map: HashMap<&'static str, &'static str>| {
+            move |key: &str| {
+                map.get(key)
+                    .copied()
+                    .map(String::from)
+                    .ok_or(VarError::NotPresent)
+            }
+        };
+
+        let env = HashMap::from([("GITHUB_TOKEN", "token_a"), ("GH_TOKEN", "token_b")]);
+        assert_eq!(resolve_token_with(mock_env(env)), Some("token_a".into()));
+
+        let env = HashMap::from([("GH_TOKEN", "token_b")]);
+        assert_eq!(resolve_token_with(mock_env(env)), Some("token_b".into()));
+
+        let env = HashMap::from([("GITHUB_TOKEN", "   "), ("GH_TOKEN", "valid_token")]);
+        assert_eq!(
+            resolve_token_with(mock_env(env)),
+            Some("valid_token".into())
+        );
+
+        let env = HashMap::from([("GITHUB_TOKEN", "")]);
+        assert_eq!(resolve_token_with(mock_env(env)), None);
+
+        let env = HashMap::new();
+        assert_eq!(resolve_token_with(mock_env(env)), None);
+    }
+
+    #[test]
+    fn api_error_suggests_token_on_rate_limit_and_forbidden() {
+        let err_429 = api_error(StatusCode::TOO_MANY_REQUESTS, b"rate limit");
+        assert!(err_429.to_string().contains("GITHUB_TOKEN"));
+
+        let err_403 = api_error(StatusCode::FORBIDDEN, b"forbidden");
+        assert!(err_403.to_string().contains("GITHUB_TOKEN"));
+
+        let err_404 = api_error(StatusCode::NOT_FOUND, b"not found");
+        assert!(!err_404.to_string().contains("GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn retries_on_server_error_and_succeeds() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept 1");
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nerror";
+            let _ = stream.write_all(response.as_bytes());
+
+            let (mut stream, _) = listener.accept().expect("accept 2");
+            let _ = stream.read(&mut buf);
+            let response =
+                "HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess";
+            let _ = stream.write_all(response.as_bytes());
+        });
+
+        let client = GithubClient::new();
+        let url = format!("http://127.0.0.1:{port}/test");
+        let mut reader = client
+            .stream_url(&url)
+            .expect("stream_url should succeed on retry");
+        let mut body = String::new();
+        reader.read_to_string(&mut body).expect("read body");
+        assert_eq!(body, "success");
+
+        handle.join().expect("server thread finish");
+    }
+
+    #[test]
+    fn does_not_retry_on_client_error() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept 1");
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let response =
+                "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found";
+            let _ = stream.write_all(response.as_bytes());
+        });
+
+        let client = GithubClient::new();
+        let url = format!("http://127.0.0.1:{port}/test");
+        let Err(err) = client.stream_url(&url) else {
+            panic!("expected error");
+        };
+        assert!(err.to_string().contains("404"));
+
+        handle.join().expect("server thread finish");
+    }
+
+    #[test]
+    fn retries_up_to_max_budget_and_returns_final_error() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let port = listener.local_addr().expect("local addr").port();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+
+        let handle = thread::spawn(move || {
+            for _ in 0..MAX_RETRIES {
+                let (mut stream, _) = listener.accept().expect("accept");
+                attempts_clone.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let response = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 11\r\nConnection: close\r\n\r\nunavailable";
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+
+        let client = GithubClient::new();
+        let url = format!("http://127.0.0.1:{port}/test");
+        let Err(err) = client.stream_url(&url) else {
+            panic!("expected error");
+        };
+        assert!(err.to_string().contains("503"));
+
+        handle.join().expect("server thread finish");
+        assert_eq!(attempts.load(Ordering::SeqCst), MAX_RETRIES);
+    }
+
+    #[test]
+    fn does_not_retry_non_transient_transport_error() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+
+        assert!(is_retryable_transport_error(&ureq::Error::Timeout(
+            ureq::Timeout::Global
+        )));
+        assert!(is_retryable_transport_error(&ureq::Error::ConnectionFailed));
+        assert!(is_retryable_transport_error(&ureq::Error::Io(
+            std::io::Error::from(std::io::ErrorKind::ConnectionReset)
+        )));
+        assert!(!is_retryable_transport_error(&ureq::Error::HostNotFound));
+        assert!(!is_retryable_transport_error(&ureq::Error::Tls(
+            "cert error"
+        )));
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let port = listener.local_addr().expect("local addr").port();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept 1");
+            attempts_clone.fetch_add(1, Ordering::SeqCst);
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(b"NOT_HTTP/1.1\r\n\r\n");
+        });
+
+        let client = GithubClient::new();
+        let url = format!("http://127.0.0.1:{port}/test");
+        assert!(client.stream_url(&url).is_err());
+
+        handle.join().expect("server thread finish");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn user_agent_matches_cargo_package_version() {
+        assert_eq!(
+            GITHUB_USER_AGENT,
+            concat!("codefeed/", env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[test]
+    fn strips_authorization_header_on_redirect() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept 1");
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).expect("read 1");
+            let req1 = String::from_utf8_lossy(&buf[..n]);
+            assert!(
+                req1.to_ascii_lowercase()
+                    .contains("authorization: bearer test-token"),
+                "first request must contain authorization header: {req1}"
+            );
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/dest\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(response.as_bytes());
+
+            let (mut stream, _) = listener.accept().expect("accept 2");
+            let mut buf = [0u8; 2048];
+            let n = stream.read(&mut buf).expect("read 2");
+            let req2 = String::from_utf8_lossy(&buf[..n]);
+            assert!(
+                !req2.to_ascii_lowercase().contains("authorization"),
+                "redirected request must not contain authorization header: {req2}"
+            );
+            let response =
+                "HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess";
+            let _ = stream.write_all(response.as_bytes());
+        });
+
+        let client = GithubClient::new();
+        let url = format!("http://127.0.0.1:{port}/start");
+        let resp = client
+            .agent
+            .get(&url)
+            .header("Authorization", "Bearer test-token")
+            .call()
+            .expect("call should follow redirect and succeed");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        handle.join().expect("server thread finish");
+    }
 
     fn create_mock_tarball(entries: &[(&str, &[u8], EntryType)]) -> Vec<u8> {
         let mut gz = GzEncoder::new(Vec::new(), Compression::default());
@@ -216,7 +582,11 @@ mod tests {
             ),
             ("repo-root/src/main.rs", b"fn main() {}", EntryType::Regular),
             ("repo-root/Cargo.lock", b"lockfile", EntryType::Regular),
-            ("repo-root/image.png", b"binary-data", EntryType::Regular),
+            (
+                "repo-root/image.png",
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
+                EntryType::Regular,
+            ),
         ]);
 
         let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
@@ -235,7 +605,7 @@ mod tests {
         assert_eq!(paths, vec!["Cargo.toml", "src/main.rs"]);
 
         // Cargo.lock is ignored (neither candidate nor skipped)
-        // image.png is binary (preclassified missing -> skipped = 1)
+        // image.png is binary (contains NUL byte -> skipped = 1)
         assert_eq!(result.skipped, 1);
     }
 
@@ -257,7 +627,7 @@ mod tests {
             crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
 
         assert_eq!(result.files.len(), 1);
-        assert_eq!(result.files.get_at(0).unwrap().path, "small.txt");
+        assert_eq!(result.files.iter().next().unwrap().path, "small.txt");
         assert_eq!(result.skipped, 1);
     }
 
@@ -276,8 +646,9 @@ mod tests {
             crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
 
         assert_eq!(result.files.len(), 1);
-        assert_eq!(result.files.get_at(0).unwrap().path, "pax_global_header");
-        assert_eq!(result.files.get_at(0).unwrap().content, "hello content");
+        let first = result.files.iter().next().unwrap();
+        assert_eq!(first.path, "pax_global_header");
+        assert_eq!(first.content, "hello content");
         assert_eq!(result.revision, None);
     }
 
@@ -349,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_out_of_order_pax_header() {
+    fn accepts_pax_header_after_archive_entries() {
         let pax_comment = b"52 comment=c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n";
         let mock_data = create_mock_tarball(&[
             ("repo-root/file.txt", b"content", EntryType::Regular),
@@ -359,30 +730,13 @@ mod tests {
         let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
         let stream =
             GithubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
-        let result = crate::shell::orchestrate::collect_stream(stream);
+        let result =
+            crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
 
-        assert!(matches!(
-            result,
-            Err(IngestError::InvalidMetadata(msg)) if msg.contains("pax header after archive entries")
-        ));
-    }
-
-    #[test]
-    fn test_tar_entry_rejects_trailing_pax_after_ignored_entry() {
-        let pax_comment = b"52 comment=c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n";
-        let mock_data = create_mock_tarball(&[
-            ("repo-root/Cargo.lock", b"lockfile", EntryType::Regular),
-            ("pax_global_header", pax_comment, EntryType::XGlobalHeader),
-        ]);
-
-        let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
-        let stream =
-            GithubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
-        let result = crate::shell::orchestrate::collect_stream(stream);
-
-        assert!(matches!(
-            result,
-            Err(IngestError::InvalidMetadata(msg)) if msg.contains("pax header after archive entries")
-        ));
+        assert_eq!(
+            result.revision.as_deref(),
+            Some("c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950")
+        );
+        assert_eq!(result.files.len(), 1);
     }
 }

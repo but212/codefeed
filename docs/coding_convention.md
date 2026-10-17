@@ -11,7 +11,7 @@ Project-wide coding standards and API design principles for `codefeed`. Combines
 | Item | Convention | Example |
 | :--- | :--- | :--- |
 | Crates | `snake_case` (prefer single word) | `codefeed` |
-| Modules, files | `snake_case` | `local_io`, `candidate_budget` |
+| Modules, files | `snake_case` | `github_url`, `orchestrate` |
 | Types, traits, enums, variants | `UpperCamelCase` | `FileRecord`, `Option::Some` |
 | Functions, methods, variables | `snake_case` | `render_text`, `path_arena` |
 | Static items, constants | `SCREAMING_SNAKE_CASE` | `MAX_FILE_COUNT`, `MAX_OUTPUT_SIZE` |
@@ -22,7 +22,7 @@ Project-wide coding standards and API design principles for `codefeed`. Combines
 ### Fine Points from RFC 430
 
 - **Acronyms and Initialisms:**
-  - In `UpperCamelCase`, acronyms and compound brand names count as a single word (e.g., `Uuid`, `HttpServer`, `XmlChunks`, `GithubClient`, `Source::Github` — never `UUID`, `HTTPServer`, `XMLChunks`, `GitHubClient`, `Source::GitHub`).
+  - In `UpperCamelCase`, acronyms and compound brand names count as a single word (e.g., `Uuid`, `HttpServer`, `GithubClient`, `Source::Github` — never `UUID`, `HTTPServer`, `GitHubClient`, `Source::GitHub`).
   - In `snake_case`, acronyms are completely lowercased (e.g., `is_xid_start`, `sha`).
 - **Single-Letter Words:**
   - In `snake_case` or `SCREAMING_SNAKE_CASE`, a word should never consist of a single letter unless it is the final word (e.g., `btree_map` over `b_tree_map`, but `PI_2` over `PI2`).
@@ -57,7 +57,7 @@ Project-wide coding standards and API design principles for `codefeed`. Combines
 - **Standard Abbreviations:**
   - Keep standard domain abbreviations concise: `id`, `url`, `len`, `src`, `dst`, `err`.
   - Prefer established Rust naming idioms (`len()` over `length()`, `iter()` over `iterator()`).
-  - Do not abbreviate domain terms outside the established list; write them out in full (e.g., `extension` / `extensions` over `ext`, such as `SENSITIVE_EXTENSIONS`, `BINARY_EXTENSIONS`, `is_binary_extension`).
+  - Do not abbreviate domain terms outside the established list; write them out in full (e.g., `extension` / `extensions` over `ext`, such as `SENSITIVE_EXTENSIONS`).
 
 - **Brevity vs. Explicitness:**
   - **No Cryptic Truncation:** Never truncate identifiers to the point of losing domain semantics (e.g., avoid `chk_vld_pt()`, `cnt_buf`; use `is_valid_path()`, `buffer_count`). Reserve abbreviations strictly for standard, established domain terms.
@@ -91,13 +91,12 @@ Codebase is strictly partitioned into pure logic and effectful shell:
 
 - **Purity:** Pure deterministic logic only.
 - **Forbidden:** No `std::fs`, `std::net`, `std::env`, `std::time::SystemTime`, `eprintln!`, or `crate::shell` imports.
-- **Determinism:** Pass timestamps, entropy, and configurations explicitly as values (e.g., `retry_delay(attempt, entropy)`).
+- **Determinism:** Pass parameters explicitly as deterministic values (e.g., `retry_delay(attempt)`).
 
 ### `src/shell/` (Imperative Shell)
 
 - **Side Effects:** All I/O, network calls, filesystem operations, and process interactions live here.
-- **Delegation:** Collect external inputs, map them into domain types (`Item`, `Probe`), and delegate computation/decisions directly to `src/core/`.
-- **Clock & Entropy:** Use `crate::shell::current_epoch_nanos()` for wall time and entropy generation.
+- **Delegation:** Collect external inputs, map them into domain types (`CandidateInput`), and delegate computation/decisions directly to `src/core/`.
 
 ---
 
@@ -105,8 +104,8 @@ Codebase is strictly partitioned into pure logic and effectful shell:
 
 Minimize memory footprints, eliminate allocations in loops, and keep dependencies minimal:
 
-- **Arena Storage:** Store file paths and contents in continuous `FileStorage` arenas (`path_arena`, `content_arena`) indexed by `FileSpan`. Iterate via zero-copy `FileRecord<'a>`. Never allocate per-file `String` or `Vec<u8>`.
-- **Flat Data Structures:** Maintain flat index structures like `BudgetTrie` (`Vec<BudgetTrieNode>`, `u32` indices) and `CandidateBudget` (`dir_runs` RLE). Avoid pointer-indirected trees and `HashMap` lookups on hot paths.
+- **Arena Storage:** Store file paths and contents in contiguous `FileStorage` arenas (`path_arena`, `content_arena`) indexed by 16-byte `FileSpan`. Iterate via zero-copy `FileRecord<'a>`. Enables in-place lexicographical sorting by swapping offsets without moving string data.
+- **Direct Data Structures:** Use direct, standard data structures (`Vec`, `HashMap`). Avoid speculative layout packing, premature micro-tuning, or pointer-indirected trees; prioritize structural simplicity.
 - **Zero-Copy Streaming:** Stream render output directly to `impl Write + ?Sized` using `Cow<'_, str>` or streaming chunks. Avoid staging full output in memory.
 - **Std-First Dependencies:** Default to `std`. Introduce external crates only when in-tree maintenance introduces disproportionate complexity or security risk (e.g., `.gitignore` parsing via `ignore`, HTTP via `ureq`). Document crate rationale inline in `Cargo.toml`.
 
@@ -136,7 +135,6 @@ Enforce defense-in-depth across filesystem and network interactions:
   - Lint: `cargo clippy --all-targets -- -D warnings`
   - Format: `cargo fmt --check`
   - Tests: `cargo test`
-  - Benchmarks: `cargo bench` (verify no regressions on `trie`, `render`, `xml`, `token`, `selector`, `local`)
 - **Table-Driven Fixtures:** Prefer slice fixtures (`let cases = [...]`) over repetitive individual test functions.
 - **In-Memory Limits:** Test file count and byte limit boundaries (`MAX_FILE_COUNT`, `MAX_OUTPUT_SIZE`) via in-memory data structures (`Selector`, `CandidateBudget`) rather than physical disk loops.
 - **Isolated I/O Tests:** Guard all filesystem-touching tests with `crate::shell::temp_dir` (`TempDirGuard`).
