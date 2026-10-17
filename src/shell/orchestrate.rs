@@ -5,27 +5,45 @@ use crate::core::model::{CollectionResult, IngestReport, RunConfig, Source};
 use crate::core::selector::{CandidateInput, Selector};
 use crate::shell;
 
+/// Identification metadata yielded by a completed source stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StreamInfo {
-    pub label: String,
-    pub revision: Option<String>,
+pub(crate) struct StreamInfo {
+    /// Display label for the repository or directory root.
+    pub(crate) label: String,
+    /// Optional commit hash or version tag.
+    pub(crate) revision: Option<String>,
 }
 
-pub trait SourceStream {
+/// Abstraction for streaming source items into the pure selector.
+pub(crate) trait SourceStream {
+    /// Returns lower and optional upper bounds on the number of candidate items.
     fn size_hint(&self) -> (usize, Option<usize>) {
         (0, None)
     }
+
+    /// Iterates over all candidate items, passing each to the callback closure.
     fn for_each_item<F>(self, callback: F) -> Result<StreamInfo, IngestError>
     where
         F: FnMut(CandidateInput<'_>) -> Result<(), IngestError>;
 }
 
-pub fn collect_stream<S: SourceStream>(stream: S) -> Result<CollectionResult, IngestError> {
+/// Consumes a [`SourceStream`] into a [`Selector`] and returns the accumulated [`CollectionResult`].
+pub(crate) fn collect_stream<S: SourceStream>(stream: S) -> Result<CollectionResult, IngestError> {
     let mut selector = Selector::from_size_hint(stream.size_hint());
     let info = stream.for_each_item(|item| selector.feed(item))?;
     Ok(selector.finish(info.label, info.revision))
 }
 
+/// Executes the end-to-end repository ingestion pipeline.
+///
+/// Dispatches collection across local filesystem or GitHub remote sources, renders
+/// the digest into the target format (plain text or XML), and atomically emits the
+/// result to standard output or a destination file.
+///
+/// # Errors
+///
+/// Returns [`IngestError`] if input sources are invalid, candidate budgets or output size
+/// limits are exceeded, filesystem operations fail, or network requests error.
 pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
     let resolved_output = shell::output::resolve_output_target(&config.output)?;
 

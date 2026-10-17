@@ -9,7 +9,7 @@ use crate::core::policy::{MAX_FILE_COUNT, MAX_OUTPUT_SIZE};
 /// Candidate input observed by the imperative shell. Non-UTF-8 paths or unreadable
 /// items are represented as `Skipped` and still counted against the file budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CandidateInput<'a> {
+pub(crate) enum CandidateInput<'a> {
     /// Bounded content bytes successfully acquired from the source.
     File { path: &'a str, bytes: &'a [u8] },
     /// Item exceeded the per-file size limit.
@@ -19,8 +19,9 @@ pub enum CandidateInput<'a> {
 }
 
 impl<'a> CandidateInput<'a> {
+    /// Returns the optional path of the candidate input.
     #[inline]
-    pub const fn path(&self) -> Option<&'a str> {
+    pub(crate) const fn path(&self) -> Option<&'a str> {
         match self {
             Self::File { path, .. } | Self::TooLarge { path } => Some(*path),
             Self::Skipped { path } => *path,
@@ -30,7 +31,7 @@ impl<'a> CandidateInput<'a> {
 
 /// UTF-8 text predicate: NUL-free bytes only.
 #[inline]
-pub fn text_str(bytes: &[u8]) -> Option<&str> {
+pub(crate) fn text_str(bytes: &[u8]) -> Option<&str> {
     if bytes.contains(&0) {
         return None;
     }
@@ -39,20 +40,22 @@ pub fn text_str(bytes: &[u8]) -> Option<&str> {
 
 /// Candidate-count budget owned by the selector that consumes it.
 #[derive(Default, Debug)]
-pub struct CandidateBudget {
+pub(crate) struct CandidateBudget {
     count: usize,
     dir_counts: HashMap<String, usize>,
 }
 
 impl CandidateBudget {
-    pub fn with_capacity(capacity: usize) -> Self {
+    /// Creates a new `CandidateBudget` pre-allocating hash map capacity for directory buckets.
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
             count: 0,
             dir_counts: HashMap::with_capacity(capacity),
         }
     }
 
-    pub fn check_limit<'a, I>(paths: I) -> Result<(), IngestError>
+    /// Validates an iterator of path candidates against the global file count limit.
+    pub(crate) fn check_limit<'a, I>(paths: I) -> Result<(), IngestError>
     where
         I: IntoIterator<Item = Option<&'a str>>,
     {
@@ -64,7 +67,8 @@ impl CandidateBudget {
         iter.try_for_each(|path| budget.add(path))
     }
 
-    pub fn add(&mut self, path: Option<&str>) -> Result<(), IngestError> {
+    /// Adds a single observed candidate path to the budget accounting.
+    pub(crate) fn add(&mut self, path: Option<&str>) -> Result<(), IngestError> {
         self.count = self.count.checked_add(1).ok_or_else(file_count_overflow)?;
         let dir = extract_dir_slice(path);
         if let Some(count) = self.dir_counts.get_mut(dir) {
@@ -110,7 +114,7 @@ fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String,
 
 /// Pure per-item selection and budget accounting. Owns no I/O; the shell feeds
 /// observations and reads the outcome through [`Selector::finish`].
-pub struct Selector {
+pub(crate) struct Selector {
     storage: FileStorage,
     candidates: CandidateBudget,
     content_bytes: u64,
@@ -118,11 +122,13 @@ pub struct Selector {
 }
 
 impl Selector {
-    pub fn new() -> Self {
+    /// Creates a default `Selector` with initial arena preallocations.
+    pub(crate) fn new() -> Self {
         Self::with_capacity(512, 16 * 1024, 256 * 1024)
     }
 
-    pub fn with_capacity(spans_cap: usize, path_bytes: usize, content_bytes: usize) -> Self {
+    /// Creates a `Selector` with explicitly specified arena and directory budget capacities.
+    pub(crate) fn with_capacity(spans_cap: usize, path_bytes: usize, content_bytes: usize) -> Self {
         let dir_runs_cap = (spans_cap / 16).clamp(16, 256);
         Self {
             storage: FileStorage::with_capacity(spans_cap, path_bytes, content_bytes),
@@ -132,7 +138,8 @@ impl Selector {
         }
     }
 
-    pub fn from_size_hint(hint: (usize, Option<usize>)) -> Self {
+    /// Creates a `Selector` sizing arena capacities based on a source stream size hint.
+    pub(crate) fn from_size_hint(hint: (usize, Option<usize>)) -> Self {
         let estimated = hint.1.unwrap_or(hint.0);
         if estimated == 0 {
             Self::new()
@@ -145,7 +152,13 @@ impl Selector {
         }
     }
 
-    pub fn feed(&mut self, input: CandidateInput<'_>) -> Result<(), IngestError> {
+    /// Evaluates a candidate input against budget and output limits, accumulating accepted files.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IngestError::CandidateLimitExceeded`] if file count overflows, or
+    /// [`IngestError::OutputTooLarge`] if output size exceeds the policy limit.
+    pub(crate) fn feed(&mut self, input: CandidateInput<'_>) -> Result<(), IngestError> {
         self.candidates.add(input.path())?;
         match input {
             CandidateInput::File { path, bytes } => {
@@ -181,7 +194,8 @@ impl Selector {
         ))
     }
 
-    pub fn finish(mut self, label: String, revision: Option<String>) -> CollectionResult {
+    /// Finalizes selection, sorting files lexicographically in-place, and returns a [`CollectionResult`].
+    pub(crate) fn finish(mut self, label: String, revision: Option<String>) -> CollectionResult {
         self.storage.sort_by_path();
         CollectionResult {
             label,

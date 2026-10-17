@@ -11,7 +11,14 @@ const TREE_LAST: &str = "└── ";
 const TREE_VERT: &str = "│   ";
 const TREE_SPACE: &str = "    ";
 
-pub fn render_tree<W: Write + ?Sized, F>(
+/// Renders an ASCII tree representation of the provided sorted paths to the writer.
+///
+/// Uses `format_name` to escape or transform individual path components per format specification.
+///
+/// # Errors
+///
+/// Returns an [`std::io::Error`] if writing to `writer` fails.
+pub(crate) fn render_tree<W: Write + ?Sized, F>(
     writer: &mut W,
     paths: &[&str],
     format_name: F,

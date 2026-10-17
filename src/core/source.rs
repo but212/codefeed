@@ -1,9 +1,12 @@
+//! Source parsing: identifies local directory paths versus GitHub HTTPS repository URLs.
+
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use crate::core::error::IngestError;
 use crate::core::model::Source;
 
+/// Parses an OS-native string argument into a [`Source`].
 pub(crate) fn parse_os(value: &OsStr) -> Result<Source, IngestError> {
     match value.to_str() {
         Some(value) => parse(value),
@@ -11,6 +14,12 @@ pub(crate) fn parse_os(value: &OsStr) -> Result<Source, IngestError> {
     }
 }
 
+/// Parses a string slice into either a [`Source::Local`] or [`Source::Github`].
+///
+/// # Errors
+///
+/// Returns [`IngestError::UnsupportedSource`] if given an unsupported protocol
+/// (such as SSH) or [`IngestError::InvalidSource`] if the GitHub URL is malformed.
 pub(crate) fn parse(value: &str) -> Result<Source, IngestError> {
     if value.starts_with("http://") || value.starts_with("https://") {
         return parse_github_url(value);

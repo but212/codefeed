@@ -11,7 +11,8 @@ use crate::core::error::IngestError;
 use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE};
 use crate::core::selector::{CandidateBudget, CandidateInput};
 
-pub struct LocalStream {
+/// Source stream walking and reading a local filesystem directory.
+pub(crate) struct LocalStream {
     label: String,
     root: PathBuf,
     work_path: PathBuf,
@@ -26,6 +27,7 @@ impl std::fmt::Debug for LocalStream {
     }
 }
 
+/// Collects files from a local directory root, excluding the resolved output file if located inside it.
 pub(crate) fn collect(
     root: &Path,
     resolved_output: Option<&Path>,
@@ -35,7 +37,8 @@ pub(crate) fn collect(
 }
 
 impl LocalStream {
-    pub fn new(root: &Path, resolved_output: Option<&Path>) -> Result<Self, IngestError> {
+    /// Validates the root directory and discovers candidates up to the budget limit.
+    pub(crate) fn new(root: &Path, resolved_output: Option<&Path>) -> Result<Self, IngestError> {
         let canonical_root = validate_root(root)?;
         let label = local_label(&canonical_root);
         let candidates = walk_candidates(&canonical_root, resolved_output)?;

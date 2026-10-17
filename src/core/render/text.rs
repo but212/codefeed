@@ -33,11 +33,12 @@ const fn header_escape_str(b: u8) -> &'static str {
 }
 
 #[inline(always)]
-pub(crate) fn first_header_escape_index(bytes: &[u8]) -> Option<usize> {
+fn first_header_escape_index(bytes: &[u8]) -> Option<usize> {
     bytes.iter().position(|&b| needs_header_escape(b))
 }
 
-pub fn escape_header(value: &str) -> Cow<'_, str> {
+/// Escapes backslashes, carriage returns, and newlines in metadata header strings.
+pub(crate) fn escape_header(value: &str) -> Cow<'_, str> {
     let bytes = value.as_bytes();
     let Some(first) = first_header_escape_index(bytes) else {
         return Cow::Borrowed(value);

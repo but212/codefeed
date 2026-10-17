@@ -20,7 +20,7 @@ use crate::core::policy::MAX_OUTPUT_SIZE;
 /// Multibyte UTF-8 sequences (such as CJK characters, which consume 3 bytes each)
 /// are underestimated by this formula.
 #[inline]
-pub fn estimate_tokens(bytes: u64) -> usize {
+pub(crate) fn estimate_tokens(bytes: u64) -> usize {
     if bytes == 0 {
         0
     } else {
@@ -91,7 +91,15 @@ fn output_limit_io_error() -> std::io::Error {
     std::io::Error::other("output size limit exceeded")
 }
 
-pub fn render_to_writer<W: Write + ?Sized>(
+/// Renders a collection to the given writer according to the chosen digest format.
+///
+/// Binds output generation to [`MAX_OUTPUT_SIZE`] and calculates the estimated token count.
+///
+/// # Errors
+///
+/// Returns [`IngestError::OutputTooLarge`] if output exceeds the maximum size limit,
+/// or [`IngestError::Io`] if writing fails.
+pub(crate) fn render_to_writer<W: Write + ?Sized>(
     writer: &mut W,
     collection: &CollectionResult,
     format: DigestFormat,

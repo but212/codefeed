@@ -37,11 +37,11 @@ fn xml_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     }
 }
 
-pub(crate) fn first_special_index(bytes: &[u8]) -> Option<usize> {
+fn first_special_index(bytes: &[u8]) -> Option<usize> {
     (0..bytes.len()).find(|&i| xml_special_at(bytes, i).is_some())
 }
 
-pub fn xml_escape(value: &str) -> Cow<'_, str> {
+fn xml_escape(value: &str) -> Cow<'_, str> {
     let bytes = value.as_bytes();
     let Some(first) = first_special_index(bytes) else {
         return Cow::Borrowed(value);
@@ -65,7 +65,7 @@ pub fn xml_escape(value: &str) -> Cow<'_, str> {
     Cow::Owned(result)
 }
 
-pub fn write_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
+fn write_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
     let bytes = value.as_bytes();
     let Some(first) = first_special_index(bytes) else {
         return writer.write_all(bytes);

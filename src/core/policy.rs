@@ -1,16 +1,16 @@
 //! Single source of truth for ingestion policies, limits, and conventions.
 
 /// Maximum individual file size accepted (1 MiB in bytes). Larger files are skipped.
-pub const MAX_FILE_SIZE: u64 = 1024 * 1024;
+pub(crate) const MAX_FILE_SIZE: u64 = 1024 * 1024;
 /// Maximum rendered digest size (20 MiB in bytes). Overflows return [`IngestError::OutputTooLarge`](crate::core::error::IngestError::OutputTooLarge).
-pub const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
+pub(crate) const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
 /// Maximum candidate files evaluated before candidate budget overflows (10,000 files).
-pub const MAX_FILE_COUNT: usize = 10_000;
+pub(crate) const MAX_FILE_COUNT: usize = 10_000;
 /// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
-pub const ARCHIVE_MAX_SECS: u64 = 300;
+pub(crate) const ARCHIVE_MAX_SECS: u64 = 300;
 
 /// Conventional lockfiles excluded before candidate budget accounting.
-pub const NOISE: &[&str] = &[
+const NOISE: &[&str] = &[
     "Cargo.lock",
     "package-lock.json",
     "yarn.lock",
@@ -22,15 +22,16 @@ pub const NOISE: &[&str] = &[
 ///
 /// Note: `credentials` is matched as an extension here (`*.credentials`, e.g., `aws.credentials`),
 /// and is also matched as a filename prefix in [`is_sensitive_file`] (`credentials*`, e.g., `credentials.json`).
-pub const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "credentials"];
+const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "credentials"];
 
 /// Maximum total HTTP request attempts (1 initial + up to 2 retries).
-pub const MAX_RETRIES: usize = 3;
+pub(crate) const MAX_RETRIES: usize = 3;
 /// Base initial delay in milliseconds for exponential backoff.
-pub const RETRY_INITIAL_DELAY_MS: u64 = 250;
+const RETRY_INITIAL_DELAY_MS: u64 = 250;
 /// Maximum delay cap in milliseconds for exponential backoff.
-pub const RETRY_MAX_DELAY_MS: u64 = 5_000;
+const RETRY_MAX_DELAY_MS: u64 = 5_000;
 
+/// Returns `true` if `file_name` matches a known noise file.
 #[inline]
 pub(crate) fn is_noise_file(file_name: &str) -> bool {
     NOISE.contains(&file_name)
@@ -42,6 +43,7 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
+/// Returns `true` if `file_name` or its `extension` indicates a sensitive credentials file.
 #[inline]
 pub(crate) fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> bool {
     if starts_with_ignore_ascii_case(file_name, ".env")

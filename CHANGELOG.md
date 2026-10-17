@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Compiler Documentation Enforcement**: Added `#![warn(missing_docs)]` to `src/lib.rs` and documented all re-exported public API items with doctests and error contracts.
+- **Documentation Conventions**: Added Section 7 (`Documentation & Comments`) in `docs/coding_convention.md` defining Rustdoc standards (RFC 1574, `C-CRATE-DOC`, `C-EXAMPLE`, `C-FAILURE`, `C-LINK`, `C-QUESTION-MARK`), standard section headers (`# Errors`, `# Panics`, `# Safety`, `# Examples`), visibility depth, and "why, not what" comment principles.
+
+### Changed
+
+- **Encapsulation & Visibility**: Demoted internal items (`FileStorage`, `FileSpan`, `FileRecord`, `CollectionResult`, `Selector`, `CandidateBudget`, `CandidateInput`, `LocalStream`, `GithubStream`, `StreamInfo`, `SourceStream`, constants) from `pub` to `pub(crate)`, and single-file items (`HELP`, `NOISE`, `SENSITIVE_EXTENSIONS`, `RETRY_*`, XML/header helpers) to private.
+
 ## [0.2.4]
 
 ### Added

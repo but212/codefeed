@@ -1,3 +1,5 @@
+//! Output delivery: atomic filesystem writing and stdout streaming.
+
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -8,6 +10,9 @@ use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Resolves an [`OutputTarget`] into an optional canonical file destination.
+///
+/// Returns `None` when writing directly to [`OutputTarget::Stdout`].
 pub(crate) fn resolve_output_target(target: &OutputTarget) -> Result<Option<PathBuf>, IngestError> {
     match target {
         OutputTarget::Stdout => Ok(None),

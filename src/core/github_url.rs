@@ -1,6 +1,7 @@
 //! Pure GitHub URL construction, percent-encoding, and origin classification
 //! used to scope credentials and API-only headers.
 
+/// Canonical base URL for GitHub REST API v3 endpoints.
 pub(crate) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 
 /// Exact-origin match: returns `true` if `url == GITHUB_API_BASE_URL` or starts with `GITHUB_API_BASE_URL + "/"`.
@@ -15,6 +16,7 @@ fn has_origin(url: &str, base: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
+/// Constructs the tarball download URL for the given repository and optional Git reference.
 pub(crate) fn tarball_url(owner: &str, repo: &str, reference: Option<&str>) -> String {
     let mut url = String::from(GITHUB_API_BASE_URL);
     for segment in ["repos", owner, repo, "tarball"] {

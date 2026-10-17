@@ -19,6 +19,12 @@ pub enum Source {
 }
 
 impl Source {
+    /// Returns a new `Source` instance with the specified Git revision reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IngestError::InvalidSource`] if `reference` is empty/whitespace or
+    /// if called on a [`Source::Local`] variant.
     pub fn with_reference(self, reference: Option<String>) -> Result<Self, IngestError> {
         if reference
             .as_ref()
@@ -77,6 +83,7 @@ pub struct RunConfig {
 }
 
 impl RunConfig {
+    /// Creates a new `RunConfig` with the given source, output target, and format.
     pub const fn new(source: Source, output: OutputTarget, format: DigestFormat) -> Self {
         Self {
             source,
@@ -101,7 +108,7 @@ pub struct IngestReport {
 
 /// 16-byte POD indexing a file path and content slice in [`FileStorage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct FileSpan {
+pub(crate) struct FileSpan {
     pub(crate) path_offset: u32,
     pub(crate) path_len: u32,
     pub(crate) content_offset: u32,
@@ -127,7 +134,7 @@ impl FileSpan {
 /// Continuous arena storage for file paths and contents.
 /// Eliminates per-file heap allocations and preserves cache locality.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FileStorage {
+pub(crate) struct FileStorage {
     spans: Vec<FileSpan>,
     path_arena: String,
     content_arena: String,
@@ -135,12 +142,12 @@ pub struct FileStorage {
 
 impl FileStorage {
     #[inline]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     #[inline]
-    pub fn with_capacity(spans_cap: usize, path_bytes: usize, content_bytes: usize) -> Self {
+    pub(crate) fn with_capacity(spans_cap: usize, path_bytes: usize, content_bytes: usize) -> Self {
         Self {
             spans: Vec::with_capacity(spans_cap),
             path_arena: String::with_capacity(path_bytes),
@@ -149,12 +156,12 @@ impl FileStorage {
     }
 
     #[inline]
-    pub const fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.spans.len()
     }
 
     /// Sorts spans lexicographically by path in-place within the path arena.
-    pub fn sort_by_path(&mut self) {
+    pub(crate) fn sort_by_path(&mut self) {
         let path_arena = &self.path_arena;
         let is_sorted = self
             .spans
@@ -168,7 +175,7 @@ impl FileStorage {
     }
 
     /// Appends path and content to the arenas and records a [`FileSpan`].
-    pub fn push(&mut self, path: &str, content: &str) -> FileSpan {
+    pub(crate) fn push(&mut self, path: &str, content: &str) -> FileSpan {
         debug_assert!(u32::try_from(self.path_arena.len()).is_ok());
         debug_assert!(u32::try_from(path.len()).is_ok());
         debug_assert!(u32::try_from(self.content_arena.len()).is_ok());
@@ -194,7 +201,7 @@ impl FileStorage {
 
     /// Resolves a [`FileSpan`] into a borrowed [`FileRecord`].
     #[inline]
-    pub fn get(&self, span: FileSpan) -> FileRecord<'_> {
+    pub(crate) fn get(&self, span: FileSpan) -> FileRecord<'_> {
         FileRecord {
             path: span.path(&self.path_arena),
             content: span.content(&self.content_arena),
@@ -202,7 +209,7 @@ impl FileStorage {
     }
 
     /// Iterator yielding borrowed [`FileRecord`] views over the arena.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = FileRecord<'_>> {
+    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = FileRecord<'_>> {
         self.spans.iter().map(move |&span| self.get(span))
     }
 }
@@ -219,18 +226,18 @@ impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
 
 /// Zero-copy borrowed view into a file record stored within [`FileStorage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FileRecord<'a> {
-    pub path: &'a str,
-    pub content: &'a str,
+pub(crate) struct FileRecord<'a> {
+    pub(crate) path: &'a str,
+    pub(crate) content: &'a str,
 }
 
 /// Raw files and metadata collected by the shell before digest rendering.
 #[derive(Debug, Clone)]
-pub struct CollectionResult {
-    pub label: String,
-    pub revision: Option<String>,
-    pub files: FileStorage,
-    pub skipped: usize,
+pub(crate) struct CollectionResult {
+    pub(crate) label: String,
+    pub(crate) revision: Option<String>,
+    pub(crate) files: FileStorage,
+    pub(crate) skipped: usize,
 }
 
 #[cfg(test)]

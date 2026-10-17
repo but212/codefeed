@@ -6,6 +6,7 @@ Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_
 
 - **Lint & Check:** `cargo clippy --all-targets -- -D warnings`
 - **Format:** `cargo fmt --check`
+- **Documentation:** `cargo doc --no-deps`
 - **Test:** `cargo test` (or `cargo test <name>`)
 
 ## 2. Code

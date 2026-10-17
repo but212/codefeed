@@ -23,6 +23,7 @@ use super::orchestrate::{SourceStream, StreamInfo};
 const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 const GITHUB_TIMEOUT_SECS: u64 = 30;
 
+/// Collects files from a remote GitHub repository via streaming tarball download.
 pub(crate) fn collect(
     owner: &str,
     repo: &str,
@@ -168,7 +169,8 @@ fn resolve_token_from_env() -> Option<String> {
     resolve_token_with(|k| std::env::var(k))
 }
 
-pub struct GithubStream<'a, R: Read> {
+/// Source stream reading entries sequentially from an uncompressed GitHub tarball archive.
+pub(crate) struct GithubStream<'a, R: Read> {
     label: String,
     reference: Option<String>,
     parsed_revision: Option<String>,
@@ -176,7 +178,8 @@ pub struct GithubStream<'a, R: Read> {
 }
 
 impl<'a, R: Read> GithubStream<'a, R> {
-    pub fn new(
+    /// Creates a new `GithubStream` around the provided tar archive reader.
+    pub(crate) fn new(
         archive: &'a mut Archive<GzDecoder<R>>,
         owner: &str,
         repo: &str,

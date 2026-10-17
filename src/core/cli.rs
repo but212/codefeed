@@ -5,19 +5,32 @@ use crate::core::error::IngestError;
 use crate::core::model::{DigestFormat, OutputTarget, RunConfig};
 use crate::core::source::parse_os;
 
-pub const HELP: &str =
+const HELP: &str =
     "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]";
 
+/// Returns the static command-line help message.
 pub const fn help_text() -> &'static str {
     HELP
 }
 
+/// Action determined by parsing command-line arguments.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CliAction {
+    /// Print help text and exit successfully.
     Help,
+    /// Execute ingestion using the resolved [`RunConfig`].
     Run(RunConfig),
 }
 
+/// Parses command-line arguments into a [`CliAction`].
+///
+/// Skips the first element (the binary name) and interprets remaining arguments
+/// according to the CLI specification.
+///
+/// # Errors
+///
+/// Returns [`IngestError::Usage`] if required arguments are missing, unknown options
+/// are passed, or flags receive invalid values.
 pub fn parse<I, T>(args: I) -> Result<CliAction, IngestError>
 where
     I: IntoIterator<Item = T>,
