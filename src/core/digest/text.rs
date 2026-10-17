@@ -18,9 +18,17 @@ const FILE_BLOCK_SUFFIX: &str = "\n=============================================
 const NEWLINE: &str = "\n";
 const METADATA_SUFFIX: &str = "\n\n";
 
+const HEADER_ESCAPE_MASK: [u64; 4] = {
+    let mut mask = [0u64; 4];
+    mask[b'\\' as usize / 64] |= 1 << (b'\\' as usize % 64);
+    mask[b'\r' as usize / 64] |= 1 << (b'\r' as usize % 64);
+    mask[b'\n' as usize / 64] |= 1 << (b'\n' as usize % 64);
+    mask
+};
+
 #[inline(always)]
 const fn needs_header_escape(b: u8) -> bool {
-    (b == b'\\') | (b == b'\r') | (b == b'\n')
+    (HEADER_ESCAPE_MASK[(b >> 6) as usize] & (1u64 << (b & 63))) != 0
 }
 
 #[inline(always)]
