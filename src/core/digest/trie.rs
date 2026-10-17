@@ -13,6 +13,8 @@ const TREE_VERT: &str = "│   ";
 const TREE_SPACE: &str = "    ";
 const FLAG_DIR: u16 = 1 << 0;
 
+const _: () = assert!(std::mem::size_of::<BudgetTrieNode>() == 16);
+
 pub(crate) const NO_NODE: u32 = u32::MAX;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
