@@ -61,18 +61,10 @@ pub(crate) fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> boo
         .any(|&s| s.eq_ignore_ascii_case(extension))
 }
 
-/// Returns `true` if `path` contains hidden directory or file components (starting with `.`, excluding `.` or `..`).
+/// Returns `true` if `path` contains hidden directory or file components (starting with `.`).
 #[inline]
 pub(crate) fn is_hidden_path(path: &str) -> bool {
-    path.split('/')
-        .any(|s| s.starts_with('.') && s != "." && s != "..")
-}
-
-/// Returns `true` if raw byte path contains hidden directory or file components.
-#[inline]
-pub(crate) fn is_hidden_bytes(path: &[u8]) -> bool {
-    path.split(|&b| b == b'/')
-        .any(|s| s.starts_with(b".") && s != b"." && s != b"..")
+    path.split('/').any(|s| s.starts_with('.'))
 }
 
 /// Returns `true` if `path` is an ignored noise, sensitive, or hidden file.
@@ -90,7 +82,7 @@ pub(crate) fn is_ignored_path(path: &str) -> bool {
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
 #[inline]
 pub(crate) const fn is_retryable_status(status_code: u16) -> bool {
-    (status_code == 429) | (status_code.wrapping_sub(500) <= 99)
+    matches!(status_code, 429 | 500..=599)
 }
 
 /// Calculates bounded exponential backoff duration for the given attempt.
@@ -194,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_hidden_bytes_matches_is_hidden_path() {
+    fn test_is_hidden_path() {
         let cases = [
             (".hidden", true),
             ("dir/.hidden", true),
@@ -202,15 +194,10 @@ mod tests {
             ("not_hidden", false),
             ("dir/not_hidden.txt", false),
             ("ends_with_dot.", false),
-            ("./src/main.rs", false),
-            ("src/./main.rs", false),
-            ("../src/main.rs", false),
-            ("src/../main.rs", false),
-            ("a//b", false),
+            ("a/b", false),
         ];
         for (path, expected) in cases {
             assert_eq!(is_hidden_path(path), expected, "path: {path}");
-            assert_eq!(is_hidden_bytes(path.as_bytes()), expected, "bytes: {path}");
         }
     }
 }

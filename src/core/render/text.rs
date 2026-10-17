@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::io::Write;
 
 use crate::core::error::IngestError;
-use crate::core::model::FileRecord;
+use crate::core::model::CollectionResult;
 
 const REPOSITORY_PREFIX: &str = "Repository: ";
 const REVISION_PREFIX: &str = "Revision: ";
@@ -59,37 +59,29 @@ pub(crate) fn escape_header(value: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-pub(crate) fn render_text<'a, W, I>(
+pub(crate) fn render_text<W: Write + ?Sized>(
     writer: &mut W,
-    label: &str,
-    revision: Option<&str>,
-    ordered_files: I,
-    skipped: usize,
-    paths: &[&str],
-) -> Result<(), IngestError>
-where
-    W: Write + ?Sized,
-    I: IntoIterator<Item = FileRecord<'a>>,
-    I::IntoIter: ExactSizeIterator,
-{
+    collection: &CollectionResult,
+) -> Result<(), IngestError> {
     writer.write_all(REPOSITORY_PREFIX.as_bytes())?;
-    writer.write_all(escape_header(label).as_bytes())?;
+    writer.write_all(escape_header(&collection.label).as_bytes())?;
     writer.write_all(NEWLINE.as_bytes())?;
-    if let Some(revision) = revision {
+    if let Some(ref revision) = collection.revision {
         writer.write_all(REVISION_PREFIX.as_bytes())?;
         writer.write_all(escape_header(revision).as_bytes())?;
         writer.write_all(NEWLINE.as_bytes())?;
     }
-    let iter = ordered_files.into_iter();
     writer.write_all(FILES_PREFIX.as_bytes())?;
-    write!(writer, "{}", iter.len())?;
+    write!(writer, "{}", collection.files.len())?;
     writer.write_all(SKIPPED_PREFIX.as_bytes())?;
-    write!(writer, "{}", skipped)?;
+    write!(writer, "{}", collection.skipped)?;
     writer.write_all(METADATA_SUFFIX.as_bytes())?;
     writer.write_all(DIRECTORY_HEADER.as_bytes())?;
-    crate::core::tree::render_tree(writer, paths, escape_header)?;
+    crate::core::tree::render_tree(writer, &collection.files, |w, name| {
+        w.write_all(escape_header(name).as_bytes())
+    })?;
     writer.write_all(FILES_HEADER.as_bytes())?;
-    for file in iter {
+    for file in collection.files.iter() {
         const TAIL: [&[u8]; 2] = [b"\n", b"\n\n"];
         let needs_extra_nl = (!file.content.ends_with('\n')) as usize;
         writer.write_all(FILE_BLOCK_PREFIX.as_bytes())?;

@@ -1,11 +1,9 @@
 //! XML format specification, entity escaping, and layout rendering.
 
-use std::borrow::Cow;
 use std::io::Write;
 
-use super::text::escape_header;
 use crate::core::error::IngestError;
-use crate::core::model::FileRecord;
+use crate::core::model::CollectionResult;
 
 const XML_REPO_START: &str = "<repository name=\"";
 const XML_REVISION_ATTR: &str = "\" revision=\"";
@@ -37,37 +35,35 @@ fn xml_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     }
 }
 
-fn first_special_index(bytes: &[u8]) -> Option<usize> {
-    (0..bytes.len()).find(|&i| xml_special_at(bytes, i).is_some())
-}
-
-fn xml_escape(value: &str) -> Cow<'_, str> {
-    let bytes = value.as_bytes();
-    let Some(first) = first_special_index(bytes) else {
-        return Cow::Borrowed(value);
-    };
-
-    let mut result = String::with_capacity(value.len() + 16);
-    result.push_str(&value[..first]);
-    let mut last = first;
-    let mut i = first;
-    while i < bytes.len() {
-        if let Some((consumed, esc)) = xml_special_at(bytes, i) {
-            result.push_str(&value[last..i]);
-            result.push_str(esc);
-            i += consumed;
-            last = i;
-        } else {
-            i += 1;
+#[inline(always)]
+fn xml_tree_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
+    match bytes[i] {
+        b'\\' => Some((1, "\\\\")),
+        b'\r' => Some((1, "\\r")),
+        b'\n' => Some((1, "\\n")),
+        0..=8 | 11 | 12 | 14..=31 => Some((1, "\u{FFFD}")),
+        b'"' => Some((1, "&quot;")),
+        b'&' => Some((1, "&amp;")),
+        b'\'' => Some((1, "&apos;")),
+        b'<' => Some((1, "&lt;")),
+        b'>' => Some((1, "&gt;")),
+        0xEF if i + 2 < bytes.len()
+            && bytes[i + 1] == 0xBF
+            && (bytes[i + 2] == 0xBE || bytes[i + 2] == 0xBF) =>
+        {
+            Some((3, "\u{FFFD}"))
         }
+        _ => None,
     }
-    result.push_str(&value[last..]);
-    Cow::Owned(result)
 }
 
-fn write_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
+fn write_stream_escaped<W, F>(writer: &mut W, value: &str, special_at: F) -> std::io::Result<()>
+where
+    W: Write + ?Sized,
+    F: Fn(&[u8], usize) -> Option<(usize, &'static str)>,
+{
     let bytes = value.as_bytes();
-    let Some(first) = first_special_index(bytes) else {
+    let Some(first) = (0..bytes.len()).find(|&i| special_at(bytes, i).is_some()) else {
         return writer.write_all(bytes);
     };
 
@@ -75,7 +71,7 @@ fn write_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Res
     let mut last = first;
     let mut i = first;
     while i < bytes.len() {
-        if let Some((consumed, esc)) = xml_special_at(bytes, i) {
+        if let Some((consumed, esc)) = special_at(bytes, i) {
             if last < i {
                 writer.write_all(&bytes[last..i])?;
             }
@@ -92,35 +88,35 @@ fn write_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Res
     Ok(())
 }
 
-pub(crate) fn render_xml<'a, W, I>(
+/// Escapes standard XML characters and control bytes while streaming to `writer`.
+pub(crate) fn write_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
+    write_stream_escaped(writer, value, xml_special_at)
+}
+
+/// Escapes newlines (`\n`, `\r`, `\`) and XML specials for tree node names in `<directory_structure>`.
+pub(crate) fn write_xml_tree_escaped<W: Write + ?Sized>(
     writer: &mut W,
-    label: &str,
-    revision: Option<&str>,
-    ordered_files: I,
-    paths: &[&str],
-) -> Result<(), IngestError>
-where
-    W: Write + ?Sized,
-    I: IntoIterator<Item = FileRecord<'a>>,
-{
+    value: &str,
+) -> std::io::Result<()> {
+    write_stream_escaped(writer, value, xml_tree_special_at)
+}
+
+pub(crate) fn render_xml<W: Write + ?Sized>(
+    writer: &mut W,
+    collection: &CollectionResult,
+) -> Result<(), IngestError> {
     writer.write_all(XML_REPO_START.as_bytes())?;
-    write_escaped(writer, label)?;
-    if let Some(revision) = revision {
+    write_escaped(writer, &collection.label)?;
+    if let Some(ref revision) = collection.revision {
         writer.write_all(XML_REVISION_ATTR.as_bytes())?;
         write_escaped(writer, revision)?;
     }
     writer.write_all(XML_TAG_CLOSE.as_bytes())?;
     writer.write_all(XML_DIR_START.as_bytes())?;
-    crate::core::tree::render_tree(writer, paths, |name| {
-        let escaped = escape_header(name);
-        match escaped {
-            Cow::Borrowed(b) => xml_escape(b),
-            Cow::Owned(o) => Cow::Owned(xml_escape(&o).into_owned()),
-        }
-    })?;
+    crate::core::tree::render_tree(writer, &collection.files, write_xml_tree_escaped)?;
     writer.write_all(XML_DIR_END.as_bytes())?;
     writer.write_all(XML_FILES_START.as_bytes())?;
-    for file in ordered_files {
+    for file in collection.files.iter() {
         writer.write_all(XML_FILE_START.as_bytes())?;
         write_escaped(writer, file.path)?;
         writer.write_all(XML_TAG_CLOSE.as_bytes())?;
@@ -136,6 +132,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn xml_escape(value: &str) -> String {
+        let mut buf = Vec::new();
+        write_escaped(&mut buf, value).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
 
     #[test]
     fn xml_escape_and_streaming_consistency() {
@@ -165,7 +167,7 @@ mod tests {
         for &(text, expected_escaped) in cases {
             let escaped = xml_escape(text);
             assert_eq!(
-                escaped.as_ref(),
+                escaped.as_str(),
                 expected_escaped,
                 "escape mismatch for {text:?}"
             );
@@ -174,7 +176,7 @@ mod tests {
             write_escaped(&mut streamed, text).unwrap();
             assert_eq!(
                 String::from_utf8(streamed).unwrap(),
-                escaped.as_ref(),
+                escaped.as_str(),
                 "streamed content mismatch for {text:?}"
             );
         }
@@ -185,33 +187,22 @@ mod tests {
         let input = "prefix \u{FFFD} & <\u{FEFF}> middle \u{FF01} suffix \u{FFFE} and \u{FFFF}";
         let escaped = xml_escape(input);
         assert_eq!(
-            escaped.as_ref(),
+            escaped.as_str(),
             "prefix \u{FFFD} &amp; &lt;\u{FEFF}&gt; middle \u{FF01} suffix \u{FFFD} and \u{FFFD}"
         );
         let mut streamed = Vec::new();
         write_escaped(&mut streamed, input).unwrap();
-        assert_eq!(String::from_utf8(streamed).unwrap(), escaped.as_ref());
+        assert_eq!(String::from_utf8(streamed).unwrap(), escaped.as_str());
     }
 
     #[test]
-    fn test_first_special_index_boundary_alignment() {
-        for len in 0..=48 {
-            let clean = "a".repeat(len);
-            assert_eq!(first_special_index(clean.as_bytes()), None);
-            assert!(matches!(xml_escape(&clean), Cow::Borrowed(_)));
-
-            for special in ['&', '<', '>', '"', '\''] {
-                for pos in 0..len {
-                    let mut text = clean.clone();
-                    text.replace_range(pos..pos + 1, &special.to_string());
-                    assert_eq!(
-                        first_special_index(text.as_bytes()),
-                        Some(pos),
-                        "mismatch at len {len}, pos {pos}, special {special}"
-                    );
-                    assert!(matches!(xml_escape(&text), Cow::Owned(_)));
-                }
-            }
-        }
+    fn test_write_xml_tree_escaped_preserves_newline_injection_defense() {
+        let input = "dir\nname\r<test>\\file";
+        let mut out = Vec::new();
+        write_xml_tree_escaped(&mut out, input).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "dir\\nname\\r&lt;test&gt;\\\\file"
+        );
     }
 }

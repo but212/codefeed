@@ -9,7 +9,7 @@ pub(crate) mod text;
 pub(crate) mod xml;
 
 use crate::core::error::IngestError;
-use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
+use crate::core::model::{CollectionResult, DigestFormat};
 use crate::core::policy::MAX_OUTPUT_SIZE;
 
 /// Heuristic token estimation (~4 bytes per token for typical ASCII code).
@@ -29,23 +29,14 @@ pub(crate) fn estimate_tokens(bytes: u64) -> usize {
 }
 
 impl DigestFormat {
-    pub(crate) fn render<'a, W, I>(
+    pub(crate) fn render<W: Write + ?Sized>(
         self,
         writer: &mut W,
-        label: &str,
-        revision: Option<&str>,
-        files: I,
-        skipped: usize,
-        paths: &[&str],
-    ) -> Result<(), IngestError>
-    where
-        W: Write + ?Sized,
-        I: IntoIterator<Item = FileRecord<'a>>,
-        I::IntoIter: ExactSizeIterator,
-    {
+        collection: &CollectionResult,
+    ) -> Result<(), IngestError> {
         match self {
-            Self::Text => text::render_text(writer, label, revision, files, skipped, paths),
-            Self::Xml => xml::render_xml(writer, label, revision, files, paths),
+            Self::Text => text::render_text(writer, collection),
+            Self::Xml => xml::render_xml(writer, collection),
         }
     }
 }
@@ -105,15 +96,7 @@ pub(crate) fn render_to_writer<W: Write + ?Sized>(
     format: DigestFormat,
 ) -> Result<usize, IngestError> {
     let mut estimating_writer = BoundedEstimatingWriter::new(writer);
-    let paths: Vec<&str> = collection.files.iter().map(|f| f.path).collect();
-    let render_res = format.render(
-        &mut estimating_writer,
-        &collection.label,
-        collection.revision.as_deref(),
-        collection.files.iter(),
-        collection.skipped,
-        &paths,
-    );
+    let render_res = format.render(&mut estimating_writer, collection);
 
     if estimating_writer.overflowed {
         return Err(output_too_large_error(collection));
@@ -261,12 +244,19 @@ hello\n\
                 content: "content_a\n",
             },
         ];
+        let mut storage = FileStorage::new();
+        for f in files.into_iter().filter(|f| f.path != "excluded.txt") {
+            storage.push(f.path, f.content);
+        }
+        storage.sort_by_path();
+        let collection = CollectionResult {
+            label: "repo".into(),
+            revision: None,
+            files: storage,
+            skipped: 1,
+        };
         let mut buf = Vec::new();
-        let filtered: Vec<_> = files
-            .into_iter()
-            .filter(|f| f.path != "excluded.txt")
-            .collect();
-        DigestFormat::Text.render(&mut buf, "repo", None, filtered, 1, &["a.txt", "b.txt"])?;
+        DigestFormat::Text.render(&mut buf, &collection)?;
         let rendered = std::str::from_utf8(&buf)?;
         assert!(rendered.contains("Files: 2"));
         assert!(rendered.contains("FILE: a.txt"));

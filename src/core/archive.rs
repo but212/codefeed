@@ -1,10 +1,27 @@
-//! Archive parsing pure utilities: Pax header comment extraction and root stripping.
+use crate::core::error::IngestError;
 
-/// Strips the top-level directory prefix from raw archive entry path bytes.
+/// Status of normalized tar entry path decoding.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TarPathStatus {
+    /// Valid normalized relative path written to the output buffer.
+    Valid,
+    /// Root directory or empty path that should be ignored.
+    Skipped,
+    /// Path contains invalid UTF-8 bytes.
+    NonUtf8 { is_hidden: bool },
+}
+
+/// Normalizes a raw tar entry path into `out`, stripping the root directory prefix,
+/// collapsing multiple slashes, and removing `.` segments.
 ///
-/// GitHub tarballs wrap all entries in a root directory `{owner}-{repo}-{hash}/`.
-/// Returns `None` for the root directory itself or empty paths.
-pub(crate) fn strip_archive_root(raw_bytes: &[u8]) -> Option<&[u8]> {
+/// Returns `Err(IngestError)` if the path contains `..` directory traversal.
+/// Returns `Ok(TarPathStatus::Skipped)` if the entry is the root directory itself or empty.
+/// Returns `Ok(TarPathStatus::NonUtf8)` if the entry path contains non-UTF-8 bytes.
+/// Returns `Ok(TarPathStatus::Valid)` on success.
+pub(crate) fn normalize_tar_entry_path(
+    raw_bytes: &[u8],
+    out: &mut String,
+) -> Result<TarPathStatus, IngestError> {
     let start = raw_bytes
         .iter()
         .position(|&b| b != b'/')
@@ -13,11 +30,57 @@ pub(crate) fn strip_archive_root(raw_bytes: &[u8]) -> Option<&[u8]> {
         .iter()
         .rposition(|&b| b != b'/')
         .map_or(start, |i| i + 1);
-    let normalized = &raw_bytes[start..end];
-    let slash_index = normalized.iter().position(|&b| b == b'/')?;
-    let after_root = &normalized[slash_index + 1..];
-    let rest_start = after_root.iter().position(|&b| b != b'/')?;
-    Some(&after_root[rest_start..])
+    let trimmed = &raw_bytes[start..end];
+    let Some(slash_index) = trimmed.iter().position(|&b| b == b'/') else {
+        return Ok(TarPathStatus::Skipped);
+    };
+
+    let rel = &trimmed[slash_index + 1..];
+    out.clear();
+
+    let mut has_hidden = false;
+    let mut has_invalid_utf8 = false;
+
+    for segment in rel.split(|&b| b == b'/') {
+        if segment.is_empty() || segment == b"." {
+            continue;
+        }
+        if segment == b".." {
+            return Err(IngestError::invalid_metadata(
+                "Tar entry contains directory traversal (..)",
+            ));
+        }
+        if segment.starts_with(b".") {
+            has_hidden = true;
+        }
+        if has_invalid_utf8 {
+            continue;
+        }
+        match std::str::from_utf8(segment) {
+            Ok(seg_str) => {
+                if !out.is_empty() {
+                    out.push('/');
+                }
+                out.push_str(seg_str);
+            }
+            Err(_) => {
+                has_invalid_utf8 = true;
+            }
+        }
+    }
+
+    if has_invalid_utf8 {
+        out.clear();
+        return Ok(TarPathStatus::NonUtf8 {
+            is_hidden: has_hidden,
+        });
+    }
+
+    if out.is_empty() {
+        Ok(TarPathStatus::Skipped)
+    } else {
+        Ok(TarPathStatus::Valid)
+    }
 }
 
 /// Parses a 40-character commit SHA from PAX global header comment bytes.
@@ -43,10 +106,7 @@ pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
 }
 
 fn is_valid_commit_sha(sha: &str) -> bool {
-    ((sha.len() == 40) | (sha.len() == 64))
-        && sha
-            .bytes()
-            .all(|b| (b.wrapping_sub(b'0') < 10) | ((b | 32).wrapping_sub(b'a') < 6))
+    (sha.len() == 40 || sha.len() == 64) && sha.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -54,23 +114,63 @@ mod tests {
     use super::*;
 
     #[test]
-    fn strips_archive_root_correctly() {
+    fn normalizes_archive_entry_path_correctly() {
+        let mut out = String::new();
+
         assert_eq!(
-            strip_archive_root(b"but212-codefeed-c1863c8/src/main.rs"),
-            Some(&b"src/main.rs"[..])
+            normalize_tar_entry_path(b"but212-codefeed-c1863c8/src/main.rs", &mut out).unwrap(),
+            TarPathStatus::Valid
+        );
+        assert_eq!(out, "src/main.rs");
+
+        assert_eq!(
+            normalize_tar_entry_path(b"repo-root//src/main.rs", &mut out).unwrap(),
+            TarPathStatus::Valid
+        );
+        assert_eq!(out, "src/main.rs");
+
+        assert_eq!(
+            normalize_tar_entry_path(b"repo-root///deep//nested/./file.txt", &mut out).unwrap(),
+            TarPathStatus::Valid
+        );
+        assert_eq!(out, "deep/nested/file.txt");
+
+        assert_eq!(
+            normalize_tar_entry_path(b"repo-root/././a.rs", &mut out).unwrap(),
+            TarPathStatus::Valid
+        );
+        assert_eq!(out, "a.rs");
+
+        assert_eq!(
+            normalize_tar_entry_path(b"but212-codefeed-c1863c8/", &mut out).unwrap(),
+            TarPathStatus::Skipped
         );
         assert_eq!(
-            strip_archive_root(b"repo-root//src/main.rs"),
-            Some(&b"src/main.rs"[..])
+            normalize_tar_entry_path(b"but212-codefeed-c1863c8///", &mut out).unwrap(),
+            TarPathStatus::Skipped
         );
         assert_eq!(
-            strip_archive_root(b"repo-root///deep/nested/file.txt"),
-            Some(&b"deep/nested/file.txt"[..])
+            normalize_tar_entry_path(b"but212-codefeed-c1863c8", &mut out).unwrap(),
+            TarPathStatus::Skipped
         );
-        assert_eq!(strip_archive_root(b"but212-codefeed-c1863c8/"), None);
-        assert_eq!(strip_archive_root(b"but212-codefeed-c1863c8///"), None);
-        assert_eq!(strip_archive_root(b"but212-codefeed-c1863c8"), None);
-        assert_eq!(strip_archive_root(b""), None);
+        assert_eq!(
+            normalize_tar_entry_path(b"", &mut out).unwrap(),
+            TarPathStatus::Skipped
+        );
+
+        // Path traversal rejection
+        assert!(normalize_tar_entry_path(b"repo-root/../etc/passwd", &mut out).is_err());
+        assert!(normalize_tar_entry_path(b"repo-root/src/../../root", &mut out).is_err());
+
+        // Non-UTF8 handling
+        assert_eq!(
+            normalize_tar_entry_path(b"repo-root/invalid/\xff\xfe", &mut out).unwrap(),
+            TarPathStatus::NonUtf8 { is_hidden: false }
+        );
+        assert_eq!(
+            normalize_tar_entry_path(b"repo-root/.hidden/\xff\xfe", &mut out).unwrap(),
+            TarPathStatus::NonUtf8 { is_hidden: true }
+        );
     }
 
     #[test]

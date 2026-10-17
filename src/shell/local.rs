@@ -6,24 +6,47 @@ use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
 
-use super::orchestrate::{SourceStream, StreamInfo};
 use crate::core::error::IngestError;
-use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE};
-use crate::core::selector::{CandidateBudget, CandidateInput};
+use crate::core::policy::MAX_FILE_SIZE;
+use crate::core::selector::{CandidateBudget, CandidateInput, Selector};
 
-/// Source stream walking and reading a local filesystem directory.
-pub(crate) struct LocalStream {
-    label: String,
-    root: PathBuf,
-    work_path: PathBuf,
-    candidates: std::vec::IntoIter<Option<String>>,
+#[derive(Default, Debug)]
+struct PathArena {
+    data: String,
+    spans: Vec<Option<(u32, u32)>>,
 }
 
-impl std::fmt::Debug for LocalStream {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LocalStream")
-            .field("label", &self.label)
-            .finish()
+impl PathArena {
+    fn with_capacity(spans_cap: usize, bytes_cap: usize) -> Self {
+        Self {
+            data: String::with_capacity(bytes_cap),
+            spans: Vec::with_capacity(spans_cap),
+        }
+    }
+
+    fn push_some(&mut self, path: &str) {
+        let offset = self.data.len() as u32;
+        let len = path.len() as u32;
+        self.data.push_str(path);
+        self.spans.push(Some((offset, len)));
+    }
+
+    fn push_none(&mut self) {
+        self.spans.push(None);
+    }
+
+    fn len(&self) -> usize {
+        self.spans.len()
+    }
+
+    fn iter(&self) -> impl ExactSizeIterator<Item = Option<&str>> {
+        self.spans.iter().map(move |&span| {
+            span.map(|(offset, len)| {
+                let start = offset as usize;
+                let end = start + len as usize;
+                &self.data[start..end]
+            })
+        })
     }
 }
 
@@ -32,58 +55,33 @@ pub(crate) fn collect(
     root: &Path,
     resolved_output: Option<&Path>,
 ) -> Result<crate::core::model::CollectionResult, IngestError> {
-    let stream = LocalStream::new(root, resolved_output)?;
-    super::orchestrate::collect_stream(stream)
-}
+    let canonical_root = validate_root(root)?;
+    let label = local_label(&canonical_root);
+    let candidates = walk_candidates(&canonical_root, resolved_output)?;
 
-impl LocalStream {
-    /// Validates the root directory and discovers candidates up to the budget limit.
-    pub(crate) fn new(root: &Path, resolved_output: Option<&Path>) -> Result<Self, IngestError> {
-        let canonical_root = validate_root(root)?;
-        let label = local_label(&canonical_root);
-        let candidates = walk_candidates(&canonical_root, resolved_output)?;
+    let mut selector = Selector::from_size_hint((candidates.len(), Some(candidates.len())));
+    let mut work_path = PathBuf::new();
+    let mut scratch = Vec::with_capacity(32 * 1024);
 
-        Ok(Self {
-            label,
-            root: canonical_root,
-            work_path: PathBuf::new(),
-            candidates: candidates.into_iter(),
-        })
-    }
-}
-
-impl SourceStream for LocalStream {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.candidates.size_hint()
-    }
-
-    fn for_each_item<F>(mut self, mut callback: F) -> Result<StreamInfo, IngestError>
-    where
-        F: FnMut(CandidateInput<'_>) -> Result<(), IngestError>,
-    {
-        let mut scratch = Vec::with_capacity(32 * 1024);
-        for item_path in self.candidates.by_ref() {
-            let input = match item_path.as_deref() {
-                Some(rel) => {
-                    self.work_path.clear();
-                    self.work_path.push(&self.root);
-                    self.work_path.push(rel);
-                    scratch.clear();
-                    match read_local_file_into(&self.work_path, &mut scratch)? {
-                        LocalFileRead::Bytes(bytes) => CandidateInput::File { path: rel, bytes },
-                        LocalFileRead::TooLarge => CandidateInput::TooLarge { path: rel },
-                        LocalFileRead::Missing => CandidateInput::Skipped { path: Some(rel) },
-                    }
+    for item_path in candidates.iter() {
+        let input = match item_path {
+            Some(rel) => {
+                work_path.clear();
+                work_path.push(&canonical_root);
+                work_path.push(rel);
+                scratch.clear();
+                match read_local_file_into(&work_path, &mut scratch)? {
+                    LocalFileRead::Bytes(bytes) => CandidateInput::File { path: rel, bytes },
+                    LocalFileRead::TooLarge => CandidateInput::TooLarge { path: rel },
+                    LocalFileRead::Missing => CandidateInput::Skipped { path: Some(rel) },
                 }
-                None => CandidateInput::Skipped { path: None },
-            };
-            callback(input)?;
-        }
-        Ok(StreamInfo {
-            label: self.label,
-            revision: None,
-        })
+            }
+            None => CandidateInput::Skipped { path: None },
+        };
+        selector.feed(input)?;
     }
+
+    Ok(selector.finish(label, None))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -144,10 +142,7 @@ fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
     Ok(canonical)
 }
 
-fn walk_candidates(
-    root: &Path,
-    resolved_output: Option<&Path>,
-) -> Result<Vec<Option<String>>, IngestError> {
+fn walk_candidates(root: &Path, resolved_output: Option<&Path>) -> Result<PathArena, IngestError> {
     let walker = WalkBuilder::new(root)
         .hidden(true)
         .ignore(false)
@@ -160,7 +155,9 @@ fn walk_candidates(
         .sort_by_file_name(|a, b| a.cmp(b))
         .build();
 
-    let mut candidates = Vec::new();
+    let mut candidates = PathArena::with_capacity(512, 16 * 1024);
+    let mut budget = CandidateBudget::with_capacity(64);
+    let mut path_scratch = String::with_capacity(256);
 
     for entry in walker {
         let entry = entry.map_err(|err| IngestError::Io(io::Error::other(err)))?;
@@ -175,40 +172,40 @@ fn walk_candidates(
         let relative = entry_path
             .strip_prefix(root)
             .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
-        let item_path = normalize_relative_path(relative);
 
-        if matches!(&item_path, Some(path) if crate::core::policy::is_ignored_path(path)) {
-            continue;
-        }
-
-        candidates.push(item_path);
-
-        if candidates.len() > MAX_FILE_COUNT {
-            break;
+        if normalize_relative_path_into(relative, &mut path_scratch) {
+            if crate::core::policy::is_ignored_path(&path_scratch) {
+                continue;
+            }
+            budget.add(Some(&path_scratch))?;
+            candidates.push_some(&path_scratch);
+        } else {
+            budget.add(None)?;
+            candidates.push_none();
         }
     }
-
-    CandidateBudget::check_limit(candidates.iter().map(|c| c.as_deref()))?;
 
     Ok(candidates)
 }
 
-fn normalize_relative_path(relative: &Path) -> Option<String> {
-    let mut parts = relative.components().peekable();
-    let first = parts.next()?;
-    let first_str = first.as_os_str().to_str()?;
-    if parts.peek().is_none() {
-        return Some(first_str.to_string());
-    }
-
-    let mut normalized_path = String::with_capacity(relative.as_os_str().len());
-    normalized_path.push_str(first_str);
+fn normalize_relative_path_into(relative: &Path, scratch: &mut String) -> bool {
+    scratch.clear();
+    let mut parts = relative.components();
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    let Some(first_str) = first.as_os_str().to_str() else {
+        return false;
+    };
+    scratch.push_str(first_str);
     for part in parts {
-        let s = part.as_os_str().to_str()?;
-        normalized_path.push('/');
-        normalized_path.push_str(s);
+        let Some(s) = part.as_os_str().to_str() else {
+            return false;
+        };
+        scratch.push('/');
+        scratch.push_str(s);
     }
-    Some(normalized_path)
+    true
 }
 
 fn local_label(root: &Path) -> String {
@@ -470,7 +467,7 @@ mod tests {
                 )?;
             }
         }
-        let result = crate::shell::orchestrate::collect_stream(LocalStream::new(&root, None)?)?;
+        let result = collect(&root, None)?;
         let files = result.files;
         assert_eq!(files.len(), 30);
         let records: Vec<FileRecord<'_>> = files.iter().collect();
@@ -503,7 +500,7 @@ mod tests {
             .share_mode(0)
             .open(root.join("file_00000.txt"))?;
 
-        let err = LocalStream::new(&root, None).unwrap_err();
+        let err = collect(&root, None).unwrap_err();
         match err {
             IngestError::CandidateLimitExceeded(..) => {
                 let msg = err.to_string();

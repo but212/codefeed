@@ -1,98 +1,90 @@
 //! In-memory deterministic ASCII tree rendering.
 //!
-//! Renders formatted ASCII directory trees directly from sorted path slices
-//! with format-aware escaping.
+//! Renders formatted ASCII directory trees directly from FileStorage
+//! with format-aware escaping and zero allocations.
 
-use std::borrow::Cow;
 use std::io::Write;
+
+use crate::core::model::{FileSpan, FileStorage};
 
 const TREE_BRANCH: &str = "├── ";
 const TREE_LAST: &str = "└── ";
 const TREE_VERT: &str = "│   ";
 const TREE_SPACE: &str = "    ";
 
-/// Renders an ASCII tree representation of the provided sorted paths to the writer.
+/// Renders an ASCII tree representation of the provided pre-sorted [`FileStorage`] to the writer.
 ///
-/// Uses `format_name` to escape or transform individual path components per format specification.
+/// Uses `format_name` to stream individual path components per format specification.
 ///
 /// # Errors
 ///
 /// Returns an [`std::io::Error`] if writing to `writer` fails.
 pub(crate) fn render_tree<W: Write + ?Sized, F>(
     writer: &mut W,
-    paths: &[&str],
-    format_name: F,
+    storage: &FileStorage,
+    mut format_name: F,
 ) -> std::io::Result<()>
 where
-    F: Fn(&str) -> Cow<'_, str>,
+    F: FnMut(&mut W, &str) -> std::io::Result<()>,
 {
     let mut prefix = String::new();
-    render_level(writer, paths, 0, &mut prefix, &format_name)
-}
-
-struct Child<'a> {
-    name: &'a str,
-    is_dir: bool,
-    start: usize,
-    end: usize,
+    render_level(
+        writer,
+        storage.spans(),
+        storage.path_arena(),
+        0,
+        &mut prefix,
+        &mut format_name,
+    )
 }
 
 fn render_level<W: Write + ?Sized, F>(
     writer: &mut W,
-    paths: &[&str],
+    spans: &[FileSpan],
+    path_arena: &str,
     depth: usize,
     prefix: &mut String,
-    format_name: &F,
+    format_name: &mut F,
 ) -> std::io::Result<()>
 where
-    F: Fn(&str) -> Cow<'_, str>,
+    F: FnMut(&mut W, &str) -> std::io::Result<()>,
 {
-    if paths.is_empty() {
+    if spans.is_empty() {
         return Ok(());
     }
 
-    let mut children: Vec<Child<'_>> = Vec::new();
     let mut i = 0;
-    while i < paths.len() {
-        let (name, is_dir) = component_at(paths[i], depth);
+    while i < spans.len() {
+        let (name, is_dir) = component_at(spans[i].path(path_arena), depth);
         if name.is_empty() {
             i += 1;
             continue;
         }
         let start = i;
         i += 1;
-        while i < paths.len() {
-            let (next_name, next_is_dir) = component_at(paths[i], depth);
+        while i < spans.len() {
+            let (next_name, next_is_dir) = component_at(spans[i].path(path_arena), depth);
             if next_name == name && next_is_dir == is_dir {
                 i += 1;
             } else {
                 break;
             }
         }
-        children.push(Child {
-            name,
-            is_dir,
-            start,
-            end: i,
-        });
-    }
+        let end = i;
+        let is_last = end == spans.len();
 
-    children.sort_unstable_by(|a, b| a.name.cmp(b.name).then_with(|| a.is_dir.cmp(&b.is_dir)));
-
-    let total = children.len();
-    for (idx, child) in children.iter().enumerate() {
-        let is_last = idx + 1 == total;
         writer.write_all(prefix.as_bytes())?;
         writer.write_all(if is_last { TREE_LAST } else { TREE_BRANCH }.as_bytes())?;
-        let formatted = format_name(child.name);
-        writer.write_all(formatted.as_bytes())?;
-        if child.is_dir {
+        format_name(writer, name)?;
+
+        if is_dir {
             writer.write_all(b"/\n")?;
             let prev_len = prefix.len();
             prefix.push_str(if is_last { TREE_SPACE } else { TREE_VERT });
             render_level(
                 writer,
-                &paths[child.start..child.end],
+                &spans[start..end],
+                path_arena,
                 depth + 1,
                 prefix,
                 format_name,
@@ -128,9 +120,14 @@ mod tests {
 
     #[test]
     fn renders_ascii_tree_correctly() -> Result<(), Box<dyn std::error::Error>> {
-        let paths = ["Cargo.toml", "src/core/a.rs", "src/lib.rs"];
+        let mut storage = FileStorage::new();
+        storage.push("Cargo.toml", "");
+        storage.push("src/core/a.rs", "");
+        storage.push("src/lib.rs", "");
+        storage.sort_by_path();
+
         let mut buf = Vec::new();
-        render_tree(&mut buf, &paths, |s| Cow::Borrowed(s))?;
+        render_tree(&mut buf, &storage, |w, s| w.write_all(s.as_bytes()))?;
         let tree_str = std::str::from_utf8(&buf)?;
         let expected = "\
 ├── Cargo.toml
@@ -145,9 +142,13 @@ mod tests {
 
     #[test]
     fn formats_tree_nodes_custom_formatter() -> std::io::Result<()> {
-        let paths = ["dir_name/file_name.txt"];
+        let mut storage = FileStorage::new();
+        storage.push("dir_name/file_name.txt", "");
+
         let mut out = Vec::new();
-        render_tree(&mut out, &paths, |name| Cow::Owned(name.to_uppercase()))?;
+        render_tree(&mut out, &storage, |w, name| {
+            w.write_all(name.to_uppercase().as_bytes())
+        })?;
         let s = String::from_utf8_lossy(&out);
         assert!(s.contains("DIR_NAME/"));
         assert!(s.contains("FILE_NAME.TXT"));
@@ -156,9 +157,14 @@ mod tests {
 
     #[test]
     fn renders_nested_siblings_in_alphabetical_order() -> Result<(), Box<dyn std::error::Error>> {
-        let paths = ["a/x.txt", "a/y.txt", "b/z.txt"];
+        let mut storage = FileStorage::new();
+        storage.push("a/x.txt", "");
+        storage.push("a/y.txt", "");
+        storage.push("b/z.txt", "");
+        storage.sort_by_path();
+
         let mut buf = Vec::new();
-        render_tree(&mut buf, &paths, |s| Cow::Borrowed(s))?;
+        render_tree(&mut buf, &storage, |w, s| w.write_all(s.as_bytes()))?;
         let tree_str = std::str::from_utf8(&buf)?;
         let expected = "\
 ├── a/

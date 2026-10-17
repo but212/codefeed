@@ -50,11 +50,11 @@ imperative-shell boundary.
 - Broken downstream pipe (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0 (preserving estimated tokens when encountered on buffer flush; defaulting to 0 on early mid-stream write termination).
 - Local walk excludes existing output files via canonical path comparison. The output target is resolved once at initialization (`resolve_output_target`); walk candidates are compared directly without repeated syscalls during traversal.
 - Local walk uses a 2-step linear pipeline:
-  1. `ignore::WalkBuilder` with `follow_links(false)` and `.sort_by_file_name(|a, b| a.cmp(b))` collects candidate paths into a deterministically sorted list, with pre-flight batch candidate budget verification (`CandidateBudget::check_limit`) to fail fast before reading file bodies.
-  2. Bounded sequential reads (verifying regular non-symlink metadata before opening) feed observations into `Selector`. Stream state in `LocalStream` holds only the root label and candidate iterator without retaining redundant root path allocations.
+  1. `ignore::WalkBuilder` with `follow_links(false)` and `.sort_by_file_name(|a, b| a.cmp(b))` buffers candidate paths into a compact contiguous `PathArena` (single `String` arena + offset spans), evaluating `CandidateBudget::add` on the fly to fail fast on candidate budget breach before reading file bodies.
+  2. Bounded sequential reads (verifying regular non-symlink metadata before opening) stream observations into `Selector` directly from `PathArena`.
 - Digest cap (`MAX_OUTPUT_SIZE`) is strictly enforced on bytes actually written to the output stream via `BoundedEstimatingWriter`, preventing framing/metadata overflow (atomic file rollback removes partial output; stdout stream terminates immediately at `MAX_OUTPUT_SIZE`).
 - Token count is estimated on the same writer stream pass over rendered byte length.
-- ASCII directory tree renders directly from sorted `FileStorage` paths without intermediate tree arena allocation (`tree::render_tree`). It is format-neutral; XML entity and newline escaping occurs on-the-fly during rendering.
+- ASCII directory tree renders directly from sorted `FileStorage` with zero intermediate allocations (`tree::render_tree`). It is format-neutral; XML entity and newline escaping occurs on-the-fly during rendering.
 - CLI arguments are parsed linearly into options and source in pure core (`core::cli`) using `std` only, supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters without third-party CLI dependencies.
 - Candidate budget uses standard `HashMap<String, usize>` during collection, with deterministic overflow diagnostics sorted by count descending then directory ascending.
 - Digest budget is tracked directly in `Selector` and is error-terminal: limit breach constructs complete `IngestError::OutputTooLarge` diagnostics without internal transactional rollback.
@@ -82,14 +82,14 @@ never depends on shell code; shell code depends on the core in one direction.
     `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`, `FileStorage`).
   - `error.rs`: domain error enum `IngestError` and diagnostic payloads (`CandidateLimitExceededError`).
   - `selector.rs`: candidate observation (`CandidateInput`), candidate budget directory accounting (`CandidateBudget`), `Selector` storage accumulation, and `largest_files` diagnostic selection.
-  - `tree.rs`: Format-neutral ASCII hierarchy tree rendering (`render_tree`) directly from sorted paths.
-  - `render/` (`mod.rs`, `text.rs`, `xml.rs`): Format-specific streaming serializers (Text/XML), single-pass escaping (`escape_header`, `xml_escape`, `write_escaped`), token estimation heuristic (`estimate_tokens`), `render_to_writer`, and streaming `BoundedEstimatingWriter`.
+  - `tree.rs`: Format-neutral ASCII hierarchy tree rendering (`render_tree`) directly from `FileStorage` with zero allocations.
+  - `render/` (`mod.rs`, `text.rs`, `xml.rs`): Format-specific streaming serializers (Text/XML), single-pass streaming escaping (`escape_header`, `write_escaped`, `write_xml_tree_escaped`) preserving newline injection defense, token estimation heuristic (`estimate_tokens`), and `BoundedEstimatingWriter`.
   - `github_url.rs`: Pure `std` URL construction with RFC 3986 percent-encoding and origin credential scoping.
-  - `archive.rs`: Pax header comment extraction and archive root stripping.
+  - `archive.rs`: Pax header comment extraction and in-place tar entry path normalization (`normalize_tar_entry_path`).
 - Imperative shell (`src/shell/`):
   - `src/main.rs`: binary entry point and user-facing CLI completion report formatting.
-  - `shell/orchestrate.rs`: Pipeline orchestration (`ingest`) and unified streaming collection driver (`SourceStream`, `collect_stream`).
-  - `shell/local.rs`: 2-step linear filesystem candidate discovery, non-symlink metadata validation, and bounded streaming reads (`LocalStream`).
-  - `shell/github.rs`: streaming archive tarball entry iterator (`GithubStream`), HTTP transport (`GithubClient`), retry handling, body bounding, and token resolution.
+  - `shell/orchestrate.rs`: Pipeline orchestration (`ingest`).
+  - `shell/local.rs`: 2-step linear filesystem candidate discovery, non-symlink metadata validation, and direct `Selector` collection.
+  - `shell/github.rs`: streaming archive tarball collection (`collect_archive`), HTTP transport (`GithubClient`), retry handling, body bounding, and token resolution.
   - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`), standard output stream emission, and canonical output path resolution (`resolve_output_target`).
   - `shell/mod.rs`: shell module declarations and scoped test fixture isolation (`TempDirGuard`).

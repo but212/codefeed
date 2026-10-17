@@ -14,7 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Encapsulation & Visibility**: Demoted internal items (`FileStorage`, `FileSpan`, `FileRecord`, `CollectionResult`, `Selector`, `CandidateBudget`, `CandidateInput`, `LocalStream`, `GithubStream`, `StreamInfo`, `SourceStream`, constants) from `pub` to `pub(crate)`, and single-file items (`HELP`, `NOISE`, `SENSITIVE_EXTENSIONS`, `RETRY_*`, XML/header helpers) to private.
+- **Boundary Normalization**: Replaced `strip_archive_root` with `normalize_tar_entry_path` in `src/core/archive.rs`, normalizing consecutive slashes, stripping `.` segments, and rejecting directory traversal (`..`) at the ingestion boundary.
+- **Policy Simplification**: Removed special-case exceptions for `.` and `..` in `policy::is_hidden_path`, relying on normalized path guarantees.
+- **Hierarchical Path Sorting**: Implemented component-wise path sorting (`cmp_path`) in `FileStorage::sort_by_path()`, keeping directory subtrees adjacent.
+- **Zero-Allocation Tree Rendering**: Converted `tree::render_tree` to stream directly from `&FileStorage`, completely removing `Child` struct, `Vec<Child>`, and intermediate allocations.
+- **Direct Collection Rendering**: Unified `DigestFormat::render` to take `&CollectionResult` directly, eliminating `Vec<&str>` allocations.
+- **Streaming Escapes & Newline Injection Defense**: Unified XML streaming escapes with `write_xml_tree_escaped`, preserving newline injection defenses while eliminating intermediate `Cow<'_, str>` and `xml_escape`.
+- **Shell Stream Indirection Elimination**: Removed `SourceStream`, `StreamInfo`, `LocalStream`, and `GithubStream`, driving `Selector` directly from `local::collect` and `collect_archive`.
+- **Selector State Pruning**: Removed redundant `Selector::content_bytes` in favor of `FileStorage::total_bytes()`.
+- **CLI Option Parsing**: Deduplicated flag value extraction into `extract_opt_val` and restricted `"-"` to output flags only.
+- **Third-Party Attribution**: Removed stale `clap` entry from `NOTICE`.
+- **Candidate Path Arena**: Replaced `Vec<Option<String>>` in `src/shell/local.rs` with `PathArena` (single contiguous `String` buffer + offset spans), evaluating `CandidateBudget::add` on the fly to eliminate batch `check_limit` loops and individual heap string allocations.
+- **Encapsulation & Visibility**: Demoted internal items (`FileStorage`, `FileSpan`, `FileRecord`, `CollectionResult`, `Selector`, `CandidateBudget`, `CandidateInput`, constants) from `pub` to `pub(crate)`, and single-file items (`HELP`, `NOISE`, `SENSITIVE_EXTENSIONS`, `RETRY_*`, XML/header helpers) to private.
 
 ## [0.2.4]
 

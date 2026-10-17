@@ -54,19 +54,6 @@ impl CandidateBudget {
         }
     }
 
-    /// Validates an iterator of path candidates against the global file count limit.
-    pub(crate) fn check_limit<'a, I>(paths: I) -> Result<(), IngestError>
-    where
-        I: IntoIterator<Item = Option<&'a str>>,
-    {
-        let mut iter = paths.into_iter();
-        if matches!(iter.size_hint().1, Some(upper) if upper <= MAX_FILE_COUNT) {
-            return Ok(());
-        }
-        let mut budget = Self::default();
-        iter.try_for_each(|path| budget.add(path))
-    }
-
     /// Adds a single observed candidate path to the budget accounting.
     pub(crate) fn add(&mut self, path: Option<&str>) -> Result<(), IngestError> {
         self.count = self.count.checked_add(1).ok_or_else(file_count_overflow)?;
@@ -117,7 +104,6 @@ fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String,
 pub(crate) struct Selector {
     storage: FileStorage,
     candidates: CandidateBudget,
-    content_bytes: u64,
     skipped: usize,
 }
 
@@ -133,7 +119,6 @@ impl Selector {
         Self {
             storage: FileStorage::with_capacity(spans_cap, path_bytes, content_bytes),
             candidates: CandidateBudget::with_capacity(dir_runs_cap),
-            content_bytes: 0,
             skipped: 0,
         }
     }
@@ -178,11 +163,10 @@ impl Selector {
 
     fn add_file(&mut self, path: &str, content: &str) -> Result<(), IngestError> {
         let file_bytes = (path.len() + content.len()) as u64;
-        let new_total = self.content_bytes.saturating_add(file_bytes);
+        let new_total = self.storage.total_bytes().saturating_add(file_bytes);
         if new_total > MAX_OUTPUT_SIZE {
             return Err(self.output_too_large_error(path, content));
         }
-        self.content_bytes = new_total;
         self.storage.push(path, content);
         Ok(())
     }
@@ -255,15 +239,6 @@ mod tests {
             candidates.add(None).unwrap();
         }
         assert!(candidates.add(None).is_err());
-    }
-
-    #[test]
-    fn candidate_budget_check_limit_validates_batch() {
-        let under_limit = (0..MAX_FILE_COUNT).map(|_| Some("dir/file.txt"));
-        assert!(CandidateBudget::check_limit(under_limit).is_ok());
-
-        let over_limit = (0..=MAX_FILE_COUNT).map(|_| Some("dir/file.txt"));
-        assert!(CandidateBudget::check_limit(over_limit).is_err());
     }
 
     #[test]

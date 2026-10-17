@@ -67,76 +67,39 @@ where
             if s == "-h" || s == "--help" {
                 return Ok(CliAction::Help);
             }
-            if s == "-o" || s == "--output" {
-                let val = match args_iter.next() {
-                    Some(v)
-                        if v.to_str()
-                            .is_none_or(|v_str| v_str == "-" || !v_str.starts_with('-')) =>
-                    {
-                        v
+            if s == "-o" || s == "--output" || s.starts_with("-o=") || s.starts_with("--output=") {
+                let inline = s.split_once('=').map(|(_, v)| v);
+                let flag = inline.map_or(s, |_| {
+                    if s.starts_with("-o=") {
+                        "-o"
+                    } else {
+                        "--output"
                     }
-                    _ => {
-                        return Err(IngestError::usage(format!(
-                            "a value is required for '{s}' but none was supplied"
-                        )));
-                    }
-                };
-                output = Some(val);
+                });
+                output = Some(extract_opt_val(flag, &mut args_iter, inline, true)?);
                 continue;
             }
-            if let Some(val) = s
-                .strip_prefix("-o=")
-                .or_else(|| s.strip_prefix("--output="))
-            {
-                output = Some(OsString::from(val));
-                continue;
-            }
-            if s == "-r" || s == "--ref" {
-                let val = match args_iter.next() {
-                    Some(v)
-                        if v.to_str()
-                            .is_none_or(|v_str| v_str == "-" || !v_str.starts_with('-')) =>
-                    {
-                        v
-                    }
-                    _ => {
-                        return Err(IngestError::usage(format!(
-                            "a value is required for '{s}' but none was supplied"
-                        )));
-                    }
-                };
+            if s == "-r" || s == "--ref" || s.starts_with("-r=") || s.starts_with("--ref=") {
+                let inline = s.split_once('=').map(|(_, v)| v);
+                let flag = inline.map_or(s, |_| if s.starts_with("-r=") { "-r" } else { "--ref" });
+                let val = extract_opt_val(flag, &mut args_iter, inline, false)?;
                 let val_str = val
                     .into_string()
                     .map_err(|_| IngestError::usage("git reference must be valid utf-8"))?;
                 reference = Some(val_str);
                 continue;
             }
-            if let Some(val) = s.strip_prefix("-r=").or_else(|| s.strip_prefix("--ref=")) {
-                reference = Some(val.to_string());
-                continue;
-            }
-            if s == "-f" || s == "--format" {
-                let val = match args_iter.next() {
-                    Some(v)
-                        if v.to_str()
-                            .is_none_or(|v_str| v_str == "-" || !v_str.starts_with('-')) =>
-                    {
-                        v
+            if s == "-f" || s == "--format" || s.starts_with("-f=") || s.starts_with("--format=") {
+                let inline = s.split_once('=').map(|(_, v)| v);
+                let flag = inline.map_or(s, |_| {
+                    if s.starts_with("-f=") {
+                        "-f"
+                    } else {
+                        "--format"
                     }
-                    _ => {
-                        return Err(IngestError::usage(format!(
-                            "a value is required for '{s}' but none was supplied"
-                        )));
-                    }
-                };
+                });
+                let val = extract_opt_val(flag, &mut args_iter, inline, false)?;
                 format = parse_format(val.to_str().unwrap_or(""))?;
-                continue;
-            }
-            if let Some(val) = s
-                .strip_prefix("-f=")
-                .or_else(|| s.strip_prefix("--format="))
-            {
-                format = parse_format(val)?;
                 continue;
             }
             if s.starts_with('-') && s != "-" {
@@ -169,6 +132,38 @@ where
         output_target,
         format,
     )))
+}
+
+fn extract_opt_val<I>(
+    flag: &str,
+    args: &mut I,
+    inline_val: Option<&str>,
+    allow_dash: bool,
+) -> Result<OsString, IngestError>
+where
+    I: Iterator<Item = OsString>,
+{
+    let val = match inline_val {
+        Some(v) => OsString::from(v),
+        None => match args.next() {
+            Some(v) => v,
+            None => {
+                return Err(IngestError::usage(format!(
+                    "a value is required for '{flag}' but none was supplied"
+                )));
+            }
+        },
+    };
+
+    if let Some(s) = val.to_str()
+        && s.starts_with('-')
+        && !(allow_dash && s == "-")
+    {
+        return Err(IngestError::usage(format!(
+            "a value is required for '{flag}' but none was supplied"
+        )));
+    }
+    Ok(val)
 }
 
 fn parse_format(val: &str) -> Result<DigestFormat, IngestError> {
@@ -278,6 +273,15 @@ mod tests {
                 "--ref",
                 "   ",
             ],
+            &["codefeed", "https://github.com/rust-lang/cargo", "-r", "-"],
+            &[
+                "codefeed",
+                "https://github.com/rust-lang/cargo",
+                "--ref",
+                "-",
+            ],
+            &["codefeed", "src", "-f", "-"],
+            &["codefeed", "src", "--format", "-"],
         ];
         for args in invalid_cases {
             assert!(

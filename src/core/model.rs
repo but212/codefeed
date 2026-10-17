@@ -160,18 +160,33 @@ impl FileStorage {
         self.spans.len()
     }
 
-    /// Sorts spans lexicographically by path in-place within the path arena.
+    #[inline]
+    pub(crate) fn spans(&self) -> &[FileSpan] {
+        &self.spans
+    }
+
+    #[inline]
+    pub(crate) fn path_arena(&self) -> &str {
+        &self.path_arena
+    }
+
+    #[inline]
+    pub(crate) fn total_bytes(&self) -> u64 {
+        (self.path_arena.len() + self.content_arena.len()) as u64
+    }
+
+    /// Sorts spans hierarchically by path components in-place within the path arena.
     pub(crate) fn sort_by_path(&mut self) {
         let path_arena = &self.path_arena;
         let is_sorted = self
             .spans
             .windows(2)
-            .all(|w| w[0].path(path_arena) <= w[1].path(path_arena));
+            .all(|w| cmp_path(w[0].path(path_arena), w[1].path(path_arena)).is_le());
         if is_sorted {
             return;
         }
         self.spans
-            .sort_unstable_by(|a, b| a.path(path_arena).cmp(b.path(path_arena)));
+            .sort_unstable_by(|a, b| cmp_path(a.path(path_arena), b.path(path_arena)));
     }
 
     /// Appends path and content to the arenas and records a [`FileSpan`].
@@ -221,6 +236,23 @@ impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
             storage.push(record.path, record.content);
         }
         storage
+    }
+}
+
+/// Compares two normalized slash-separated relative paths hierarchically by path components.
+pub(crate) fn cmp_path(a: &str, b: &str) -> std::cmp::Ordering {
+    let mut a_parts = a.split('/');
+    let mut b_parts = b.split('/');
+    loop {
+        match (a_parts.next(), b_parts.next()) {
+            (Some(seg_a), Some(seg_b)) => match seg_a.cmp(seg_b) {
+                std::cmp::Ordering::Equal => continue,
+                other => return other,
+            },
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (None, None) => return std::cmp::Ordering::Equal,
+        }
     }
 }
 
@@ -290,6 +322,18 @@ mod tests {
 
         let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
         assert_eq!(paths, vec!["a/file.rs", "m/file.rs", "z/file.rs"]);
+    }
+
+    #[test]
+    fn file_storage_sorts_hierarchically() {
+        let mut storage = FileStorage::new();
+        storage.push("src-test/b.rs", "content_b");
+        storage.push("src/a.rs", "content_a");
+
+        storage.sort_by_path();
+
+        let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
+        assert_eq!(paths, vec!["src/a.rs", "src-test/b.rs"]);
     }
 
     #[test]
