@@ -247,7 +247,7 @@ pub struct CollectionResult {
     pub revision: Option<String>,
     pub files: FileStorage,
     pub skipped: usize,
-    pub trie: crate::core::digest::BudgetTrie,
+    pub trie: crate::core::tree::BudgetTrie,
 }
 
 #[cfg(test)]

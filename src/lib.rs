@@ -11,13 +11,14 @@ pub use shell::orchestrate::ingest;
 #[doc(hidden)]
 pub mod __bench {
     pub use crate::core::decide::{CandidateBudget, Item, ItemPath, Probe, Selector, text_str};
-    pub use crate::core::digest::{
-        BudgetTrie, escape_header, estimate_tokens, render_to_writer, unescape_header,
-        write_escaped, xml_escape,
-    };
     pub use crate::core::model::{
         CollectionResult, DigestFormat, FileRecord, FileStorage, OutputTarget,
     };
+    pub use crate::core::render::{
+        escape_header, estimate_tokens, render_to_writer, unescape_header, write_escaped,
+        xml_escape,
+    };
+    pub use crate::core::tree::BudgetTrie;
     pub use crate::shell::local::LocalStream;
     pub use crate::shell::orchestrate::{SourceStream, collect_stream};
 }

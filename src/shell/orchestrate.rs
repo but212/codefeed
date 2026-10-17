@@ -37,7 +37,7 @@ pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
     };
 
     let estimated_tokens = shell::output::emit(&config.output, |writer| {
-        crate::core::digest::render_to_writer(writer, &collection, config.format)
+        crate::core::render::render_to_writer(writer, &collection, config.format)
     })?;
 
     Ok(IngestReport {

@@ -338,7 +338,7 @@ mod suites {
         runner.bench("trie_render_flat_1000", 20, 50, None, || {
             let mut writer = VoidWriter;
             flat_trie
-                .render_to_writer(&mut writer, false)
+                .render_to_writer(&mut writer, escape_header)
                 .expect("render trie");
             black_box(&mut writer);
         });
@@ -361,7 +361,7 @@ mod suites {
         runner.bench("trie_render_deep_1000", 20, 50, None, || {
             let mut writer = VoidWriter;
             deep_trie
-                .render_to_writer(&mut writer, false)
+                .render_to_writer(&mut writer, escape_header)
                 .expect("render trie");
             black_box(&mut writer);
         });

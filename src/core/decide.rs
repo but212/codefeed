@@ -1,12 +1,12 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use crate::core::digest::{BudgetTrie, InsertError};
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, FileRecord, FileStorage};
 use crate::core::policy::{
     MAX_COMPONENT_LEN, MAX_FILE_COUNT, MAX_OUTPUT_SIZE, find_overlong_component,
 };
+use crate::core::tree::{BudgetTrie, InsertError};
 
 /// Path text as observed by the imperative shell. Non-UTF-8 paths are still
 /// candidates and must be counted, then skipped.
@@ -75,7 +75,7 @@ pub(crate) enum ItemDecision<'a> {
 
 impl<'a> ItemDecision<'a> {
     #[inline]
-    pub(crate) fn path(&self) -> Option<&'a str> {
+    pub(crate) const fn path(&self) -> Option<&'a str> {
         match self {
             Self::Included { path, .. } => Some(path),
             Self::Skipped { path } => *path,
@@ -170,9 +170,7 @@ impl Selector {
         if new_total > MAX_OUTPUT_SIZE {
             let record = FileRecord { path, content };
             return Err(IngestError::OutputTooLarge {
-                largest_files: crate::core::digest::largest_files(
-                    self.storage.iter().chain(std::iter::once(record)),
-                ),
+                largest_files: largest_files(self.storage.iter().chain(std::iter::once(record))),
             });
         }
         self.content_bytes = new_total;
@@ -257,7 +255,7 @@ pub struct CandidateBudget {
 }
 
 impl CandidateBudget {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             count: 0,
             dir_runs: Vec::new(),
@@ -350,6 +348,36 @@ pub fn text_str(bytes: &[u8]) -> Option<&str> {
         return None;
     }
     std::str::from_utf8(bytes).ok()
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic ranking for digest size
+// ---------------------------------------------------------------------------
+
+pub(crate) fn largest_files<'a>(
+    files: impl IntoIterator<Item = FileRecord<'a>>,
+) -> Vec<(String, usize)> {
+    let mut top: Vec<(&'a str, usize)> = Vec::with_capacity(6);
+
+    for file in files {
+        let size = file.content.len();
+        if top.len() == 5 && size <= top.last().unwrap().1 {
+            continue;
+        }
+
+        let index = top
+            .iter()
+            .position(|probe| probe.1 < size)
+            .unwrap_or(top.len());
+        if index < 5 {
+            top.insert(index, (file.path, size));
+            top.truncate(5);
+        }
+    }
+
+    top.into_iter()
+        .map(|(path, size)| (path.to_string(), size))
+        .collect()
 }
 
 #[cfg(test)]
@@ -698,5 +726,46 @@ mod tests {
         let long_str = "deeply/nested/directory/structure/path/";
         let long_dir = CompactDir::from_str(long_str);
         assert_eq!(long_dir.as_bytes(), long_str.as_bytes());
+    }
+
+    #[test]
+    fn largest_files_selects_top_five_with_stability() {
+        let files = [
+            FileRecord {
+                path: "f1.txt",
+                content: "1",
+            },
+            FileRecord {
+                path: "f2.txt",
+                content: "22",
+            },
+            FileRecord {
+                path: "f3.txt",
+                content: "333",
+            },
+            FileRecord {
+                path: "f4.txt",
+                content: "4444",
+            },
+            FileRecord {
+                path: "f5_a.txt",
+                content: "55555",
+            },
+            FileRecord {
+                path: "f5_b.txt",
+                content: "55555",
+            },
+            FileRecord {
+                path: "f6.txt",
+                content: "666666",
+            },
+        ];
+        let result = largest_files(files);
+        assert_eq!(result.len(), 5);
+        assert_eq!(result[0], ("f6.txt".into(), 6));
+        assert_eq!(result[1], ("f5_a.txt".into(), 5));
+        assert_eq!(result[2], ("f5_b.txt".into(), 5));
+        assert_eq!(result[3], ("f4.txt".into(), 4));
+        assert_eq!(result[4], ("f3.txt".into(), 3));
     }
 }

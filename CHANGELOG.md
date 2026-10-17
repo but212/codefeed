@@ -16,14 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `BudgetTrieNode` (`src/core/digest/trie.rs`): packed directory status into `flags: u16` (`FLAG_DIR = 1 << 0`) while maintaining 16-byte fixed node layout.
-- `HEADER_ESCAPE_MASK` (`src/core/digest/text.rs`): replaced escape matching with a compact 32-byte bitset (`[u64; 4]`) and inline mask checking.
+- `BudgetTrie`, `BudgetTrieNode`, and `InsertError`: extracted to dedicated format-neutral data structure module `src/core/tree.rs`.
+- `largest_files`: relocated to `src/core/decide.rs`.
+- Decoupled core module DAG: established strict acyclic unidirectional flow (`tree` -> `model` -> `decide` -> `render`), eliminating cyclic/backward module dependencies.
+- Consolidate digest formatting: merged `src/core/digest/{mod.rs, text.rs, xml.rs, token.rs}` into single module `src/core/render.rs` (`render_to_writer`, `BoundedEstimatingWriter`, `TokenEstimator`, `escape_header`, `xml_escape`).
+- `BudgetTrieNode` (`src/core/tree.rs`): packed directory status into `flags: u16` (`FLAG_DIR = 1 << 0`) while maintaining 16-byte fixed node layout.
+- `HEADER_ESCAPE_MASK` (`src/core/render.rs`): replaced escape matching with a compact 32-byte bitset (`[u64; 4]`) and inline mask checking.
 - `Selector::add_file` (`src/core/decide.rs`): validates component lengths upfront during ingestion (fail-fast) before adding files to storage.
 - `Selector::finish` (`src/core/decide.rs`): returns `Result<CollectionResult, IngestError>`, eliminating unhandled panics by propagating component limit violations.
 - `collect_stream` (`src/shell/orchestrate.rs`): propagates `Selector::finish` errors directly through the streaming pipeline.
 
 ### Removed
 
+- `src/core/digest/`: completely eliminated directory module and boilerplate submodules (`budget.rs`, `text.rs`, `token.rs`, `trie.rs`, `xml.rs`, `mod.rs`).
 - `safe_component` (`src/core/digest/trie.rs`): removed dead-code truncation in favor of atomic insertion pre-validation.
 
 ## [0.2.3]

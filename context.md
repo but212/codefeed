@@ -95,14 +95,10 @@ never depends on shell code; shell code depends on the core in one direction.
   - `model.rs`: domain value types (`Source`, `FileRecord`, `CollectionResult`,
     `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`, `FileStorage`).
   - `error.rs`: domain error enum `IngestError` with structured diagnostic payload (`CandidateLimitExceeded`, `OutputTooLarge`).
-  - `decide.rs`: `Selector::decide`, `Selector::finish`, `CandidateBudget`, `CandidateBudget::check_limit`, item evaluation via `slice::contains`, and
-    candidate overflow diagnostics.
-  - `digest/`:
-    - `budget.rs`: `largest_files` diagnostic selection.
-    - `token.rs`: `TokenEstimator` heuristic token state machine and `estimate_tokens`.
-    - `trie.rs`: Format-neutral ASCII hierarchy tree (`BudgetTrie`).
-    - `text.rs` / `xml.rs`: Format-specific streaming serializers.
-    - `mod.rs`: `DigestFormat::render`, `render_to_writer`, and streaming `BoundedEstimatingWriter`.
+  - `decide.rs`: `Selector::decide`, `Selector::finish`, `CandidateBudget`, `CandidateBudget::check_limit`, item evaluation via `slice::contains`,
+    candidate overflow diagnostics, and `largest_files` diagnostic selection.
+  - `tree.rs`: Format-neutral ASCII hierarchy tree (`BudgetTrie`, `BudgetTrieNode`, `InsertError`) in flat 16-byte LCRS arena.
+  - `render.rs`: Format-specific streaming serializers (Text/XML), escaping (`escape_header`, `xml_escape`), `TokenEstimator` heuristic token state machine, `render_to_writer`, and streaming `BoundedEstimatingWriter`.
   - `github_url.rs`: Pure `std` URL construction with RFC 3986 percent-encoding and origin credential scoping.
   - `archive.rs`: Pax header comment extraction and archive root stripping.
 - Imperative shell (`src/shell/`):

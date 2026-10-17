@@ -1,10 +1,12 @@
 //! In-memory directory tree representation and deterministic ASCII tree rendering.
+//!
+//! Provides a compact 16-byte fixed-size Left-Child Right-Sibling (LCRS) arena
+//! representation of file hierarchy (`BudgetTrie`) and zero-allocation deterministic
+//! ASCII tree rendering with format-aware escaping.
 
 use std::borrow::Cow;
 use std::io::Write;
 
-use super::text::escape_header;
-use super::xml::xml_escape;
 use crate::core::policy::{MAX_COMPONENT_LEN, find_overlong_component};
 
 const TREE_BRANCH: &str = "├── ";
@@ -76,20 +78,6 @@ impl Default for BudgetTrie {
             label_arena: String::new(),
             last_children: vec![NO_NODE],
         }
-    }
-}
-
-fn tree_display<'a>(name: &'a str, escape_xml: bool) -> Cow<'a, str> {
-    if !escape_xml {
-        return escape_header(name);
-    }
-    let escaped = escape_header(name);
-    match escaped {
-        Cow::Borrowed(b) => xml_escape(b),
-        Cow::Owned(o) => match xml_escape(&o) {
-            Cow::Borrowed(_) => Cow::Owned(o),
-            Cow::Owned(xml_str) => Cow::Owned(xml_str),
-        },
     }
 }
 
@@ -197,26 +185,32 @@ impl BudgetTrie {
         new_index
     }
 
-    pub fn render_to_writer<W: Write + ?Sized>(
+    pub fn render_to_writer<W: Write + ?Sized, F>(
         &self,
         writer: &mut W,
-        escape_xml: bool,
-    ) -> std::io::Result<()> {
+        format_name: F,
+    ) -> std::io::Result<()>
+    where
+        F: Fn(&str) -> Cow<'_, str>,
+    {
         let mut prefix = String::new();
         let first_child = self.nodes.first().map(|n| n.first_child).unwrap_or(NO_NODE);
         if first_child != NO_NODE {
-            self.render_sibling_chain(writer, first_child, &mut prefix, escape_xml)?;
+            self.render_sibling_chain(writer, first_child, &mut prefix, &format_name)?;
         }
         Ok(())
     }
 
-    fn render_sibling_chain<W: Write + ?Sized>(
+    fn render_sibling_chain<W: Write + ?Sized, F>(
         &self,
         writer: &mut W,
         first_child: u32,
         prefix: &mut String,
-        escape_xml: bool,
-    ) -> std::io::Result<()> {
+        format_name: &F,
+    ) -> std::io::Result<()>
+    where
+        F: Fn(&str) -> Cow<'_, str>,
+    {
         const BRANCH_STRS: [&[u8]; 2] = [TREE_BRANCH.as_bytes(), TREE_LAST.as_bytes()];
         const PREFIX_STRS: [&str; 2] = [TREE_VERT, TREE_SPACE];
         const SUFFIXES: [&[u8]; 2] = [b"\n", b"/\n"];
@@ -229,14 +223,14 @@ impl BudgetTrie {
             writer.write_all(prefix.as_bytes())?;
             writer.write_all(BRANCH_STRS[is_last as usize])?;
             let name = self.node_name(curr);
-            let display = tree_display(name, escape_xml);
+            let display = format_name(name);
             writer.write_all(display.as_bytes())?;
             writer.write_all(SUFFIXES[node.is_dir() as usize])?;
 
             if node.first_child != NO_NODE {
                 let prev_len = prefix.len();
                 prefix.push_str(PREFIX_STRS[is_last as usize]);
-                self.render_sibling_chain(writer, node.first_child, prefix, escape_xml)?;
+                self.render_sibling_chain(writer, node.first_child, prefix, format_name)?;
                 prefix.truncate(prev_len);
             }
 
@@ -257,7 +251,7 @@ pub(crate) mod tests {
             trie.insert(path).unwrap();
         }
         let mut buf = Vec::new();
-        trie.render_to_writer(&mut buf, false)?;
+        trie.render_to_writer(&mut buf, |s| Cow::Borrowed(s))?;
         let tree_str = std::str::from_utf8(&buf)?;
         let expected = "\
 ├── Cargo.toml
@@ -271,47 +265,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn escapes_tree_node_newlines() -> std::io::Result<()> {
+    fn formats_tree_nodes_custom_formatter() -> std::io::Result<()> {
         let mut trie = BudgetTrie::new();
-        trie.insert("dir\nname/file\rname.txt").unwrap();
+        trie.insert("dir_name/file_name.txt").unwrap();
         let mut out = Vec::new();
-        trie.render_to_writer(&mut out, false)?;
+        trie.render_to_writer(&mut out, |name| Cow::Owned(name.to_uppercase()))?;
         let s = String::from_utf8_lossy(&out);
-        assert!(s.contains("dir\\nname/"));
-        assert!(s.contains("file\\rname.txt"));
-        assert!(!s.contains("dir\n"));
+        assert!(s.contains("DIR_NAME/"));
+        assert!(s.contains("FILE_NAME.TXT"));
         Ok(())
     }
 
     #[test]
-    fn escapes_tree_node_xml_entities() -> std::io::Result<()> {
-        let mut trie = BudgetTrie::new();
-        trie.insert("a & b/c < d.txt").unwrap();
-        let mut out = Vec::new();
-        trie.render_to_writer(&mut out, true)?;
-        let s = String::from_utf8_lossy(&out);
-        assert!(s.contains("a &amp; b/"));
-        assert!(s.contains("c &lt; d.txt"));
-        Ok(())
-    }
-
-    #[test]
-    fn test_trie_node_display_and_storage_optimization() {
-        use std::borrow::Cow;
-
+    fn test_trie_node_storage_optimization() {
         assert_eq!(std::mem::size_of::<BudgetTrieNode>(), 16);
-
-        assert!(matches!(tree_display("src", false), Cow::Borrowed("src")));
-        assert!(matches!(tree_display("src", true), Cow::Borrowed("src")));
-
-        assert!(matches!(
-            tree_display("dir\nname", false),
-            Cow::Owned(ref s) if s == "dir\\nname"
-        ));
-        assert!(matches!(
-            tree_display("a & b", true),
-            Cow::Owned(ref s) if s == "a &amp; b"
-        ));
 
         let mut trie = BudgetTrie::new();
         trie.insert("clean/dir/file.rs").unwrap();
