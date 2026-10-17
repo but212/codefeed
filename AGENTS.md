@@ -24,9 +24,9 @@ Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_
 
 ### OS & Network Safety
 
-- **Local reads (`src/shell/local_io.rs`):** Verify candidate entries are regular, non-symlink files (`fs::symlink_metadata`) and read bounded contents via standard `fs::File::open`. Never follow symlinks.
+- **Local reads (`src/shell/local.rs`):** Verify candidate entries are regular, non-symlink files (`fs::symlink_metadata`) and read bounded contents via standard `fs::File::open`. Never follow symlinks.
 - **File writes (`src/shell/output.rs`):** Write through `AtomicFile` so errors or panics unlink temp files on `Drop`.
-- **HTTP (`src/shell/github_client.rs`):** Keep `RedirectAuthHeaders::Never` and gate `Authorization` with `is_github_api_origin(url)`.
+- **HTTP (`src/shell/github.rs`):** Keep `RedirectAuthHeaders::Never` and gate `Authorization` with `is_github_api_origin(url)`.
 
 ## 3. Test
 

@@ -1,16 +1,15 @@
 //! Local directory collection orchestration: walk, map, select.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
 
-use super::local_io::{LocalFileRead, read_local_file_into};
 use super::orchestrate::{SourceStream, StreamInfo};
-use crate::core::decide::{CandidateBudget, CandidateInput};
 use crate::core::error::IngestError;
-use crate::core::policy::MAX_FILE_COUNT;
+use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE};
+use crate::core::selector::{CandidateBudget, CandidateInput};
 
 pub struct LocalStream {
     label: String,
@@ -82,6 +81,51 @@ impl SourceStream for LocalStream {
             revision: None,
         })
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LocalFileRead<'b> {
+    Bytes(&'b [u8]),
+    Missing,
+    TooLarge,
+}
+
+fn read_local_file_into<'b>(
+    path: &Path,
+    buf: &'b mut Vec<u8>,
+) -> Result<LocalFileRead<'b>, IngestError> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(LocalFileRead::Missing),
+        Err(err) => return Err(IngestError::Io(err)),
+    };
+    if meta.is_symlink() || !meta.is_file() {
+        return Ok(LocalFileRead::Missing);
+    }
+    if meta.len() > MAX_FILE_SIZE {
+        return Ok(LocalFileRead::TooLarge);
+    }
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(LocalFileRead::Missing),
+        Err(err) => return Err(IngestError::Io(err)),
+    };
+    read_bounded_content_into(file, buf).map_err(Into::into)
+}
+
+fn read_bounded_content_into<'b>(
+    file: fs::File,
+    buf: &'b mut Vec<u8>,
+) -> io::Result<LocalFileRead<'b>> {
+    if !file.metadata()?.is_file() {
+        return Ok(LocalFileRead::Missing);
+    }
+    let mut handle = file.take(MAX_FILE_SIZE.saturating_add(1));
+    handle.read_to_end(buf)?;
+    if buf.len() as u64 > MAX_FILE_SIZE {
+        return Ok(LocalFileRead::TooLarge);
+    }
+    Ok(LocalFileRead::Bytes(buf.as_slice()))
 }
 
 fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
@@ -178,6 +222,80 @@ mod tests {
     use super::*;
     use crate::core::model::{DigestFormat, FileRecord, OutputTarget, RunConfig, Source};
     use crate::ingest;
+
+    #[test]
+    fn read_local_file_enforces_size_boundaries() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("size_boundaries")?;
+        let exact_path = root.join("exact.txt");
+        let too_large_path = root.join("large.txt");
+        fs::write(&exact_path, vec![b'x'; MAX_FILE_SIZE as usize])?;
+        fs::write(&too_large_path, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
+
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_local_file_into(&exact_path, &mut buf)?,
+            LocalFileRead::Bytes(_)
+        ));
+        buf.clear();
+        assert!(matches!(
+            read_local_file_into(&too_large_path, &mut buf)?,
+            LocalFileRead::TooLarge
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn handles_unlinked_file_as_missing() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("missing_file")?;
+        let path = root.join("nonexistent.txt");
+
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_local_file_into(&path, &mut buf)?,
+            LocalFileRead::Missing
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_file() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("symlink_test")?;
+        let target = root.join("target.txt");
+        let link = root.join("link.txt");
+        fs::write(&target, "content")?;
+        symlink(&target, &link)?;
+
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_local_file_into(&link, &mut buf)?,
+            LocalFileRead::Missing
+        ));
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_windows_symlink_file() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::symlink_file;
+
+        let root = temp_dir("win_symlink_test")?;
+        let target = root.join("target.txt");
+        let link = root.join("link.txt");
+        fs::write(&target, "content")?;
+
+        if symlink_file(&target, &link).is_ok() {
+            let mut buf = Vec::new();
+            assert!(matches!(
+                read_local_file_into(&link, &mut buf)?,
+                LocalFileRead::Missing
+            ));
+            let _ = fs::remove_file(&link);
+        }
+        Ok(())
+    }
 
     #[cfg(unix)]
     #[test]

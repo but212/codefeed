@@ -16,7 +16,7 @@ imperative-shell boundary.
 - `FileSpan` — POD indexing path and content byte spans (`path_offset`, `path_len`, `content_offset`, `content_len`).
 - `FileStorage` — continuous append-only arena buffer with private arenas (`path_arena`, `content_arena`, `spans`) eliminating per-file heap fragmentation while preserving invariant safety and supporting in-place span sorting (`sort_by_path`).
 - `FileRecord<'a>` — zero-copy borrowed digest entry view: `path: &'a str`, `content: &'a str`.
-- `CollectionResult` — uniform collection record: `label`, optional `revision`, `files: FileStorage`, `skipped`, `trie`. Format-neutral and decoupled from presentation.
+- `CollectionResult` — uniform collection record: `label`, optional `revision`, `files: FileStorage`, `skipped`. Format-neutral and decoupled from presentation.
 - `IngestReport` — `output`, `included_files`, `skipped_files`, `estimated_tokens`.
 - `OutputTarget` — digest destination: `File(PathBuf)` or `Stdout`.
 - `DigestFormat` — output serialization format: `Text` or `Xml`.
@@ -51,7 +51,7 @@ imperative-shell boundary.
 - Local walk excludes existing output files via canonical path comparison. The output target is resolved once at initialization (`resolve_output_target`); walk candidates are compared directly without repeated syscalls during traversal.
 - Local walk uses a 2-step linear pipeline:
   1. `ignore::WalkBuilder` with `follow_links(false)` and `.sort_by_file_name(|a, b| a.cmp(b))` collects candidate paths into a deterministically sorted list, with pre-flight batch candidate budget verification (`CandidateBudget::check_limit`) to fail fast before reading file bodies.
-  2. Bounded sequential reads via `local_io::read_local_file` (verifying regular non-symlink metadata before opening) feed observations into `Selector`. Stream state in `LocalStream` holds only the root label and candidate iterator without retaining redundant root path allocations.
+  2. Bounded sequential reads (verifying regular non-symlink metadata before opening) feed observations into `Selector`. Stream state in `LocalStream` holds only the root label and candidate iterator without retaining redundant root path allocations.
 - Digest cap (`MAX_OUTPUT_SIZE`) is strictly enforced on bytes actually written to the output stream via `BoundedEstimatingWriter`, preventing framing/metadata overflow (atomic file rollback removes partial output; stdout stream terminates immediately at `MAX_OUTPUT_SIZE`).
 - Token count is estimated on the same writer stream pass over rendered byte length.
 - ASCII directory tree renders directly from sorted `FileStorage` paths without intermediate tree arena allocation (`tree::render_tree`). It is format-neutral; XML entity and newline escaping occurs on-the-fly during rendering.
@@ -61,7 +61,7 @@ imperative-shell boundary.
 
 ### Network & GitHub
 
-- Single HTTP request streams GitHub repository archive (`/repos/{owner}/{repo}/tarball/{ref}`) via `flate2` and `tar` over a 64 KiB `BufReader` buffered stream, streaming entries into `Selector::decide` with zero intermediate disk files and fail-fast budget termination. Commit revision is extracted from the archive `pax_global_header`.
+- Single HTTP request streams GitHub repository archive (`/repos/{owner}/{repo}/tarball/{ref}`) via `flate2` and `tar` over a 64 KiB `BufReader` buffered stream, streaming entries into `Selector::feed` with zero intermediate disk files and fail-fast budget termination. Commit revision is extracted from the archive `pax_global_header`.
 - HTTP credentials (`Authorization: Bearer <token>`) attach strictly to exact-origin GitHub API (`https://api.github.com`); foreign origins never receive credentials.
 - HTTP transport retries transient transport errors (`Io`, `Timeout`, `ConnectionFailed`) and HTTP 429 / 5xx responses with bounded exponential backoff up to `MAX_RETRIES` total attempts (1 initial + up to 2 retries). Fails immediately on non-transient transport errors and 4xx client errors (except 429).
 
@@ -91,7 +91,7 @@ never depends on shell code; shell code depends on the core in one direction.
   - `model.rs`: domain value types (`Source`, `FileRecord`, `CollectionResult`,
     `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`, `FileStorage`).
   - `error.rs`: domain error enum `IngestError` and diagnostic payloads (`CandidateLimitExceededError`).
-  - `decide/` (`mod.rs`, `item.rs`, `budget.rs`, `selector.rs`): candidate observation, candidate budget directory accounting, `Selector` storage accumulation, and `largest_files` diagnostic selection.
+  - `selector.rs`: candidate observation (`CandidateInput`), candidate budget directory accounting (`CandidateBudget`), `Selector` storage accumulation, and `largest_files` diagnostic selection.
   - `tree.rs`: Format-neutral ASCII hierarchy tree rendering (`render_tree`) directly from sorted paths.
   - `render/` (`mod.rs`, `text.rs`, `xml.rs`): Format-specific streaming serializers (Text/XML), single-pass escaping (`escape_header`, `xml_escape`, `write_escaped`), token estimation heuristic (`estimate_tokens`), `render_to_writer`, and streaming `BoundedEstimatingWriter`.
   - `github_url.rs`: Pure `std` URL construction with RFC 3986 percent-encoding and origin credential scoping.
@@ -99,9 +99,7 @@ never depends on shell code; shell code depends on the core in one direction.
 - Imperative shell (`src/shell/`):
   - `src/main.rs`: binary entry point and user-facing CLI completion report formatting.
   - `shell/orchestrate.rs`: Pipeline orchestration (`ingest`) and unified streaming collection driver (`SourceStream`, `collect_stream`).
-  - `shell/local.rs`: 2-step linear filesystem candidate discovery and streaming reader (`LocalStream`).
-  - `shell/local_io.rs`: Non-symlink file metadata validation and bounded streaming reads.
-  - `shell/github_client.rs`: HTTP transport, retry handling, body bounding, and token resolution.
-  - `shell/github.rs`: streaming archive tarball entry iterator (`GithubStream`).
+  - `shell/local.rs`: 2-step linear filesystem candidate discovery, non-symlink metadata validation, and bounded streaming reads (`LocalStream`).
+  - `shell/github.rs`: streaming archive tarball entry iterator (`GithubStream`), HTTP transport (`GithubClient`), retry handling, body bounding, and token resolution.
   - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`), standard output stream emission, and canonical output path resolution (`resolve_output_target`).
   - `shell/mod.rs`: shell module declarations and scoped test fixture isolation (`TempDirGuard`).

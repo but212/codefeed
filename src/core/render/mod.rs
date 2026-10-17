@@ -109,7 +109,9 @@ pub fn render_to_writer<W: Write + ?Sized>(
 }
 
 fn output_too_large_error(collection: &CollectionResult) -> IngestError {
-    IngestError::output_too_large(crate::core::decide::largest_files(collection.files.iter()))
+    IngestError::output_too_large(crate::core::selector::largest_files(
+        collection.files.iter(),
+    ))
 }
 
 #[cfg(test)]

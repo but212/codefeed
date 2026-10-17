@@ -97,7 +97,7 @@ Any path containing a component starting with a leading dot (`.`) is considered 
 
 ## 4. Local Filesystem Safety
 
-Local directory traversal in `src/shell/local.rs` and `src/shell/local_io.rs` adheres to the following invariants:
+Local directory traversal in `src/shell/local.rs` adheres to the following invariants:
 
 1. **No Symlink Following:**
    - Traversal configures `WalkBuilder::new().follow_links(false)`.
@@ -115,7 +115,7 @@ Local directory traversal in `src/shell/local.rs` and `src/shell/local_io.rs` ad
 
 ## 5. Network & Remote Safety (GitHub Ingestion)
 
-Remote ingestion via `src/shell/github.rs` and `src/shell/github_client.rs` operates under strict isolation:
+Remote ingestion via `src/shell/github.rs` operates under strict isolation:
 
 1. **Origin-Gated Authentication:**
    - GitHub tokens (`GITHUB_TOKEN` or `GH_TOKEN`) are attached as `Authorization: Bearer <token>` **only** when the request destination exactly matches `https://api.github.com`.

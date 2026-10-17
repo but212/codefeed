@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Module Architecture**: Consolidated over-fragmented modules: unified `src/core/decide/*` (`budget.rs`, `item.rs`, `selector.rs`, `mod.rs`) into `src/core/selector.rs`, merged `local_io.rs` into `src/shell/local.rs`, and merged `github_client.rs` into `src/shell/github.rs`.
 - **Directory Tree**: Eliminated `BudgetTrie` LCRS arena trie and `BudgetTrieNode`, rendering ASCII tree directly from lexicographically sorted `FileStorage`.
 - **Hidden Path Matching**: Replaced substring path matching with segment-based matching (`split('/')`), preventing false positives on `./` segments.
 - **CLI Parsing**: Dropped `clap` and `clap_derive` dependencies in favor of a minimal ~50-line standard library argument parser preserving all CLI flags, options, and help contracts.
@@ -35,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - External dependencies: `clap` and `clap_derive` (`Cargo.toml`).
+- Module fragments: `src/core/decide/`, `src/shell/local_io.rs`, and `src/shell/github_client.rs`.
 - `BudgetTrie`, `BudgetTrieNode`, and `CollectionResult::trie`.
 - `OutputFilter` struct and redundant `fs::canonicalize` calls during directory walk.
 - `seen_entries` boolean state on `GithubStream`.

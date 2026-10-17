@@ -11,7 +11,7 @@ Project-wide coding standards and API design principles for `codefeed`. Combines
 | Item | Convention | Example |
 | :--- | :--- | :--- |
 | Crates | `snake_case` (prefer single word) | `codefeed` |
-| Modules, files | `snake_case` | `local_io`, `candidate_budget` |
+| Modules, files | `snake_case` | `github_url`, `orchestrate` |
 | Types, traits, enums, variants | `UpperCamelCase` | `FileRecord`, `Option::Some` |
 | Functions, methods, variables | `snake_case` | `render_text`, `path_arena` |
 | Static items, constants | `SCREAMING_SNAKE_CASE` | `MAX_FILE_COUNT`, `MAX_OUTPUT_SIZE` |
@@ -22,7 +22,7 @@ Project-wide coding standards and API design principles for `codefeed`. Combines
 ### Fine Points from RFC 430
 
 - **Acronyms and Initialisms:**
-  - In `UpperCamelCase`, acronyms and compound brand names count as a single word (e.g., `Uuid`, `HttpServer`, `BudgetTrie`, `GithubClient`, `Source::Github` — never `UUID`, `HTTPServer`, `BudgetTRIE`, `GitHubClient`, `Source::GitHub`).
+  - In `UpperCamelCase`, acronyms and compound brand names count as a single word (e.g., `Uuid`, `HttpServer`, `GithubClient`, `Source::Github` — never `UUID`, `HTTPServer`, `GitHubClient`, `Source::GitHub`).
   - In `snake_case`, acronyms are completely lowercased (e.g., `is_xid_start`, `sha`).
 - **Single-Letter Words:**
   - In `snake_case` or `SCREAMING_SNAKE_CASE`, a word should never consist of a single letter unless it is the final word (e.g., `btree_map` over `b_tree_map`, but `PI_2` over `PI2`).

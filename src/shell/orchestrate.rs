@@ -1,8 +1,8 @@
 //! Pipeline orchestration: coordinates collection, emission, and digest rendering.
 
-use crate::core::decide::{CandidateInput, Selector};
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, IngestReport, RunConfig, Source};
+use crate::core::selector::{CandidateInput, Selector};
 use crate::shell;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
