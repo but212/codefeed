@@ -17,8 +17,8 @@ Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_
 
 ### Memory & Dependencies
 
-- Store file paths and contents in `FileStorage` arenas (`path_arena`, `content_arena`) indexed by `FileSpan`; iterate via zero-copy `FileRecord<'a>`. Never allocate per-file `String` structs.
-- Keep data structures direct and minimal. Avoid speculative optimizations without benchmark evidence.
+- Store file paths and contents in contiguous `FileStorage` arenas (`path_arena`, `content_arena`) indexed by 16-byte `FileSpan`; enables zero-copy `FileRecord<'a>` borrowed views throughout ingestion and in-place lexicographical sorting by swapping offsets without moving string data.
+- Keep data structures direct and minimal. Avoid speculative optimizations or premature micro-tuning; prioritize structural simplicity.
 - Stream output directly to `impl Write + ?Sized` using `Cow<'_, str>` or single-pass `write_escaped`.
 - Default to `std` first. Add an external crate only if implementing or maintaining the logic in-tree introduces disproportionate complexity or security risk (e.g., `.gitignore` parsing via `ignore`, HTTP via `ureq`). Document the rationale as an inline comment in `Cargo.toml`.
 

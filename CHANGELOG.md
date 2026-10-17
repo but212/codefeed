@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `CandidateInput` (`src/core/decide/item.rs`): Unified candidate input enum (`File`, `TooLarge`, `Skipped`) simplifying the FCIS boundary data flow.
+- `CandidateInput` (`src/core/selector.rs`): Unified candidate input enum (`File`, `TooLarge`, `Skipped`) simplifying the FCIS boundary data flow.
 - `render_tree` (`src/core/tree.rs`): Direct deterministic ASCII tree rendering from sorted path slices.
 - `resolve_output_target` (`src/shell/output.rs`): Single-pass output target validation and parent canonicalization.
 - `policy::is_ignored_path` (`src/core/policy.rs`): Direct path exclusion for noise lockfiles, sensitive prefixes/extensions, and hidden components.
@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Retry Backoff**: Removed `RETRY_JITTER_MAX_MS` and entropy plumbing; made `retry_delay(attempt)` a deterministic pure function.
 - **Binary Filtering**: Removed `BINARY_EXTENSIONS` hardcoded list and `PathClassification` enum; binary files are detected via UTF-8 / NUL-byte inspection during body read.
 - **Testing**: Replaced repeated `SystemTime` temporary directory boilerplate in integration tests with RAII `TempDir`.
+- **Documentation & Policy Alignment**: Reconciled optimization guidelines in `AGENTS.md` and `docs/coding_convention.md` to prioritize structural simplicity without benchmark mandates; documented `FileStorage` arena structural rationale (zero-copy views and in-place offset sorting); documented `estimate_tokens` ASCII/code heuristic limitations on multibyte/CJK text; and removed duplicate limit tables in `context.md` in favor of `policy.rs` as single source of truth.
 
 ### Removed
 

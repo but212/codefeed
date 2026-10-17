@@ -12,6 +12,13 @@ use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
 use crate::core::policy::MAX_OUTPUT_SIZE;
 
+/// Heuristic token estimation (~4 bytes per token for typical ASCII code).
+///
+/// Returns 0 for empty digests, and at least 1 token when non-empty.
+///
+/// Note: This is a fast byte-level heuristic calibrated for English text and source code.
+/// Multibyte UTF-8 sequences (such as CJK characters, which consume 3 bytes each)
+/// are underestimated by this formula.
 #[inline]
 pub fn estimate_tokens(bytes: u64) -> usize {
     if bytes == 0 {

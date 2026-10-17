@@ -14,7 +14,7 @@ imperative-shell boundary.
 - `RunConfig` — execution configuration unifying `source`, `output`, and `format`.
 - `CandidateInput` — one observed candidate entry handed to the pure core: `File { path, bytes }`, `TooLarge { path }`, or `Skipped { path }`. Pure evaluation in `Selector::feed` verifies UTF-8 text and NUL-free content, registers directory counts with `CandidateBudget`, and updates storage. Shell collectors filter noise and sensitive paths pre-candidate (`policy::is_ignored_path`).
 - `FileSpan` — POD indexing path and content byte spans (`path_offset`, `path_len`, `content_offset`, `content_len`).
-- `FileStorage` — continuous append-only arena buffer with private arenas (`path_arena`, `content_arena`, `spans`) eliminating per-file heap fragmentation while preserving invariant safety and supporting in-place span sorting (`sort_by_path`).
+- `FileStorage` — continuous append-only arena buffer with private arenas (`path_arena`, `content_arena`, `spans`); provides zero-copy borrowed `FileRecord<'a>` views throughout ingestion and enables in-place lexicographical sorting (`sort_by_path`) by swapping 16-byte `FileSpan` offsets without string reallocations.
 - `FileRecord<'a>` — zero-copy borrowed digest entry view: `path: &'a str`, `content: &'a str`.
 - `CollectionResult` — uniform collection record: `label`, optional `revision`, `files: FileStorage`, `skipped`. Format-neutral and decoupled from presentation.
 - `IngestReport` — `output`, `included_files`, `skipped_files`, `estimated_tokens`.
@@ -36,7 +36,7 @@ imperative-shell boundary.
 ### Rendering & Formats
 
 - ASCII hierarchy tree (`├── `, `└── `, `│   `) renders deterministic directory structure, escaping control codes and XML entities to prevent tree line-break injections.
-- Heuristic token estimation runs via pure function `estimate_tokens(bytes)` (`(bytes / 4).max(1)` when non-zero, `0` when empty), reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`).
+- Heuristic token estimation runs via pure function `estimate_tokens(bytes)` (`(bytes / 4).max(1)` when non-zero, `0` when empty), reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`). This is a fast byte heuristic calibrated for English text and source code (~4 bytes/token); multibyte text (such as Korean/CJK) will be underestimated.
 - Plain text serialization (`--format text`) preserves all valid UTF-8 file content verbatim (rejecting only NUL bytes) to maintain raw fidelity for LLM prompts; headers and paths are escaped, but file bodies are unmutated (viewing raw digests in interactive terminals may affect emulator state if files contain ANSI escape codes).
 - XML serialization (`--format xml`) structures output into `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`) and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`.
 - File-path ordering is strictly lexicographical, established in-place on `spans` via `FileStorage::sort_by_path()` during `Selector::finish()`. Format renderers consume `ExactSizeIterator<Item = FileRecord<'_>>` directly with zero heap re-allocation or re-sorting.
@@ -67,17 +67,7 @@ imperative-shell boundary.
 
 ## Limits and Tunables (`src/core/policy.rs`)
 
-| Constant | Value | Purpose |
-| --- | --- | --- |
-| `MAX_FILE_SIZE` | 1 MiB | Maximum individual file size accepted |
-| `MAX_OUTPUT_SIZE` | 20 MiB | Maximum rendered digest size |
-| `MAX_FILE_COUNT` | 10,000 | Maximum candidate files evaluated |
-| `ARCHIVE_MAX_SECS` | 300 s | Maximum duration for whole-archive Tarball transfer |
-| `MAX_RETRIES` | 3 | Maximum total request attempts (1 initial + up to 2 retries) |
-| `RETRY_INITIAL_DELAY_MS` | 250 ms | Base initial delay for exponential backoff |
-| `RETRY_MAX_DELAY_MS` | 5,000 ms | Maximum delay cap for exponential backoff |
-| `NOISE` | lockfiles | Conventional lockfiles excluded before candidate budget |
-| `SENSITIVE_EXTENSIONS` | 5 extensions | Key, cert, and credential extensions (`*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.credentials`) excluded before candidate budget (note: `credentials*` is also matched as filename prefix) |
+Operational constants, limits, thresholds, noise lists, and sensitive patterns are defined exclusively in `src/core/policy.rs` as the single source of truth. Refer to that module for current bounds (`MAX_FILE_SIZE`, `MAX_OUTPUT_SIZE`, `MAX_FILE_COUNT`, `ARCHIVE_MAX_SECS`, `MAX_RETRIES`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS`, `NOISE`, `SENSITIVE_EXTENSIONS`).
 
 ## Functional core / imperative shell boundary
 
