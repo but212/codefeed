@@ -41,4 +41,3 @@ Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_
 - **Limits / exclusions / domain types:** Single source of truth is `src/core/policy.rs`. Reference it rather than duplicating constants across documents.
 - **CLI flags / exit codes:** Update `src/core/cli.rs`, `tests/cli.rs`, `README.md`.
 - **Behavior / architecture:** Update `CHANGELOG.md` under `## [Unreleased]`.
-
