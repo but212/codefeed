@@ -41,9 +41,43 @@ const fn header_escape_str(b: u8) -> &'static str {
     }
 }
 
+#[inline(always)]
+fn header_chunk_has_escape(chunk: &[u8; 16]) -> bool {
+    let mut has = 0u8;
+    for &b in chunk {
+        has |= needs_header_escape(b) as u8;
+    }
+    has != 0
+}
+
+#[inline(always)]
+fn first_header_escape_index(bytes: &[u8]) -> Option<usize> {
+    let (chunks, remainder) = bytes.as_chunks::<16>();
+
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
+        if header_chunk_has_escape(chunk) {
+            let base = chunk_idx * 16;
+            for (offset, &b) in chunk.iter().enumerate() {
+                if needs_header_escape(b) {
+                    return Some(base + offset);
+                }
+            }
+        }
+    }
+
+    let rem_base = bytes.len() - remainder.len();
+    for (offset, &b) in remainder.iter().enumerate() {
+        if needs_header_escape(b) {
+            return Some(rem_base + offset);
+        }
+    }
+
+    None
+}
+
 pub fn escape_header(value: &str) -> Cow<'_, str> {
     let bytes = value.as_bytes();
-    let Some(first) = bytes.iter().position(|&b| needs_header_escape(b)) else {
+    let Some(first) = first_header_escape_index(bytes) else {
         return Cow::Borrowed(value);
     };
 
@@ -187,6 +221,28 @@ mod tests {
                 sample,
                 "roundtrip failed for sample {sample:?}"
             );
+        }
+    }
+
+    #[test]
+    fn test_escape_header_boundary_alignment() {
+        for len in 0..=48 {
+            let clean = "a".repeat(len);
+            assert_eq!(first_header_escape_index(clean.as_bytes()), None);
+            assert!(matches!(escape_header(&clean), Cow::Borrowed(_)));
+
+            for special in ['\\', '\r', '\n'] {
+                for pos in 0..len {
+                    let mut text = clean.clone();
+                    text.replace_range(pos..pos + 1, &special.to_string());
+                    assert_eq!(
+                        first_header_escape_index(text.as_bytes()),
+                        Some(pos),
+                        "mismatch at len {len}, pos {pos}, special {special:?}"
+                    );
+                    assert!(matches!(escape_header(&text), Cow::Owned(_)));
+                }
+            }
         }
     }
 }

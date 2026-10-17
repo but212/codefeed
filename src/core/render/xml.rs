@@ -111,6 +111,15 @@ impl<'a> XmlChunks<'a> {
     }
 }
 
+#[inline(always)]
+fn chunk_has_special(chunk: &[u8; 16]) -> bool {
+    let mut has = 0u8;
+    for &b in chunk {
+        has |= is_special_byte(b) as u8;
+    }
+    has != 0
+}
+
 impl<'a> Iterator for XmlChunks<'a> {
     type Item = XmlChunk<'a>;
 
@@ -123,37 +132,56 @@ impl<'a> Iterator for XmlChunks<'a> {
             return None;
         }
 
-        let start = self.cursor;
-        while self.cursor < self.bytes.len() {
-            if is_special_byte(self.bytes[self.cursor])
-                && let Some((consumed, esc)) = xml_special(self.bytes, self.cursor)
-            {
-                if self.cursor > start {
-                    let raw = &self.value[start..self.cursor];
+        let rem = &self.bytes[self.cursor..];
+        match first_special_index(rem) {
+            Some(0) => {
+                let (consumed, esc) = xml_special(self.bytes, self.cursor)?;
+                self.cursor += consumed;
+                Some(XmlChunk::Escaped(esc))
+            }
+            Some(offset) => {
+                let raw = &self.value[self.cursor..self.cursor + offset];
+                self.cursor += offset;
+                if let Some((consumed, esc)) = xml_special(self.bytes, self.cursor) {
                     self.cursor += consumed;
                     self.pending = Some(esc);
-                    return Some(XmlChunk::Raw(raw));
                 }
-                self.cursor += consumed;
-                return Some(XmlChunk::Escaped(esc));
+                Some(XmlChunk::Raw(raw))
             }
-            self.cursor += 1;
-        }
-
-        if self.cursor > start {
-            Some(XmlChunk::Raw(&self.value[start..]))
-        } else {
-            None
+            None => {
+                let raw = &self.value[self.cursor..];
+                self.cursor = self.bytes.len();
+                Some(XmlChunk::Raw(raw))
+            }
         }
     }
 }
 
 #[inline(always)]
 pub(crate) fn first_special_index(bytes: &[u8]) -> Option<usize> {
-    bytes
-        .iter()
-        .enumerate()
-        .position(|(i, &b)| is_special_byte(b) && (b != 0xEF || xml_special(bytes, i).is_some()))
+    let (chunks, remainder) = bytes.as_chunks::<16>();
+
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
+        if chunk_has_special(chunk) {
+            let base = chunk_idx * 16;
+            for (offset, &b) in chunk.iter().enumerate() {
+                let idx = base + offset;
+                if is_special_byte(b) && (b != 0xEF || xml_special(bytes, idx).is_some()) {
+                    return Some(idx);
+                }
+            }
+        }
+    }
+
+    let rem_base = bytes.len() - remainder.len();
+    for (offset, &b) in remainder.iter().enumerate() {
+        let idx = rem_base + offset;
+        if is_special_byte(b) && (b != 0xEF || xml_special(bytes, idx).is_some()) {
+            return Some(idx);
+        }
+    }
+
+    None
 }
 
 pub fn xml_escape(value: &str) -> Cow<'_, str> {
@@ -318,5 +346,27 @@ mod tests {
             escaped.as_ref(),
             "prefix \u{FFFD} &amp; &lt;\u{FEFF}&gt; middle \u{FF01} suffix"
         );
+    }
+
+    #[test]
+    fn test_first_special_index_and_chunks_boundary_alignment() {
+        for len in 0..=48 {
+            let clean = "a".repeat(len);
+            assert_eq!(first_special_index(clean.as_bytes()), None);
+            assert!(matches!(xml_escape(&clean), Cow::Borrowed(_)));
+
+            for special in ['&', '<', '>', '"', '\''] {
+                for pos in 0..len {
+                    let mut text = clean.clone();
+                    text.replace_range(pos..pos + 1, &special.to_string());
+                    assert_eq!(
+                        first_special_index(text.as_bytes()),
+                        Some(pos),
+                        "mismatch at len {len}, pos {pos}, special {special}"
+                    );
+                    assert!(matches!(xml_escape(&text), Cow::Owned(_)));
+                }
+            }
+        }
     }
 }

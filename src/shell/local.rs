@@ -98,10 +98,10 @@ impl SourceStream for LocalStream {
 fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
     let root_display = root.display();
     let canonical = fs::canonicalize(root)
-        .map_err(|error| IngestError::InvalidSource(format!("{root_display} ({error})")))?;
+        .map_err(|error| IngestError::invalid_source(format!("{root_display} ({error})")))?;
     if !canonical.is_dir() {
         let display = canonical.display();
-        return Err(IngestError::InvalidSource(format!(
+        return Err(IngestError::invalid_source(format!(
             "{display} is not a directory"
         )));
     }
@@ -138,7 +138,7 @@ fn walk_candidates(
 
         let relative = entry_path
             .strip_prefix(root)
-            .map_err(|err| IngestError::InvalidMetadata(err.to_string()))?;
+            .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
         let item_path = normalize_relative_path(relative);
 
         let skip_read = match &item_path {
@@ -446,7 +446,7 @@ mod tests {
 
         let err = LocalStream::new(&root, &OutputTarget::Stdout).unwrap_err();
         match err {
-            IngestError::CandidateLimitExceeded { .. } => {
+            IngestError::CandidateLimitExceeded(..) => {
                 let msg = err.to_string();
                 assert!(msg.contains("repository contains more than 10000 files"));
             }

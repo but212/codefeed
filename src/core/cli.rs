@@ -74,7 +74,7 @@ where
 
     let opts = match Opts::try_parse_from(&args_vec) {
         Ok(opts) => opts,
-        Err(err) => return Err(IngestError::Usage(err.to_string())),
+        Err(err) => return Err(IngestError::usage(err.to_string())),
     };
 
     if opts.help {
@@ -82,7 +82,7 @@ where
     }
 
     let Some(source_value) = opts.source else {
-        return Err(IngestError::Usage(MISSING_SOURCE_ERR.to_string()));
+        return Err(IngestError::usage(MISSING_SOURCE_ERR));
     };
 
     let output = if opts.output == "-" {

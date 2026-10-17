@@ -62,6 +62,13 @@ impl BudgetTrieNode {
     pub(crate) const fn is_dir(&self) -> bool {
         (self.flags & FLAG_DIR) != 0
     }
+
+    #[inline(always)]
+    pub(crate) fn name_bytes<'a>(&self, arena: &'a [u8]) -> &'a [u8] {
+        let start = self.name_offset as usize;
+        let end = start + self.name_len as usize;
+        &arena[start..end]
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +99,13 @@ impl BudgetTrie {
         let start = node.name_offset as usize;
         let end = start + node.name_len as usize;
         &self.label_arena[start..end]
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn node_name_bytes(&self, index: u32) -> &[u8] {
+        let node = &self.nodes[index as usize];
+        node.name_bytes(self.label_arena.as_bytes())
     }
 
     pub fn insert(&mut self, path: &str) -> Result<(), InsertError> {
@@ -125,13 +139,13 @@ impl BudgetTrie {
     fn get_or_insert_child(&mut self, parent_index: u32, part: &str, is_dir: bool) -> u32 {
         let parent_node = parent_index as usize;
         let last_child_index = self.last_children[parent_node];
+        let part_bytes = part.as_bytes();
 
         if last_child_index != NO_NODE {
             let last_node = self.nodes[last_child_index as usize];
-            let last_name = &self.label_arena[last_node.name_offset as usize
-                ..(last_node.name_offset + last_node.name_len as u32) as usize];
+            let last_name = last_node.name_bytes(self.label_arena.as_bytes());
             let ordering = last_name
-                .cmp(part)
+                .cmp(part_bytes)
                 .then_with(|| last_node.is_dir().cmp(&is_dir));
             if ordering == std::cmp::Ordering::Equal {
                 return last_child_index;
@@ -155,12 +169,12 @@ impl BudgetTrie {
         let mut curr = self.nodes[parent_node].first_child;
         let mut prev = NO_NODE;
 
+        let arena_bytes = self.label_arena.as_bytes();
         while curr != NO_NODE {
             let curr_node = self.nodes[curr as usize];
-            let curr_name = &self.label_arena[curr_node.name_offset as usize
-                ..(curr_node.name_offset + curr_node.name_len as u32) as usize];
+            let curr_name = curr_node.name_bytes(arena_bytes);
             let ord = curr_name
-                .cmp(part)
+                .cmp(part_bytes)
                 .then_with(|| curr_node.is_dir().cmp(&is_dir));
             match ord {
                 std::cmp::Ordering::Equal => return curr,
@@ -326,5 +340,16 @@ pub(crate) mod tests {
         trie.insert(&format!("{max}/file.rs")).unwrap();
         let child = trie.nodes[0].first_child;
         assert_eq!(trie.node_name(child).len(), MAX_COMPONENT_LEN);
+    }
+
+    #[test]
+    fn test_trie_node_name_bytes_parity() {
+        let mut trie = BudgetTrie::new();
+        trie.insert("foo/bar.rs").unwrap();
+        let child = trie.nodes[0].first_child;
+        assert_eq!(
+            trie.node_name_bytes(child),
+            trie.node_name(child).as_bytes()
+        );
     }
 }

@@ -86,7 +86,7 @@ impl GithubClient {
                         );
                         continue;
                     }
-                    return Err(IngestError::Http(error.to_string()));
+                    return Err(IngestError::http(error.to_string()));
                 }
             };
 
@@ -124,11 +124,11 @@ const fn is_retryable_transport_error(error: &ureq::Error) -> bool {
 fn api_error(status: StatusCode, body_bytes: &[u8]) -> IngestError {
     let detail = String::from_utf8_lossy(body_bytes).replace('\n', " ");
     if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::FORBIDDEN {
-        IngestError::Api(format!(
+        IngestError::api(format!(
             "HTTP {status}: {detail} (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
         ))
     } else {
-        IngestError::Api(format!("HTTP {status}: {detail}"))
+        IngestError::api(format!("HTTP {status}: {detail}"))
     }
 }
 

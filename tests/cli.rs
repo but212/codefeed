@@ -23,7 +23,7 @@ fn public_api_types_are_accessible() {
         estimated_tokens: 42,
     };
     assert_eq!(report.estimated_tokens, 42);
-    let _err = IngestError::Usage("test".into());
+    let _err = IngestError::usage("test");
 }
 
 #[test]

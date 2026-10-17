@@ -3,59 +3,122 @@ use std::io;
 
 use crate::core::policy::MAX_OUTPUT_SIZE;
 
+/// Diagnostic details for exceeded candidate limits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateLimitExceededError {
+    /// The candidate limit that was exceeded.
+    pub limit: usize,
+    /// Top directories contributing to the candidate overflow.
+    pub largest_directories: Vec<(String, usize)>,
+}
+
+/// Diagnostic details for overlong path components.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathComponentTooLongError {
+    /// File path containing the oversized component.
+    pub path: String,
+    /// Actual byte length of the oversized component.
+    pub len: usize,
+    /// Maximum allowed component byte length.
+    pub max: usize,
+}
+
 /// Domain error encountered during ingestion or CLI execution.
 #[derive(Debug)]
 pub enum IngestError {
     /// CLI usage error or missing argument.
-    Usage(String),
+    Usage(Box<String>),
     /// Candidate file budget exceeded.
-    CandidateLimitExceeded {
-        /// The candidate limit that was exceeded.
-        limit: usize,
-        /// Top directories contributing to the candidate overflow.
-        largest_directories: Vec<(String, usize)>,
-    },
+    CandidateLimitExceeded(Box<CandidateLimitExceededError>),
     /// Source string or CLI argument is syntactically invalid.
-    InvalidSource(String),
+    InvalidSource(Box<String>),
     /// Source scheme or host is unsupported (e.g. non-GitHub remote or SSH).
-    UnsupportedSource(String),
+    UnsupportedSource(Box<String>),
     /// Local filesystem I/O failure.
     Io(io::Error),
     /// Network transport or connection failure contacting GitHub.
-    Http(String),
+    Http(Box<String>),
     /// GitHub HTTP error response or rate limit exceeded.
-    Api(String),
+    Api(Box<String>),
     /// Repository metadata or API response payload is malformed.
-    InvalidMetadata(String),
+    InvalidMetadata(Box<String>),
     /// Rendered digest exceeds the maximum allowed output size.
-    OutputTooLarge {
-        /// Up to five largest files contributing to the digest overflow.
-        largest_files: Vec<(String, usize)>,
-    },
+    OutputTooLarge(Box<Vec<(String, usize)>>),
     /// Path component length exceeds maximum allowed limit.
-    PathComponentTooLong {
-        /// File path containing the oversized component.
-        path: String,
-        /// Actual byte length of the oversized component.
-        len: usize,
-        /// Maximum allowed component byte length.
-        max: usize,
-    },
+    PathComponentTooLong(Box<PathComponentTooLongError>),
+}
+
+const _: () = assert!(std::mem::size_of::<IngestError>() <= 16);
+const _: () = assert!(std::mem::size_of::<std::result::Result<(), IngestError>>() <= 16);
+
+impl IngestError {
+    #[inline]
+    pub fn usage(message: impl Into<String>) -> Self {
+        Self::Usage(Box::new(message.into()))
+    }
+
+    #[inline]
+    pub fn candidate_limit_exceeded(
+        limit: usize,
+        largest_directories: Vec<(String, usize)>,
+    ) -> Self {
+        Self::CandidateLimitExceeded(Box::new(CandidateLimitExceededError {
+            limit,
+            largest_directories,
+        }))
+    }
+
+    #[inline]
+    pub fn invalid_source(message: impl Into<String>) -> Self {
+        Self::InvalidSource(Box::new(message.into()))
+    }
+
+    #[inline]
+    pub fn unsupported_source(message: impl Into<String>) -> Self {
+        Self::UnsupportedSource(Box::new(message.into()))
+    }
+
+    #[inline]
+    pub fn http(message: impl Into<String>) -> Self {
+        Self::Http(Box::new(message.into()))
+    }
+
+    #[inline]
+    pub fn api(message: impl Into<String>) -> Self {
+        Self::Api(Box::new(message.into()))
+    }
+
+    #[inline]
+    pub fn invalid_metadata(message: impl Into<String>) -> Self {
+        Self::InvalidMetadata(Box::new(message.into()))
+    }
+
+    #[inline]
+    pub fn output_too_large(largest_files: Vec<(String, usize)>) -> Self {
+        Self::OutputTooLarge(Box::new(largest_files))
+    }
+
+    #[inline]
+    pub fn path_component_too_long(path: impl Into<String>, len: usize, max: usize) -> Self {
+        Self::PathComponentTooLong(Box::new(PathComponentTooLongError {
+            path: path.into(),
+            len,
+            max,
+        }))
+    }
 }
 
 impl Display for IngestError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
             Self::Usage(message) => write!(f, "{message}"),
-            Self::CandidateLimitExceeded {
-                limit,
-                largest_directories,
-            } => {
+            Self::CandidateLimitExceeded(err) => {
                 write!(
                     f,
-                    "repository contains more than {limit} files\nlargest directories:"
+                    "repository contains more than {} files\nlargest directories:",
+                    err.limit
                 )?;
-                for (dir, count) in largest_directories {
+                for (dir, count) in &err.largest_directories {
                     write!(f, "\n  - {dir} ({count} files)")?;
                 }
                 Ok(())
@@ -66,22 +129,23 @@ impl Display for IngestError {
             Self::Http(message) => write!(f, "GitHub request failed: {message}"),
             Self::Api(message) => write!(f, "GitHub API error: {message}"),
             Self::InvalidMetadata(message) => write!(f, "invalid repository metadata: {message}"),
-            Self::OutputTooLarge { largest_files } => {
+            Self::OutputTooLarge(largest_files) => {
                 let limit_mib = MAX_OUTPUT_SIZE / (1024 * 1024);
                 write!(f, "digest exceeds the {limit_mib} MiB output limit")?;
                 if !largest_files.is_empty() {
                     write!(f, "\nlargest files:")?;
-                    for (path, size) in largest_files {
+                    for (path, size) in largest_files.as_slice() {
                         let formatted_size = format_size(*size);
                         write!(f, "\n  - {path} ({formatted_size})")?;
                     }
                 }
                 Ok(())
             }
-            Self::PathComponentTooLong { path, len, max } => {
+            Self::PathComponentTooLong(err) => {
                 write!(
                     f,
-                    "path component in '{path}' is {len} bytes; maximum is {max}"
+                    "path component in '{}' is {} bytes; maximum is {}",
+                    err.path, err.len, err.max
                 )
             }
         }
@@ -115,13 +179,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ingest_error_fits_in_two_registers() {
+        assert!(std::mem::size_of::<IngestError>() <= 16);
+        assert!(std::mem::size_of::<std::result::Result<(), IngestError>>() <= 16);
+    }
+
+    #[test]
     fn output_too_large_message_derives_from_limit() {
         let mib = MAX_OUTPUT_SIZE / (1024 * 1024);
         assert_eq!(
-            IngestError::OutputTooLarge {
-                largest_files: Vec::new()
-            }
-            .to_string(),
+            IngestError::output_too_large(Vec::new()).to_string(),
             format!("digest exceeds the {mib} MiB output limit")
         );
     }

@@ -9,32 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `MAX_COMPONENT_LEN` & `find_overlong_component` (`src/core/policy.rs`): centralized 65,535-byte path component limit and validation helper for trie node labels.
-- `IngestError::PathComponentTooLong` (`src/core/error.rs`): explicit error variant for oversized path components, surfaced during ingestion and tree construction.
-- `InsertError` (`src/core/tree.rs`): trie insertion error implementing `std::error::Error`.
+- `CandidateLimitExceededError` & `PathComponentTooLongError` (`src/core/error.rs`): Boxed diagnostic payloads sizing `IngestError` and `Result<(), IngestError>` to 16 bytes for two-register ABI returns (`rax`/`rdx`).
+- `FileSpan::path_bytes` (`src/core/model.rs`) & `BudgetTrieNode::name_bytes` (`src/core/tree.rs`): Zero-copy byte-slice accessors for branchless path comparisons.
+- `MAX_COMPONENT_LEN` & `find_overlong_component` (`src/core/policy.rs`): 65,535-byte path component limit and validation helper.
+- `IngestError::PathComponentTooLong` (`src/core/error.rs`): Error variant for oversized path components during ingestion and tree insertion.
+- `InsertError` (`src/core/tree.rs`): Trie insertion error implementing `std::error::Error`.
 
 ### Changed
 
+- **LLVM x86-64 Codegen & ABI**:
+  - `IngestError` (`src/core/error.rs`): 16-byte enum layout via thin heap pointers (`Box<String>`, `Box<Vec<...>>`, boxed structs) with compile-time assertions for direct register returns.
+  - Cold path isolation (`src/core/decide/budget.rs`, `src/core/decide/selector.rs`, `src/core/render/mod.rs`): Extracted overflow error formatting into `#[cold] #[inline(never)]` functions to eliminate hot-path prologue spills.
+  - Register hoisting (`src/core/render/token.rs`): Hoisted `TokenEstimator` loop state (`tokens`, `in_word`, `word_len`) into CPU registers; set `saw_input` once per slice.
+  - Panic branch elimination (`src/core/model.rs`, `src/core/tree.rs`): Replaced UTF-8 path comparisons in `sort_by_path` and `get_or_insert_child` with `&[u8]` slice checks, removing `is_char_boundary` landing pads in safe Rust.
+  - Auto-vectorization (`src/core/render/xml.rs`, `src/core/render/text.rs`): Refactored escape scanning in `XmlChunks`, `first_special_index`, and `escape_header` to `as_chunks::<16>()` two-stage bitset matching.
 - **Architecture & Modularity**:
-  - `src/core/render/` (`mod.rs`, `text.rs`, `xml.rs`, `token.rs`): decomposed digest rendering into focused submodules with colocated unit tests while strictly preserving public re-exports and acyclic core DAG.
-  - `src/core/tree.rs`: extracted `BudgetTrie`, `BudgetTrieNode`, and `InsertError` into a dedicated format-neutral data structure module with a 16-byte fixed node layout and bitwise `FLAG_DIR`.
-  - Core module DAG: established strict acyclic unidirectional flow (`tree` -> `model` -> `decide` -> `render`), relocating `largest_files` to `src/core/decide.rs`.
+  - `src/core/decide/` (`mod.rs`, `item.rs`, `budget.rs`, `selector.rs`): Decomposed monolithic `decide.rs` into submodules with colocated unit tests while preserving public re-exports.
+  - `src/core/render/` (`mod.rs`, `text.rs`, `xml.rs`, `token.rs`): Decomposed digest rendering into submodules with colocated unit tests.
+  - `src/core/tree.rs`: Extracted `BudgetTrie`, `BudgetTrieNode`, and `InsertError` into a dedicated module with 16-byte POD nodes and `FLAG_DIR`.
+  - Core DAG: Enforced acyclic `tree` -> `model` -> `decide` -> `render` dependency order; moved `largest_files` to `src/core/decide/selector.rs`.
 - **Zero-Allocation & Performance**:
-  - `GithubStream` & `probe_tar_entry` (`src/shell/github.rs`): added reusable `path_scratch: &mut String` alongside `content_scratch: &mut Vec<u8>` to stream candidate tar entry paths with zero per-file heap string allocations.
-  - `HEADER_ESCAPE_MASK` (`src/core/render/text.rs`): replaced linear character matching with a compact 32-byte bitset (`[u64; 4]`) and branchless mask checking.
-- **Idioms & Ergonomics**:
-  - `usage_str!` macro (`src/core/cli.rs`): unified usage string literals across `HELP`, `MISSING_SOURCE_ERR`, and clap derive attributes via compile-time `concat!`.
-  - `CompactDir` (`src/core/decide.rs`): replaced custom `from_str` constructor with standard `From<&str>` conversion trait.
-  - `CandidateBudget::check_limit` & `Selector::finish` (`src/core/decide.rs`): refactored loops to idiomatic `Iterator::try_for_each`.
-  - `find_overlong_component` (`src/core/policy.rs`): simplified component inspection by eliminating redundant non-empty filter.
-- **Reliability & Error Propagation**:
-  - `Selector::add_file` (`src/core/decide.rs`): validates component lengths upfront during ingestion (fail-fast) before storage push.
-  - `Selector::finish` (`src/core/decide.rs`) & `collect_stream` (`src/shell/orchestrate.rs`): propagate component length and tree construction errors without panics.
+  - `GithubStream` & `probe_tar_entry` (`src/shell/github.rs`): Reused `path_scratch: &mut String` with `content_scratch: &mut Vec<u8>` to stream candidate paths without per-file heap allocations.
+  - `HEADER_ESCAPE_MASK` (`src/core/render/text.rs`): Compact 32-byte bitset (`[u64; 4]`) with branchless mask checking.
+- **Idioms & Reliability**:
+  - `usage_str!` (`src/core/cli.rs`): Unified CLI usage strings via compile-time `concat!`.
+  - `CompactDir` (`src/core/decide/budget.rs`): Replaced `from_str` with `From<&str>`.
+  - `CandidateBudget::check_limit` & `Selector::finish` (`src/core/decide/`): Replaced loops with `Iterator::try_for_each`.
+  - `Selector::add_file` (`src/core/decide/selector.rs`): Fail-fast path component length validation before storage push.
+  - `Selector::finish` (`src/core/decide/selector.rs`) & `collect_stream` (`src/shell/orchestrate.rs`): Propagate component length and tree construction errors without panics.
 
 ### Removed
 
-- `src/core/digest/`: completely eliminated legacy directory module and boilerplate submodules (`budget.rs`, `text.rs`, `token.rs`, `trie.rs`, `xml.rs`, `mod.rs`).
-- `safe_component` (`src/core/digest/trie.rs`): removed lossy truncation in favor of upfront fail-fast insertion errors.
+- `src/core/digest/`: Legacy directory module and submodules (`budget.rs`, `text.rs`, `token.rs`, `trie.rs`, `xml.rs`, `mod.rs`).
+- `safe_component` (`src/core/digest/trie.rs`): Removed lossy truncation in favor of fail-fast errors.
 
 ## [0.2.3]
 
@@ -47,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CandidateBudget::check_limit` (`src/core/decide.rs`): batch pre-flight candidate count check with O(1) fast path.
 - `Selector::finish` (`src/core/decide.rs`): builds `CollectionResult` directly with inline skipped byte tracking.
 - `TokenEstimator` (`src/core/digest/token.rs`): non-destructive token estimation state machine backed by a 256-byte `CHAR_METRIC` lookup table.
-- `Isolated byte budget tracking and top-K diagnostics` (`src/core/digest/budget.rs`): isolated byte budget accounting.
+- Byte budget tracking & top-K diagnostics (`src/core/digest/budget.rs`): Isolated byte accounting and diagnostic collection.
 - `unescape_header` (`src/core/digest/text.rs`): lossless roundtrip decoding for escaped digest headers.
 - Pure CLI parser (`src/core/cli.rs`): side-effect-free argument and flag evaluation using `clap` derive.
 - `SourceStream` and `collect_stream` (`src/shell/orchestrate.rs`): generic streaming driver and `SourceStream::for_each_item` traversal returning `Result<StreamInfo, IngestError>`, unifying metadata lifecycle with stream completion.
@@ -110,7 +117,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Streamlined local walk to a 2-step linear collection pipeline (`ignore::WalkBuilder` candidate harvest followed by bounded file reads).
-- Replaced channel passing and worker thread pools in `src/shell/local.rs` with sequential traversal, simplifying codebase structure.
+- Replaced channel passing and worker thread pools in `src/shell/local.rs` with sequential traversal.
 - Simplified `DigestBudget::skip` to return `()` directly, removing dead error plumbing in `Selector::decide`.
 - Converted unique file path sorting in `text::render` and `xml::render` to in-place pdqsort (`sort_unstable_by`).
 - Replaced multi-byte Unicode whitespace sweeps with `trim_ascii()` for `--ref` and GitHub token parsing in `cli.rs` and `github_client.rs`.
@@ -128,7 +135,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Collection abstraction `Collector` trait and stack-allocated static dispatch enum `AnyCollector` in `src/shell/collector.rs`, encapsulating `LocalCollector` and `GitHubCollector`.
 - Zero-dependency benchmark runner and synthetic microbenchmark suite (`benches/bench.rs`) covering `BudgetTrie`, `render_digest_to_writer`, `TokenEstimatingWriter`, and batch `Selector::decide`.
 - Library target (`src/lib.rs`) exposing core entry points, `RunConfig`, and benchmark facade (`#[doc(hidden)] pub mod __bench`).
-- Scoped test fixture directory lifecycle guard (`TempDirGuard`) in `src/shell/mod.rs` with path canonicalization, eliminating manual cleanup boilerplate.
+- Scoped test fixture directory lifecycle guard (`TempDirGuard`) in `src/shell/mod.rs` with path canonicalization.
 
 ### Fixed
 

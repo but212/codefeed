@@ -34,6 +34,26 @@ const CHAR_METRIC: [u8; 256] = {
     t
 };
 
+#[inline(always)]
+const fn step_byte(
+    b: u8,
+    mut tokens: usize,
+    in_word: usize,
+    word_len: usize,
+) -> (usize, usize, usize) {
+    let metric = CHAR_METRIC[b as usize] as usize;
+    let omega = metric & (METRIC_WORD as usize);
+    let w_b = metric >> 1;
+
+    let next_in_word = (omega != 0) as usize;
+    let next_word_len = (word_len + 1) * omega;
+    let delta_word = next_word_len / 4;
+    let word_len = next_word_len % 4;
+
+    tokens += delta_word + (1 - omega) * in_word + w_b;
+    (tokens, next_in_word, word_len)
+}
+
 /// State machine tracking token count heuristics across character streams.
 #[derive(Default, Debug, Clone)]
 pub struct TokenEstimator {
@@ -48,28 +68,38 @@ impl TokenEstimator {
         Self::default()
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     pub fn process_byte(&mut self, b: u8) {
         self.saw_input = true;
-        let metric = CHAR_METRIC[b as usize] as usize;
-        let omega = metric & (METRIC_WORD as usize);
-        let w_b = metric >> 1;
-
-        let prev_in_word = self.in_word as usize;
-        self.in_word = omega != 0;
-
-        let next_word_len = (self.word_len + 1) * omega;
-        let delta_word = next_word_len / 4;
-        self.word_len = next_word_len % 4;
-
-        self.tokens += delta_word + (1 - omega) * prev_in_word + w_b;
+        let (tokens, in_word, word_len) =
+            step_byte(b, self.tokens, self.in_word as usize, self.word_len);
+        self.tokens = tokens;
+        self.in_word = in_word != 0;
+        self.word_len = word_len;
     }
 
     #[inline]
     pub fn process_bytes(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.process_byte(b);
+        if bytes.is_empty() {
+            return;
         }
+        self.saw_input = true;
+        let mut tokens = self.tokens;
+        let mut in_word = self.in_word as usize;
+        let mut word_len = self.word_len;
+
+        for &b in bytes {
+            let (next_tokens, next_in_word, next_word_len) =
+                step_byte(b, tokens, in_word, word_len);
+            tokens = next_tokens;
+            in_word = next_in_word;
+            word_len = next_word_len;
+        }
+
+        self.tokens = tokens;
+        self.in_word = in_word != 0;
+        self.word_len = word_len;
     }
 
     pub fn process_str(&mut self, text: &str) {
@@ -167,6 +197,36 @@ mod tests {
             assert_eq!(
                 estimated, oracle,
                 "token estimation mismatch for sample {sample:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_process_bytes_chunked_and_empty_slice() {
+        let mut empty_est = TokenEstimator::new();
+        empty_est.process_bytes(b"");
+        assert_eq!(empty_est.finish(), 0);
+
+        let input = b"fn compute(val: u64) -> Result<u64, &'static str> {\n    Ok(val * 42)\n}\n";
+        let mut full_est = TokenEstimator::new();
+        full_est.process_bytes(input);
+        let full_result = full_est.finish();
+
+        let mut byte_est = TokenEstimator::new();
+        for &b in input {
+            byte_est.process_byte(b);
+        }
+        assert_eq!(byte_est.finish(), full_result);
+
+        for chunk_size in [1, 2, 3, 5, 7, 16, 32] {
+            let mut chunk_est = TokenEstimator::new();
+            for chunk in input.chunks(chunk_size) {
+                chunk_est.process_bytes(chunk);
+            }
+            assert_eq!(
+                chunk_est.finish(),
+                full_result,
+                "chunked estimation mismatch for chunk_size {chunk_size}"
             );
         }
     }

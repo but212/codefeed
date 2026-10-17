@@ -83,7 +83,7 @@ impl<W: Write + ?Sized> Write for BoundedEstimatingWriter<'_, W> {
         let new_written = self.written.saturating_add(buf.len() as u64);
         if new_written > MAX_OUTPUT_SIZE {
             self.overflowed = true;
-            return Err(std::io::Error::other("output size limit exceeded"));
+            return Err(output_limit_io_error());
         }
         self.written = new_written;
 
@@ -113,6 +113,12 @@ impl<W: Write + ?Sized> Write for BoundedEstimatingWriter<'_, W> {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn output_limit_io_error() -> std::io::Error {
+    std::io::Error::other("output size limit exceeded")
+}
+
 pub fn render_to_writer<W: Write + ?Sized>(
     writer: &mut W,
     collection: &CollectionResult,
@@ -129,13 +135,17 @@ pub fn render_to_writer<W: Write + ?Sized>(
     );
 
     if estimating_writer.overflowed {
-        return Err(IngestError::OutputTooLarge {
-            largest_files: crate::core::decide::largest_files(collection.files.iter()),
-        });
+        return Err(output_too_large_error(collection));
     }
 
     render_res?;
     estimating_writer.finish().map_err(Into::into)
+}
+
+#[cold]
+#[inline(never)]
+fn output_too_large_error(collection: &CollectionResult) -> IngestError {
+    IngestError::output_too_large(crate::core::decide::largest_files(collection.files.iter()))
 }
 
 #[cfg(test)]
@@ -315,7 +325,7 @@ hello\n\
         };
         let mut sink = Vec::new();
         match render_to_writer(&mut sink, &collection, DigestFormat::Text) {
-            Err(IngestError::OutputTooLarge { largest_files }) => {
+            Err(IngestError::OutputTooLarge(largest_files)) => {
                 assert_eq!(largest_files.len(), 1);
                 assert_eq!(largest_files[0].0, "large.txt");
             }

@@ -24,7 +24,7 @@ impl Source {
             .as_ref()
             .is_some_and(|r| r.trim_ascii().is_empty())
         {
-            return Err(IngestError::InvalidSource("--ref cannot be empty".into()));
+            return Err(IngestError::invalid_source("--ref cannot be empty"));
         }
         match self {
             Self::Github { owner, repo, .. } => Ok(Self::Github {
@@ -34,8 +34,8 @@ impl Source {
             }),
             Self::Local(_) => {
                 if reference.is_some() {
-                    Err(IngestError::InvalidSource(
-                        "--ref is only valid for GitHub sources".into(),
+                    Err(IngestError::invalid_source(
+                        "--ref is only valid for GitHub sources",
                     ))
                 } else {
                     Ok(self)
@@ -117,6 +117,13 @@ impl FileSpan {
     }
 
     #[inline(always)]
+    pub(crate) fn path_bytes<'a>(&self, arena: &'a [u8]) -> &'a [u8] {
+        let start = self.path_offset as usize;
+        let end = start + self.path_len as usize;
+        &arena[start..end]
+    }
+
+    #[inline(always)]
     pub(crate) fn content<'a>(&self, arena: &'a str) -> &'a str {
         let start = self.content_offset as usize;
         let end = start + self.content_len as usize;
@@ -160,16 +167,16 @@ impl FileStorage {
 
     /// Sorts spans lexicographically by path in-place within the path arena.
     pub fn sort_by_path(&mut self) {
-        let path_arena = &self.path_arena;
+        let path_arena = self.path_arena.as_bytes();
         let is_sorted = self
             .spans
             .windows(2)
-            .all(|w| w[0].path(path_arena) <= w[1].path(path_arena));
+            .all(|w| w[0].path_bytes(path_arena) <= w[1].path_bytes(path_arena));
         if is_sorted {
             return;
         }
         self.spans
-            .sort_unstable_by(|a, b| a.path(path_arena).cmp(b.path(path_arena)));
+            .sort_unstable_by(|a, b| a.path_bytes(path_arena).cmp(b.path_bytes(path_arena)));
     }
 
     /// Appends path and content to the arenas and records a [`FileSpan`].
@@ -302,6 +309,16 @@ mod tests {
 
         let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
         assert_eq!(paths, vec!["a/file.rs", "m/file.rs", "z/file.rs"]);
+    }
+
+    #[test]
+    fn test_file_span_path_bytes_parity() {
+        let mut storage = FileStorage::new();
+        let span = storage.push("src/core/model.rs", "pub struct Foo;");
+        assert_eq!(
+            span.path_bytes(storage.path_arena.as_bytes()),
+            span.path(&storage.path_arena).as_bytes()
+        );
     }
 
     #[test]

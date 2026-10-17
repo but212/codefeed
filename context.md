@@ -94,9 +94,8 @@ never depends on shell code; shell code depends on the core in one direction.
   - `source.rs`: source string and OS-string parsing.
   - `model.rs`: domain value types (`Source`, `FileRecord`, `CollectionResult`,
     `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`, `FileStorage`).
-  - `error.rs`: domain error enum `IngestError` with structured diagnostic payload (`CandidateLimitExceeded`, `OutputTooLarge`).
-  - `decide.rs`: `Selector::decide`, `Selector::finish`, `CandidateBudget`, `CandidateBudget::check_limit`, item evaluation via `slice::contains`,
-    candidate overflow diagnostics, and `largest_files` diagnostic selection.
+  - `error.rs`: domain error enum `IngestError` packed into 16 bytes for register-return ABI (`rax`/`rdx`), with boxed diagnostic payloads (`CandidateLimitExceededError`, `PathComponentTooLongError`).
+  - `decide/` (`mod.rs`, `item.rs`, `budget.rs`, `selector.rs`): candidate observation, candidate budget RLE accounting, `Selector` storage accumulation, and `largest_files` diagnostic selection.
   - `tree.rs`: Format-neutral ASCII hierarchy tree (`BudgetTrie`, `BudgetTrieNode`, `InsertError`) in flat 16-byte LCRS arena.
   - `render/` (`mod.rs`, `text.rs`, `xml.rs`, `token.rs`): Format-specific streaming serializers (Text/XML), escaping (`escape_header`, `xml_escape`), `TokenEstimator` heuristic token state machine, `render_to_writer`, and streaming `BoundedEstimatingWriter`.
   - `github_url.rs`: Pure `std` URL construction with RFC 3986 percent-encoding and origin credential scoping.

@@ -67,8 +67,8 @@ impl<'a, R: Read> SourceStream for GithubStream<'a, R> {
             match probe_tar_entry(&mut entry, &mut path_scratch, &mut content_scratch)? {
                 ArchiveEntryOutcome::PaxHeader(sha) => {
                     if self.seen_entries {
-                        return Err(IngestError::InvalidMetadata(
-                            "pax header after archive entries".into(),
+                        return Err(IngestError::invalid_metadata(
+                            "pax header after archive entries",
                         ));
                     }
                     self.parsed_revision = Some(sha);

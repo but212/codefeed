@@ -60,7 +60,7 @@ struct AtomicFile {
 impl AtomicFile {
     fn create(target: &Path) -> Result<Self, IngestError> {
         let Some(raw_name) = target.file_name() else {
-            return Err(IngestError::Usage("output path has no filename".into()));
+            return Err(IngestError::usage("output path has no filename"));
         };
         if target.is_dir() {
             return Err(IngestError::Io(io::Error::new(
@@ -180,7 +180,7 @@ impl OutputFilter {
         } else {
             let parent = normalized_target.parent().unwrap_or(Path::new("."));
             let file_name = normalized_target.file_name().ok_or_else(|| {
-                IngestError::Usage(format!("invalid output path: {}", output.display()))
+                IngestError::usage(format!("invalid output path: {}", output.display()))
             })?;
             if let Ok(canon_parent) = fs::canonicalize(parent) {
                 let canonical = canon_parent.join(file_name);
@@ -328,7 +328,7 @@ mod tests {
 
         // 1. Cleanup on closure error
         let err_result: Result<(), _> = write_atomic(&output, |_w| {
-            Err(IngestError::InvalidMetadata("test failure".into()))
+            Err(IngestError::invalid_metadata("test failure"))
         });
         assert!(err_result.is_err());
         assert!(!output.exists());
