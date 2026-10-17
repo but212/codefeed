@@ -5,6 +5,6 @@ mod item;
 mod selector;
 
 pub use budget::CandidateBudget;
-pub use item::{Item, ItemPath, Probe, text_str};
+pub use item::{CandidateInput, text_str};
 pub use selector::Selector;
 pub(crate) use selector::largest_files;

@@ -6,17 +6,21 @@
 use std::io::Write;
 
 pub(crate) mod text;
-pub(crate) mod token;
 pub(crate) mod xml;
-
-pub use text::escape_header;
-pub use token::{TokenEstimator, estimate_tokens};
-pub use xml::{write_escaped, xml_escape};
 
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
 use crate::core::policy::MAX_OUTPUT_SIZE;
 use crate::core::tree::BudgetTrie;
+
+#[inline]
+pub fn estimate_tokens(bytes: u64) -> usize {
+    if bytes == 0 {
+        0
+    } else {
+        (bytes / 4).max(1) as usize
+    }
+}
 
 impl DigestFormat {
     pub(crate) fn render<'a, W, I>(
@@ -40,15 +44,10 @@ impl DigestFormat {
     }
 }
 
-const ESTIMATING_WRITER_BUF_SIZE: usize = 8 * 1024;
-
 struct BoundedEstimatingWriter<'a, W: Write + ?Sized> {
     inner: &'a mut W,
     written: u64,
-    estimator: TokenEstimator,
     overflowed: bool,
-    buf: [u8; ESTIMATING_WRITER_BUF_SIZE],
-    buf_len: usize,
 }
 
 impl<'a, W: Write + ?Sized> BoundedEstimatingWriter<'a, W> {
@@ -56,25 +55,12 @@ impl<'a, W: Write + ?Sized> BoundedEstimatingWriter<'a, W> {
         Self {
             inner,
             written: 0,
-            estimator: TokenEstimator::new(),
             overflowed: false,
-            buf: [0u8; ESTIMATING_WRITER_BUF_SIZE],
-            buf_len: 0,
         }
     }
 
-    fn flush_buf(&mut self) -> std::io::Result<()> {
-        if self.buf_len > 0 {
-            self.inner.write_all(&self.buf[..self.buf_len])?;
-            self.estimator.process_bytes(&self.buf[..self.buf_len]);
-            self.buf_len = 0;
-        }
-        Ok(())
-    }
-
-    fn finish(mut self) -> std::io::Result<usize> {
-        self.flush_buf()?;
-        Ok(self.estimator.finish())
+    fn finish(self) -> std::io::Result<usize> {
+        Ok(estimate_tokens(self.written))
     }
 }
 
@@ -85,36 +71,16 @@ impl<W: Write + ?Sized> Write for BoundedEstimatingWriter<'_, W> {
             self.overflowed = true;
             return Err(output_limit_io_error());
         }
+        self.inner.write_all(buf)?;
         self.written = new_written;
-
-        let space = self.buf.len() - self.buf_len;
-        if buf.len() <= space {
-            self.buf[self.buf_len..self.buf_len + buf.len()].copy_from_slice(buf);
-            self.buf_len += buf.len();
-            return Ok(buf.len());
-        }
-
-        self.flush_buf()?;
-
-        if buf.len() >= self.buf.len() {
-            self.inner.write_all(buf)?;
-            self.estimator.process_bytes(buf);
-        } else {
-            self.buf[..buf.len()].copy_from_slice(buf);
-            self.buf_len = buf.len();
-        }
-
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.flush_buf()?;
         self.inner.flush()
     }
 }
 
-#[cold]
-#[inline(never)]
 fn output_limit_io_error() -> std::io::Error {
     std::io::Error::other("output size limit exceeded")
 }
@@ -142,14 +108,12 @@ pub fn render_to_writer<W: Write + ?Sized>(
     estimating_writer.finish().map_err(Into::into)
 }
 
-#[cold]
-#[inline(never)]
 fn output_too_large_error(collection: &CollectionResult) -> IngestError {
     IngestError::output_too_large(crate::core::decide::largest_files(collection.files.iter()))
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
     use crate::core::error::IngestError;
     use crate::core::model::{FileRecord, FileStorage};
@@ -442,5 +406,15 @@ z &lt; 10
             .expect("finish must succeed even if inner flush fails");
         assert!(tokens > 0);
         assert_eq!(inner.buf, b"hello world\n");
+    }
+
+    #[test]
+    fn estimate_tokens_boundaries() {
+        assert_eq!(estimate_tokens(0), 0);
+        assert_eq!(estimate_tokens(1), 1);
+        assert_eq!(estimate_tokens(3), 1);
+        assert_eq!(estimate_tokens(4), 1);
+        assert_eq!(estimate_tokens(5), 1);
+        assert_eq!(estimate_tokens(8), 2);
     }
 }

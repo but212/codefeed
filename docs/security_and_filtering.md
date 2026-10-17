@@ -19,25 +19,21 @@ Comprehensive specification of security boundaries, pattern-based exclusion, can
 
 ## 2. Path Classification & Filtering Hierarchy
 
-Every encountered entry (local filesystem or remote archive) passes through a multi-stage classification pipeline defined in `src/core/policy.rs` (`PathClassification`):
+Every encountered entry (local filesystem or remote archive) passes through path filtering and candidate evaluation defined in `src/core/policy.rs` (`is_ignored_path`):
 
 ```
 Entry Discovered (Local Walk or Tar Stream)
    │
-   ├── Ignored (Pre-candidate Filter)
+   ├── Ignored (Pre-candidate Filter: is_ignored_path)
    │     ├── Noise Lockfiles (Cargo.lock, package-lock.json, etc.)
    │     ├── Sensitive Patterns (.env*, id_rsa*, credentials*, *.key, *.pem, etc.)
    │     ├── Hidden Components (.git, .github, .config, etc.)
    │     └── Symlinks (Local filesystem only)
    │     └── [Result: Dropped immediately. Not counted in candidate budget or skipped tally.]
    │
-   ├── PreclassifiedBinary
-   │     └── Matches BINARY_EXTENSIONS (.png, .jpg, .pdf, .zip, etc.)
-   │     └── [Result: Candidate slot consumed; body read/fetch skipped (Probe::Missing); counted in skipped.]
-   │
-   └── NeedsContent
+   └── Candidate
          └── Regular candidate file
-         └── [Result: Candidate slot consumed; body validated for UTF-8 encoding and MAX_FILE_SIZE.]
+         └── [Result: Candidate slot consumed; body validated for UTF-8 encoding (no NUL bytes) and MAX_FILE_SIZE. Non-text or oversized files increment skipped.]
 ```
 
 ### 2.1 Conventional Noise Exclusions
@@ -95,8 +91,7 @@ Any path containing a component starting with a leading dot (`.`) is considered 
 ### Candidate vs. Skipped Accounting Rules
 
 - **Ignored paths:** Dropped during discovery. They consume **zero** candidate slots and do **not** appear in skipped counts.
-- **Binary extensions (`BINARY_EXTENSIONS`):** Consume 1 candidate slot in `CandidateBudget`. Content download/read is skipped via `Probe::Missing`, incrementing `skipped_files`.
-- **Oversized / Non-UTF-8 / NUL-byte files:** Consume 1 candidate slot. Rejected during probe inspection, incrementing `skipped_files`.
+- **Oversized / Non-UTF-8 / NUL-byte binary files:** Consume 1 candidate slot. Rejected during content inspection or probe evaluation, incrementing `skipped_files`.
 
 ---
 
@@ -109,10 +104,10 @@ Local directory traversal in `src/shell/local.rs` and `src/shell/local_io.rs` ad
    - File inspection verifies non-symlink metadata (`fs::symlink_metadata(path)?.file_type().is_file()`).
    - Symlinks to files, directories, or special devices are completely ignored, avoiding infinite symlink recursion and arbitrary file reads outside the root.
 2. **Output Target Exclusion (`OutputFilter`):**
-   - The destination digest path is resolved and normalized at startup.
-   - Files matching the canonical or normalized target path are excluded during traversal to prevent recursive ingestion loops when generating digests inside the source directory.
+   - The destination digest path is resolved and validated once at startup (`resolve_output_target`).
+   - Files matching the canonical target path are excluded during traversal to prevent recursive ingestion loops when generating digests inside the source directory.
 3. **Atomic Writes (`AtomicFile`):**
-   - Digest files are written to a temporary sibling file in the normalized parent directory.
+   - Digest files are written to a temporary sibling file in the resolved parent directory.
    - Flushed and synced to disk before being atomically renamed to the destination path.
    - Temporary files are immediately unlinked on `Drop` if an error occurs or the process panics.
 
@@ -128,8 +123,8 @@ Remote ingestion via `src/shell/github.rs` and `src/shell/github_client.rs` oper
 2. **Diskless Streaming Pipeline:**
    - Remote repositories are streamed directly from `/repos/{owner}/{repo}/tarball/{ref}` as a single HTTP response.
    - Archive entries are unpacked via `flate2` and `tar` directly into memory arena buffers (`FileStorage`) without writing tarballs or unpacked files to disk.
-3. **Bounded Retries & Jitter:**
-   - Bounded exponential backoff with random jitter (`MAX_RETRIES = 3`, initial delay 250 ms, cap 5,000 ms, jitter 50 ms).
+3. **Bounded Retries:**
+   - Bounded exponential backoff (`MAX_RETRIES = 3`, initial delay 250 ms, cap 5,000 ms).
    - Only retryable transport errors (I/O, timeout, connection drop) and HTTP 429 / 5xx status codes trigger retries. 4xx client errors fail immediately.
 
 ---

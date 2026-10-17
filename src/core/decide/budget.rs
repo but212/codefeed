@@ -1,68 +1,22 @@
-//! Candidate file budget, run-length directory accounting, and overflow diagnostics.
+//! Candidate file budget and overflow diagnostics.
 
 use std::collections::HashMap;
 
 use crate::core::error::IngestError;
 use crate::core::policy::MAX_FILE_COUNT;
 
-#[derive(Clone, Debug)]
-pub(crate) enum CompactDir {
-    Inline { len: u8, buf: [u8; 22] },
-    Heap(Box<str>),
-}
-
-impl CompactDir {
-    #[inline]
-    pub(crate) fn as_str(&self) -> &str {
-        match self {
-            Self::Inline { len, buf } => std::str::from_utf8(&buf[..*len as usize]).unwrap_or(""),
-            Self::Heap(s) => s.as_ref(),
-        }
-    }
-
-    #[inline]
-    pub(crate) fn as_bytes(&self) -> &[u8] {
-        match self {
-            Self::Inline { len, buf } => &buf[..*len as usize],
-            Self::Heap(s) => s.as_bytes(),
-        }
-    }
-}
-
-impl From<&str> for CompactDir {
-    fn from(s: &str) -> Self {
-        if s.len() <= 22 {
-            let mut buf = [0u8; 22];
-            buf[..s.len()].copy_from_slice(s.as_bytes());
-            Self::Inline {
-                len: s.len() as u8,
-                buf,
-            }
-        } else {
-            Self::Heap(s.into())
-        }
-    }
-}
-
 /// Candidate-count budget owned by the selector that consumes it.
 #[derive(Default, Debug)]
 pub struct CandidateBudget {
     count: usize,
-    dir_runs: Vec<(CompactDir, usize)>,
+    dir_counts: HashMap<String, usize>,
 }
 
 impl CandidateBudget {
-    pub const fn new() -> Self {
-        Self {
-            count: 0,
-            dir_runs: Vec::new(),
-        }
-    }
-
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             count: 0,
-            dir_runs: Vec::with_capacity(capacity),
+            dir_counts: HashMap::with_capacity(capacity),
         }
     }
 
@@ -80,7 +34,8 @@ impl CandidateBudget {
 
     pub fn add(&mut self, path: Option<&str>) -> Result<(), IngestError> {
         self.count = self.count.checked_add(1).ok_or_else(file_count_overflow)?;
-        self.record_dir_run(extract_dir_slice(path));
+        let dir = extract_dir_slice(path);
+        *self.dir_counts.entry(dir.to_string()).or_default() += 1;
 
         if self.count > MAX_FILE_COUNT {
             return Err(self.overflow_error());
@@ -88,34 +43,14 @@ impl CandidateBudget {
         Ok(())
     }
 
-    fn record_dir_run(&mut self, dir_slice: &str) {
-        let dir_bytes = dir_slice.as_bytes();
-        if let Some(entry) = self
-            .dir_runs
-            .iter_mut()
-            .rev()
-            .take(16)
-            .find(|(dir, _)| dir.as_bytes() == dir_bytes)
-        {
-            entry.1 += 1;
-        } else {
-            self.dir_runs.push((CompactDir::from(dir_slice), 1));
-        }
-    }
-
-    #[cold]
-    #[inline(never)]
     fn overflow_error(&self) -> IngestError {
-        let mut aggregated: HashMap<&str, usize> = HashMap::new();
-        for (dir, count) in &self.dir_runs {
-            *aggregated.entry(dir.as_str()).or_insert(0) += count;
-        }
-        IngestError::candidate_limit_exceeded(MAX_FILE_COUNT, top_overflow_directories(&aggregated))
+        IngestError::candidate_limit_exceeded(
+            MAX_FILE_COUNT,
+            top_overflow_directories(&self.dir_counts),
+        )
     }
 }
 
-#[cold]
-#[inline(never)]
 fn file_count_overflow() -> IngestError {
     IngestError::invalid_metadata("file count overflow")
 }
@@ -130,8 +65,8 @@ fn extract_dir_slice(path: Option<&str>) -> &str {
     }
 }
 
-fn top_overflow_directories(dir_counts: &HashMap<&str, usize>) -> Vec<(String, usize)> {
-    let mut dirs: Vec<(&str, usize)> = dir_counts.iter().map(|(&d, &c)| (d, c)).collect();
+fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String, usize)> {
+    let mut dirs: Vec<(&str, usize)> = dir_counts.iter().map(|(d, &c)| (d.as_str(), c)).collect();
     dirs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     dirs.truncate(3);
     dirs.into_iter().map(|(d, c)| (d.to_string(), c)).collect()
@@ -140,29 +75,6 @@ fn top_overflow_directories(dir_counts: &HashMap<&str, usize>) -> Vec<(String, u
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_compact_dir_layout_and_parity() {
-        assert!(std::mem::size_of::<CompactDir>() <= 24);
-        assert!(std::mem::size_of::<(CompactDir, usize)>() <= 32);
-
-        let short_dir = CompactDir::from("src/");
-        assert_eq!(short_dir.as_str(), "src/");
-
-        let long_str = "deeply/nested/directory/structure/path/";
-        let long_dir = CompactDir::from(long_str);
-        assert_eq!(long_dir.as_str(), long_str);
-    }
-
-    #[test]
-    fn test_compact_dir_as_bytes() {
-        let short_dir = CompactDir::from("src/");
-        assert_eq!(short_dir.as_bytes(), b"src/");
-
-        let long_str = "deeply/nested/directory/structure/path/";
-        let long_dir = CompactDir::from(long_str);
-        assert_eq!(long_dir.as_bytes(), long_str.as_bytes());
-    }
 
     #[test]
     fn candidate_budget_enforces_limit() {

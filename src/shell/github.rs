@@ -6,9 +6,9 @@ use flate2::read::GzDecoder;
 use tar::{Archive, EntryType};
 
 use crate::core::archive::{parse_pax_comment, strip_archive_root};
-use crate::core::decide::{Item, ItemPath, Probe};
+use crate::core::decide::CandidateInput;
 use crate::core::error::IngestError;
-use crate::core::policy::{MAX_FILE_SIZE, PathClassification};
+use crate::core::policy::{MAX_FILE_SIZE, is_ignored_path};
 
 use super::orchestrate::{SourceStream, StreamInfo};
 
@@ -53,7 +53,7 @@ impl<'a, R: Read> GithubStream<'a, R> {
 impl<'a, R: Read> SourceStream for GithubStream<'a, R> {
     fn for_each_item<F>(mut self, mut callback: F) -> Result<StreamInfo, IngestError>
     where
-        F: FnMut(Item<'_>) -> Result<(), IngestError>,
+        F: FnMut(CandidateInput<'_>) -> Result<(), IngestError>,
     {
         let mut path_scratch = String::with_capacity(256);
         let mut content_scratch = Vec::with_capacity(32 * 1024);
@@ -73,9 +73,9 @@ impl<'a, R: Read> SourceStream for GithubStream<'a, R> {
                     }
                     self.parsed_revision = Some(sha);
                 }
-                ArchiveEntryOutcome::Item(item) => {
+                ArchiveEntryOutcome::Candidate(candidate) => {
                     self.seen_entries = true;
-                    callback(item)?;
+                    callback(candidate)?;
                 }
                 ArchiveEntryOutcome::Ignored => {
                     self.seen_entries = true;
@@ -91,7 +91,7 @@ impl<'a, R: Read> SourceStream for GithubStream<'a, R> {
 
 enum ArchiveEntryOutcome<'a> {
     PaxHeader(String),
-    Item(Item<'a>),
+    Candidate(CandidateInput<'a>),
     Ignored,
 }
 
@@ -130,35 +130,24 @@ fn probe_tar_entry<'a, R: Read>(
         if crate::core::policy::is_hidden_bytes(rel_bytes) {
             return Ok(ArchiveEntryOutcome::Ignored);
         }
-        return Ok(ArchiveEntryOutcome::Item(Item {
-            path: ItemPath::NonUtf8,
-            probe: Probe::Missing,
+        return Ok(ArchiveEntryOutcome::Candidate(CandidateInput::Skipped {
+            path: None,
         }));
     };
 
-    // 4. Conventional filtering (noise, sensitive, hidden) before heap allocation
-    let classification = PathClassification::classify(rel_str);
-    if classification == PathClassification::Ignored {
+    // 4. Conventional filtering (noise, sensitive, hidden)
+    if is_ignored_path(rel_str) {
         return Ok(ArchiveEntryOutcome::Ignored);
     }
 
     path_scratch.push_str(rel_str);
     let rel_path = std::borrow::Cow::Borrowed(path_scratch.as_str());
 
-    // 5. Known binary extension pre-filter (avoid body read)
-    if classification == PathClassification::PreclassifiedBinary {
-        return Ok(ArchiveEntryOutcome::Item(Item {
-            path: ItemPath::Utf8(rel_path),
-            probe: Probe::Missing,
-        }));
-    }
-
-    // 6. Content reading with MAX_FILE_SIZE limit
+    // 5. Content reading with MAX_FILE_SIZE limit
     let header_size = entry.header().size().unwrap_or(0);
     if header_size > MAX_FILE_SIZE {
-        return Ok(ArchiveEntryOutcome::Item(Item {
-            path: ItemPath::Utf8(rel_path),
-            probe: Probe::TooLarge,
+        return Ok(ArchiveEntryOutcome::Candidate(CandidateInput::TooLarge {
+            path: rel_path,
         }));
     }
 
@@ -167,16 +156,16 @@ fn probe_tar_entry<'a, R: Read>(
         .read_to_end(content_scratch)
         .map_err(IngestError::Io)?;
 
-    let probe = if content_scratch.len() as u64 > MAX_FILE_SIZE {
-        Probe::TooLarge
+    let candidate = if content_scratch.len() as u64 > MAX_FILE_SIZE {
+        CandidateInput::TooLarge { path: rel_path }
     } else {
-        Probe::Bytes(std::borrow::Cow::Borrowed(content_scratch.as_slice()))
+        CandidateInput::File {
+            path: rel_path,
+            bytes: std::borrow::Cow::Borrowed(content_scratch.as_slice()),
+        }
     };
 
-    Ok(ArchiveEntryOutcome::Item(Item {
-        path: ItemPath::Utf8(rel_path),
-        probe,
-    }))
+    Ok(ArchiveEntryOutcome::Candidate(candidate))
 }
 
 #[cfg(test)]
@@ -216,7 +205,11 @@ mod tests {
             ),
             ("repo-root/src/main.rs", b"fn main() {}", EntryType::Regular),
             ("repo-root/Cargo.lock", b"lockfile", EntryType::Regular),
-            ("repo-root/image.png", b"binary-data", EntryType::Regular),
+            (
+                "repo-root/image.png",
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
+                EntryType::Regular,
+            ),
         ]);
 
         let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
@@ -235,7 +228,7 @@ mod tests {
         assert_eq!(paths, vec!["Cargo.toml", "src/main.rs"]);
 
         // Cargo.lock is ignored (neither candidate nor skipped)
-        // image.png is binary (preclassified missing -> skipped = 1)
+        // image.png is binary (contains NUL byte -> skipped = 1)
         assert_eq!(result.skipped, 1);
     }
 
@@ -257,7 +250,7 @@ mod tests {
             crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
 
         assert_eq!(result.files.len(), 1);
-        assert_eq!(result.files.get_at(0).unwrap().path, "small.txt");
+        assert_eq!(result.files.iter().next().unwrap().path, "small.txt");
         assert_eq!(result.skipped, 1);
     }
 
@@ -276,8 +269,9 @@ mod tests {
             crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
 
         assert_eq!(result.files.len(), 1);
-        assert_eq!(result.files.get_at(0).unwrap().path, "pax_global_header");
-        assert_eq!(result.files.get_at(0).unwrap().content, "hello content");
+        let first = result.files.iter().next().unwrap();
+        assert_eq!(first.path, "pax_global_header");
+        assert_eq!(first.content, "hello content");
         assert_eq!(result.revision, None);
     }
 

@@ -117,13 +117,6 @@ impl FileSpan {
     }
 
     #[inline(always)]
-    pub(crate) fn path_bytes<'a>(&self, arena: &'a [u8]) -> &'a [u8] {
-        let start = self.path_offset as usize;
-        let end = start + self.path_len as usize;
-        &arena[start..end]
-    }
-
-    #[inline(always)]
     pub(crate) fn content<'a>(&self, arena: &'a str) -> &'a str {
         let start = self.content_offset as usize;
         let end = start + self.content_len as usize;
@@ -160,23 +153,18 @@ impl FileStorage {
         self.spans.len()
     }
 
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.spans.is_empty()
-    }
-
     /// Sorts spans lexicographically by path in-place within the path arena.
     pub fn sort_by_path(&mut self) {
-        let path_arena = self.path_arena.as_bytes();
+        let path_arena = &self.path_arena;
         let is_sorted = self
             .spans
             .windows(2)
-            .all(|w| w[0].path_bytes(path_arena) <= w[1].path_bytes(path_arena));
+            .all(|w| w[0].path(path_arena) <= w[1].path(path_arena));
         if is_sorted {
             return;
         }
         self.spans
-            .sort_unstable_by(|a, b| a.path_bytes(path_arena).cmp(b.path_bytes(path_arena)));
+            .sort_unstable_by(|a, b| a.path(path_arena).cmp(b.path(path_arena)));
     }
 
     /// Appends path and content to the arenas and records a [`FileSpan`].
@@ -213,20 +201,9 @@ impl FileStorage {
         }
     }
 
-    /// Resolves a span by index into a borrowed [`FileRecord`].
-    #[inline]
-    pub fn get_at(&self, index: usize) -> Option<FileRecord<'_>> {
-        self.spans.get(index).map(|&span| self.get(span))
-    }
-
     /// Iterator yielding borrowed [`FileRecord`] views over the arena.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = FileRecord<'_>> {
         self.spans.iter().map(move |&span| self.get(span))
-    }
-    /// Test-only inspector for continuous arena storage.
-    #[cfg(test)]
-    pub(crate) fn arenas(&self) -> (&str, &str) {
-        (&self.path_arena, &self.content_arena)
     }
 }
 
@@ -264,14 +241,12 @@ mod tests {
     #[test]
     fn file_storage_maintains_continuous_arena_and_zero_copy_views() {
         let mut storage = FileStorage::new();
-        assert!(storage.is_empty());
         assert_eq!(storage.len(), 0);
 
         let span1 = storage.push("path/to/first.rs", "pub fn first() {}");
         let span2 = storage.push("second.txt", "second content\n");
 
         assert_eq!(storage.len(), 2);
-        assert!(!storage.is_empty());
 
         let rec1 = storage.get(span1);
         assert_eq!(rec1.path, "path/to/first.rs");
@@ -281,17 +256,17 @@ mod tests {
         assert_eq!(rec2.path, "second.txt");
         assert_eq!(rec2.content, "second content\n");
 
-        assert_eq!(storage.get_at(0), Some(rec1));
-        assert_eq!(storage.get_at(1), Some(rec2));
-        assert_eq!(storage.get_at(2), None);
+        let mut iter = storage.iter();
+        assert_eq!(iter.next(), Some(rec1));
+        assert_eq!(iter.next(), Some(rec2));
+        assert_eq!(iter.next(), None);
 
         let collected: Vec<FileRecord<'_>> = storage.iter().collect();
         assert_eq!(collected, vec![rec1, rec2]);
 
         // Arena contents verification
-        let (path_arena, content_arena) = storage.arenas();
-        assert_eq!(path_arena, "path/to/first.rssecond.txt");
-        assert_eq!(content_arena, "pub fn first() {}second content\n");
+        assert_eq!(storage.path_arena, "path/to/first.rssecond.txt");
+        assert_eq!(storage.content_arena, "pub fn first() {}second content\n");
 
         // FromIterator verification
         let reconstructed: FileStorage = collected.into_iter().collect();
@@ -309,16 +284,6 @@ mod tests {
 
         let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
         assert_eq!(paths, vec!["a/file.rs", "m/file.rs", "z/file.rs"]);
-    }
-
-    #[test]
-    fn test_file_span_path_bytes_parity() {
-        let mut storage = FileStorage::new();
-        let span = storage.push("src/core/model.rs", "pub struct Foo;");
-        assert_eq!(
-            span.path_bytes(storage.path_arena.as_bytes()),
-            span.path(&storage.path_arena).as_bytes()
-        );
     }
 
     #[test]

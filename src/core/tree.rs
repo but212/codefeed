@@ -11,29 +11,24 @@ const TREE_BRANCH: &str = "├── ";
 const TREE_LAST: &str = "└── ";
 const TREE_VERT: &str = "│   ";
 const TREE_SPACE: &str = "    ";
-const FLAG_DIR: u32 = 1 << 31;
-const LEN_MASK: u32 = !FLAG_DIR;
-
-const _: () = assert!(std::mem::size_of::<BudgetTrieNode>() == 16);
-
 pub(crate) const NO_NODE: u32 = u32::MAX;
 
-/// 16-byte fixed-size trie node in a Left-Child Right-Sibling (LCRS) flat arena.
-#[repr(C)]
+/// Trie node in a Left-Child Right-Sibling (LCRS) flat arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BudgetTrieNode {
     pub(crate) name_offset: u32,
-    pub(crate) len_and_flags: u32,
+    pub(crate) name_len: u32,
+    pub(crate) is_dir: bool,
     pub(crate) first_child: u32,  // NO_NODE means None
     pub(crate) next_sibling: u32, // NO_NODE means None
 }
 
 impl BudgetTrieNode {
     pub(crate) fn new(name_offset: u32, name_len: u32, is_dir: bool) -> Self {
-        assert!(name_len <= LEN_MASK, "component length overflow");
         Self {
             name_offset,
-            len_and_flags: name_len | if is_dir { FLAG_DIR } else { 0 },
+            name_len,
+            is_dir,
             first_child: NO_NODE,
             next_sibling: NO_NODE,
         }
@@ -41,19 +36,12 @@ impl BudgetTrieNode {
 
     #[inline(always)]
     pub(crate) const fn is_dir(&self) -> bool {
-        (self.len_and_flags & FLAG_DIR) != 0
+        self.is_dir
     }
 
     #[inline(always)]
     pub(crate) const fn name_len(&self) -> usize {
-        (self.len_and_flags & LEN_MASK) as usize
-    }
-
-    #[inline(always)]
-    pub(crate) fn name_bytes<'a>(&self, arena: &'a [u8]) -> &'a [u8] {
-        let start = self.name_offset as usize;
-        let end = start + self.name_len();
-        &arena[start..end]
+        self.name_len as usize
     }
 }
 
@@ -87,13 +75,6 @@ impl BudgetTrie {
         &self.label_arena[start..end]
     }
 
-    #[cfg(test)]
-    #[inline]
-    pub(crate) fn node_name_bytes(&self, index: u32) -> &[u8] {
-        let node = &self.nodes[index as usize];
-        node.name_bytes(self.label_arena.as_bytes())
-    }
-
     pub fn insert(&mut self, path: &str) {
         let mut parts = path.split('/').filter(|s| !s.is_empty()).peekable();
         let mut current_node_index: u32 = 0;
@@ -120,13 +101,12 @@ impl BudgetTrie {
     fn get_or_insert_child(&mut self, parent_index: u32, part: &str, is_dir: bool) -> u32 {
         let parent_node = parent_index as usize;
         let last_child_index = self.last_children[parent_node];
-        let part_bytes = part.as_bytes();
 
         if last_child_index != NO_NODE {
             let last_node = self.nodes[last_child_index as usize];
-            let last_name = last_node.name_bytes(self.label_arena.as_bytes());
+            let last_name = self.node_name(last_child_index);
             let ordering = last_name
-                .cmp(part_bytes)
+                .cmp(part)
                 .then_with(|| last_node.is_dir().cmp(&is_dir));
             if ordering == std::cmp::Ordering::Equal {
                 return last_child_index;
@@ -150,12 +130,11 @@ impl BudgetTrie {
         let mut curr = self.nodes[parent_node].first_child;
         let mut prev = NO_NODE;
 
-        let arena_bytes = self.label_arena.as_bytes();
         while curr != NO_NODE {
             let curr_node = self.nodes[curr as usize];
-            let curr_name = curr_node.name_bytes(arena_bytes);
+            let curr_name = self.node_name(curr);
             let ord = curr_name
-                .cmp(part_bytes)
+                .cmp(part)
                 .then_with(|| curr_node.is_dir().cmp(&is_dir));
             match ord {
                 std::cmp::Ordering::Equal => return curr,
@@ -236,7 +215,7 @@ impl BudgetTrie {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     #[test]
@@ -273,8 +252,6 @@ pub(crate) mod tests {
 
     #[test]
     fn test_trie_node_storage_optimization() {
-        assert_eq!(std::mem::size_of::<BudgetTrieNode>(), 16);
-
         let mut trie = BudgetTrie::new();
         trie.insert("clean/dir/file.rs");
         let clean_dir_index = trie.nodes[0].first_child;
@@ -288,7 +265,6 @@ pub(crate) mod tests {
 
     #[test]
     fn test_flat_arena_links() {
-        assert_eq!(std::mem::size_of::<BudgetTrieNode>(), 16);
         let mut trie = BudgetTrie::new();
         trie.insert("src/lib.rs");
         assert_eq!(trie.nodes.len(), 3);
@@ -312,16 +288,5 @@ pub(crate) mod tests {
         trie.insert(&path);
         let child = trie.nodes[0].first_child;
         assert_eq!(trie.node_name(child).len(), long_len);
-    }
-
-    #[test]
-    fn test_trie_node_name_bytes_parity() {
-        let mut trie = BudgetTrie::new();
-        trie.insert("foo/bar.rs");
-        let child = trie.nodes[0].first_child;
-        assert_eq!(
-            trie.node_name_bytes(child),
-            trie.node_name(child).as_bytes()
-        );
     }
 }

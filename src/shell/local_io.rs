@@ -4,43 +4,52 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
 
-use crate::core::decide::Probe;
 use crate::core::error::IngestError;
 use crate::core::policy::MAX_FILE_SIZE;
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LocalFileRead<'b> {
+    Bytes(&'b [u8]),
+    Missing,
+    TooLarge,
+}
 
 pub(crate) fn read_local_file_into<'b>(
     path: &Path,
     buf: &'b mut Vec<u8>,
-) -> Result<Probe<'b>, IngestError> {
+) -> Result<LocalFileRead<'b>, IngestError> {
     let meta = match fs::symlink_metadata(path) {
         Ok(m) => m,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Probe::Missing),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(LocalFileRead::Missing),
         Err(err) => return Err(IngestError::Io(err)),
     };
     if meta.is_symlink() || !meta.is_file() {
-        return Ok(Probe::Missing);
+        return Ok(LocalFileRead::Missing);
     }
     if meta.len() > MAX_FILE_SIZE {
-        return Ok(Probe::TooLarge);
+        return Ok(LocalFileRead::TooLarge);
     }
     let file = match fs::File::open(path) {
         Ok(f) => f,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Probe::Missing),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(LocalFileRead::Missing),
         Err(err) => return Err(IngestError::Io(err)),
     };
     read_bounded_content_into(file, buf).map_err(Into::into)
 }
 
-fn read_bounded_content_into<'b>(file: fs::File, buf: &'b mut Vec<u8>) -> io::Result<Probe<'b>> {
+fn read_bounded_content_into<'b>(
+    file: fs::File,
+    buf: &'b mut Vec<u8>,
+) -> io::Result<LocalFileRead<'b>> {
     if !file.metadata()?.is_file() {
-        return Ok(Probe::Missing);
+        return Ok(LocalFileRead::Missing);
     }
     let mut handle = file.take(MAX_FILE_SIZE.saturating_add(1));
     handle.read_to_end(buf)?;
     if buf.len() as u64 > MAX_FILE_SIZE {
-        return Ok(Probe::TooLarge);
+        return Ok(LocalFileRead::TooLarge);
     }
-    Ok(Probe::Bytes(std::borrow::Cow::Borrowed(buf.as_slice())))
+    Ok(LocalFileRead::Bytes(buf.as_slice()))
 }
 
 #[cfg(test)]
@@ -59,12 +68,12 @@ mod tests {
         let mut buf = Vec::new();
         assert!(matches!(
             read_local_file_into(&exact_path, &mut buf)?,
-            Probe::Bytes(_)
+            LocalFileRead::Bytes(_)
         ));
         buf.clear();
         assert!(matches!(
             read_local_file_into(&too_large_path, &mut buf)?,
-            Probe::TooLarge
+            LocalFileRead::TooLarge
         ));
         Ok(())
     }
@@ -77,7 +86,7 @@ mod tests {
         let mut buf = Vec::new();
         assert!(matches!(
             read_local_file_into(&path, &mut buf)?,
-            Probe::Missing
+            LocalFileRead::Missing
         ));
         Ok(())
     }
@@ -96,7 +105,7 @@ mod tests {
         let mut buf = Vec::new();
         assert!(matches!(
             read_local_file_into(&link, &mut buf)?,
-            Probe::Missing
+            LocalFileRead::Missing
         ));
         Ok(())
     }
@@ -115,7 +124,7 @@ mod tests {
             let mut buf = Vec::new();
             assert!(matches!(
                 read_local_file_into(&link, &mut buf)?,
-                Probe::Missing
+                LocalFileRead::Missing
             ));
             let _ = fs::remove_file(&link);
         }

@@ -7,14 +7,8 @@ use crate::core::error::IngestError;
 use crate::core::model::{DigestFormat, OutputTarget, RunConfig};
 use crate::core::source::parse_os;
 
-macro_rules! usage_str {
-    () => {
-        "codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]"
-    };
-}
-
-const HELP: &str = concat!("Usage: ", usage_str!());
-const MISSING_SOURCE_ERR: &str = concat!("missing source\n\nUsage: ", usage_str!());
+pub const HELP: &str =
+    "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]";
 
 pub const fn help_text() -> &'static str {
     HELP
@@ -35,15 +29,11 @@ enum FormatArg {
 #[derive(Parser, Debug)]
 #[command(
     name = "codefeed",
-    override_usage = usage_str!(),
-    disable_help_flag = true
+    override_usage = "codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]"
 )]
 struct Opts {
-    #[arg(short = 'h', long = "help", help = "Print help")]
-    help: bool,
-
     #[arg(value_name = "SOURCE")]
-    source: Option<OsString>,
+    source: OsString,
 
     #[arg(
         short = 'o',
@@ -74,15 +64,12 @@ where
 
     let opts = match Opts::try_parse_from(&args_vec) {
         Ok(opts) => opts,
-        Err(err) => return Err(IngestError::usage(err.to_string())),
-    };
-
-    if opts.help {
-        return Ok(CliAction::Help);
-    }
-
-    let Some(source_value) = opts.source else {
-        return Err(IngestError::usage(MISSING_SOURCE_ERR));
+        Err(err) => {
+            if err.kind() == clap::error::ErrorKind::DisplayHelp {
+                return Ok(CliAction::Help);
+            }
+            return Err(IngestError::usage(err.to_string()));
+        }
     };
 
     let output = if opts.output == "-" {
@@ -96,7 +83,7 @@ where
         FormatArg::Xml => DigestFormat::Xml,
     };
 
-    let source = parse_os(&source_value)?.with_reference(opts.reference)?;
+    let source = parse_os(&opts.source)?.with_reference(opts.reference)?;
 
     Ok(CliAction::Run(RunConfig::new(source, output, format)))
 }

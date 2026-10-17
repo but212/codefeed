@@ -24,19 +24,12 @@ pub const NOISE: &[&str] = &[
 /// and is also matched as a filename prefix in [`is_sensitive_path`] (`credentials*`, e.g., `credentials.json`).
 pub const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "credentials"];
 
-/// Known binary file extensions filtered prior to remote download.
-pub const BINARY_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "ico", "webp", "woff", "woff2", "ttf", "pdf", "zip",
-];
-
 /// Maximum total HTTP request attempts (1 initial + up to 2 retries).
 pub const MAX_RETRIES: usize = 3;
 /// Base initial delay in milliseconds for exponential backoff.
 pub const RETRY_INITIAL_DELAY_MS: u64 = 250;
 /// Maximum delay cap in milliseconds for exponential backoff.
 pub const RETRY_MAX_DELAY_MS: u64 = 5_000;
-/// Maximum random jitter in milliseconds added to backoff delay.
-pub const RETRY_JITTER_MAX_MS: u64 = 50;
 
 #[inline]
 pub(crate) fn is_noise_file(file_name: &str) -> bool {
@@ -66,16 +59,6 @@ pub(crate) fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> boo
         .any(|&s| s.eq_ignore_ascii_case(extension))
 }
 
-#[inline]
-pub(crate) fn is_binary_extension(extension: Option<&str>) -> bool {
-    let Some(extension) = extension else {
-        return false;
-    };
-    BINARY_EXTENSIONS
-        .iter()
-        .any(|&b| b.eq_ignore_ascii_case(extension))
-}
-
 /// Returns `true` if `path` contains hidden directory or file components (starting with `.`).
 #[inline]
 pub(crate) fn is_hidden_path(path: &str) -> bool {
@@ -88,34 +71,16 @@ pub(crate) fn is_hidden_bytes(path: &[u8]) -> bool {
     path.starts_with(b".") || path.windows(2).any(|w| w == b"/.")
 }
 
-/// Pre-ingestion classification of a relative path candidate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PathClassification {
-    /// Noise, sensitive, or hidden: ignored completely (neither candidates nor skipped).
-    Ignored,
-    /// Known binary extension: candidate accounted, but body read/fetch is skipped (Probe::Missing).
-    PreclassifiedBinary,
-    /// Normal candidate: requires reading or downloading content to evaluate encoding and size.
-    NeedsContent,
-}
-
-impl PathClassification {
-    pub(crate) fn classify(path: &str) -> Self {
-        if is_hidden_path(path) {
-            return Self::Ignored;
-        }
-
-        let file_name = path.rsplit('/').next().unwrap_or(path);
-        let extension = file_name.rsplit_once('.').map(|(_, e)| e);
-
-        if is_noise_file(file_name) || is_sensitive_file(file_name, extension) {
-            Self::Ignored
-        } else if is_binary_extension(extension) {
-            Self::PreclassifiedBinary
-        } else {
-            Self::NeedsContent
-        }
+/// Returns `true` if `path` is an ignored noise, sensitive, or hidden file.
+pub(crate) fn is_ignored_path(path: &str) -> bool {
+    if is_hidden_path(path) {
+        return true;
     }
+
+    let file_name = path.rsplit('/').next().unwrap_or(path);
+    let extension = file_name.rsplit_once('.').map(|(_, e)| e);
+
+    is_noise_file(file_name) || is_sensitive_file(file_name, extension)
 }
 
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
@@ -124,18 +89,16 @@ pub(crate) const fn is_retryable_status(status_code: u16) -> bool {
     (status_code == 429) | (status_code.wrapping_sub(500) <= 99)
 }
 
-/// Calculates bounded exponential backoff duration with jitter for the given attempt.
+/// Calculates bounded exponential backoff duration for the given attempt.
 #[inline]
-pub(crate) const fn retry_delay(attempt: usize, entropy: u64) -> std::time::Duration {
+pub(crate) const fn retry_delay(attempt: usize) -> std::time::Duration {
     let shift = if attempt < 5 { attempt as u32 } else { 5 };
     let exponential = RETRY_INITIAL_DELAY_MS.saturating_mul(1_u64 << shift);
-    let capped_exponential = if exponential < RETRY_MAX_DELAY_MS - RETRY_JITTER_MAX_MS {
+    let millis = if exponential < RETRY_MAX_DELAY_MS {
         exponential
     } else {
-        RETRY_MAX_DELAY_MS - RETRY_JITTER_MAX_MS
+        RETRY_MAX_DELAY_MS
     };
-    let jitter = entropy % (RETRY_JITTER_MAX_MS + 1);
-    let millis = capped_exponential + jitter;
 
     std::time::Duration::from_millis(millis)
 }
@@ -165,84 +128,65 @@ mod tests {
     #[test]
     fn calculates_bounded_exponential_backoff() {
         const {
-            assert!(retry_delay(0, 0).as_millis() == 250);
-            assert!(retry_delay(10, 0).as_millis() == 4950);
-            assert!(retry_delay(10, 50).as_millis() == 5000);
+            assert!(retry_delay(0).as_millis() == 250);
+            assert!(retry_delay(1).as_millis() == 500);
+            assert!(retry_delay(2).as_millis() == 1000);
+            assert!(retry_delay(5).as_millis() == 5000);
+            assert!(retry_delay(10).as_millis() == 5000);
         }
-        assert_eq!(retry_delay(0, 0).as_millis(), 250);
-        assert_eq!(retry_delay(1, 0).as_millis(), 500);
-        assert_eq!(retry_delay(2, 0).as_millis(), 1000);
-        assert_eq!(retry_delay(10, 0).as_millis(), 4950);
-        assert_eq!(retry_delay(10, 25).as_millis(), 4975);
-        assert_eq!(retry_delay(10, 50).as_millis(), 5000);
-
-        assert_eq!(retry_delay(0, 42).as_millis(), 292);
-        assert_eq!(retry_delay(0, 50).as_millis(), 300);
+        assert_eq!(retry_delay(0).as_millis(), 250);
+        assert_eq!(retry_delay(1).as_millis(), 500);
+        assert_eq!(retry_delay(2).as_millis(), 1000);
+        assert_eq!(retry_delay(3).as_millis(), 2000);
+        assert_eq!(retry_delay(4).as_millis(), 4000);
+        assert_eq!(retry_delay(5).as_millis(), 5000);
+        assert_eq!(retry_delay(10).as_millis(), 5000);
     }
 
     #[test]
-    fn classifies_candidate_paths() {
-        let cases = [
-            ("Cargo.lock", PathClassification::Ignored),
-            ("nested/dir/package-lock.json", PathClassification::Ignored),
-            (".env", PathClassification::Ignored),
-            ("config/.env.local", PathClassification::Ignored),
-            ("certs/server.pem", PathClassification::Ignored),
-            ("certs/privkey.key", PathClassification::Ignored),
-            ("id_rsa", PathClassification::Ignored),
-            (".ssh/id_rsa_deploy", PathClassification::Ignored),
-            ("id_ed25519", PathClassification::Ignored),
-            (".ssh/id_ed25519_backup", PathClassification::Ignored),
-            ("secrets/credentials.json", PathClassification::Ignored),
-            ("auth/aws.credentials", PathClassification::Ignored),
-            ("aws/credentials", PathClassification::Ignored),
-            ("config/credentials.yaml", PathClassification::Ignored),
-            ("Credentials.json", PathClassification::Ignored),
-            ("keys/ID_RSA", PathClassification::Ignored),
-            ("ID_ED25519_backup", PathClassification::Ignored),
-            ("config/.ENV.prod", PathClassification::Ignored),
-            (".git/config", PathClassification::Ignored),
-            ("src/.hidden.rs", PathClassification::Ignored),
-            ("assets/logo.png", PathClassification::PreclassifiedBinary),
-            ("image.PNG", PathClassification::PreclassifiedBinary),
-            ("assets/font.woff2", PathClassification::PreclassifiedBinary),
-            ("src/main.rs", PathClassification::NeedsContent),
-            ("src//main.rs", PathClassification::NeedsContent),
-            ("/src/main.rs", PathClassification::NeedsContent),
-            ("Cargo.toml", PathClassification::NeedsContent),
-            ("Makefile", PathClassification::NeedsContent),
+    fn test_is_ignored_path() {
+        let ignored = [
+            "Cargo.lock",
+            "nested/dir/package-lock.json",
+            ".env",
+            "config/.env.local",
+            "certs/server.pem",
+            "certs/privkey.key",
+            "id_rsa",
+            ".ssh/id_rsa_deploy",
+            "id_ed25519",
+            ".ssh/id_ed25519_backup",
+            "secrets/credentials.json",
+            "auth/aws.credentials",
+            "aws/credentials",
+            "config/credentials.yaml",
+            "Credentials.json",
+            "keys/ID_RSA",
+            "ID_ED25519_backup",
+            "config/.ENV.prod",
+            ".git/config",
+            "src/.hidden.rs",
+            ".env.production",
+            ".envrc",
         ];
-        for (path, expected) in cases {
-            assert_eq!(
-                PathClassification::classify(path),
-                expected,
-                "classification mismatch for {path}"
-            );
+        for path in ignored {
+            assert!(is_ignored_path(path), "expected {path} to be ignored");
         }
-    }
 
-    #[test]
-    fn is_sensitive_path_matches_env_prefixes() {
-        assert_eq!(
-            PathClassification::classify(".env"),
-            PathClassification::Ignored
-        );
-        assert_eq!(
-            PathClassification::classify(".env.local"),
-            PathClassification::Ignored
-        );
-        assert_eq!(
-            PathClassification::classify("nested/.ENV.production"),
-            PathClassification::Ignored
-        );
-        assert_eq!(
-            PathClassification::classify(".envrc"),
-            PathClassification::Ignored
-        );
-        assert_eq!(
-            PathClassification::classify("environment.rs"),
-            PathClassification::NeedsContent
-        );
+        let kept = [
+            "assets/logo.png",
+            "image.PNG",
+            "assets/font.woff2",
+            "src/main.rs",
+            "src//main.rs",
+            "/src/main.rs",
+            "Cargo.toml",
+            "Makefile",
+            "environment.rs",
+        ];
+        for path in kept {
+            assert!(!is_ignored_path(path), "expected {path} not to be ignored");
+        }
     }
 
     #[test]

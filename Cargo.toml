@@ -26,7 +26,3 @@ bench = false
 [[bin]]
 name = "codefeed"
 bench = false
-
-[[bench]]
-name = "bench"
-harness = false

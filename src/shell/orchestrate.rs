@@ -1,6 +1,6 @@
 //! Pipeline orchestration: coordinates collection, emission, and digest rendering.
 
-use crate::core::decide::{Item, Selector};
+use crate::core::decide::{CandidateInput, Selector};
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, IngestReport, RunConfig, Source};
 use crate::shell;
@@ -17,17 +17,17 @@ pub trait SourceStream {
     }
     fn for_each_item<F>(self, callback: F) -> Result<StreamInfo, IngestError>
     where
-        F: FnMut(Item<'_>) -> Result<(), IngestError>;
+        F: FnMut(CandidateInput<'_>) -> Result<(), IngestError>;
 }
 
 pub fn collect_stream<S: SourceStream>(stream: S) -> Result<CollectionResult, IngestError> {
     let mut selector = Selector::from_size_hint(stream.size_hint());
-    let info = stream.for_each_item(|item| selector.decide(item))?;
+    let info = stream.for_each_item(|item| selector.feed(item))?;
     Ok(selector.finish(info.label, info.revision))
 }
 
 pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
-    shell::output::validate_target(&config.output)?;
+    let resolved_output = shell::output::resolve_output_target(&config.output)?;
 
     let collection = match &config.source {
         Source::Local(path) => shell::local::collect(path, &config.output)?,
@@ -38,7 +38,8 @@ pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
         } => shell::github::collect(owner, repo, reference.as_deref())?,
     };
 
-    let estimated_tokens = shell::output::emit(&config.output, &collection, config.format)?;
+    let estimated_tokens =
+        shell::output::emit(resolved_output.as_deref(), &collection, config.format)?;
 
     Ok(IngestReport {
         output: config.output.clone(),

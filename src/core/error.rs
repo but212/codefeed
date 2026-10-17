@@ -16,32 +16,29 @@ pub struct CandidateLimitExceededError {
 #[derive(Debug)]
 pub enum IngestError {
     /// CLI usage error or missing argument.
-    Usage(Box<String>),
+    Usage(String),
     /// Candidate file budget exceeded.
-    CandidateLimitExceeded(Box<CandidateLimitExceededError>),
+    CandidateLimitExceeded(CandidateLimitExceededError),
     /// Source string or CLI argument is syntactically invalid.
-    InvalidSource(Box<String>),
+    InvalidSource(String),
     /// Source scheme or host is unsupported (e.g. non-GitHub remote or SSH).
-    UnsupportedSource(Box<String>),
+    UnsupportedSource(String),
     /// Local filesystem I/O failure.
     Io(io::Error),
     /// Network transport or connection failure contacting GitHub.
-    Http(Box<String>),
+    Http(String),
     /// GitHub HTTP error response or rate limit exceeded.
-    Api(Box<String>),
+    Api(String),
     /// Repository metadata or API response payload is malformed.
-    InvalidMetadata(Box<String>),
+    InvalidMetadata(String),
     /// Rendered digest exceeds the maximum allowed output size.
-    OutputTooLarge(Box<Vec<(String, usize)>>),
+    OutputTooLarge(Vec<(String, usize)>),
 }
-
-const _: () = assert!(std::mem::size_of::<IngestError>() <= 16);
-const _: () = assert!(std::mem::size_of::<std::result::Result<(), IngestError>>() <= 16);
 
 impl IngestError {
     #[inline]
     pub fn usage(message: impl Into<String>) -> Self {
-        Self::Usage(Box::new(message.into()))
+        Self::Usage(message.into())
     }
 
     #[inline]
@@ -49,40 +46,40 @@ impl IngestError {
         limit: usize,
         largest_directories: Vec<(String, usize)>,
     ) -> Self {
-        Self::CandidateLimitExceeded(Box::new(CandidateLimitExceededError {
+        Self::CandidateLimitExceeded(CandidateLimitExceededError {
             limit,
             largest_directories,
-        }))
+        })
     }
 
     #[inline]
     pub fn invalid_source(message: impl Into<String>) -> Self {
-        Self::InvalidSource(Box::new(message.into()))
+        Self::InvalidSource(message.into())
     }
 
     #[inline]
     pub fn unsupported_source(message: impl Into<String>) -> Self {
-        Self::UnsupportedSource(Box::new(message.into()))
+        Self::UnsupportedSource(message.into())
     }
 
     #[inline]
     pub fn http(message: impl Into<String>) -> Self {
-        Self::Http(Box::new(message.into()))
+        Self::Http(message.into())
     }
 
     #[inline]
     pub fn api(message: impl Into<String>) -> Self {
-        Self::Api(Box::new(message.into()))
+        Self::Api(message.into())
     }
 
     #[inline]
     pub fn invalid_metadata(message: impl Into<String>) -> Self {
-        Self::InvalidMetadata(Box::new(message.into()))
+        Self::InvalidMetadata(message.into())
     }
 
     #[inline]
     pub fn output_too_large(largest_files: Vec<(String, usize)>) -> Self {
-        Self::OutputTooLarge(Box::new(largest_files))
+        Self::OutputTooLarge(largest_files)
     }
 }
 
@@ -148,12 +145,6 @@ impl From<io::Error> for IngestError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ingest_error_fits_in_two_registers() {
-        assert!(std::mem::size_of::<IngestError>() <= 16);
-        assert!(std::mem::size_of::<std::result::Result<(), IngestError>>() <= 16);
-    }
 
     #[test]
     fn output_too_large_message_derives_from_limit() {

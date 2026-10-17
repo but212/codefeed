@@ -68,7 +68,7 @@ impl GithubClient {
                          reason: &dyn std::fmt::Display|
              -> std::time::Duration {
                 *attempt += 1;
-                let delay = retry_delay(*attempt - 1, current_entropy());
+                let delay = retry_delay(*attempt - 1);
                 eprintln!(
                     "warning: {reason} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
                 );
@@ -146,10 +146,6 @@ where
 
 fn resolve_token_from_env() -> Option<String> {
     resolve_token_with(|k| std::env::var(k))
-}
-
-fn current_entropy() -> u64 {
-    super::current_epoch_nanos() as u64
 }
 
 #[cfg(test)]
