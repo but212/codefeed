@@ -88,10 +88,16 @@ impl Display for IngestError {
     }
 }
 
+const KIB: f64 = 1024.0;
+const MIB: f64 = 1024.0 * 1024.0;
+// With "{:.1}", any value >= 1023.95 KiB rounds to "1024.0 KiB", colliding with MiB.
+// 1023.95 * 1024 = 1_048_524.8, so values >= 1_048_525 must be formatted as MiB.
+const MIB_ROUNDING_THRESHOLD: usize = 1_048_525;
+
 fn format_size(bytes: usize) -> String {
     match bytes {
-        b @ 1_048_576.. => format!("{:.1} MiB", b as f64 / 1_048_576.0),
-        b @ 1024.. => format!("{:.1} KiB", b as f64 / 1024.0),
+        b @ MIB_ROUNDING_THRESHOLD.. => format!("{:.1} MiB", b as f64 / MIB),
+        b @ 1024.. => format!("{:.1} KiB", b as f64 / KIB),
         b => format!("{b} B"),
     }
 }
@@ -118,5 +124,23 @@ mod tests {
             .to_string(),
             format!("digest exceeds the {mib} MiB output limit")
         );
+    }
+
+    #[test]
+    fn format_size_boundary_cases() {
+        let cases = [
+            (0, "0 B"),
+            (1023, "1023 B"),
+            (1024, "1.0 KiB"),
+            (1_048_524, "1023.9 KiB"),
+            (1_048_525, "1.0 MiB"),
+            (1_048_575, "1.0 MiB"),
+            (1_048_576, "1.0 MiB"),
+            (2_097_152, "2.0 MiB"),
+        ];
+
+        for (bytes, expected) in cases {
+            assert_eq!(format_size(bytes), expected, "failed for {bytes} bytes");
+        }
     }
 }
