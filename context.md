@@ -20,7 +20,7 @@ imperative-shell boundary.
 - `IngestReport` — `output`, `included_files`, `skipped_files`, `estimated_tokens`.
 - `OutputTarget` — digest destination: `File(PathBuf)` or `Stdout`.
 - `DigestFormat` — output serialization format: `Text` or `Xml`.
-- Budgets — `CandidateBudget` (candidate count with run-length encoded directory tracking fast-path), tracking candidate limits and diagnostic reporting.
+- Budgets — `CandidateBudget` (candidate count with run-length encoded directory tracking fast-path backed by `CompactDir` inline/heap descriptors), tracking candidate limits and diagnostic reporting.
 - Policy — centralised tunables, thresholds, noise lists, sensitive patterns, and extension sets
   (`policy.rs`).
 
@@ -98,7 +98,7 @@ never depends on shell code; shell code depends on the core in one direction.
   - `decide.rs`: `Selector::decide`, `Selector::finish`, `CandidateBudget`, `CandidateBudget::check_limit`, item evaluation via `slice::contains`,
     candidate overflow diagnostics, and `largest_files` diagnostic selection.
   - `tree.rs`: Format-neutral ASCII hierarchy tree (`BudgetTrie`, `BudgetTrieNode`, `InsertError`) in flat 16-byte LCRS arena.
-  - `render.rs`: Format-specific streaming serializers (Text/XML), escaping (`escape_header`, `xml_escape`), `TokenEstimator` heuristic token state machine, `render_to_writer`, and streaming `BoundedEstimatingWriter`.
+  - `render/` (`mod.rs`, `text.rs`, `xml.rs`, `token.rs`): Format-specific streaming serializers (Text/XML), escaping (`escape_header`, `xml_escape`), `TokenEstimator` heuristic token state machine, `render_to_writer`, and streaming `BoundedEstimatingWriter`.
   - `github_url.rs`: Pure `std` URL construction with RFC 3986 percent-encoding and origin credential scoping.
   - `archive.rs`: Pax header comment extraction and archive root stripping.
 - Imperative shell (`src/shell/`):

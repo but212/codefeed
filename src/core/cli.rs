@@ -7,8 +7,14 @@ use crate::core::error::IngestError;
 use crate::core::model::{DigestFormat, OutputTarget, RunConfig};
 use crate::core::source::parse_os;
 
-const HELP: &str =
-    "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]";
+macro_rules! usage_str {
+    () => {
+        "codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]"
+    };
+}
+
+const HELP: &str = concat!("Usage: ", usage_str!());
+const MISSING_SOURCE_ERR: &str = concat!("missing source\n\nUsage: ", usage_str!());
 
 pub const fn help_text() -> &'static str {
     HELP
@@ -29,7 +35,7 @@ enum FormatArg {
 #[derive(Parser, Debug)]
 #[command(
     name = "codefeed",
-    override_usage = "codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]",
+    override_usage = usage_str!(),
     disable_help_flag = true
 )]
 struct Opts {
@@ -76,7 +82,7 @@ where
     }
 
     let Some(source_value) = opts.source else {
-        return Err(IngestError::Usage(format!("missing source\n\n{HELP}")));
+        return Err(IngestError::Usage(MISSING_SOURCE_ERR.to_string()));
     };
 
     let output = if opts.output == "-" {

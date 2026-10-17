@@ -185,15 +185,15 @@ impl Selector {
     ) -> Result<CollectionResult, IngestError> {
         self.storage.sort_by_path();
         let mut trie = BudgetTrie::new();
-        for file in self.storage.iter() {
+        self.storage.iter().try_for_each(|file| {
             trie.insert(file.path).map_err(|err| match err {
                 InsertError::ComponentTooLong { len } => IngestError::PathComponentTooLong {
                     path: file.path.to_string(),
                     len,
                     max: MAX_COMPONENT_LEN,
                 },
-            })?;
-        }
+            })
+        })?;
         Ok(CollectionResult {
             label,
             revision,
@@ -210,26 +210,13 @@ impl Default for Selector {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub(crate) enum CompactDir {
     Inline { len: u8, buf: [u8; 22] },
     Heap(Box<str>),
 }
 
 impl CompactDir {
-    pub(crate) fn from_str(s: &str) -> Self {
-        if s.len() <= 22 {
-            let mut buf = [0u8; 22];
-            buf[..s.len()].copy_from_slice(s.as_bytes());
-            Self::Inline {
-                len: s.len() as u8,
-                buf,
-            }
-        } else {
-            Self::Heap(s.into())
-        }
-    }
-
     #[inline]
     pub(crate) fn as_str(&self) -> &str {
         match self {
@@ -243,6 +230,21 @@ impl CompactDir {
         match self {
             Self::Inline { len, buf } => &buf[..*len as usize],
             Self::Heap(s) => s.as_bytes(),
+        }
+    }
+}
+
+impl From<&str> for CompactDir {
+    fn from(s: &str) -> Self {
+        if s.len() <= 22 {
+            let mut buf = [0u8; 22];
+            buf[..s.len()].copy_from_slice(s.as_bytes());
+            Self::Inline {
+                len: s.len() as u8,
+                buf,
+            }
+        } else {
+            Self::Heap(s.into())
         }
     }
 }
@@ -273,15 +275,12 @@ impl CandidateBudget {
     where
         I: IntoIterator<Item = Option<&'a str>>,
     {
-        let iter = paths.into_iter();
+        let mut iter = paths.into_iter();
         if matches!(iter.size_hint().1, Some(upper) if upper <= MAX_FILE_COUNT) {
             return Ok(());
         }
         let mut budget = Self::default();
-        for path in iter {
-            budget.add(path)?;
-        }
-        Ok(())
+        iter.try_for_each(|path| budget.add(path))
     }
 
     pub fn add(&mut self, path: Option<&str>) -> Result<(), IngestError> {
@@ -308,7 +307,7 @@ impl CandidateBudget {
         {
             entry.1 += 1;
         } else {
-            self.dir_runs.push((CompactDir::from_str(dir_slice), 1));
+            self.dir_runs.push((CompactDir::from(dir_slice), 1));
         }
     }
 
@@ -707,24 +706,21 @@ mod tests {
         assert!(std::mem::size_of::<CompactDir>() <= 24);
         assert!(std::mem::size_of::<(CompactDir, usize)>() <= 32);
 
-        let short_dir = CompactDir::from_str("src/");
+        let short_dir = CompactDir::from("src/");
         assert_eq!(short_dir.as_str(), "src/");
 
         let long_str = "deeply/nested/directory/structure/path/";
-        let long_dir = CompactDir::from_str(long_str);
+        let long_dir = CompactDir::from(long_str);
         assert_eq!(long_dir.as_str(), long_str);
-
-        assert_eq!(short_dir, CompactDir::from_str("src/"));
-        assert_ne!(short_dir, long_dir);
     }
 
     #[test]
     fn test_compact_dir_as_bytes() {
-        let short_dir = CompactDir::from_str("src/");
+        let short_dir = CompactDir::from("src/");
         assert_eq!(short_dir.as_bytes(), b"src/");
 
         let long_str = "deeply/nested/directory/structure/path/";
-        let long_dir = CompactDir::from_str(long_str);
+        let long_dir = CompactDir::from(long_str);
         assert_eq!(long_dir.as_bytes(), long_str.as_bytes());
     }
 

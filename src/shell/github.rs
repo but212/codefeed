@@ -55,14 +55,16 @@ impl<'a, R: Read> SourceStream for GithubStream<'a, R> {
     where
         F: FnMut(Item<'_>) -> Result<(), IngestError>,
     {
-        let mut scratch = Vec::with_capacity(32 * 1024);
+        let mut path_scratch = String::with_capacity(256);
+        let mut content_scratch = Vec::with_capacity(32 * 1024);
         for entry_res in self.entries.by_ref() {
             let mut entry = match entry_res {
                 Ok(e) => e,
                 Err(err) => return Err(IngestError::Io(err)),
             };
-            scratch.clear();
-            match probe_tar_entry(&mut entry, &mut scratch)? {
+            path_scratch.clear();
+            content_scratch.clear();
+            match probe_tar_entry(&mut entry, &mut path_scratch, &mut content_scratch)? {
                 ArchiveEntryOutcome::PaxHeader(sha) => {
                     if self.seen_entries {
                         return Err(IngestError::InvalidMetadata(
@@ -95,7 +97,8 @@ enum ArchiveEntryOutcome<'a> {
 
 fn probe_tar_entry<'a, R: Read>(
     entry: &mut tar::Entry<R>,
-    scratch: &'a mut Vec<u8>,
+    path_scratch: &'a mut String,
+    content_scratch: &'a mut Vec<u8>,
 ) -> Result<ArchiveEntryOutcome<'a>, IngestError> {
     let entry_type = entry.header().entry_type();
 
@@ -103,9 +106,9 @@ fn probe_tar_entry<'a, R: Read>(
     if entry_type == EntryType::XGlobalHeader {
         entry
             .take(1024)
-            .read_to_end(scratch)
+            .read_to_end(content_scratch)
             .map_err(IngestError::Io)?;
-        if let Some(sha) = parse_pax_comment(scratch) {
+        if let Some(sha) = parse_pax_comment(content_scratch) {
             return Ok(ArchiveEntryOutcome::PaxHeader(sha));
         }
         return Ok(ArchiveEntryOutcome::Ignored);
@@ -143,7 +146,8 @@ fn probe_tar_entry<'a, R: Read>(
         return Ok(ArchiveEntryOutcome::Ignored);
     }
 
-    let rel_path = std::borrow::Cow::Owned(rel_str.to_owned());
+    path_scratch.push_str(rel_str);
+    let rel_path = std::borrow::Cow::Borrowed(path_scratch.as_str());
 
     // 5. Known binary extension pre-filter (avoid body read)
     if classification == PathClassification::PreclassifiedBinary {
@@ -164,13 +168,13 @@ fn probe_tar_entry<'a, R: Read>(
 
     entry
         .take(MAX_FILE_SIZE.saturating_add(1))
-        .read_to_end(scratch)
+        .read_to_end(content_scratch)
         .map_err(IngestError::Io)?;
 
-    let probe = if scratch.len() as u64 > MAX_FILE_SIZE {
+    let probe = if content_scratch.len() as u64 > MAX_FILE_SIZE {
         Probe::TooLarge
     } else {
-        Probe::Bytes(std::borrow::Cow::Borrowed(scratch.as_slice()))
+        Probe::Bytes(std::borrow::Cow::Borrowed(content_scratch.as_slice()))
     };
 
     Ok(ArchiveEntryOutcome::Item(Item {

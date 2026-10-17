@@ -50,7 +50,6 @@ pub(crate) fn is_noise_file(file_name: &str) -> bool {
 pub(crate) fn find_overlong_component(path: &str) -> Option<usize> {
     if path.len() > MAX_COMPONENT_LEN {
         path.split('/')
-            .filter(|s| !s.is_empty())
             .find(|s| s.len() > MAX_COMPONENT_LEN)
             .map(|s| s.len())
     } else {

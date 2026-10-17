@@ -9,27 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `MAX_COMPONENT_LEN` (`src/core/policy.rs`): centralized 65,535-byte path component limit for trie node labels.
-- `find_overlong_component` (`src/core/policy.rs`): shared validation helper.
+- `MAX_COMPONENT_LEN` & `find_overlong_component` (`src/core/policy.rs`): centralized 65,535-byte path component limit and validation helper for trie node labels.
 - `IngestError::PathComponentTooLong` (`src/core/error.rs`): explicit error variant for oversized path components, surfaced during ingestion and tree construction.
-- `InsertError` (`src/core/digest/mod.rs`, `src/core/digest/trie.rs`): trie insertion error implementing `std::error::Error`.
+- `InsertError` (`src/core/tree.rs`): trie insertion error implementing `std::error::Error`.
 
 ### Changed
 
-- `BudgetTrie`, `BudgetTrieNode`, and `InsertError`: extracted to dedicated format-neutral data structure module `src/core/tree.rs`.
-- `largest_files`: relocated to `src/core/decide.rs`.
-- Decoupled core module DAG: established strict acyclic unidirectional flow (`tree` -> `model` -> `decide` -> `render`), eliminating cyclic/backward module dependencies.
-- Consolidate digest formatting: merged `src/core/digest/{mod.rs, text.rs, xml.rs, token.rs}` into single module `src/core/render.rs` (`render_to_writer`, `BoundedEstimatingWriter`, `TokenEstimator`, `escape_header`, `xml_escape`).
-- `BudgetTrieNode` (`src/core/tree.rs`): packed directory status into `flags: u16` (`FLAG_DIR = 1 << 0`) while maintaining 16-byte fixed node layout.
-- `HEADER_ESCAPE_MASK` (`src/core/render.rs`): replaced escape matching with a compact 32-byte bitset (`[u64; 4]`) and inline mask checking.
-- `Selector::add_file` (`src/core/decide.rs`): validates component lengths upfront during ingestion (fail-fast) before adding files to storage.
-- `Selector::finish` (`src/core/decide.rs`): returns `Result<CollectionResult, IngestError>`, eliminating unhandled panics by propagating component limit violations.
-- `collect_stream` (`src/shell/orchestrate.rs`): propagates `Selector::finish` errors directly through the streaming pipeline.
+- **Architecture & Modularity**:
+  - `src/core/render/` (`mod.rs`, `text.rs`, `xml.rs`, `token.rs`): decomposed digest rendering into focused submodules with colocated unit tests while strictly preserving public re-exports and acyclic core DAG.
+  - `src/core/tree.rs`: extracted `BudgetTrie`, `BudgetTrieNode`, and `InsertError` into a dedicated format-neutral data structure module with a 16-byte fixed node layout and bitwise `FLAG_DIR`.
+  - Core module DAG: established strict acyclic unidirectional flow (`tree` -> `model` -> `decide` -> `render`), relocating `largest_files` to `src/core/decide.rs`.
+- **Zero-Allocation & Performance**:
+  - `GithubStream` & `probe_tar_entry` (`src/shell/github.rs`): added reusable `path_scratch: &mut String` alongside `content_scratch: &mut Vec<u8>` to stream candidate tar entry paths with zero per-file heap string allocations.
+  - `HEADER_ESCAPE_MASK` (`src/core/render/text.rs`): replaced linear character matching with a compact 32-byte bitset (`[u64; 4]`) and branchless mask checking.
+- **Idioms & Ergonomics**:
+  - `usage_str!` macro (`src/core/cli.rs`): unified usage string literals across `HELP`, `MISSING_SOURCE_ERR`, and clap derive attributes via compile-time `concat!`.
+  - `CompactDir` (`src/core/decide.rs`): replaced custom `from_str` constructor with standard `From<&str>` conversion trait.
+  - `CandidateBudget::check_limit` & `Selector::finish` (`src/core/decide.rs`): refactored loops to idiomatic `Iterator::try_for_each`.
+  - `find_overlong_component` (`src/core/policy.rs`): simplified component inspection by eliminating redundant non-empty filter.
+- **Reliability & Error Propagation**:
+  - `Selector::add_file` (`src/core/decide.rs`): validates component lengths upfront during ingestion (fail-fast) before storage push.
+  - `Selector::finish` (`src/core/decide.rs`) & `collect_stream` (`src/shell/orchestrate.rs`): propagate component length and tree construction errors without panics.
 
 ### Removed
 
-- `src/core/digest/`: completely eliminated directory module and boilerplate submodules (`budget.rs`, `text.rs`, `token.rs`, `trie.rs`, `xml.rs`, `mod.rs`).
-- `safe_component` (`src/core/digest/trie.rs`): removed dead-code truncation in favor of atomic insertion pre-validation.
+- `src/core/digest/`: completely eliminated legacy directory module and boilerplate submodules (`budget.rs`, `text.rs`, `token.rs`, `trie.rs`, `xml.rs`, `mod.rs`).
+- `safe_component` (`src/core/digest/trie.rs`): removed lossy truncation in favor of upfront fail-fast insertion errors.
 
 ## [0.2.3]
 
