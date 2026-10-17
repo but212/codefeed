@@ -16,7 +16,6 @@ ignore = "0.4" # Fast .gitignore parsing and deterministic directory traversal w
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] } # Minimal synchronous HTTP client for GitHub tarball streams
 flate2 = "1.0" # Gzip decompression for GitHub archive streams
 tar = "0.4" # Tarball entry streaming without temporary disk extraction
-clap = { version = "4", features = ["derive"] } # Standard GNU/POSIX CLI parsing, help generation, and usage validation
 
 
 [lib]

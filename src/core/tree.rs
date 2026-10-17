@@ -1,8 +1,7 @@
-//! In-memory directory tree representation and deterministic ASCII tree rendering.
+//! In-memory deterministic ASCII tree rendering.
 //!
-//! Provides a compact 16-byte fixed-size Left-Child Right-Sibling (LCRS) arena
-//! representation of file hierarchy (`BudgetTrie`) and zero-allocation deterministic
-//! ASCII tree rendering with format-aware escaping.
+//! Renders formatted ASCII directory trees directly from sorted path slices
+//! with format-aware escaping.
 
 use std::borrow::Cow;
 use std::io::Write;
@@ -11,206 +10,108 @@ const TREE_BRANCH: &str = "├── ";
 const TREE_LAST: &str = "└── ";
 const TREE_VERT: &str = "│   ";
 const TREE_SPACE: &str = "    ";
-pub(crate) const NO_NODE: u32 = u32::MAX;
 
-/// Trie node in a Left-Child Right-Sibling (LCRS) flat arena.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct BudgetTrieNode {
-    pub(crate) name_offset: u32,
-    pub(crate) name_len: u32,
-    pub(crate) is_dir: bool,
-    pub(crate) first_child: u32,  // NO_NODE means None
-    pub(crate) next_sibling: u32, // NO_NODE means None
+pub fn render_tree<W: Write + ?Sized, F>(
+    writer: &mut W,
+    paths: &[&str],
+    format_name: F,
+) -> std::io::Result<()>
+where
+    F: Fn(&str) -> Cow<'_, str>,
+{
+    let mut prefix = String::new();
+    render_level(writer, paths, 0, &mut prefix, &format_name)
 }
 
-impl BudgetTrieNode {
-    pub(crate) fn new(name_offset: u32, name_len: u32, is_dir: bool) -> Self {
-        Self {
-            name_offset,
-            name_len,
+struct Child<'a> {
+    name: &'a str,
+    is_dir: bool,
+    start: usize,
+    end: usize,
+}
+
+fn render_level<W: Write + ?Sized, F>(
+    writer: &mut W,
+    paths: &[&str],
+    depth: usize,
+    prefix: &mut String,
+    format_name: &F,
+) -> std::io::Result<()>
+where
+    F: Fn(&str) -> Cow<'_, str>,
+{
+    if paths.is_empty() {
+        return Ok(());
+    }
+
+    let mut children: Vec<Child<'_>> = Vec::new();
+    let mut i = 0;
+    while i < paths.len() {
+        let (name, is_dir) = component_at(paths[i], depth);
+        if name.is_empty() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while i < paths.len() {
+            let (next_name, next_is_dir) = component_at(paths[i], depth);
+            if next_name == name && next_is_dir == is_dir {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        children.push(Child {
+            name,
             is_dir,
-            first_child: NO_NODE,
-            next_sibling: NO_NODE,
-        }
+            start,
+            end: i,
+        });
     }
 
-    #[inline(always)]
-    pub(crate) const fn is_dir(&self) -> bool {
-        self.is_dir
-    }
+    children.sort_unstable_by(|a, b| a.name.cmp(b.name).then_with(|| a.is_dir.cmp(&b.is_dir)));
 
-    #[inline(always)]
-    pub(crate) const fn name_len(&self) -> usize {
-        self.name_len as usize
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct BudgetTrie {
-    pub(crate) nodes: Vec<BudgetTrieNode>,
-    pub(crate) label_arena: String,
-    pub(crate) last_children: Vec<u32>,
-}
-
-impl Default for BudgetTrie {
-    fn default() -> Self {
-        Self {
-            nodes: vec![BudgetTrieNode::new(0, 0, true)],
-            label_arena: String::new(),
-            last_children: vec![NO_NODE],
-        }
-    }
-}
-
-impl BudgetTrie {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    #[inline]
-    pub(crate) fn node_name(&self, index: u32) -> &str {
-        let node = &self.nodes[index as usize];
-        let start = node.name_offset as usize;
-        let end = start + node.name_len();
-        &self.label_arena[start..end]
-    }
-
-    pub fn insert(&mut self, path: &str) {
-        let mut parts = path.split('/').filter(|s| !s.is_empty()).peekable();
-        let mut current_node_index: u32 = 0;
-
-        while let Some(part) = parts.next() {
-            let is_dir = parts.peek().is_some();
-            current_node_index = self.get_or_insert_child(current_node_index, part, is_dir);
-        }
-    }
-
-    fn push_node(&mut self, part: &str, is_dir: bool, next_sibling: u32) -> u32 {
-        let new_index = u32::try_from(self.nodes.len()).expect("trie node count exceeds u32::MAX");
-        let name_offset =
-            u32::try_from(self.label_arena.len()).expect("trie arena exceeds u32::MAX");
-        let name_len = u32::try_from(part.len()).expect("component length exceeds u32::MAX");
-        self.label_arena.push_str(part);
-        let mut node = BudgetTrieNode::new(name_offset, name_len, is_dir);
-        node.next_sibling = next_sibling;
-        self.nodes.push(node);
-        self.last_children.push(NO_NODE);
-        new_index
-    }
-
-    fn get_or_insert_child(&mut self, parent_index: u32, part: &str, is_dir: bool) -> u32 {
-        let parent_node = parent_index as usize;
-        let last_child_index = self.last_children[parent_node];
-
-        if last_child_index != NO_NODE {
-            let last_node = self.nodes[last_child_index as usize];
-            let last_name = self.node_name(last_child_index);
-            let ordering = last_name
-                .cmp(part)
-                .then_with(|| last_node.is_dir().cmp(&is_dir));
-            if ordering == std::cmp::Ordering::Equal {
-                return last_child_index;
-            }
-            if ordering == std::cmp::Ordering::Less {
-                // Sequential append (presorted fast path): append after last_child
-                let new_index = self.push_node(part, is_dir, NO_NODE);
-                self.nodes[last_child_index as usize].next_sibling = new_index;
-                self.last_children[parent_node] = new_index;
-                return new_index;
-            }
+    let total = children.len();
+    for (idx, child) in children.iter().enumerate() {
+        let is_last = idx + 1 == total;
+        writer.write_all(prefix.as_bytes())?;
+        writer.write_all(if is_last { TREE_LAST } else { TREE_BRANCH }.as_bytes())?;
+        let formatted = format_name(child.name);
+        writer.write_all(formatted.as_bytes())?;
+        if child.is_dir {
+            writer.write_all(b"/\n")?;
+            let prev_len = prefix.len();
+            prefix.push_str(if is_last { TREE_SPACE } else { TREE_VERT });
+            render_level(
+                writer,
+                &paths[child.start..child.end],
+                depth + 1,
+                prefix,
+                format_name,
+            )?;
+            prefix.truncate(prev_len);
         } else {
-            // First child for parent
-            let new_index = self.push_node(part, is_dir, NO_NODE);
-            self.nodes[parent_node].first_child = new_index;
-            self.last_children[parent_node] = new_index;
-            return new_index;
+            writer.write_all(b"\n")?;
         }
-
-        // Non-sequential / arbitrary insertion: search sibling chain
-        let mut curr = self.nodes[parent_node].first_child;
-        let mut prev = NO_NODE;
-
-        while curr != NO_NODE {
-            let curr_node = self.nodes[curr as usize];
-            let curr_name = self.node_name(curr);
-            let ord = curr_name
-                .cmp(part)
-                .then_with(|| curr_node.is_dir().cmp(&is_dir));
-            match ord {
-                std::cmp::Ordering::Equal => return curr,
-                std::cmp::Ordering::Greater => break,
-                std::cmp::Ordering::Less => {
-                    prev = curr;
-                    curr = curr_node.next_sibling;
-                }
-            }
-        }
-
-        let new_index = self.push_node(part, is_dir, curr);
-        if prev == NO_NODE {
-            self.nodes[parent_node].first_child = new_index;
-        } else {
-            self.nodes[prev as usize].next_sibling = new_index;
-        }
-        if curr == NO_NODE {
-            self.last_children[parent_node] = new_index;
-        }
-
-        new_index
     }
 
-    pub fn render_to_writer<W: Write + ?Sized, F>(
-        &self,
-        writer: &mut W,
-        format_name: F,
-    ) -> std::io::Result<()>
-    where
-        F: Fn(&str) -> Cow<'_, str>,
-    {
-        let mut prefix = String::new();
-        let first_child = self.nodes.first().map(|n| n.first_child).unwrap_or(NO_NODE);
-        if first_child != NO_NODE {
-            self.render_sibling_chain(writer, first_child, &mut prefix, &format_name)?;
+    Ok(())
+}
+
+fn component_at(path: &str, depth: usize) -> (&str, bool) {
+    let mut parts = path.split('/').filter(|s| !s.is_empty());
+    for _ in 0..depth {
+        if parts.next().is_none() {
+            return ("", false);
         }
-        Ok(())
     }
-
-    fn render_sibling_chain<W: Write + ?Sized, F>(
-        &self,
-        writer: &mut W,
-        first_child: u32,
-        prefix: &mut String,
-        format_name: &F,
-    ) -> std::io::Result<()>
-    where
-        F: Fn(&str) -> Cow<'_, str>,
-    {
-        const BRANCH_STRS: [&[u8]; 2] = [TREE_BRANCH.as_bytes(), TREE_LAST.as_bytes()];
-        const PREFIX_STRS: [&str; 2] = [TREE_VERT, TREE_SPACE];
-        const SUFFIXES: [&[u8]; 2] = [b"\n", b"/\n"];
-
-        let mut curr = first_child;
-        while curr != NO_NODE {
-            let node = &self.nodes[curr as usize];
-            let is_last = node.next_sibling == NO_NODE;
-
-            writer.write_all(prefix.as_bytes())?;
-            writer.write_all(BRANCH_STRS[is_last as usize])?;
-            let name = self.node_name(curr);
-            let display = format_name(name);
-            writer.write_all(display.as_bytes())?;
-            writer.write_all(SUFFIXES[node.is_dir() as usize])?;
-
-            if node.first_child != NO_NODE {
-                let prev_len = prefix.len();
-                prefix.push_str(PREFIX_STRS[is_last as usize]);
-                self.render_sibling_chain(writer, node.first_child, prefix, format_name)?;
-                prefix.truncate(prev_len);
-            }
-
-            curr = node.next_sibling;
+    match parts.next() {
+        Some(name) => {
+            let is_dir = parts.next().is_some();
+            (name, is_dir)
         }
-        Ok(())
+        None => ("", false),
     }
 }
 
@@ -220,12 +121,9 @@ mod tests {
 
     #[test]
     fn renders_ascii_tree_correctly() -> Result<(), Box<dyn std::error::Error>> {
-        let mut trie = BudgetTrie::new();
-        for path in ["Cargo.toml", "src/core/a.rs", "src/lib.rs"] {
-            trie.insert(path);
-        }
+        let paths = ["Cargo.toml", "src/core/a.rs", "src/lib.rs"];
         let mut buf = Vec::new();
-        trie.render_to_writer(&mut buf, |s| Cow::Borrowed(s))?;
+        render_tree(&mut buf, &paths, |s| Cow::Borrowed(s))?;
         let tree_str = std::str::from_utf8(&buf)?;
         let expected = "\
 ├── Cargo.toml
@@ -240,10 +138,9 @@ mod tests {
 
     #[test]
     fn formats_tree_nodes_custom_formatter() -> std::io::Result<()> {
-        let mut trie = BudgetTrie::new();
-        trie.insert("dir_name/file_name.txt");
+        let paths = ["dir_name/file_name.txt"];
         let mut out = Vec::new();
-        trie.render_to_writer(&mut out, |name| Cow::Owned(name.to_uppercase()))?;
+        render_tree(&mut out, &paths, |name| Cow::Owned(name.to_uppercase()))?;
         let s = String::from_utf8_lossy(&out);
         assert!(s.contains("DIR_NAME/"));
         assert!(s.contains("FILE_NAME.TXT"));
@@ -251,42 +148,19 @@ mod tests {
     }
 
     #[test]
-    fn test_trie_node_storage_optimization() {
-        let mut trie = BudgetTrie::new();
-        trie.insert("clean/dir/file.rs");
-        let clean_dir_index = trie.nodes[0].first_child;
-        assert_eq!(trie.node_name(clean_dir_index), "clean");
-
-        let mut trie_esc = BudgetTrie::new();
-        trie_esc.insert("a & b/c.rs");
-        let esc_dir_index = trie_esc.nodes[0].first_child;
-        assert_eq!(trie_esc.node_name(esc_dir_index), "a & b");
-    }
-
-    #[test]
-    fn test_flat_arena_links() {
-        let mut trie = BudgetTrie::new();
-        trie.insert("src/lib.rs");
-        assert_eq!(trie.nodes.len(), 3);
-        assert_eq!(trie.nodes[0].first_child, 1);
-        assert_eq!(trie.node_name(1), "src");
-        assert!(trie.nodes[1].is_dir());
-        assert_eq!(trie.nodes[1].first_child, 2);
-
-        assert_eq!(trie.node_name(2), "lib.rs");
-        assert!(!trie.nodes[2].is_dir());
-        assert_eq!(trie.nodes[2].first_child, NO_NODE);
-        assert_eq!(trie.nodes[2].next_sibling, NO_NODE);
-    }
-
-    #[test]
-    fn test_insert_accepts_overlong_component() {
-        let mut trie = BudgetTrie::new();
-        let long_len = 70_000;
-        let long_name = "a".repeat(long_len);
-        let path = format!("{long_name}/file.rs");
-        trie.insert(&path);
-        let child = trie.nodes[0].first_child;
-        assert_eq!(trie.node_name(child).len(), long_len);
+    fn renders_nested_siblings_in_alphabetical_order() -> Result<(), Box<dyn std::error::Error>> {
+        let paths = ["a/x.txt", "a/y.txt", "b/z.txt"];
+        let mut buf = Vec::new();
+        render_tree(&mut buf, &paths, |s| Cow::Borrowed(s))?;
+        let tree_str = std::str::from_utf8(&buf)?;
+        let expected = "\
+├── a/
+│   ├── x.txt
+│   └── y.txt
+└── b/
+    └── z.txt
+";
+        assert_eq!(tree_str, expected);
+        Ok(())
     }
 }

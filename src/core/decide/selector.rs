@@ -5,7 +5,6 @@ use super::item::CandidateInput;
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, FileRecord, FileStorage};
 use crate::core::policy::{MAX_FILE_COUNT, MAX_OUTPUT_SIZE};
-use crate::core::tree::BudgetTrie;
 
 /// Pure per-item selection and budget accounting. Owns no I/O; the shell feeds
 /// observations and reads the outcome through [`Selector::finish`].
@@ -48,8 +47,8 @@ impl Selector {
         self.candidates.add(input.path())?;
         match input {
             CandidateInput::File { path, bytes } => {
-                if let Some(content) = super::item::text_str(bytes.as_ref()) {
-                    self.add_file(path.as_ref(), content)
+                if let Some(content) = super::item::text_str(bytes) {
+                    self.add_file(path, content)
                 } else {
                     self.skipped = self.skipped.saturating_add(1);
                     Ok(())
@@ -82,16 +81,11 @@ impl Selector {
 
     pub fn finish(mut self, label: String, revision: Option<String>) -> CollectionResult {
         self.storage.sort_by_path();
-        let mut trie = BudgetTrie::new();
-        for file in self.storage.iter() {
-            trie.insert(file.path);
-        }
         CollectionResult {
             label,
             revision,
             files: self.storage,
             skipped: self.skipped,
-            trie,
         }
     }
 }
@@ -131,34 +125,25 @@ pub(crate) fn largest_files<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
-
     use super::*;
     use crate::core::policy::MAX_FILE_SIZE;
 
-    fn file_candidate<'a>(path: &'a str, bytes: impl Into<Cow<'a, [u8]>>) -> CandidateInput<'a> {
-        CandidateInput::File {
-            path: Cow::Borrowed(path),
-            bytes: bytes.into(),
-        }
+    fn file_candidate<'a>(path: &'a str, bytes: &'a [u8]) -> CandidateInput<'a> {
+        CandidateInput::File { path, bytes }
     }
 
     #[test]
     fn feed_classifies_text_binary_and_size_boundaries() -> Result<(), Box<dyn std::error::Error>> {
         let mut selector = Selector::new();
-        selector.feed(file_candidate("a.txt", b"hello".to_vec()))?;
-        selector.feed(file_candidate("bin.bin", vec![0, 1, 2]))?;
-        selector.feed(file_candidate("bad_utf8", vec![0xff]))?;
-        selector.feed(CandidateInput::TooLarge {
-            path: Cow::Borrowed("big.txt"),
-        })?;
+        let exact_bytes = vec![b'x'; MAX_FILE_SIZE as usize];
+        selector.feed(file_candidate("a.txt", b"hello"))?;
+        selector.feed(file_candidate("bin.bin", &[0, 1, 2]))?;
+        selector.feed(file_candidate("bad_utf8", &[0xff]))?;
+        selector.feed(CandidateInput::TooLarge { path: "big.txt" })?;
         selector.feed(CandidateInput::Skipped {
-            path: Some(Cow::Borrowed("missing.txt")),
+            path: Some("missing.txt"),
         })?;
-        selector.feed(file_candidate(
-            "exact.txt",
-            vec![b'x'; MAX_FILE_SIZE as usize],
-        ))?;
+        selector.feed(file_candidate("exact.txt", &exact_bytes))?;
 
         let collection = selector.finish("test".into(), None);
         assert_eq!(collection.files.len(), 2);
@@ -172,9 +157,9 @@ mod tests {
     fn skipped_candidate_is_counted() -> Result<(), Box<dyn std::error::Error>> {
         let mut selector = Selector::new();
         selector.feed(CandidateInput::Skipped {
-            path: Some(Cow::Borrowed("missing.png")),
+            path: Some("missing.png"),
         })?;
-        selector.feed(file_candidate("kept.txt", b"kept".to_vec()))?;
+        selector.feed(file_candidate("kept.txt", b"kept"))?;
         let collection = selector.finish("test".into(), None);
         assert_eq!(collection.files.len(), 1);
         assert_eq!(collection.skipped, 1);
@@ -185,10 +170,10 @@ mod tests {
     fn feed_counts_candidate_before_content() -> Result<(), Box<dyn std::error::Error>> {
         let mut selector = Selector::new();
         for _ in 0..MAX_FILE_COUNT {
-            selector.feed(file_candidate("bin.txt", vec![0]))?;
+            selector.feed(file_candidate("bin.txt", &[0]))?;
         }
         assert!(matches!(
-            selector.feed(file_candidate("extra.txt", b"ok".to_vec())),
+            selector.feed(file_candidate("extra.txt", b"ok")),
             Err(IngestError::CandidateLimitExceeded(..))
         ));
         Ok(())
@@ -198,13 +183,13 @@ mod tests {
     fn output_overflow_includes_largest_files_diagnostic() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut selector = Selector::new();
-        selector.feed(file_candidate("small.txt", vec![b'a'; 100]))?;
-        selector.feed(file_candidate("medium.txt", vec![b'b'; 50_000]))?;
+        let small = vec![b'a'; 100];
+        let medium = vec![b'b'; 50_000];
+        let large = vec![b'x'; MAX_OUTPUT_SIZE as usize];
+        selector.feed(file_candidate("small.txt", &small))?;
+        selector.feed(file_candidate("medium.txt", &medium))?;
         let err = selector
-            .feed(file_candidate(
-                "large.txt",
-                vec![b'x'; MAX_OUTPUT_SIZE as usize],
-            ))
+            .feed(file_candidate("large.txt", &large))
             .unwrap_err();
         let message = err.to_string();
         assert!(message.contains("digest exceeds the 20 MiB output limit"));
@@ -217,12 +202,10 @@ mod tests {
     #[test]
     fn selector_accumulates_decisions_and_respects_size_hint() {
         let mut selector = Selector::from_size_hint((10, Some(10)));
-        selector
-            .feed(file_candidate("a.txt", b"hello".as_slice()))
-            .unwrap();
+        selector.feed(file_candidate("a.txt", b"hello")).unwrap();
         selector
             .feed(CandidateInput::Skipped {
-                path: Some(Cow::Borrowed("b.bin")),
+                path: Some("b.bin"),
             })
             .unwrap();
         let res = selector.finish("test".to_string(), None);
@@ -237,14 +220,16 @@ mod tests {
         let path = format!("{}/file.rs", "a".repeat(long_len));
         selector
             .feed(CandidateInput::File {
-                path: Cow::Owned(path),
-                bytes: Cow::Borrowed(b"fn main() {}"),
+                path: &path,
+                bytes: b"fn main() {}",
             })
             .unwrap();
         let res = selector.finish("test".to_string(), None);
         assert_eq!(res.files.len(), 1);
-        let child = res.trie.nodes[0].first_child;
-        assert_eq!(res.trie.node_name(child).len(), long_len);
+        assert_eq!(
+            res.files.iter().next().unwrap().path.len(),
+            long_len + "/file.rs".len()
+        );
     }
 
     #[test]

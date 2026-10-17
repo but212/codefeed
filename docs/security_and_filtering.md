@@ -103,7 +103,7 @@ Local directory traversal in `src/shell/local.rs` and `src/shell/local_io.rs` ad
    - Traversal configures `WalkBuilder::new().follow_links(false)`.
    - File inspection verifies non-symlink metadata (`fs::symlink_metadata(path)?.file_type().is_file()`).
    - Symlinks to files, directories, or special devices are completely ignored, avoiding infinite symlink recursion and arbitrary file reads outside the root.
-2. **Output Target Exclusion (`OutputFilter`):**
+2. **Output Target Exclusion:**
    - The destination digest path is resolved and validated once at startup (`resolve_output_target`).
    - Files matching the canonical target path are excluded during traversal to prevent recursive ingestion loops when generating digests inside the source directory.
 3. **Atomic Writes (`AtomicFile`):**

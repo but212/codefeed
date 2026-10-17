@@ -29,7 +29,6 @@ pub struct GithubStream<'a, R: Read> {
     reference: Option<String>,
     parsed_revision: Option<String>,
     entries: tar::Entries<'a, GzDecoder<R>>,
-    seen_entries: bool,
 }
 
 impl<'a, R: Read> GithubStream<'a, R> {
@@ -45,7 +44,6 @@ impl<'a, R: Read> GithubStream<'a, R> {
             reference: reference.map(str::to_string),
             parsed_revision: None,
             entries,
-            seen_entries: false,
         })
     }
 }
@@ -66,20 +64,14 @@ impl<'a, R: Read> SourceStream for GithubStream<'a, R> {
             content_scratch.clear();
             match probe_tar_entry(&mut entry, &mut path_scratch, &mut content_scratch)? {
                 ArchiveEntryOutcome::PaxHeader(sha) => {
-                    if self.seen_entries {
-                        return Err(IngestError::invalid_metadata(
-                            "pax header after archive entries",
-                        ));
+                    if self.parsed_revision.is_none() {
+                        self.parsed_revision = Some(sha);
                     }
-                    self.parsed_revision = Some(sha);
                 }
                 ArchiveEntryOutcome::Candidate(candidate) => {
-                    self.seen_entries = true;
                     callback(candidate)?;
                 }
-                ArchiveEntryOutcome::Ignored => {
-                    self.seen_entries = true;
-                }
+                ArchiveEntryOutcome::Ignored => {}
             }
         }
         Ok(StreamInfo {
@@ -141,7 +133,7 @@ fn probe_tar_entry<'a, R: Read>(
     }
 
     path_scratch.push_str(rel_str);
-    let rel_path = std::borrow::Cow::Borrowed(path_scratch.as_str());
+    let rel_path = path_scratch.as_str();
 
     // 5. Content reading with MAX_FILE_SIZE limit
     let header_size = entry.header().size().unwrap_or(0);
@@ -161,7 +153,7 @@ fn probe_tar_entry<'a, R: Read>(
     } else {
         CandidateInput::File {
             path: rel_path,
-            bytes: std::borrow::Cow::Borrowed(content_scratch.as_slice()),
+            bytes: content_scratch.as_slice(),
         }
     };
 
@@ -343,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_out_of_order_pax_header() {
+    fn accepts_pax_header_after_archive_entries() {
         let pax_comment = b"52 comment=c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n";
         let mock_data = create_mock_tarball(&[
             ("repo-root/file.txt", b"content", EntryType::Regular),
@@ -353,30 +345,13 @@ mod tests {
         let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
         let stream =
             GithubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
-        let result = crate::shell::orchestrate::collect_stream(stream);
+        let result =
+            crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
 
-        assert!(matches!(
-            result,
-            Err(IngestError::InvalidMetadata(msg)) if msg.contains("pax header after archive entries")
-        ));
-    }
-
-    #[test]
-    fn test_tar_entry_rejects_trailing_pax_after_ignored_entry() {
-        let pax_comment = b"52 comment=c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n";
-        let mock_data = create_mock_tarball(&[
-            ("repo-root/Cargo.lock", b"lockfile", EntryType::Regular),
-            ("pax_global_header", pax_comment, EntryType::XGlobalHeader),
-        ]);
-
-        let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
-        let stream =
-            GithubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
-        let result = crate::shell::orchestrate::collect_stream(stream);
-
-        assert!(matches!(
-            result,
-            Err(IngestError::InvalidMetadata(msg)) if msg.contains("pax header after archive entries")
-        ));
+        assert_eq!(
+            result.revision.as_deref(),
+            Some("c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950")
+        );
+        assert_eq!(result.files.len(), 1);
     }
 }

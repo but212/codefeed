@@ -6,7 +6,6 @@ use std::io::Write;
 use super::text::escape_header;
 use crate::core::error::IngestError;
 use crate::core::model::FileRecord;
-use crate::core::tree::BudgetTrie;
 
 const XML_REPO_START: &str = "<repository name=\"";
 const XML_REVISION_ATTR: &str = "\" revision=\"";
@@ -19,92 +18,27 @@ const XML_REPO_END: &str = "</repository>\n";
 const XML_FILE_START: &str = "<file path=\"";
 const FILE_TAILS: [&[u8]; 2] = [b"</file>\n", b"\n</file>\n"];
 
-const SPECIAL_BITSET: [u64; 4] = {
-    let mut mask = [0u64; 4];
-    let mut i = 0;
-    while i <= 8 {
-        mask[0] |= 1 << i;
-        i += 1;
-    }
-    mask[0] |= (1 << 0x0B) | (1 << 0x0C);
-    let mut j = 0x0E;
-    while j <= 0x1F {
-        mask[0] |= 1 << j;
-        j += 1;
-    }
-    mask[b'&' as usize / 64] |= 1 << (b'&' as usize % 64);
-    mask[b'<' as usize / 64] |= 1 << (b'<' as usize % 64);
-    mask[b'>' as usize / 64] |= 1 << (b'>' as usize % 64);
-    mask[b'"' as usize / 64] |= 1 << (b'"' as usize % 64);
-    mask[b'\'' as usize / 64] |= 1 << (b'\'' as usize % 64);
-    mask[0xEF / 64] |= 1 << (0xEF % 64);
-    mask
-};
-
 #[inline(always)]
-const fn is_special_byte(b: u8) -> bool {
-    let word = SPECIAL_BITSET[(b >> 6) as usize];
-    (word & (1u64 << (b & 63))) != 0
+fn xml_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
+    match bytes[i] {
+        0..=8 | 11 | 12 | 14..=31 => Some((1, "\u{FFFD}")),
+        b'"' => Some((1, "&quot;")),
+        b'&' => Some((1, "&amp;")),
+        b'\'' => Some((1, "&apos;")),
+        b'<' => Some((1, "&lt;")),
+        b'>' => Some((1, "&gt;")),
+        0xEF if i + 2 < bytes.len()
+            && bytes[i + 1] == 0xBF
+            && (bytes[i + 2] == 0xBE || bytes[i + 2] == 0xBF) =>
+        {
+            Some((3, "\u{FFFD}"))
+        }
+        _ => None,
+    }
 }
 
-const XML_ESCAPES: [&str; 6] = ["\u{FFFD}", "&quot;", "&amp;", "&apos;", "&lt;", "&gt;"];
-const ASCII_ESC_IDX: [u8; 64] = {
-    let mut t = [0u8; 64];
-    t[b'"' as usize] = 1;
-    t[b'&' as usize] = 2;
-    t[b'\'' as usize] = 3;
-    t[b'<' as usize] = 4;
-    t[b'>' as usize] = 5;
-    t
-};
-
-#[inline(always)]
-fn xml_special(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
-    let b = bytes[i];
-    if b < 64 {
-        return Some((1, XML_ESCAPES[ASCII_ESC_IDX[b as usize] as usize]));
-    }
-    if b == 0xEF && i + 2 < bytes.len() {
-        let tail = ((bytes[i + 1] as u32) << 8) | (bytes[i + 2] as u32);
-        return ((tail & !1) == 0xBFBE).then_some((3, "\u{FFFD}"));
-    }
-    None
-}
-
-#[inline(always)]
-fn chunk_has_special(chunk: &[u8; 16]) -> bool {
-    let mut has = 0u8;
-    for &b in chunk {
-        has |= is_special_byte(b) as u8;
-    }
-    has != 0
-}
-
-#[inline(always)]
 pub(crate) fn first_special_index(bytes: &[u8]) -> Option<usize> {
-    let (chunks, remainder) = bytes.as_chunks::<16>();
-
-    for (chunk_idx, chunk) in chunks.iter().enumerate() {
-        if chunk_has_special(chunk) {
-            let base = chunk_idx * 16;
-            for (offset, &b) in chunk.iter().enumerate() {
-                let idx = base + offset;
-                if is_special_byte(b) && (b != 0xEF || xml_special(bytes, idx).is_some()) {
-                    return Some(idx);
-                }
-            }
-        }
-    }
-
-    let rem_base = bytes.len() - remainder.len();
-    for (offset, &b) in remainder.iter().enumerate() {
-        let idx = rem_base + offset;
-        if is_special_byte(b) && (b != 0xEF || xml_special(bytes, idx).is_some()) {
-            return Some(idx);
-        }
-    }
-
-    None
+    (0..bytes.len()).find(|&i| xml_special_at(bytes, i).is_some())
 }
 
 pub fn xml_escape(value: &str) -> Cow<'_, str> {
@@ -118,16 +52,14 @@ pub fn xml_escape(value: &str) -> Cow<'_, str> {
     let mut last = first;
     let mut i = first;
     while i < bytes.len() {
-        if is_special_byte(bytes[i])
-            && let Some((consumed, esc)) = xml_special(bytes, i)
-        {
+        if let Some((consumed, esc)) = xml_special_at(bytes, i) {
             result.push_str(&value[last..i]);
             result.push_str(esc);
             i += consumed;
             last = i;
-            continue;
+        } else {
+            i += 1;
         }
-        i += 1;
     }
     result.push_str(&value[last..]);
     Cow::Owned(result)
@@ -139,21 +71,20 @@ pub fn write_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io:
         return writer.write_all(bytes);
     };
 
-    let mut last = 0;
+    writer.write_all(&bytes[..first])?;
+    let mut last = first;
     let mut i = first;
     while i < bytes.len() {
-        if is_special_byte(bytes[i])
-            && let Some((consumed, esc)) = xml_special(bytes, i)
-        {
+        if let Some((consumed, esc)) = xml_special_at(bytes, i) {
             if last < i {
                 writer.write_all(&bytes[last..i])?;
             }
             writer.write_all(esc.as_bytes())?;
             i += consumed;
             last = i;
-            continue;
+        } else {
+            i += 1;
         }
-        i += 1;
     }
     if last < bytes.len() {
         writer.write_all(&bytes[last..])?;
@@ -166,35 +97,32 @@ pub(crate) fn render_xml<'a, W, I>(
     label: &str,
     revision: Option<&str>,
     ordered_files: I,
-    trie: &BudgetTrie,
+    paths: &[&str],
 ) -> Result<(), IngestError>
 where
     W: Write + ?Sized,
     I: IntoIterator<Item = FileRecord<'a>>,
 {
     writer.write_all(XML_REPO_START.as_bytes())?;
-    writer.write_all(xml_escape(label).as_bytes())?;
+    write_escaped(writer, label)?;
     if let Some(revision) = revision {
         writer.write_all(XML_REVISION_ATTR.as_bytes())?;
-        writer.write_all(xml_escape(revision).as_bytes())?;
+        write_escaped(writer, revision)?;
     }
     writer.write_all(XML_TAG_CLOSE.as_bytes())?;
     writer.write_all(XML_DIR_START.as_bytes())?;
-    trie.render_to_writer(writer, |name| {
+    crate::core::tree::render_tree(writer, paths, |name| {
         let escaped = escape_header(name);
         match escaped {
             Cow::Borrowed(b) => xml_escape(b),
-            Cow::Owned(o) => match xml_escape(&o) {
-                Cow::Borrowed(_) => Cow::Owned(o),
-                Cow::Owned(xml_str) => Cow::Owned(xml_str),
-            },
+            Cow::Owned(o) => Cow::Owned(xml_escape(&o).into_owned()),
         }
     })?;
     writer.write_all(XML_DIR_END.as_bytes())?;
     writer.write_all(XML_FILES_START.as_bytes())?;
     for file in ordered_files {
         writer.write_all(XML_FILE_START.as_bytes())?;
-        writer.write_all(xml_escape(file.path).as_bytes())?;
+        write_escaped(writer, file.path)?;
         writer.write_all(XML_TAG_CLOSE.as_bytes())?;
         write_escaped(writer, file.content)?;
         let needs_nl = (!file.content.ends_with('\n')) as usize;

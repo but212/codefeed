@@ -8,10 +8,8 @@ use ignore::WalkBuilder;
 
 use super::local_io::{LocalFileRead, read_local_file_into};
 use super::orchestrate::{SourceStream, StreamInfo};
-use super::output::OutputFilter;
 use crate::core::decide::{CandidateBudget, CandidateInput};
 use crate::core::error::IngestError;
-use crate::core::model::OutputTarget;
 use crate::core::policy::MAX_FILE_COUNT;
 
 pub struct LocalStream {
@@ -31,18 +29,17 @@ impl std::fmt::Debug for LocalStream {
 
 pub(crate) fn collect(
     root: &Path,
-    output: &OutputTarget,
+    resolved_output: Option<&Path>,
 ) -> Result<crate::core::model::CollectionResult, IngestError> {
-    let stream = LocalStream::new(root, output)?;
+    let stream = LocalStream::new(root, resolved_output)?;
     super::orchestrate::collect_stream(stream)
 }
 
 impl LocalStream {
-    pub fn new(root: &Path, output: &OutputTarget) -> Result<Self, IngestError> {
+    pub fn new(root: &Path, resolved_output: Option<&Path>) -> Result<Self, IngestError> {
         let canonical_root = validate_root(root)?;
-        let output_filter = OutputFilter::from_target(output);
         let label = local_label(&canonical_root);
-        let candidates = walk_candidates(&canonical_root, output_filter.as_ref())?;
+        let candidates = walk_candidates(&canonical_root, resolved_output)?;
 
         Ok(Self {
             label,
@@ -64,23 +61,16 @@ impl SourceStream for LocalStream {
     {
         let mut scratch = Vec::with_capacity(32 * 1024);
         for item_path in self.candidates.by_ref() {
-            let input = match item_path {
+            let input = match item_path.as_deref() {
                 Some(rel) => {
                     self.work_path.clear();
                     self.work_path.push(&self.root);
-                    self.work_path.push(&rel);
+                    self.work_path.push(rel);
                     scratch.clear();
                     match read_local_file_into(&self.work_path, &mut scratch)? {
-                        LocalFileRead::Bytes(bytes) => CandidateInput::File {
-                            path: std::borrow::Cow::Owned(rel),
-                            bytes: std::borrow::Cow::Borrowed(bytes),
-                        },
-                        LocalFileRead::TooLarge => CandidateInput::TooLarge {
-                            path: std::borrow::Cow::Owned(rel),
-                        },
-                        LocalFileRead::Missing => CandidateInput::Skipped {
-                            path: Some(std::borrow::Cow::Owned(rel)),
-                        },
+                        LocalFileRead::Bytes(bytes) => CandidateInput::File { path: rel, bytes },
+                        LocalFileRead::TooLarge => CandidateInput::TooLarge { path: rel },
+                        LocalFileRead::Missing => CandidateInput::Skipped { path: Some(rel) },
                     }
                 }
                 None => CandidateInput::Skipped { path: None },
@@ -109,7 +99,7 @@ fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
 
 fn walk_candidates(
     root: &Path,
-    output_filter: Option<&OutputFilter>,
+    resolved_output: Option<&Path>,
 ) -> Result<Vec<Option<String>>, IngestError> {
     let walker = WalkBuilder::new(root)
         .hidden(true)
@@ -130,7 +120,7 @@ fn walk_candidates(
         let entry_path = entry.path();
         if entry_path == root
             || !entry.file_type().is_some_and(|kind| kind.is_file())
-            || output_filter.is_some_and(|filter| filter.is_excluded(entry_path))
+            || resolved_output.is_some_and(|target| entry_path == target)
         {
             continue;
         }
@@ -186,7 +176,7 @@ fn local_label(root: &Path) -> String {
 mod tests {
     use super::super::temp_dir;
     use super::*;
-    use crate::core::model::{DigestFormat, FileRecord, RunConfig, Source};
+    use crate::core::model::{DigestFormat, FileRecord, OutputTarget, RunConfig, Source};
     use crate::ingest;
 
     #[cfg(unix)]
@@ -359,10 +349,7 @@ mod tests {
                 )?;
             }
         }
-        let result = crate::shell::orchestrate::collect_stream(LocalStream::new(
-            &root,
-            &OutputTarget::Stdout,
-        )?)?;
+        let result = crate::shell::orchestrate::collect_stream(LocalStream::new(&root, None)?)?;
         let files = result.files;
         assert_eq!(files.len(), 30);
         let records: Vec<FileRecord<'_>> = files.iter().collect();
@@ -395,7 +382,7 @@ mod tests {
             .share_mode(0)
             .open(root.join("file_00000.txt"))?;
 
-        let err = LocalStream::new(&root, &OutputTarget::Stdout).unwrap_err();
+        let err = LocalStream::new(&root, None).unwrap_err();
         match err {
             IngestError::CandidateLimitExceeded(..) => {
                 let msg = err.to_string();

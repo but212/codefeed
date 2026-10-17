@@ -5,7 +5,6 @@ use std::io::Write;
 
 use crate::core::error::IngestError;
 use crate::core::model::FileRecord;
-use crate::core::tree::BudgetTrie;
 
 const REPOSITORY_PREFIX: &str = "Repository: ";
 const REVISION_PREFIX: &str = "Revision: ";
@@ -18,17 +17,9 @@ const FILE_BLOCK_SUFFIX: &str = "\n=============================================
 const NEWLINE: &str = "\n";
 const METADATA_SUFFIX: &str = "\n\n";
 
-const HEADER_ESCAPE_MASK: [u64; 4] = {
-    let mut mask = [0u64; 4];
-    mask[b'\\' as usize / 64] |= 1 << (b'\\' as usize % 64);
-    mask[b'\r' as usize / 64] |= 1 << (b'\r' as usize % 64);
-    mask[b'\n' as usize / 64] |= 1 << (b'\n' as usize % 64);
-    mask
-};
-
 #[inline(always)]
 const fn needs_header_escape(b: u8) -> bool {
-    (HEADER_ESCAPE_MASK[(b >> 6) as usize] & (1u64 << (b & 63))) != 0
+    matches!(b, b'\\' | b'\r' | b'\n')
 }
 
 #[inline(always)]
@@ -42,37 +33,8 @@ const fn header_escape_str(b: u8) -> &'static str {
 }
 
 #[inline(always)]
-fn header_chunk_has_escape(chunk: &[u8; 16]) -> bool {
-    let mut has = 0u8;
-    for &b in chunk {
-        has |= needs_header_escape(b) as u8;
-    }
-    has != 0
-}
-
-#[inline(always)]
-fn first_header_escape_index(bytes: &[u8]) -> Option<usize> {
-    let (chunks, remainder) = bytes.as_chunks::<16>();
-
-    for (chunk_idx, chunk) in chunks.iter().enumerate() {
-        if header_chunk_has_escape(chunk) {
-            let base = chunk_idx * 16;
-            for (offset, &b) in chunk.iter().enumerate() {
-                if needs_header_escape(b) {
-                    return Some(base + offset);
-                }
-            }
-        }
-    }
-
-    let rem_base = bytes.len() - remainder.len();
-    for (offset, &b) in remainder.iter().enumerate() {
-        if needs_header_escape(b) {
-            return Some(rem_base + offset);
-        }
-    }
-
-    None
+pub(crate) fn first_header_escape_index(bytes: &[u8]) -> Option<usize> {
+    bytes.iter().position(|&b| needs_header_escape(b))
 }
 
 pub fn escape_header(value: &str) -> Cow<'_, str> {
@@ -102,7 +64,7 @@ pub(crate) fn render_text<'a, W, I>(
     revision: Option<&str>,
     ordered_files: I,
     skipped: usize,
-    trie: &BudgetTrie,
+    paths: &[&str],
 ) -> Result<(), IngestError>
 where
     W: Write + ?Sized,
@@ -124,7 +86,7 @@ where
     write!(writer, "{}", skipped)?;
     writer.write_all(METADATA_SUFFIX.as_bytes())?;
     writer.write_all(DIRECTORY_HEADER.as_bytes())?;
-    trie.render_to_writer(writer, escape_header)?;
+    crate::core::tree::render_tree(writer, paths, escape_header)?;
     writer.write_all(FILES_HEADER.as_bytes())?;
     for file in iter {
         const TAIL: [&[u8]; 2] = [b"\n", b"\n\n"];

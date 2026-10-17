@@ -21,7 +21,7 @@ pub const NOISE: &[&str] = &[
 /// Known sensitive file extensions (case-insensitive) excluded prior to reading or download.
 ///
 /// Note: `credentials` is matched as an extension here (`*.credentials`, e.g., `aws.credentials`),
-/// and is also matched as a filename prefix in [`is_sensitive_path`] (`credentials*`, e.g., `credentials.json`).
+/// and is also matched as a filename prefix in [`is_sensitive_file`] (`credentials*`, e.g., `credentials.json`).
 pub const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "credentials"];
 
 /// Maximum total HTTP request attempts (1 initial + up to 2 retries).
@@ -59,16 +59,18 @@ pub(crate) fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> boo
         .any(|&s| s.eq_ignore_ascii_case(extension))
 }
 
-/// Returns `true` if `path` contains hidden directory or file components (starting with `.`).
+/// Returns `true` if `path` contains hidden directory or file components (starting with `.`, excluding `.` or `..`).
 #[inline]
 pub(crate) fn is_hidden_path(path: &str) -> bool {
-    path.starts_with('.') || path.contains("/.")
+    path.split('/')
+        .any(|s| s.starts_with('.') && s != "." && s != "..")
 }
 
 /// Returns `true` if raw byte path contains hidden directory or file components.
 #[inline]
 pub(crate) fn is_hidden_bytes(path: &[u8]) -> bool {
-    path.starts_with(b".") || path.windows(2).any(|w| w == b"/.")
+    path.split(|&b| b == b'/')
+        .any(|s| s.starts_with(b".") && s != b"." && s != b"..")
 }
 
 /// Returns `true` if `path` is an ignored noise, sensitive, or hidden file.
@@ -198,10 +200,15 @@ mod tests {
             ("not_hidden", false),
             ("dir/not_hidden.txt", false),
             ("ends_with_dot.", false),
+            ("./src/main.rs", false),
+            ("src/./main.rs", false),
+            ("../src/main.rs", false),
+            ("src/../main.rs", false),
+            ("a//b", false),
         ];
         for (path, expected) in cases {
-            assert_eq!(is_hidden_path(path), expected);
-            assert_eq!(is_hidden_bytes(path.as_bytes()), expected);
+            assert_eq!(is_hidden_path(path), expected, "path: {path}");
+            assert_eq!(is_hidden_bytes(path.as_bytes()), expected, "bytes: {path}");
         }
     }
 }

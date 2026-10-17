@@ -30,7 +30,7 @@ pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
     let resolved_output = shell::output::resolve_output_target(&config.output)?;
 
     let collection = match &config.source {
-        Source::Local(path) => shell::local::collect(path, &config.output)?,
+        Source::Local(path) => shell::local::collect(path, resolved_output.as_deref())?,
         Source::Github {
             owner,
             repo,

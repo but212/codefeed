@@ -48,14 +48,14 @@ imperative-shell boundary.
 - Stdout target writes directly to stdout with no temporary file or filesystem sync.
 - Completion messages emit to stdout for file targets and stderr for stdout targets.
 - Broken downstream pipe (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0 (preserving estimated tokens when encountered on buffer flush; defaulting to 0 on early mid-stream write termination).
-- Local walk excludes existing output files via canonical path comparison (`output::OutputFilter`). The output target is resolved once at initialization; walk candidates are compared directly without repeated syscalls during traversal.
+- Local walk excludes existing output files via canonical path comparison. The output target is resolved once at initialization (`resolve_output_target`); walk candidates are compared directly without repeated syscalls during traversal.
 - Local walk uses a 2-step linear pipeline:
   1. `ignore::WalkBuilder` with `follow_links(false)` and `.sort_by_file_name(|a, b| a.cmp(b))` collects candidate paths into a deterministically sorted list, with pre-flight batch candidate budget verification (`CandidateBudget::check_limit`) to fail fast before reading file bodies.
   2. Bounded sequential reads via `local_io::read_local_file` (verifying regular non-symlink metadata before opening) feed observations into `Selector`. Stream state in `LocalStream` holds only the root label and candidate iterator without retaining redundant root path allocations.
 - Digest cap (`MAX_OUTPUT_SIZE`) is strictly enforced on bytes actually written to the output stream via `BoundedEstimatingWriter`, preventing framing/metadata overflow (atomic file rollback removes partial output; stdout stream terminates immediately at `MAX_OUTPUT_SIZE`).
 - Token count is estimated on the same writer stream pass over rendered byte length.
-- `BudgetTrie` stores nodes in a Left-Child Right-Sibling (LCRS) arena (`Vec<BudgetTrieNode>`) with compact contiguous labels in `label_arena: String`, explicit `name_len: u32` and `is_dir: bool`, and a unified root directory node at index 0. It is format-neutral; XML entity and newline escaping occurs on-the-fly during `render_to_writer(writer, escape_xml)`.
-- CLI arguments are parsed linearly into options and source in pure core (`core::cli`), supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters.
+- ASCII directory tree renders directly from sorted `FileStorage` paths without intermediate tree arena allocation (`tree::render_tree`). It is format-neutral; XML entity and newline escaping occurs on-the-fly during rendering.
+- CLI arguments are parsed linearly into options and source in pure core (`core::cli`) using `std` only, supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters without third-party CLI dependencies.
 - Candidate budget uses standard `HashMap<String, usize>` during collection, with deterministic overflow diagnostics sorted by count descending then directory ascending.
 - Digest budget is tracked directly in `Selector` and is error-terminal: limit breach constructs complete `IngestError::OutputTooLarge` diagnostics without internal transactional rollback.
 
@@ -92,7 +92,7 @@ never depends on shell code; shell code depends on the core in one direction.
     `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`, `FileStorage`).
   - `error.rs`: domain error enum `IngestError` and diagnostic payloads (`CandidateLimitExceededError`).
   - `decide/` (`mod.rs`, `item.rs`, `budget.rs`, `selector.rs`): candidate observation, candidate budget directory accounting, `Selector` storage accumulation, and `largest_files` diagnostic selection.
-  - `tree.rs`: Format-neutral ASCII hierarchy tree (`BudgetTrie`, `BudgetTrieNode`) in LCRS arena.
+  - `tree.rs`: Format-neutral ASCII hierarchy tree rendering (`render_tree`) directly from sorted paths.
   - `render/` (`mod.rs`, `text.rs`, `xml.rs`): Format-specific streaming serializers (Text/XML), single-pass escaping (`escape_header`, `xml_escape`, `write_escaped`), token estimation heuristic (`estimate_tokens`), `render_to_writer`, and streaming `BoundedEstimatingWriter`.
   - `github_url.rs`: Pure `std` URL construction with RFC 3986 percent-encoding and origin credential scoping.
   - `archive.rs`: Pax header comment extraction and archive root stripping.
@@ -103,5 +103,5 @@ never depends on shell code; shell code depends on the core in one direction.
   - `shell/local_io.rs`: Non-symlink file metadata validation and bounded streaming reads.
   - `shell/github_client.rs`: HTTP transport, retry handling, body bounding, and token resolution.
   - `shell/github.rs`: streaming archive tarball entry iterator (`GithubStream`).
-  - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`), standard output stream emission, and canonical output path filtering (`OutputFilter`).
+  - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`), standard output stream emission, and canonical output path resolution (`resolve_output_target`).
   - `shell/mod.rs`: shell module declarations and scoped test fixture isolation (`TempDirGuard`).

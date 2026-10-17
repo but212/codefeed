@@ -34,12 +34,17 @@ pub(crate) fn resolve_output_target(target: &OutputTarget) -> Result<Option<Path
                     ),
                 ))
             })?;
-            let resolved = canonical_parent.join(file_name);
+            let mut resolved = canonical_parent.join(file_name);
             if resolved.is_dir() {
                 return Err(IngestError::Io(io::Error::new(
                     io::ErrorKind::IsADirectory,
                     "output path is a directory",
                 )));
+            }
+            if resolved.exists()
+                && let Ok(canonical) = fs::canonicalize(&resolved)
+            {
+                resolved = canonical;
             }
             Ok(Some(resolved))
         }
@@ -181,35 +186,6 @@ where
     Ok(value)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OutputFilter {
-    canonical_target: PathBuf,
-}
-
-impl OutputFilter {
-    pub(crate) fn from_target(target: &OutputTarget) -> Option<Self> {
-        match target {
-            OutputTarget::File(path) => Self::new(path),
-            OutputTarget::Stdout => None,
-        }
-    }
-
-    pub(crate) fn new(output: &Path) -> Option<Self> {
-        fs::canonicalize(output)
-            .ok()
-            .map(|canonical_target| Self { canonical_target })
-    }
-
-    #[inline]
-    pub(crate) fn is_excluded(&self, candidate: &Path) -> bool {
-        if candidate.file_name() != self.canonical_target.file_name() {
-            return false;
-        }
-        candidate == self.canonical_target
-            || fs::canonicalize(candidate).is_ok_and(|c| c == self.canonical_target)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::temp_dir;
@@ -311,28 +287,13 @@ mod tests {
     }
 
     #[test]
-    fn nonexistent_output_returns_none() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("output_nonexistent")?;
-        let output = root.join("missing_file.txt");
-        assert!(OutputFilter::new(&output).is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn output_filter_from_target_handles_stdout_and_file() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let filter = OutputFilter::from_target(&OutputTarget::Stdout);
-        assert!(filter.is_none());
-
-        let missing = OutputFilter::from_target(&OutputTarget::File(PathBuf::from(
-            "nonexistent_test_output.txt",
-        )));
-        assert!(missing.is_none());
+    fn resolve_output_target_handles_stdout_and_file() -> Result<(), Box<dyn std::error::Error>> {
+        let stdout_target = resolve_output_target(&OutputTarget::Stdout)?;
+        assert!(stdout_target.is_none());
 
         let root = temp_dir("output_target_test")?;
-        let existing = root.join("existing_output.txt");
-        fs::write(&existing, "existing")?;
-        let file_target = OutputFilter::from_target(&OutputTarget::File(existing));
+        let output = root.join("digest.txt");
+        let file_target = resolve_output_target(&OutputTarget::File(output))?;
         assert!(file_target.is_some());
         Ok(())
     }
@@ -345,43 +306,33 @@ mod tests {
         let file_a = root.join("вывод.txt");
         fs::write(&file_a, "test")?;
         let file_b = root.join("ВЫВОД.TXT");
-        let filter = OutputFilter::new(&file_b).expect("filter exists");
+        let resolved = resolve_output_target(&OutputTarget::File(file_b))?.unwrap();
         let canonical_a = fs::canonicalize(&file_a)?;
-        assert!(filter.is_excluded(&canonical_a));
+        assert_eq!(resolved, canonical_a);
         Ok(())
     }
 
     #[test]
-    fn filter_skips_different_filename() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("output_filter_diff")?;
-        let output = root.join("digest.txt");
-        fs::write(&output, "output")?;
-        let filter = OutputFilter::new(&output).expect("filter exists");
-        assert!(!filter.is_excluded(&root.join("src/main.rs")));
-        assert!(!filter.is_excluded(&root.join("digest_other.txt")));
-        Ok(())
-    }
-
-    #[test]
-    fn filter_identifies_output_file() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("output_filter_test")?;
+    fn resolve_output_target_canonicalizes_existing_file() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = temp_dir("output_canonical_test")?;
         fs::create_dir_all(root.join("subdir"))?;
         let output = root.join("digest.txt");
         fs::write(&output, "output")?;
         let canonical_output = fs::canonicalize(&output)?;
 
-        let filter = OutputFilter::new(&output).expect("filter exists");
-        assert!(filter.is_excluded(&canonical_output));
+        let resolved = resolve_output_target(&OutputTarget::File(output))?.unwrap();
+        assert_eq!(resolved, canonical_output);
 
         let alias_output = root.join("subdir").join("..").join("digest.txt");
-        let alias_filter = OutputFilter::new(&alias_output).expect("alias filter exists");
-        assert!(alias_filter.is_excluded(&canonical_output));
+        let alias_resolved = resolve_output_target(&OutputTarget::File(alias_output))?.unwrap();
+        assert_eq!(alias_resolved, canonical_output);
 
         #[cfg(any(windows, target_os = "macos"))]
         {
             let cased_output = root.join("DIGEST.TXT");
-            let cased_filter = OutputFilter::new(&cased_output).expect("cased filter exists");
-            assert!(cased_filter.is_excluded(&canonical_output));
+            let cased_resolved = resolve_output_target(&OutputTarget::File(cased_output))?.unwrap();
+            assert_eq!(cased_resolved, canonical_output);
         }
 
         Ok(())
@@ -389,7 +340,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn filter_excludes_output_in_symlinked_parent() -> Result<(), Box<dyn std::error::Error>> {
+    fn resolve_output_target_resolves_symlinked_parent() -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::symlink;
 
         let root = temp_dir("output_symlink_parent")?;
@@ -402,9 +353,9 @@ mod tests {
         let output_via_real = real_dir.join("digest.txt");
         fs::write(&output_via_real, "test")?;
 
-        let filter = OutputFilter::new(&output_via_link).expect("filter exists");
+        let resolved = resolve_output_target(&OutputTarget::File(output_via_link))?.unwrap();
         let canonical_real = fs::canonicalize(&output_via_real)?;
-        assert!(filter.is_excluded(&canonical_real));
+        assert_eq!(resolved, canonical_real);
         Ok(())
     }
 }

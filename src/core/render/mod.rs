@@ -11,7 +11,6 @@ pub(crate) mod xml;
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, FileRecord};
 use crate::core::policy::MAX_OUTPUT_SIZE;
-use crate::core::tree::BudgetTrie;
 
 #[inline]
 pub fn estimate_tokens(bytes: u64) -> usize {
@@ -30,7 +29,7 @@ impl DigestFormat {
         revision: Option<&str>,
         files: I,
         skipped: usize,
-        trie: &BudgetTrie,
+        paths: &[&str],
     ) -> Result<(), IngestError>
     where
         W: Write + ?Sized,
@@ -38,8 +37,8 @@ impl DigestFormat {
         I::IntoIter: ExactSizeIterator,
     {
         match self {
-            Self::Text => text::render_text(writer, label, revision, files, skipped, trie),
-            Self::Xml => xml::render_xml(writer, label, revision, files, trie),
+            Self::Text => text::render_text(writer, label, revision, files, skipped, paths),
+            Self::Xml => xml::render_xml(writer, label, revision, files, paths),
         }
     }
 }
@@ -91,13 +90,14 @@ pub fn render_to_writer<W: Write + ?Sized>(
     format: DigestFormat,
 ) -> Result<usize, IngestError> {
     let mut estimating_writer = BoundedEstimatingWriter::new(writer);
+    let paths: Vec<&str> = collection.files.iter().map(|f| f.path).collect();
     let render_res = format.render(
         &mut estimating_writer,
         &collection.label,
         collection.revision.as_deref(),
         collection.files.iter(),
         collection.skipped,
-        &collection.trie,
+        &paths,
     );
 
     if estimating_writer.overflowed {
@@ -118,15 +118,6 @@ mod tests {
     use crate::core::error::IngestError;
     use crate::core::model::{FileRecord, FileStorage};
     use crate::core::policy::MAX_OUTPUT_SIZE;
-    use crate::core::tree::BudgetTrie;
-
-    fn test_trie<'a>(files: impl IntoIterator<Item = FileRecord<'a>>) -> BudgetTrie {
-        let mut trie = BudgetTrie::new();
-        for file in files {
-            trie.insert(file.path);
-        }
-        trie
-    }
 
     fn render_digest(
         label: &str,
@@ -136,13 +127,11 @@ mod tests {
     ) -> Result<String, IngestError> {
         let mut storage: FileStorage = files.iter().copied().collect();
         storage.sort_by_path();
-        let trie = test_trie(storage.iter());
         let collection = CollectionResult {
             label: label.to_string(),
             revision: revision.map(str::to_string),
             files: storage,
             skipped,
-            trie,
         };
         let mut buffer = Vec::new();
         render_to_writer(&mut buffer, &collection, DigestFormat::Text)?;
@@ -206,7 +195,6 @@ mod tests {
             revision: Some("v1.0".into()),
             files: storage,
             skipped: 2,
-            trie: test_trie(files),
         };
         let mut streamed = Vec::new();
         render_to_writer(&mut streamed, &collection, DigestFormat::Text)?;
@@ -256,13 +244,12 @@ hello\n\
                 content: "content_a\n",
             },
         ];
-        let trie = test_trie([files[0], files[2]]);
         let mut buf = Vec::new();
         let filtered: Vec<_> = files
             .into_iter()
             .filter(|f| f.path != "excluded.txt")
             .collect();
-        DigestFormat::Text.render(&mut buf, "repo", None, filtered, 1, &trie)?;
+        DigestFormat::Text.render(&mut buf, "repo", None, filtered, 1, &["a.txt", "b.txt"])?;
         let rendered = std::str::from_utf8(&buf)?;
         assert!(rendered.contains("Files: 2"));
         assert!(rendered.contains("FILE: a.txt"));
@@ -285,7 +272,6 @@ hello\n\
             revision: None,
             files: storage,
             skipped: 0,
-            trie: BudgetTrie::new(),
         };
         let mut sink = Vec::new();
         match render_to_writer(&mut sink, &collection, DigestFormat::Text) {
@@ -316,7 +302,6 @@ hello\n\
             revision: Some("v1.0".into()),
             files: storage,
             skipped: 1,
-            trie: test_trie(files),
         };
         let mut out = Vec::new();
         render_to_writer(&mut out, &collection, DigestFormat::Xml)?;
@@ -361,7 +346,6 @@ z &lt; 10
             revision: None,
             files: files.into_iter().collect(),
             skipped: 0,
-            trie: test_trie(files),
         };
         let mut xml_out = Vec::new();
         render_to_writer(&mut xml_out, &collection, DigestFormat::Xml)?;

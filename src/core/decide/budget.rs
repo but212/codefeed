@@ -35,7 +35,11 @@ impl CandidateBudget {
     pub fn add(&mut self, path: Option<&str>) -> Result<(), IngestError> {
         self.count = self.count.checked_add(1).ok_or_else(file_count_overflow)?;
         let dir = extract_dir_slice(path);
-        *self.dir_counts.entry(dir.to_string()).or_default() += 1;
+        if let Some(count) = self.dir_counts.get_mut(dir) {
+            *count += 1;
+        } else {
+            self.dir_counts.insert(dir.to_string(), 1);
+        }
 
         if self.count > MAX_FILE_COUNT {
             return Err(self.overflow_error());

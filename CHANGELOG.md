@@ -10,25 +10,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `CandidateInput` (`src/core/decide/item.rs`): Unified candidate input enum (`File`, `TooLarge`, `Skipped`) simplifying the FCIS boundary data flow.
+- `render_tree` (`src/core/tree.rs`): Direct deterministic ASCII tree rendering from sorted path slices.
 - `resolve_output_target` (`src/shell/output.rs`): Single-pass output target validation and parent canonicalization.
 - `policy::is_ignored_path` (`src/core/policy.rs`): Direct path exclusion for noise lockfiles, sensitive prefixes/extensions, and hidden components.
 
 ### Changed
 
+- **Directory Tree**: Eliminated `BudgetTrie` LCRS arena trie and `BudgetTrieNode`, rendering ASCII tree directly from lexicographically sorted `FileStorage`.
+- **Hidden Path Matching**: Replaced substring path matching with segment-based matching (`split('/')`), preventing false positives on `./` segments.
+- **CLI Parsing**: Dropped `clap` and `clap_derive` dependencies in favor of a minimal ~50-line standard library argument parser preserving all CLI flags, options, and help contracts.
+- **Archive Ingestion**: Removed `seen_entries` state tracking and out-of-order PAX header error in `GithubStream`, accepting PAX headers whenever encountered.
+- **Output Sanitization & Escaping**: Removed 16-byte manual chunk loops and bitmask lookups in `text.rs` and `xml.rs` in favor of standard linear slice iterators; streamed XML attributes directly via `write_escaped`.
+- **Output Filtering**: Eliminated `OutputFilter` struct and repeated filesystem syscalls by resolving canonical output target once at startup.
+- **Candidate Input & Budget**: Stripped `Cow` from `CandidateInput` to use borrowed `&str` and `&[u8]`; optimized `CandidateBudget::add` using `get_mut` to eliminate heap allocations for existing directories.
 - **Stream Collection Pipeline**: Replaced indirect `Item` / `Probe` / `ItemDecision` evaluation steps with direct candidate streaming into `Selector::feed(CandidateInput)`.
 - **Local Collection**: Replaced `Vec<ItemPath>` with `Vec<Option<String>>` candidate list and integrated `LocalFileRead` in `src/shell/local_io.rs`.
 - **Token Estimation**: Replaced 220-line `TokenEstimator` lookup table state machine and streaming chunk buffer with a pure function `estimate_tokens(bytes)` (`(bytes / 4).max(1)` for non-zero bytes).
 - **Candidate Accounting**: Replaced RLE `dir_runs` and 24-byte `CompactDir` in `CandidateBudget` with standard `HashMap<String, usize>`.
 - **Error Types**: Unboxed `IngestError` string and slice payloads (`String`, `Vec<...>`, `CandidateLimitExceededError`); removed speculative 16-byte ABI packing assertions.
-- **Data Structures**: Replaced bitfield-packed `BudgetTrieNode` with explicit `name_len: u32` and `is_dir: bool`.
 - **Retry Backoff**: Removed `RETRY_JITTER_MAX_MS` and entropy plumbing; made `retry_delay(attempt)` a deterministic pure function.
-- **Output Validation**: Unified three-pass path normalization and target validation into single startup check in `resolve_output_target`.
 - **Binary Filtering**: Removed `BINARY_EXTENSIONS` hardcoded list and `PathClassification` enum; binary files are detected via UTF-8 / NUL-byte inspection during body read.
-- **CLI Parsing**: Removed manual `usage_str!` and help interception; delegated help generation and exit cleanly to `clap`.
 - **Testing**: Replaced repeated `SystemTime` temporary directory boilerplate in integration tests with RAII `TempDir`.
 
 ### Removed
 
+- External dependencies: `clap` and `clap_derive` (`Cargo.toml`).
+- `BudgetTrie`, `BudgetTrieNode`, and `CollectionResult::trie`.
+- `OutputFilter` struct and redundant `fs::canonicalize` calls during directory walk.
+- `seen_entries` boolean state on `GithubStream`.
 - Intermediate stream types: `Item`, `ItemPath`, `Probe`, `ItemDecision`, and `Selector::decide`.
 - `benches/bench.rs` (737 lines) and `pub mod __bench` in `src/lib.rs`.
 - `docs/internal_bench_result.md`.
