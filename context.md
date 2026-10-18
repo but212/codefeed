@@ -13,7 +13,8 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 - `FileSpan` — POD indexing path and content byte spans via private offsets, accessed through borrowed slice methods (`path(&arena)`, `content(&arena)`).
 - `FileStorage` — Append-only arena buffer (`path_arena`, `content_arena`, `spans`). Provides zero-copy `FileRecord<'a>` borrowed views throughout ingestion and in-place lexicographical sorting (`sort_by_path`) without string reallocations.
 - `FileRecord<'a>` — Zero-copy borrowed digest entry view: `path: &'a str`, `content: &'a str`.
-- `CollectionResult` — Uniform format-neutral collection record: `label`, optional `revision`, `files: FileStorage`, `skipped`.
+- `SortedFiles` — Lexicographically sorted file storage arena wrapper guaranteeing path ordering invariants (`SortedFiles`).
+- `CollectionResult` — Uniform format-neutral collection record: `label`, optional `revision`, `files: SortedFiles`, `skipped`.
 - `IngestReport` — Output summary report: `output`, `included_files`, `skipped_files`, `estimated_tokens` (`#[non_exhaustive]`).
 - `OutputTarget` — Digest destination: `File(PathBuf)` or `Stdout`.
 - `DigestFormat` — Output serialization format: `Text` or `Xml`.
@@ -36,7 +37,7 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 - Token estimation: Pure function `estimate_tokens(bytes)` calculates `(bytes / 4).max(1)` when non-zero, `0` when empty. Reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`). Calibrated for English text and code (~4 bytes/token); multibyte text (such as Korean/CJK) will be underestimated.
 - Plain text (`--format text`): Preserves valid UTF-8 file content verbatim (rejecting NUL bytes) for LLM prompts; escapes header metadata and file paths (`\`, `\r`, `\n`, C0 control characters `0x00..=0x08`, `0x0B`, `0x0C`, `0x0E..=0x1F`, and DEL `0x7F` to `\u{FFFD}`) while leaving file bodies unmutated (interactive terminals may reflect ANSI escape codes contained in files).
 - XML (`--format xml`): Emits `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`), attribute whitespace (`\t`, `\n`, `\r` via character references), while preserving raw `\t`, `\n`, `\r` in `<file>` element bodies for LLM readability and token efficiency, and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`.
-- Lexicographical ordering: File-path ordering is established in-place on `spans` via `FileStorage::sort_by_path()` during `Selector::finish()`. Format renderers consume `ExactSizeIterator<Item = FileRecord<'_>>` directly with zero heap re-allocation or re-sorting.
+- Lexicographical ordering: File-path ordering is established in-place on `spans` via `SortedFiles::new(FileStorage)` during `Selector::finish()`. Format renderers consume `ExactSizeIterator<Item = FileRecord<'_>>` directly with zero heap re-allocation or re-sorting.
 - Header format: Local digest headers use root directory basename (`Repository: <basename>`), omitting absolute paths and system prefixes.
 
 ### I/O & Output Target Contracts
@@ -72,14 +73,16 @@ Boundary rule: Pure core performs no I/O, clock, or network calls and never depe
   - `cli.rs`: CLI argument parsing, help detection, and `CliAction` generation (`parse`).
   - `policy.rs`: Operational limits, noise patterns, sensitive patterns, and path classification (`PathStatus`, `is_ignored_filename`, `is_hidden_segment`). Single source of truth for limits and path exclusion rules.
   - `model.rs`: Domain value types (`Source`, `CollectionResult`, `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`) and source parsing (`Source::parse`, `Source::parse_os`).
-  - `storage.rs`: Continuous arena storage (`FileStorage`, `FileSpan`, `FileRecord`, `FileRecordIter`, `cmp_path`, `largest_files`).
+  - `github.rs`: Pure GitHub domain rules, identifier validation (`valid_github_name`), URL parsing (`parse_github_url`), tarball URL construction (`tarball_url`), API origin security policy (`is_github_api_origin`), and retry decision (`decide_retry`).
+  - `storage.rs`: Continuous arena storage (`FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, `largest_files`).
   - `error.rs`: Domain error enum `IngestError` and diagnostic payloads (`CandidateLimitExceededError`).
-  - `selector.rs`: Candidate reservation (`CandidateSlot`), directory accounting (`CandidateBudget`), and storage accumulation (`Selector`).
-  - `render.rs`: Format-specific streaming serializers (Text/XML), format-neutral ASCII hierarchy tree rendering (`render_tree`), single-pass streaming escaping (`write_escaped`), token estimation heuristic (`estimate_tokens`), and `BoundedEstimatingWriter`.
+  - `selector.rs`: Candidate reservation (`CandidateSlot`), directory accounting (`CandidateBudget`), content observation (`Observation`, `SkipReason`), and storage accumulation (`Selector`).
+  - `render/`: Format-specific streaming serializers (`text.rs`, `xml.rs`), format-neutral ASCII hierarchy tree rendering (`tree.rs`), single-pass streaming escaping (`escape.rs`), and token estimation writer (`budget.rs`).
   - `archive.rs`: Pax header comment extraction and single-pass tar entry path normalization & policy classification (`normalize_tar_entry_path`).
 - Imperative shell (`src/shell/`):
   - `src/main.rs`: Binary entry point and CLI completion report formatting.
-  - `shell/mod.rs`: Shell module declarations, pipeline orchestration (`ingest`), and scoped test fixture isolation (`TempDirGuard`).
+  - `shell/mod.rs`: Shell module declarations and pipeline orchestration (`ingest`, `run_cli`).
+  - `shell/testing.rs`: Scoped test fixture isolation (`TempDirGuard`, `temp_dir`).
   - `shell/local.rs`: Single-pass filesystem candidate traversal, non-symlink metadata validation, and pre-I/O candidate reservation in `Selector`.
   - `shell/github.rs`: Streaming archive tarball collection (`collect_archive`), HTTP transport (`GithubClient`), retry handling, body bounding, and token resolution.
   - `shell/output.rs`: Atomic file writing via RAII commit guard (`AtomicFile`), stdout streaming, and canonical output path resolution (`resolve_output_target`).

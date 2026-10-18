@@ -8,49 +8,14 @@ use std::io::Write;
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat};
 use crate::core::policy::MAX_OUTPUT_SIZE;
-use crate::core::storage::{FileSpan, FileStorage};
 
-const TREE_BRANCH: &str = "├── ";
-const TREE_LAST: &str = "└── ";
-const TREE_VERT: &str = "│   ";
-const TREE_SPACE: &str = "    ";
+mod budget;
+mod escape;
+mod text;
+mod tree;
+mod xml;
 
-const REPOSITORY_PREFIX: &str = "Repository: ";
-const REVISION_PREFIX: &str = "Revision: ";
-const FILES_PREFIX: &str = "Files: ";
-const SKIPPED_PREFIX: &str = "\nSkipped: ";
-const DIRECTORY_HEADER: &str = "Directory structure:\n";
-const FILES_HEADER: &str = "\nFiles:\n\n";
-const FILE_BLOCK_PREFIX: &str = "==================================================\nFILE: ";
-const FILE_BLOCK_SUFFIX: &str = "\n==================================================\n\n";
-const NEWLINE: &str = "\n";
-const METADATA_SUFFIX: &str = "\n\n";
-const XML_REPO_START: &str = "<repository name=\"";
-const XML_REVISION_ATTR: &str = "\" revision=\"";
-const XML_TAG_CLOSE: &str = "\">\n";
-const XML_DIR_START: &str = "<directory_structure>\n";
-const XML_DIR_END: &str = "</directory_structure>\n";
-const XML_FILES_START: &str = "<files>\n";
-const XML_FILES_END: &str = "</files>\n";
-const XML_REPO_END: &str = "</repository>\n";
-const XML_FILE_START: &str = "<file path=\"";
-const FILE_TAILS: [&[u8]; 2] = [b"</file>\n", b"\n</file>\n"];
-
-/// Heuristic token estimation (~4 bytes per token for typical ASCII code).
-///
-/// Returns 0 for empty digests, and at least 1 token when non-empty.
-///
-/// Note: This is a fast byte-level heuristic calibrated for English text and source code.
-/// Multibyte UTF-8 sequences (such as CJK characters, which consume 3 bytes each)
-/// are underestimated by this formula.
-#[inline]
-fn estimate_tokens(bytes: u64) -> usize {
-    if bytes == 0 {
-        0
-    } else {
-        (bytes / 4).max(1) as usize
-    }
-}
+pub(crate) use budget::BoundedEstimatingWriter;
 
 impl DigestFormat {
     pub(crate) fn render<W: Write + ?Sized>(
@@ -59,46 +24,10 @@ impl DigestFormat {
         collection: &CollectionResult,
     ) -> std::io::Result<()> {
         match self {
-            Self::Text => render_text(writer, collection),
-            Self::Xml => render_xml(writer, collection),
+            Self::Text => text::render_text(writer, collection),
+            Self::Xml => xml::render_xml(writer, collection),
         }
     }
-}
-
-struct BoundedEstimatingWriter<'a, W: Write + ?Sized> {
-    inner: &'a mut W,
-    written: u64,
-}
-
-impl<'a, W: Write + ?Sized> BoundedEstimatingWriter<'a, W> {
-    fn new(inner: &'a mut W) -> Self {
-        Self { inner, written: 0 }
-    }
-
-    fn finish(self) -> usize {
-        estimate_tokens(self.written)
-    }
-}
-
-impl<W: Write + ?Sized> Write for BoundedEstimatingWriter<'_, W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let new_written = self.written.saturating_add(buf.len() as u64);
-        if new_written > MAX_OUTPUT_SIZE {
-            self.written = new_written;
-            return Err(output_limit_io_error());
-        }
-        self.inner.write_all(buf)?;
-        self.written = new_written;
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-fn output_limit_io_error() -> std::io::Error {
-    std::io::Error::other("output size limit exceeded")
 }
 
 /// Renders a collection to the given writer according to the chosen digest format.
@@ -116,7 +45,7 @@ pub(crate) fn render_to_writer<W: Write + ?Sized>(
 ) -> Result<usize, IngestError> {
     let mut estimating_writer = BoundedEstimatingWriter::new(writer);
     if let Err(err) = format.render(&mut estimating_writer, collection) {
-        if estimating_writer.written > MAX_OUTPUT_SIZE {
+        if estimating_writer.written() > MAX_OUTPUT_SIZE {
             return Err(collection.output_too_large_error());
         }
         return Err(IngestError::Io(err));
@@ -124,225 +53,16 @@ pub(crate) fn render_to_writer<W: Write + ?Sized>(
     Ok(estimating_writer.finish())
 }
 
-#[inline(always)]
-fn escape_header(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
-    match bytes[i] {
-        b'\\' => Some((1, "\\\\")),
-        b'\r' => Some((1, "\\r")),
-        b'\n' => Some((1, "\\n")),
-        0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F | 0x7F => Some((1, "\u{FFFD}")),
-        _ => None,
-    }
-}
-
-fn render_text<W: Write + ?Sized>(
-    writer: &mut W,
-    collection: &CollectionResult,
-) -> std::io::Result<()> {
-    writer.write_all(REPOSITORY_PREFIX.as_bytes())?;
-    write_escaped(writer, &collection.label, escape_header)?;
-    writer.write_all(NEWLINE.as_bytes())?;
-    if let Some(ref revision) = collection.revision {
-        writer.write_all(REVISION_PREFIX.as_bytes())?;
-        write_escaped(writer, revision, escape_header)?;
-        writer.write_all(NEWLINE.as_bytes())?;
-    }
-    writer.write_all(FILES_PREFIX.as_bytes())?;
-    write!(writer, "{}", collection.files.len())?;
-    writer.write_all(SKIPPED_PREFIX.as_bytes())?;
-    write!(writer, "{}", collection.skipped)?;
-    writer.write_all(METADATA_SUFFIX.as_bytes())?;
-    writer.write_all(DIRECTORY_HEADER.as_bytes())?;
-    render_tree(writer, &collection.files, |w, name| {
-        write_escaped(w, name, escape_header)
-    })?;
-    writer.write_all(FILES_HEADER.as_bytes())?;
-    for file in collection.files.iter() {
-        const TAIL: [&[u8]; 2] = [b"\n", b"\n\n"];
-        let needs_extra_nl = (!file.content.ends_with('\n')) as usize;
-        writer.write_all(FILE_BLOCK_PREFIX.as_bytes())?;
-        write_escaped(writer, file.path, escape_header)?;
-        writer.write_all(FILE_BLOCK_SUFFIX.as_bytes())?;
-        writer.write_all(file.content.as_bytes())?;
-        writer.write_all(TAIL[needs_extra_nl])?;
-    }
-
-    Ok(())
-}
-
-#[inline(always)]
-fn escape_xml_body(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
-    match bytes[i] {
-        0..=8 | 11 | 12 | 14..=31 => Some((1, "\u{FFFD}")),
-        b'"' => Some((1, "&quot;")),
-        b'&' => Some((1, "&amp;")),
-        b'\'' => Some((1, "&apos;")),
-        b'<' => Some((1, "&lt;")),
-        b'>' => Some((1, "&gt;")),
-        0xEF if i + 2 < bytes.len()
-            && bytes[i + 1] == 0xBF
-            && (bytes[i + 2] == 0xBE || bytes[i + 2] == 0xBF) =>
-        {
-            Some((3, "\u{FFFD}"))
-        }
-        _ => None,
-    }
-}
-
-#[inline(always)]
-fn escape_xml_single_line(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
-    match bytes[i] {
-        b'\t' => Some((1, "&#9;")),
-        b'\n' => Some((1, "&#10;")),
-        b'\r' => Some((1, "&#13;")),
-        _ => escape_xml_body(bytes, i),
-    }
-}
-
-fn write_escaped<W, F>(writer: &mut W, value: &str, special_at: F) -> std::io::Result<()>
-where
-    W: Write + ?Sized,
-    F: Fn(&[u8], usize) -> Option<(usize, &'static str)>,
-{
-    let bytes = value.as_bytes();
-    let mut last = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        if let Some((consumed, esc)) = special_at(bytes, i) {
-            writer.write_all(&bytes[last..i])?;
-            writer.write_all(esc.as_bytes())?;
-            i += consumed;
-            last = i;
-        } else {
-            i += 1;
-        }
-    }
-    writer.write_all(&bytes[last..])
-}
-
-fn render_xml<W: Write + ?Sized>(
-    writer: &mut W,
-    collection: &CollectionResult,
-) -> std::io::Result<()> {
-    writer.write_all(XML_REPO_START.as_bytes())?;
-    write_escaped(writer, &collection.label, escape_xml_single_line)?;
-    if let Some(ref revision) = collection.revision {
-        writer.write_all(XML_REVISION_ATTR.as_bytes())?;
-        write_escaped(writer, revision, escape_xml_single_line)?;
-    }
-    writer.write_all(XML_TAG_CLOSE.as_bytes())?;
-    writer.write_all(XML_DIR_START.as_bytes())?;
-    render_tree(writer, &collection.files, |w, name| {
-        write_escaped(w, name, escape_xml_single_line)
-    })?;
-    writer.write_all(XML_DIR_END.as_bytes())?;
-    writer.write_all(XML_FILES_START.as_bytes())?;
-    for file in collection.files.iter() {
-        writer.write_all(XML_FILE_START.as_bytes())?;
-        write_escaped(writer, file.path, escape_xml_single_line)?;
-        writer.write_all(XML_TAG_CLOSE.as_bytes())?;
-        write_escaped(writer, file.content, escape_xml_body)?;
-        let needs_nl = (!file.content.ends_with('\n')) as usize;
-        writer.write_all(FILE_TAILS[needs_nl])?;
-    }
-    writer.write_all(XML_FILES_END.as_bytes())?;
-    writer.write_all(XML_REPO_END.as_bytes())?;
-    Ok(())
-}
-
-/// Renders an ASCII tree representation of the provided pre-sorted [`FileStorage`] to the writer.
-fn render_tree<W: Write + ?Sized, F>(
-    writer: &mut W,
-    storage: &FileStorage,
-    mut format_name: F,
-) -> std::io::Result<()>
-where
-    F: FnMut(&mut W, &str) -> std::io::Result<()>,
-{
-    let mut prefix = String::new();
-    render_level(
-        writer,
-        storage.spans(),
-        storage.path_arena(),
-        0,
-        &mut prefix,
-        &mut format_name,
-    )
-}
-
-fn render_level<W: Write + ?Sized, F>(
-    writer: &mut W,
-    spans: &[FileSpan],
-    path_arena: &str,
-    offset: usize,
-    prefix: &mut String,
-    format_name: &mut F,
-) -> std::io::Result<()>
-where
-    F: FnMut(&mut W, &str) -> std::io::Result<()>,
-{
-    let mut i = 0;
-    while let Some((name, is_dir)) = spans
-        .get(i)
-        .and_then(|s| component_at_offset(s.path(path_arena), offset))
-    {
-        let start = i;
-        i += 1;
-        if is_dir {
-            let dir_prefix = &spans[start].path(path_arena)[offset..offset + name.len() + 1];
-            while spans
-                .get(i)
-                .and_then(|s| s.path(path_arena).get(offset..))
-                .is_some_and(|rem| rem.starts_with(dir_prefix))
-            {
-                i += 1;
-            }
-        }
-        let end = i;
-        let is_last = end == spans.len();
-
-        writer.write_all(prefix.as_bytes())?;
-        writer.write_all(if is_last { TREE_LAST } else { TREE_BRANCH }.as_bytes())?;
-        format_name(writer, name)?;
-
-        if is_dir {
-            writer.write_all(b"/\n")?;
-            let prev_len = prefix.len();
-            prefix.push_str(if is_last { TREE_SPACE } else { TREE_VERT });
-            render_level(
-                writer,
-                &spans[start..end],
-                path_arena,
-                offset + name.len() + 1,
-                prefix,
-                format_name,
-            )?;
-            prefix.truncate(prev_len);
-        } else {
-            writer.write_all(b"\n")?;
-        }
-    }
-
-    Ok(())
-}
-
-#[inline]
-fn component_at_offset(path: &str, offset: usize) -> Option<(&str, bool)> {
-    let remainder = path.get(offset..)?;
-    if remainder.is_empty() {
-        return None;
-    }
-    match remainder.find('/') {
-        Some(idx) => Some((&remainder[..idx], true)),
-        None => Some((remainder, false)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::error::IngestError;
     use crate::core::policy::MAX_OUTPUT_SIZE;
+    use crate::core::render::budget::estimate_tokens;
+    use crate::core::render::escape::{
+        escape_header, escape_xml_body, escape_xml_single_line, write_escaped,
+    };
+    use crate::core::render::tree::{component_at_offset, render_tree};
     use crate::core::storage::{FileRecord, FileStorage};
 
     fn render_digest(
@@ -356,7 +76,7 @@ mod tests {
         let collection = CollectionResult {
             label: label.to_string(),
             revision: revision.map(str::to_string),
-            files: storage,
+            files: crate::core::storage::SortedFiles::new(storage),
             skipped,
         };
         let mut buffer = Vec::new();
@@ -419,7 +139,7 @@ mod tests {
         let collection = CollectionResult {
             label: "my-repo".into(),
             revision: Some("v1.0".into()),
-            files: storage,
+            files: crate::core::storage::SortedFiles::new(storage),
             skipped: 2,
         };
         let mut streamed = Vec::new();
@@ -478,7 +198,7 @@ hello\n\
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,
-            files: storage,
+            files: crate::core::storage::SortedFiles::new(storage),
             skipped: 1,
         };
         let mut buf = Vec::new();
@@ -503,7 +223,7 @@ hello\n\
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,
-            files: storage,
+            files: crate::core::storage::SortedFiles::new(storage),
             skipped: 0,
         };
         let mut sink = Vec::new();
@@ -533,7 +253,7 @@ hello\n\
         let collection = CollectionResult {
             label: "my-repo".into(),
             revision: Some("v1.0".into()),
-            files: storage,
+            files: crate::core::storage::SortedFiles::new(storage),
             skipped: 1,
         };
         let mut out = Vec::new();
@@ -577,7 +297,7 @@ z &lt; 10
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,
-            files: files.into_iter().collect(),
+            files: crate::core::storage::SortedFiles::new(files.into_iter().collect()),
             skipped: 0,
         };
         let mut xml_out = Vec::new();
@@ -606,7 +326,7 @@ z &lt; 10
         let collection = CollectionResult {
             label: "my\trepo\n".into(),
             revision: Some("rev\r\n1".into()),
-            files: storage,
+            files: crate::core::storage::SortedFiles::new(storage),
             skipped: 0,
         };
         let mut xml_out = Vec::new();
@@ -681,7 +401,8 @@ z &lt; 10
     }
 
     #[test]
-    fn escapes_control_characters_in_filename_headers_and_tree() -> Result<(), Box<dyn std::error::Error>> {
+    fn escapes_control_characters_in_filename_headers_and_tree()
+    -> Result<(), Box<dyn std::error::Error>> {
         let filename = "x\x1b]0;title\x07.md";
         let files = [FileRecord {
             path: filename,
@@ -868,5 +589,4 @@ z &lt; 10
         assert_eq!(tree_str, expected);
         Ok(())
     }
-
 }

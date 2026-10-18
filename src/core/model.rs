@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::core::error::IngestError;
-use crate::core::storage::FileStorage;
+use crate::core::storage::SortedFiles;
 
 /// Validated non-empty Git revision reference (branch, tag, or commit SHA).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -74,7 +74,9 @@ impl Source {
     ) -> Result<Self, IngestError> {
         let owner = owner.into();
         let repo = repo.into();
-        if !valid_github_name(&owner) || !valid_github_name(&repo) {
+        if !crate::core::github::valid_github_name(&owner)
+            || !crate::core::github::valid_github_name(&repo)
+        {
             return Err(IngestError::invalid_source(
                 "owner and repository names contain invalid characters",
             ));
@@ -102,7 +104,7 @@ impl Source {
     /// (such as SSH) or [`IngestError::InvalidSource`] if the GitHub URL is malformed.
     fn parse(value: &str) -> Result<Self, IngestError> {
         if value.starts_with("http://") || value.starts_with("https://") {
-            return parse_github_url(value);
+            return crate::core::github::parse_github_url(value);
         }
         if value.starts_with("git@") || value.starts_with("ssh://") {
             return Err(IngestError::unsupported_source(
@@ -139,62 +141,6 @@ impl Source {
             }
         }
     }
-}
-
-fn parse_github_url(value: &str) -> Result<Source, IngestError> {
-    let remainder = value.strip_prefix("https://").ok_or_else(|| {
-        IngestError::unsupported_source("only https://github.com/{owner}/{repo} is supported")
-    })?;
-    let (authority, path) = match remainder.find('/') {
-        Some(index) => (&remainder[..index], &remainder[index..]),
-        None => (remainder, ""),
-    };
-    if authority.is_empty() {
-        return Err(IngestError::invalid_source(value));
-    }
-    let host_port = authority.rsplit('@').next().unwrap_or(authority);
-    let host = match host_port.split_once(':') {
-        Some((host, port)) => {
-            if !port.is_empty() && port.parse::<u16>().is_err() {
-                return Err(IngestError::invalid_source(value));
-            }
-            host
-        }
-        None => host_port,
-    };
-    if !host.eq_ignore_ascii_case("github.com") {
-        return Err(IngestError::unsupported_source(
-            "only https://github.com/{owner}/{repo} is supported",
-        ));
-    }
-    if path.contains('?') || path.contains('#') {
-        return Err(IngestError::invalid_source(
-            "repository URLs cannot contain a query or fragment",
-        ));
-    }
-
-    let mut parts = path.split('/').filter(|part| !part.is_empty());
-    let (Some(owner), Some(repo_segment), None) = (parts.next(), parts.next(), parts.next()) else {
-        return Err(IngestError::invalid_source(
-            "expected https://github.com/{owner}/{repo}",
-        ));
-    };
-
-    let repo = repo_segment.strip_suffix(".git").unwrap_or(repo_segment);
-    Source::github(owner, repo, None)
-}
-
-fn valid_github_name(value: &str) -> bool {
-    !value.is_empty()
-        && value != "."
-        && value != ".."
-        && value.bytes().all(|byte| {
-            (byte.wrapping_sub(b'0') < 10)
-                | ((byte | 32).wrapping_sub(b'a') < 26)
-                | (byte == b'-')
-                | (byte == b'_')
-                | (byte == b'.')
-        })
 }
 
 /// Where the digest is delivered. Distinguishes a filesystem path from the
@@ -258,7 +204,7 @@ pub struct IngestReport {
 pub(crate) struct CollectionResult {
     pub(crate) label: String,
     pub(crate) revision: Option<String>,
-    pub(crate) files: FileStorage,
+    pub(crate) files: SortedFiles,
     pub(crate) skipped: usize,
 }
 
