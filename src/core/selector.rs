@@ -125,20 +125,6 @@ impl Selector {
         }
     }
 
-    /// Creates a `Selector` sizing arena capacities based on a source stream size hint.
-    pub(crate) fn from_size_hint(hint: (usize, Option<usize>)) -> Self {
-        let estimated = hint.1.unwrap_or(hint.0);
-        if estimated == 0 {
-            Self::new()
-        } else {
-            let spans_cap = estimated.min(MAX_FILE_COUNT);
-            let path_cap = spans_cap.saturating_mul(48);
-            let content_cap =
-                (spans_cap.saturating_mul(2048)).clamp(256 * 1024, MAX_OUTPUT_SIZE as usize);
-            Self::with_capacity(spans_cap, path_cap, content_cap)
-        }
-    }
-
     /// Evaluates a candidate input against budget and output limits, accumulating accepted files.
     ///
     /// # Errors
@@ -345,8 +331,8 @@ mod tests {
     }
 
     #[test]
-    fn selector_accumulates_decisions_and_respects_size_hint() {
-        let mut selector = Selector::from_size_hint((10, Some(10)));
+    fn selector_accumulates_decisions() {
+        let mut selector = Selector::new();
         selector.feed(file_candidate("a.txt", b"hello")).unwrap();
         selector
             .feed(CandidateInput::Skipped {

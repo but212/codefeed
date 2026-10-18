@@ -8,47 +8,7 @@ use ignore::WalkBuilder;
 
 use crate::core::error::IngestError;
 use crate::core::policy::MAX_FILE_SIZE;
-use crate::core::selector::{CandidateBudget, CandidateInput, Selector};
-
-#[derive(Default, Debug)]
-struct PathArena {
-    data: String,
-    spans: Vec<Option<(u32, u32)>>,
-}
-
-impl PathArena {
-    fn with_capacity(spans_cap: usize, bytes_cap: usize) -> Self {
-        Self {
-            data: String::with_capacity(bytes_cap),
-            spans: Vec::with_capacity(spans_cap),
-        }
-    }
-
-    fn push_some(&mut self, path: &str) {
-        let offset = self.data.len() as u32;
-        let len = path.len() as u32;
-        self.data.push_str(path);
-        self.spans.push(Some((offset, len)));
-    }
-
-    fn push_none(&mut self) {
-        self.spans.push(None);
-    }
-
-    fn len(&self) -> usize {
-        self.spans.len()
-    }
-
-    fn iter(&self) -> impl ExactSizeIterator<Item = Option<&str>> {
-        self.spans.iter().map(move |&span| {
-            span.map(|(offset, len)| {
-                let start = offset as usize;
-                let end = start + len as usize;
-                &self.data[start..end]
-            })
-        })
-    }
-}
+use crate::core::selector::{CandidateInput, Selector};
 
 /// Collects files from a local directory root, excluding the resolved output file if located inside it.
 pub(super) fn collect(
@@ -57,28 +17,61 @@ pub(super) fn collect(
 ) -> Result<crate::core::model::CollectionResult, IngestError> {
     let canonical_root = validate_root(root)?;
     let label = local_label(&canonical_root);
-    let candidates = walk_candidates(&canonical_root, resolved_output)?;
 
-    let mut selector = Selector::from_size_hint((candidates.len(), Some(candidates.len())));
-    let mut work_path = PathBuf::new();
+    let walker = WalkBuilder::new(&canonical_root)
+        .hidden(true)
+        .ignore(false)
+        .git_ignore(true)
+        .git_global(false)
+        .git_exclude(false)
+        .require_git(false)
+        .parents(false)
+        .follow_links(false)
+        .sort_by_file_name(|a, b| a.cmp(b))
+        .build();
+
+    let mut selector = Selector::new();
+    let mut path_scratch = String::with_capacity(256);
     let mut scratch = Vec::with_capacity(32 * 1024);
 
-    for item_path in candidates.iter() {
-        let input = match item_path {
-            Some(rel) => {
-                work_path.clear();
-                work_path.push(&canonical_root);
-                work_path.push(rel);
-                scratch.clear();
-                match read_local_file_into(&work_path, &mut scratch)? {
-                    LocalFileRead::Bytes(bytes) => CandidateInput::File { path: rel, bytes },
-                    LocalFileRead::TooLarge => CandidateInput::TooLarge { path: rel },
-                    LocalFileRead::Missing => CandidateInput::Skipped { path: Some(rel) },
-                }
+    for entry in walker {
+        let entry = entry.map_err(|err| IngestError::Io(io::Error::other(err)))?;
+        let entry_path = entry.path();
+        if entry_path == canonical_root
+            || !entry.file_type().is_some_and(|kind| kind.is_file())
+            || resolved_output.is_some_and(|target| entry_path == target)
+        {
+            continue;
+        }
+
+        let relative = entry_path
+            .strip_prefix(&canonical_root)
+            .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
+
+        if normalize_relative_path_into(relative, &mut path_scratch) {
+            if crate::core::policy::is_ignored_path(&path_scratch) {
+                continue;
             }
-            None => CandidateInput::Skipped { path: None },
-        };
-        selector.feed(input)?;
+            scratch.clear();
+            let input = match read_local_file_into(entry_path, &mut scratch)? {
+                LocalFileRead::Bytes(bytes) => CandidateInput::File {
+                    path: &path_scratch,
+                    bytes,
+                },
+                LocalFileRead::TooLarge => CandidateInput::TooLarge {
+                    path: &path_scratch,
+                },
+                LocalFileRead::Missing => CandidateInput::Skipped {
+                    path: Some(&path_scratch),
+                },
+            };
+            selector.feed(input)?;
+        } else if !relative
+            .components()
+            .any(|c| c.as_os_str().as_encoded_bytes().starts_with(b"."))
+        {
+            selector.feed(CandidateInput::Skipped { path: None })?;
+        }
     }
 
     Ok(selector.finish(label, None))
@@ -148,55 +141,6 @@ fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
         )));
     }
     Ok(canonical)
-}
-
-fn walk_candidates(root: &Path, resolved_output: Option<&Path>) -> Result<PathArena, IngestError> {
-    let walker = WalkBuilder::new(root)
-        .hidden(true)
-        .ignore(false)
-        .git_ignore(true)
-        .git_global(false)
-        .git_exclude(false)
-        .require_git(false)
-        .parents(false)
-        .follow_links(false)
-        .sort_by_file_name(|a, b| a.cmp(b))
-        .build();
-
-    let mut candidates = PathArena::with_capacity(512, 16 * 1024);
-    let mut budget = CandidateBudget::with_capacity(64);
-    let mut path_scratch = String::with_capacity(256);
-
-    for entry in walker {
-        let entry = entry.map_err(|err| IngestError::Io(io::Error::other(err)))?;
-        let entry_path = entry.path();
-        if entry_path == root
-            || !entry.file_type().is_some_and(|kind| kind.is_file())
-            || resolved_output.is_some_and(|target| entry_path == target)
-        {
-            continue;
-        }
-
-        let relative = entry_path
-            .strip_prefix(root)
-            .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
-
-        if normalize_relative_path_into(relative, &mut path_scratch) {
-            if crate::core::policy::is_ignored_path(&path_scratch) {
-                continue;
-            }
-            budget.add(Some(&path_scratch))?;
-            candidates.push_some(&path_scratch);
-        } else if !relative
-            .components()
-            .any(|c| c.as_os_str().as_encoded_bytes().starts_with(b"."))
-        {
-            budget.add(None)?;
-            candidates.push_none();
-        }
-    }
-
-    Ok(candidates)
 }
 
 fn normalize_relative_path_into(relative: &Path, scratch: &mut String) -> bool {
@@ -496,11 +440,11 @@ mod tests {
     }
 
     #[test]
-    fn candidate_overflow_does_not_read_file_bodies() -> Result<(), Box<dyn std::error::Error>> {
+    fn candidate_overflow_aborts_immediately_at_limit() -> Result<(), Box<dyn std::error::Error>> {
         use crate::core::policy::MAX_FILE_COUNT;
 
-        let root = temp_dir("candidate_overflow_no_read")?;
-        for i in 0..=MAX_FILE_COUNT {
+        let root = temp_dir("candidate_overflow_abort")?;
+        for i in 0..(MAX_FILE_COUNT + 50) {
             fs::write(root.join(format!("file_{i:05}.txt")), b"")?;
         }
 
@@ -517,8 +461,8 @@ mod tests {
 
         assert_eq!(
             BODY_READ_COUNT.with(|c| c.get()),
-            0,
-            "must not read any file bodies when candidate count exceeds budget during walk"
+            MAX_FILE_COUNT + 1,
+            "must abort traversal immediately upon exceeding limit without reading remaining files"
         );
         Ok(())
     }
