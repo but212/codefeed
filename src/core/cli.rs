@@ -21,6 +21,30 @@ pub(crate) enum CliAction {
     Run(RunConfig),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseState {
+    Normal,
+    ExpectValue {
+        flag: &'static str,
+        allow_dash: bool,
+    },
+    PositionalOnly,
+}
+
+fn match_flag(s: &str) -> Option<(&'static str, Option<&str>)> {
+    for flag in ["-o", "--output", "-r", "--ref", "-f", "--format"] {
+        if s == flag {
+            return Some((flag, None));
+        }
+        if let Some(rest) = s.strip_prefix(flag)
+            && let Some(inline) = rest.strip_prefix('=')
+        {
+            return Some((flag, Some(inline)));
+        }
+    }
+    None
+}
+
 /// Parses command-line arguments into a [`CliAction`].
 ///
 /// Skips the first element (the binary name) and interprets remaining arguments
@@ -42,68 +66,82 @@ where
     let mut output: Option<OsString> = None;
     let mut reference: Option<String> = None;
     let mut format = DigestFormat::Text;
-    let mut positional_only = false;
+    let mut state = ParseState::Normal;
 
-    while let Some(arg) = args_iter.next() {
-        if positional_only {
-            if source.is_some() {
-                return Err(IngestError::usage(format!(
-                    "unexpected argument '{}' found",
-                    arg.to_string_lossy()
-                )));
-            }
-            source = Some(arg);
-            continue;
-        }
-
-        let arg_str = arg.to_str();
-        if arg_str == Some("--") {
-            positional_only = true;
-            continue;
-        }
-
-        if let Some(s) = arg_str {
-            if s == "-h" || s == "--help" {
-                return Ok(CliAction::Help);
-            }
-            if let Some(flag) = ["-o", "--output", "-r", "--ref", "-f", "--format"]
-                .into_iter()
-                .find(|&f| s == f || s.starts_with(&format!("{f}=")))
-            {
-                let inline = s.split_once('=').map(|(_, v)| v);
-                let val = extract_opt_val(
-                    flag,
-                    &mut args_iter,
-                    inline,
-                    flag == "-o" || flag == "--output",
-                )?;
-                match flag {
-                    "-o" | "--output" => output = Some(val),
-                    "-r" | "--ref" => {
-                        let val_str = val
-                            .into_string()
-                            .map_err(|_| IngestError::usage("git reference must be valid utf-8"))?;
-                        reference = Some(val_str);
-                    }
-                    "-f" | "--format" => {
-                        format = parse_format(&val.to_string_lossy())?;
-                    }
-                    _ => unreachable!(),
+    for arg in args_iter {
+        match state {
+            ParseState::ExpectValue { flag, allow_dash } => {
+                if let Some(s) = arg.to_str()
+                    && s.starts_with('-')
+                    && !(allow_dash && s == "-")
+                {
+                    return Err(IngestError::usage(format!(
+                        "a value is required for '{flag}' but none was supplied"
+                    )));
                 }
-                continue;
+                apply_flag_value(flag, arg, &mut output, &mut reference, &mut format)?;
+                state = ParseState::Normal;
             }
-            if s.starts_with('-') && s != "-" {
-                return Err(IngestError::usage(format!("unknown option: {s}")));
+            ParseState::PositionalOnly => {
+                if source.is_some() {
+                    return Err(IngestError::usage(format!(
+                        "unexpected argument '{}' found",
+                        arg.to_string_lossy()
+                    )));
+                }
+                source = Some(arg);
             }
-        }
+            ParseState::Normal => {
+                let arg_str = arg.to_str();
+                if arg_str == Some("--") {
+                    state = ParseState::PositionalOnly;
+                    continue;
+                }
 
-        if source.is_some() {
-            return Err(IngestError::usage(format!(
-                "unexpected argument '{}' found",
-                arg.to_string_lossy()
-            )));
+                if let Some(s) = arg_str {
+                    if s == "-h" || s == "--help" {
+                        return Ok(CliAction::Help);
+                    }
+                    if let Some((flag, inline_val)) = match_flag(s) {
+                        let allow_dash = flag == "-o" || flag == "--output";
+                        if let Some(inline) = inline_val {
+                            if inline.starts_with('-') && !(allow_dash && inline == "-") {
+                                return Err(IngestError::usage(format!(
+                                    "a value is required for '{flag}' but none was supplied"
+                                )));
+                            }
+                            apply_flag_value(
+                                flag,
+                                OsString::from(inline),
+                                &mut output,
+                                &mut reference,
+                                &mut format,
+                            )?;
+                        } else {
+                            state = ParseState::ExpectValue { flag, allow_dash };
+                        }
+                        continue;
+                    }
+                    if s.starts_with('-') && s != "-" {
+                        return Err(IngestError::usage(format!("unknown option: {s}")));
+                    }
+                }
+
+                if source.is_some() {
+                    return Err(IngestError::usage(format!(
+                        "unexpected argument '{}' found",
+                        arg.to_string_lossy()
+                    )));
+                }
+                source = Some(arg);
+            }
         }
-        source = Some(arg);
+    }
+
+    if let ParseState::ExpectValue { flag, .. } = state {
+        return Err(IngestError::usage(format!(
+            "a value is required for '{flag}' but none was supplied"
+        )));
     }
 
     let source_os = source.ok_or_else(|| {
@@ -124,36 +162,27 @@ where
     )))
 }
 
-fn extract_opt_val<I>(
+fn apply_flag_value(
     flag: &str,
-    args: &mut I,
-    inline_val: Option<&str>,
-    allow_dash: bool,
-) -> Result<OsString, IngestError>
-where
-    I: Iterator<Item = OsString>,
-{
-    let val = match inline_val {
-        Some(v) => OsString::from(v),
-        None => match args.next() {
-            Some(v) => v,
-            None => {
-                return Err(IngestError::usage(format!(
-                    "a value is required for '{flag}' but none was supplied"
-                )));
-            }
-        },
-    };
-
-    if let Some(s) = val.to_str()
-        && s.starts_with('-')
-        && !(allow_dash && s == "-")
-    {
-        return Err(IngestError::usage(format!(
-            "a value is required for '{flag}' but none was supplied"
-        )));
+    val: OsString,
+    output: &mut Option<OsString>,
+    reference: &mut Option<String>,
+    format: &mut DigestFormat,
+) -> Result<(), IngestError> {
+    match flag {
+        "-o" | "--output" => *output = Some(val),
+        "-r" | "--ref" => {
+            let val_str = val
+                .into_string()
+                .map_err(|_| IngestError::usage("git reference must be valid utf-8"))?;
+            *reference = Some(val_str);
+        }
+        "-f" | "--format" => {
+            *format = parse_format(&val.to_string_lossy())?;
+        }
+        _ => unreachable!(),
     }
-    Ok(val)
+    Ok(())
 }
 
 fn parse_format(val: &str) -> Result<DigestFormat, IngestError> {

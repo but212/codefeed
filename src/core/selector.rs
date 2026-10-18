@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, output_too_large_error};
-use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE};
+use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE, PathStatus};
 use crate::core::storage::{FileStorage, SortedFiles};
 
 /// Shell observation of a candidate file content pass.
@@ -184,6 +184,33 @@ impl Selector {
         let _slot = self.reserve_candidate(path)?;
         self.skipped = self.skipped.saturating_add(1);
         Ok(RecordOutcome::Skipped(reason))
+    }
+
+    /// Handles entry classification state (`PathStatus`), reserving candidate slots,
+    /// evaluating pre-I/O size hints, and executing lazy content reading only when valid.
+    ///
+    /// Returns `Ok(None)` if the entry is [`PathStatus::Ignored`].
+    pub(crate) fn record_entry<'b, F>(
+        &mut self,
+        status: PathStatus,
+        path: &str,
+        size_hint: Option<u64>,
+        read: F,
+    ) -> Result<Option<RecordOutcome>, IngestError>
+    where
+        F: FnOnce(u64) -> Result<Observation<'b>, IngestError>,
+    {
+        match status {
+            PathStatus::Ignored => Ok(None),
+            PathStatus::NonUtf8Candidate => {
+                let outcome = self.record_skipped(path, SkipReason::NonUtf8Path)?;
+                Ok(Some(outcome))
+            }
+            PathStatus::Valid => {
+                let outcome = self.record_with(path, size_hint, read)?;
+                Ok(Some(outcome))
+            }
+        }
     }
 
     /// Reserves a candidate slot, checks optional pre-I/O size hint against limits,

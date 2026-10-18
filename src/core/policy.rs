@@ -77,6 +77,12 @@ pub(crate) fn is_ignored_filename(file_name: &str) -> bool {
     is_noise_file(file_name) || is_sensitive_file(file_name, extension)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathClassifierState {
+    ValidUtf8,
+    NonUtf8Prefix,
+}
+
 /// Classifies a sequence of raw path segment bytes into [`PathStatus`].
 ///
 /// Builds a normalized UTF-8 path string in `scratch` for valid candidates or prefix strings for non-UTF-8 candidates.
@@ -85,40 +91,43 @@ where
     I: IntoIterator<Item = &'a [u8]>,
 {
     scratch.clear();
-    let mut has_hidden = false;
-    let mut has_non_utf8 = false;
-    let mut last_segment_bytes: Option<&'a [u8]> = None;
+    let mut state = PathClassifierState::ValidUtf8;
+    let mut last_segment: Option<&'a [u8]> = None;
+    let mut has_segments = false;
 
     for segment in segments {
+        has_segments = true;
         if is_hidden_segment(segment) {
-            has_hidden = true;
+            scratch.clear();
+            return PathStatus::Ignored;
         }
-        last_segment_bytes = Some(segment);
-        if has_non_utf8 {
-            continue;
-        }
-        match std::str::from_utf8(segment) {
-            Ok(s) => {
-                if !scratch.is_empty() {
-                    scratch.push('/');
+
+        last_segment = Some(segment);
+
+        match state {
+            PathClassifierState::ValidUtf8 => match std::str::from_utf8(segment) {
+                Ok(s) => {
+                    if !scratch.is_empty() {
+                        scratch.push('/');
+                    }
+                    scratch.push_str(s);
                 }
-                scratch.push_str(s);
-            }
-            Err(_) => {
-                has_non_utf8 = true;
-                if !scratch.is_empty() {
-                    scratch.push('/');
+                Err(_) => {
+                    state = PathClassifierState::NonUtf8Prefix;
+                    if !scratch.is_empty() {
+                        scratch.push('/');
+                    }
                 }
-            }
+            },
+            PathClassifierState::NonUtf8Prefix => {}
         }
     }
 
-    if has_hidden {
-        scratch.clear();
+    if !has_segments {
         return PathStatus::Ignored;
     }
 
-    if let Some(last) = last_segment_bytes {
+    if let Some(last) = last_segment {
         if last.is_empty() {
             scratch.clear();
             return PathStatus::Ignored;
@@ -129,15 +138,16 @@ where
         }
     }
 
-    if has_non_utf8 {
-        return PathStatus::NonUtf8Candidate;
+    match state {
+        PathClassifierState::ValidUtf8 => {
+            if scratch.is_empty() {
+                PathStatus::Ignored
+            } else {
+                PathStatus::Valid
+            }
+        }
+        PathClassifierState::NonUtf8Prefix => PathStatus::NonUtf8Candidate,
     }
-
-    if scratch.is_empty() {
-        return PathStatus::Ignored;
-    }
-
-    PathStatus::Valid
 }
 
 #[cfg(test)]

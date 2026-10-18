@@ -26,25 +26,24 @@ pub(crate) fn normalize_tar_entry_path(
         .rposition(|&b| b != b'/')
         .map_or(start, |i| i + 1);
     let trimmed = &raw_bytes[start..end];
+
+    if trimmed.split(|&b| b == b'/').any(|seg| seg == b"..") {
+        return Err(IngestError::invalid_metadata(
+            "Tar entry contains directory traversal (..)",
+        ));
+    }
+
     let Some(slash_index) = trimmed.iter().position(|&b| b == b'/') else {
         return Ok(PathStatus::Ignored);
     };
-    if matches!(&trimmed[..slash_index], b"." | b"..") {
+
+    if trimmed[..slash_index] == *b"." {
         return Err(IngestError::invalid_metadata(
             "Tar entry contains directory traversal (..)",
         ));
     }
 
     let rel = &trimmed[slash_index + 1..];
-
-    // Verify traversal in a quick check
-    for segment in rel.split(|&b| b == b'/') {
-        if segment == b".." {
-            return Err(IngestError::invalid_metadata(
-                "Tar entry contains directory traversal (..)",
-            ));
-        }
-    }
 
     let filtered_segments = rel
         .split(|&b| b == b'/')
@@ -148,6 +147,7 @@ mod tests {
         assert!(normalize_tar_entry_path(b"./etc/passwd", &mut out).is_err());
         assert!(normalize_tar_entry_path(b"repo-root/../etc/passwd", &mut out).is_err());
         assert!(normalize_tar_entry_path(b"repo-root/src/../../root", &mut out).is_err());
+        assert!(normalize_tar_entry_path(b"repo-root/.hidden/../etc/passwd", &mut out).is_err());
 
         // Embedded NUL rejection
         assert!(normalize_tar_entry_path(b"repo-root/certs/privkey.key\0", &mut out).is_err());

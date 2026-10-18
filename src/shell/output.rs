@@ -117,13 +117,40 @@ fn render_stdout_to<W: Write>(
 
 const BUF_WRITER_CAPACITY: usize = 64 * 1024;
 
-struct AtomicFile {
-    target: PathBuf,
-    temporary: Option<PathBuf>,
-    writer: Option<io::BufWriter<fs::File>>,
+struct TempPathGuard {
+    path: PathBuf,
+    active: bool,
 }
 
-impl AtomicFile {
+impl TempPathGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, active: true }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for TempPathGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+struct AtomicWriter {
+    target: PathBuf,
+    temp_guard: TempPathGuard,
+    writer: io::BufWriter<fs::File>,
+}
+
+impl AtomicWriter {
     fn create(target: &Path) -> Result<Self, IngestError> {
         let file_name = target
             .file_name()
@@ -156,33 +183,26 @@ impl AtomicFile {
 
         Ok(Self {
             target: target.to_path_buf(),
-            temporary: Some(temporary),
-            writer: Some(io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, file)),
+            temp_guard: TempPathGuard::new(temporary),
+            writer: io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, file),
         })
     }
 
-    fn commit(mut self) -> Result<(), IngestError> {
-        if let Some(writer) = self.writer.take() {
-            let file = writer
-                .into_inner()
-                .map_err(|e| IngestError::Io(e.into_error()))?;
-            file.sync_all()?;
-            drop(file);
-        }
-
-        let temp_path = self.temporary.as_ref().expect("temporary path exists");
-        fs::rename(temp_path, &self.target)?;
-        self.temporary = None;
-        Ok(())
+    fn writer(&mut self) -> &mut io::BufWriter<fs::File> {
+        &mut self.writer
     }
-}
 
-impl Drop for AtomicFile {
-    fn drop(&mut self) {
-        drop(self.writer.take());
-        if let Some(temp_path) = self.temporary.take() {
-            let _ = fs::remove_file(temp_path);
-        }
+    fn commit(mut self) -> Result<(), IngestError> {
+        let file = self
+            .writer
+            .into_inner()
+            .map_err(|e| IngestError::Io(e.into_error()))?;
+        file.sync_all()?;
+        drop(file);
+
+        fs::rename(self.temp_guard.path(), &self.target)?;
+        self.temp_guard.disarm();
+        Ok(())
     }
 }
 
@@ -190,12 +210,9 @@ fn write_atomic<R, F>(output: &Path, write_fn: F) -> Result<R, IngestError>
 where
     F: FnOnce(&mut io::BufWriter<fs::File>) -> Result<R, IngestError>,
 {
-    let mut file = AtomicFile::create(output)?;
-    let value = match file.writer.as_mut() {
-        Some(w) => write_fn(w)?,
-        None => unreachable!(),
-    };
-    file.commit()?;
+    let mut writer = AtomicWriter::create(output)?;
+    let value = write_fn(writer.writer())?;
+    writer.commit()?;
     Ok(value)
 }
 

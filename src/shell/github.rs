@@ -13,12 +13,12 @@ use ureq::tls::{RootCerts, TlsConfig};
 use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::error::IngestError;
 use crate::core::github::{
-    MAX_RETRIES, RequestOutcome, RetryDecision, TransportKind, decide_retry, is_github_api_origin,
+    AttemptState, MAX_RETRIES, RequestOutcome, Transition, TransportKind, is_github_api_origin,
     tarball_url,
 };
 use crate::core::model::CollectionResult;
 use crate::core::policy::{ARCHIVE_MAX_SECS, PathStatus};
-use crate::core::selector::{Observation, Selector, SkipReason};
+use crate::core::selector::{Observation, Selector};
 
 const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 const GITHUB_TIMEOUT_SECS: u64 = 30;
@@ -72,7 +72,7 @@ impl GithubClient {
     }
 
     fn stream_url(&self, url: &str) -> Result<Box<dyn Read + Send>, IngestError> {
-        let mut attempt = 0;
+        let mut attempt_state = AttemptState::new();
         loop {
             let mut request = self.agent.get(url);
 
@@ -83,52 +83,62 @@ impl GithubClient {
                 request = request.header("X-Github-Api-Version", "2022-11-28");
             }
 
-            let response = match request.call() {
-                Ok(resp) => resp,
+            let mut transport_err = None;
+            let (outcome, response) = match request.call() {
+                Ok(resp) => {
+                    let status = resp.status();
+                    (RequestOutcome::HttpStatus(status.as_u16()), Some(resp))
+                }
                 Err(error) => {
                     let kind = if is_retryable_transport_error(&error) {
                         TransportKind::Retryable
                     } else {
                         TransportKind::Permanent
                     };
-                    let outcome = RequestOutcome::TransportError(kind);
-                    if let RetryDecision::Retry(delay) = decide_retry(attempt, &outcome) {
-                        attempt += 1;
-                        eprintln!(
-                            "warning: GitHub transport error: {error} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
-                        );
-                        std::thread::sleep(delay);
-                        continue;
-                    }
-                    return Err(IngestError::http(error.to_string()));
+                    transport_err = Some(error.to_string());
+                    (RequestOutcome::TransportError(kind), None)
                 }
             };
 
-            let status = response.status();
-            let outcome = RequestOutcome::HttpStatus(status.as_u16());
-            if let RetryDecision::Retry(delay) = decide_retry(attempt, &outcome) {
-                attempt += 1;
-                eprintln!(
-                    "warning: GitHub HTTP status {status} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
-                );
-                std::thread::sleep(delay);
-                continue;
-            }
+            match attempt_state.step(&outcome) {
+                Transition::Retry { attempt, delay } => {
+                    let reason = match &outcome {
+                        RequestOutcome::HttpStatus(s) => format!("HTTP status {s}"),
+                        RequestOutcome::TransportError(_) => "transport error".to_string(),
+                    };
+                    eprintln!(
+                        "warning: GitHub {reason} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
+                    );
+                    std::thread::sleep(delay);
+                    continue;
+                }
+                Transition::Fail => {
+                    let response = match response {
+                        Some(resp) => resp,
+                        None => {
+                            let msg =
+                                transport_err.unwrap_or_else(|| "unknown HTTP failure".into());
+                            return Err(IngestError::http(msg));
+                        }
+                    };
 
-            if !status.is_success() {
-                let mut body_bytes = Vec::new();
-                let _ = response
-                    .into_body()
-                    .into_reader()
-                    .take(4096)
-                    .read_to_end(&mut body_bytes);
-                return Err(api_error(status, &body_bytes));
-            }
+                    let status = response.status();
+                    if !status.is_success() {
+                        let mut body_bytes = Vec::new();
+                        let _ = response
+                            .into_body()
+                            .into_reader()
+                            .take(4096)
+                            .read_to_end(&mut body_bytes);
+                        return Err(api_error(status, &body_bytes));
+                    }
 
-            return Ok(Box::new(BufReader::with_capacity(
-                64 * 1024,
-                response.into_body().into_reader(),
-            )));
+                    return Ok(Box::new(BufReader::with_capacity(
+                        64 * 1024,
+                        response.into_body().into_reader(),
+                    )));
+                }
+            }
         }
     }
 }
@@ -228,20 +238,20 @@ fn process_tar_entry<R: Read>(
 
     // 3. Path decoding, root stripping, normalization & policy classification
     let path_bytes = entry.path_bytes();
-    match normalize_tar_entry_path(&path_bytes, path_scratch)? {
-        PathStatus::Ignored => return Ok(None),
-        PathStatus::NonUtf8Candidate => {
-            selector.record_skipped(path_scratch, SkipReason::NonUtf8Path)?;
-            return Ok(None);
-        }
-        PathStatus::Valid => {}
+    let status = normalize_tar_entry_path(&path_bytes, path_scratch)?;
+    if status == PathStatus::Ignored {
+        return Ok(None);
     }
 
     let rel_path = path_scratch.as_str();
-    let size_hint = entry.header().size().ok();
+    let size_hint = if status == PathStatus::Valid {
+        entry.header().size().ok()
+    } else {
+        None
+    };
 
     // 4. Pre-I/O candidate reservation before reading entry body
-    selector.record_with(rel_path, size_hint, |limit| {
+    selector.record_entry(status, rel_path, size_hint, |limit| {
         read_tar_entry_into(entry, limit, content_scratch)
     })?;
 

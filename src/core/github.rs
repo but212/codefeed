@@ -153,28 +153,51 @@ pub(crate) enum RequestOutcome {
     TransportError(TransportKind),
 }
 
-/// Retry decision derived purely from attempt count and attempt outcome.
+/// Transition outcome from an HTTP attempt state transition.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum RetryDecision {
-    Retry(Duration),
+pub(crate) enum Transition {
+    Retry { attempt: usize, delay: Duration },
     Fail,
 }
 
-/// Decides whether to retry an HTTP/transport request based on attempt count and outcome.
-pub(crate) fn decide_retry(attempt: usize, outcome: &RequestOutcome) -> RetryDecision {
-    if attempt + 1 >= MAX_RETRIES {
-        return RetryDecision::Fail;
-    }
-    let should_retry = match outcome {
-        RequestOutcome::HttpStatus(status) => is_retryable_status(*status),
-        RequestOutcome::TransportError(kind) => matches!(kind, TransportKind::Retryable),
-    };
+/// Finite state machine managing HTTP attempt state and retry transitions.
+#[derive(Debug, Default)]
+pub(crate) struct AttemptState {
+    attempt: usize,
+}
 
-    if should_retry {
-        RetryDecision::Retry(retry_delay(attempt))
-    } else {
-        RetryDecision::Fail
+impl AttemptState {
+    pub(crate) const fn new() -> Self {
+        Self { attempt: 0 }
     }
+
+    /// Advances state given an attempt outcome, returning next transition action.
+    pub(crate) fn step(&mut self, outcome: &RequestOutcome) -> Transition {
+        if self.attempt + 1 >= MAX_RETRIES {
+            return Transition::Fail;
+        }
+        let should_retry = match outcome {
+            RequestOutcome::HttpStatus(status) => is_retryable_status(*status),
+            RequestOutcome::TransportError(kind) => matches!(kind, TransportKind::Retryable),
+        };
+
+        if should_retry {
+            let delay = retry_delay(self.attempt);
+            self.attempt += 1;
+            Transition::Retry {
+                attempt: self.attempt,
+                delay,
+            }
+        } else {
+            Transition::Fail
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn decide_retry(attempt: usize, outcome: &RequestOutcome) -> Transition {
+    let mut state = AttemptState { attempt };
+    state.step(outcome)
 }
 
 #[cfg(test)]
@@ -264,32 +287,41 @@ mod tests {
         // Attempt 0 (1st try), 500 status -> Retry initial delay
         assert_eq!(
             decide_retry(0, &RequestOutcome::HttpStatus(500)),
-            RetryDecision::Retry(retry_delay(0))
+            Transition::Retry {
+                attempt: 1,
+                delay: retry_delay(0)
+            }
         );
         // Attempt 1 (2nd try), 429 status -> Retry delay 1
         assert_eq!(
             decide_retry(1, &RequestOutcome::HttpStatus(429)),
-            RetryDecision::Retry(retry_delay(1))
+            Transition::Retry {
+                attempt: 2,
+                delay: retry_delay(1)
+            }
         );
         // Attempt 2 (3rd try) -> Exceeds MAX_RETRIES (3), Fail
         assert_eq!(
             decide_retry(2, &RequestOutcome::HttpStatus(500)),
-            RetryDecision::Fail
+            Transition::Fail
         );
         // Non-retryable status (404) -> Fail
         assert_eq!(
             decide_retry(0, &RequestOutcome::HttpStatus(404)),
-            RetryDecision::Fail
+            Transition::Fail
         );
         // Retryable transport error -> Retry
         assert_eq!(
             decide_retry(0, &RequestOutcome::TransportError(TransportKind::Retryable)),
-            RetryDecision::Retry(retry_delay(0))
+            Transition::Retry {
+                attempt: 1,
+                delay: retry_delay(0)
+            }
         );
         // Non-retryable transport error -> Fail
         assert_eq!(
             decide_retry(0, &RequestOutcome::TransportError(TransportKind::Permanent)),
-            RetryDecision::Fail
+            Transition::Fail
         );
     }
 }

@@ -9,7 +9,7 @@ use ignore::WalkBuilder;
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
 use crate::core::policy::{PathStatus, classify_path_segments};
-use crate::core::selector::{Observation, Selector, SkipReason};
+use crate::core::selector::{Observation, Selector};
 
 /// Collects files from a local directory root, excluding the resolved output file if located inside it.
 pub(super) fn collect(
@@ -49,19 +49,16 @@ pub(super) fn collect(
             .strip_prefix(&canonical_root)
             .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
 
-        match classify_local_path(relative, &mut path_scratch) {
-            PathStatus::Ignored => continue,
-            PathStatus::NonUtf8Candidate => {
-                selector.record_skipped(&path_scratch, SkipReason::NonUtf8Path)?;
-            }
-            PathStatus::Valid => {
-                let size_hint = entry.metadata().ok().map(|m| m.len());
-                selector.record_with(&path_scratch, size_hint, |limit| {
-                    scratch.clear();
-                    read_local_file_into(entry_path, limit, &mut scratch)
-                })?;
-            }
-        }
+        let status = classify_local_path(relative, &mut path_scratch);
+        let size_hint = if status == PathStatus::Valid {
+            entry.metadata().ok().map(|m| m.len())
+        } else {
+            None
+        };
+        selector.record_entry(status, &path_scratch, size_hint, |limit| {
+            scratch.clear();
+            read_local_file_into(entry_path, limit, &mut scratch)
+        })?;
     }
 
     Ok(selector.finish(label, None))
