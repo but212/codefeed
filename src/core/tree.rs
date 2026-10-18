@@ -49,21 +49,17 @@ fn render_level<W: Write + ?Sized, F>(
 where
     F: FnMut(&mut W, &str) -> std::io::Result<()>,
 {
-    if spans.is_empty() {
-        return Ok(());
-    }
-
     let mut i = 0;
-    while i < spans.len() {
-        let (name, is_dir) = component_at(spans[i].path(path_arena), depth);
-        if name.is_empty() {
-            i += 1;
-            continue;
-        }
+    while let Some((name, is_dir)) = spans
+        .get(i)
+        .and_then(|s| component_at(s.path(path_arena), depth))
+    {
         let start = i;
         i += 1;
-        while i < spans.len() {
-            let (next_name, next_is_dir) = component_at(spans[i].path(path_arena), depth);
+        while let Some((next_name, next_is_dir)) = spans
+            .get(i)
+            .and_then(|s| component_at(s.path(path_arena), depth))
+        {
             if next_name == name && next_is_dir == is_dir {
                 i += 1;
             } else {
@@ -98,20 +94,11 @@ where
     Ok(())
 }
 
-fn component_at(path: &str, depth: usize) -> (&str, bool) {
+fn component_at(path: &str, depth: usize) -> Option<(&str, bool)> {
     let mut parts = path.split('/').filter(|s| !s.is_empty());
-    for _ in 0..depth {
-        if parts.next().is_none() {
-            return ("", false);
-        }
-    }
-    match parts.next() {
-        Some(name) => {
-            let is_dir = parts.next().is_some();
-            (name, is_dir)
-        }
-        None => ("", false),
-    }
+    let name = parts.nth(depth)?;
+    let is_dir = parts.next().is_some();
+    Some((name, is_dir))
 }
 
 #[cfg(test)]

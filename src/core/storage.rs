@@ -47,6 +47,7 @@ pub(crate) struct FileStorage {
 }
 
 impl FileStorage {
+    #[cfg(test)]
     #[inline]
     pub(crate) fn new() -> Self {
         Self::default()
@@ -96,7 +97,7 @@ impl FileStorage {
     }
 
     /// Appends path and content to the arenas and records a [`FileSpan`].
-    pub(crate) fn push(&mut self, path: &str, content: &str) -> FileSpan {
+    pub(crate) fn push(&mut self, path: &str, content: &str) {
         debug_assert!(u32::try_from(self.path_arena.len()).is_ok());
         debug_assert!(u32::try_from(path.len()).is_ok());
         debug_assert!(u32::try_from(self.content_arena.len()).is_ok());
@@ -117,7 +118,6 @@ impl FileStorage {
             content_len,
         };
         self.spans.push(span);
-        span
     }
 
     /// Resolves a [`FileSpan`] into a borrowed [`FileRecord`].
@@ -181,6 +181,7 @@ impl<'a> IntoIterator for &'a FileStorage {
     }
 }
 
+#[cfg(test)]
 impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
     fn from_iter<T: IntoIterator<Item = FileRecord<'a>>>(iter: T) -> Self {
         let mut storage = Self::new();
@@ -217,11 +218,13 @@ mod tests {
         let mut storage = FileStorage::new();
         assert_eq!(storage.len(), 0);
 
-        let span1 = storage.push("path/to/first.rs", "pub fn first() {}");
-        let span2 = storage.push("second.txt", "second content\n");
+        storage.push("path/to/first.rs", "pub fn first() {}");
+        storage.push("second.txt", "second content\n");
 
         assert_eq!(storage.len(), 2);
 
+        let span1 = storage.spans()[0];
+        let span2 = storage.spans()[1];
         let rec1 = storage.get(span1);
         assert_eq!(rec1.path, "path/to/first.rs");
         assert_eq!(rec1.content, "pub fn first() {}");

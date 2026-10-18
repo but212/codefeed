@@ -106,7 +106,7 @@ Minimize memory footprints, eliminate allocations in loops, and keep dependencie
 
 - **Arena Storage:** Store file paths and contents in contiguous `FileStorage` arenas (`path_arena`, `content_arena`) indexed by 16-byte `FileSpan`. Iterate via zero-copy `FileRecord<'a>`. Enables in-place lexicographical sorting by swapping offsets without moving string data.
 - **Direct Data Structures:** Use direct, standard data structures (`Vec`, `HashMap`). Avoid speculative layout packing, premature micro-tuning, or pointer-indirected trees; prioritize structural simplicity.
-- **Zero-Copy Streaming:** Stream render output directly to `impl Write + ?Sized` using `Cow<'_, str>` or streaming chunks. Avoid staging full output in memory.
+- **Zero-Copy Streaming:** Stream render output directly to `impl Write + ?Sized` using `Cow<'_, str>` or streaming chunks. File delivery streams directly into an atomic temporary file; stdout buffers up to `MAX_OUTPUT_SIZE` before writing to guarantee all-or-nothing delivery on overflow.
 - **Std-First Dependencies:** Default to `std`. Introduce external crates only when in-tree maintenance introduces disproportionate complexity or security risk (e.g., `.gitignore` parsing via `ignore`, HTTP via `ureq`). Document crate rationale inline in `Cargo.toml`.
 
 ---

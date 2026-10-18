@@ -17,46 +17,18 @@ const FILE_BLOCK_SUFFIX: &str = "\n=============================================
 const NEWLINE: &str = "\n";
 const METADATA_SUFFIX: &str = "\n\n";
 
-#[inline(always)]
-const fn needs_header_escape(b: u8) -> bool {
-    matches!(b, b'\\' | b'\r' | b'\n')
-}
-
-#[inline(always)]
-const fn header_escape_str(b: u8) -> &'static str {
-    match b {
-        b'\\' => "\\\\",
-        b'\r' => "\\r",
-        b'\n' => "\\n",
-        _ => "",
-    }
-}
-
-#[inline(always)]
-fn first_header_escape_index(bytes: &[u8]) -> Option<usize> {
-    bytes.iter().position(|&b| needs_header_escape(b))
-}
-
 /// Escapes backslashes, carriage returns, and newlines in metadata header strings.
 fn escape_header(value: &str) -> Cow<'_, str> {
-    let bytes = value.as_bytes();
-    let Some(first) = first_header_escape_index(bytes) else {
-        return Cow::Borrowed(value);
-    };
-
-    let mut out = String::with_capacity(value.len() + 8);
-    out.push_str(&value[..first]);
-    let mut last = first;
-    for (i, &b) in bytes[first..].iter().enumerate() {
-        let abs_i = first + i;
-        if needs_header_escape(b) {
-            out.push_str(&value[last..abs_i]);
-            out.push_str(header_escape_str(b));
-            last = abs_i + 1;
-        }
+    if !value.contains(['\\', '\r', '\n']) {
+        Cow::Borrowed(value)
+    } else {
+        Cow::Owned(
+            value
+                .replace('\\', "\\\\")
+                .replace('\r', "\\r")
+                .replace('\n', "\\n"),
+        )
     }
-    out.push_str(&value[last..]);
-    Cow::Owned(out)
 }
 
 pub(crate) fn render_text<W: Write + ?Sized>(
@@ -112,27 +84,5 @@ mod tests {
         let input = "a\\b\rc\nd\\\\e\r\n";
         let expected = "a\\\\b\\rc\\nd\\\\\\\\e\\r\\n";
         assert_eq!(escape_header(input).as_ref(), expected);
-    }
-
-    #[test]
-    fn test_escape_header_boundary_alignment() {
-        for len in 0..=48 {
-            let clean = "a".repeat(len);
-            assert_eq!(first_header_escape_index(clean.as_bytes()), None);
-            assert!(matches!(escape_header(&clean), Cow::Borrowed(_)));
-
-            for special in ['\\', '\r', '\n'] {
-                for pos in 0..len {
-                    let mut text = clean.clone();
-                    text.replace_range(pos..pos + 1, &special.to_string());
-                    assert_eq!(
-                        first_header_escape_index(text.as_bytes()),
-                        Some(pos),
-                        "mismatch at len {len}, pos {pos}, special {special:?}"
-                    );
-                    assert!(matches!(escape_header(&text), Cow::Owned(_)));
-                }
-            }
-        }
     }
 }

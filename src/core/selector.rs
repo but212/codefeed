@@ -7,15 +7,16 @@ use crate::core::model::CollectionResult;
 use crate::core::policy::{MAX_FILE_COUNT, MAX_OUTPUT_SIZE};
 use crate::core::storage::{FileRecord, FileStorage};
 
-/// Candidate input observed by the imperative shell. Non-UTF-8 paths or unreadable
-/// items are represented as `Skipped` and still counted against the file budget.
+/// Candidate input observed by the imperative shell. Non-UTF-8 paths, entries that
+/// disappeared (`NotFound`), or non-regular files are represented as `Skipped` and
+/// still counted against the candidate budget. Other I/O failures abort ingestion as [`IngestError::Io`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CandidateInput<'a> {
     /// Bounded content bytes successfully acquired from the source.
     File { path: &'a str, bytes: &'a [u8] },
     /// Item exceeded the per-file size limit.
     TooLarge { path: &'a str },
-    /// Item skipped due to metadata error, non-UTF-8 path, or read failure.
+    /// Item skipped due to non-UTF-8 path, disappearing file (`NotFound`), or non-regular file.
     Skipped { path: Option<&'a str> },
 }
 

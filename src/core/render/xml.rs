@@ -45,16 +45,6 @@ fn xml_attr_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> 
     }
 }
 
-#[inline(always)]
-fn xml_tree_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
-    match bytes[i] {
-        b'\\' => Some((1, "\\\\")),
-        b'\r' => Some((1, "\\r")),
-        b'\n' => Some((1, "\\n")),
-        _ => xml_special_at(bytes, i),
-    }
-}
-
 fn write_stream_escaped<W, F>(writer: &mut W, value: &str, special_at: F) -> std::io::Result<()>
 where
     W: Write + ?Sized,
@@ -96,11 +86,6 @@ fn write_xml_attr_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std
     write_stream_escaped(writer, value, xml_attr_special_at)
 }
 
-/// Escapes newlines (`\n`, `\r`, `\`) and XML specials for tree node names in `<directory_structure>`.
-fn write_xml_tree_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
-    write_stream_escaped(writer, value, xml_tree_special_at)
-}
-
 pub(crate) fn render_xml<W: Write + ?Sized>(
     writer: &mut W,
     collection: &CollectionResult,
@@ -113,7 +98,7 @@ pub(crate) fn render_xml<W: Write + ?Sized>(
     }
     writer.write_all(XML_TAG_CLOSE.as_bytes())?;
     writer.write_all(XML_DIR_START.as_bytes())?;
-    crate::core::tree::render_tree(writer, &collection.files, write_xml_tree_escaped)?;
+    crate::core::tree::render_tree(writer, &collection.files, write_xml_attr_escaped)?;
     writer.write_all(XML_DIR_END.as_bytes())?;
     writer.write_all(XML_FILES_START.as_bytes())?;
     for file in collection.files.iter() {
@@ -193,17 +178,6 @@ mod tests {
         let mut streamed = Vec::new();
         write_escaped(&mut streamed, input).unwrap();
         assert_eq!(String::from_utf8(streamed).unwrap(), escaped.as_str());
-    }
-
-    #[test]
-    fn test_write_xml_tree_escaped_preserves_newline_injection_defense() {
-        let input = "dir\nname\r<test>\\file";
-        let mut out = Vec::new();
-        write_xml_tree_escaped(&mut out, input).unwrap();
-        assert_eq!(
-            String::from_utf8(out).unwrap(),
-            "dir\\nname\\r&lt;test&gt;\\\\file"
-        );
     }
 
     #[test]

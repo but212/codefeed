@@ -46,6 +46,8 @@ pub(crate) fn resolve_output_target(target: &OutputTarget) -> Result<Option<Path
                     "output path is a directory",
                 )));
             }
+            // Canonicalize an existing regular file so case-insensitive matches
+            // (e.g. Windows/macOS) align with on-disk paths during exclusion checks.
             if fs::symlink_metadata(&resolved).is_ok_and(|m| !m.is_symlink())
                 && let Ok(canonical) = fs::canonicalize(&resolved)
             {
@@ -57,44 +59,43 @@ pub(crate) fn resolve_output_target(target: &OutputTarget) -> Result<Option<Path
 }
 
 /// Delivers the rendered digest to its target. A file target is written
-/// atomically; the stdout target writes the buffer to the stream directly,
-/// bypassing temporary-file creation and filesystem sync.
+/// atomically; the stdout target buffers into memory up to [`MAX_OUTPUT_SIZE`]
+/// and writes to the stream only on success, preventing partial output on overflow.
 pub(crate) fn emit(
     resolved_target: Option<&Path>,
     collection: &CollectionResult,
     format: DigestFormat,
 ) -> Result<usize, IngestError> {
     match resolved_target {
-        Some(path) => write_atomic(path, |file| {
-            crate::core::render::render_to_writer(file, collection, format)
+        Some(path) => write_atomic(path, |writer| {
+            crate::core::render::render_to_writer(writer, collection, format)
         }),
         None => {
-            write_stdout(|writer| crate::core::render::render_to_writer(writer, collection, format))
+            let stdout = io::stdout();
+            render_stdout_to(&mut stdout.lock(), collection, format)
         }
+    }
+}
+
+pub(crate) fn render_stdout_to<W: Write>(
+    out: &mut W,
+    collection: &CollectionResult,
+    format: DigestFormat,
+) -> Result<usize, IngestError> {
+    let mut buffer = Vec::new();
+    let tokens = crate::core::render::render_to_writer(&mut buffer, collection, format)?;
+    match out.write_all(&buffer) {
+        Ok(()) => match out.flush() {
+            Ok(()) => Ok(tokens),
+            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(tokens),
+            Err(e) => Err(IngestError::Io(e)),
+        },
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(tokens),
+        Err(e) => Err(IngestError::Io(e)),
     }
 }
 
 const BUF_WRITER_CAPACITY: usize = 64 * 1024;
-
-fn write_stdout<R: Default, F>(write_fn: F) -> Result<R, IngestError>
-where
-    F: FnOnce(&mut io::BufWriter<io::StdoutLock<'_>>) -> Result<R, IngestError>,
-{
-    let stdout = io::stdout();
-    let mut writer = io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, stdout.lock());
-    let result = write_fn(&mut writer);
-    match result {
-        Ok(val) => match writer.flush() {
-            Ok(()) => Ok(val),
-            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(val),
-            Err(error) => Err(IngestError::Io(error)),
-        },
-        Err(IngestError::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe => {
-            Ok(R::default())
-        }
-        Err(error) => Err(error),
-    }
-}
 
 struct AtomicFile {
     target: PathBuf,
@@ -156,22 +157,6 @@ impl AtomicFile {
     }
 }
 
-impl io::Write for AtomicFile {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match &mut self.writer {
-            Some(w) => w.write(buf),
-            None => Err(io::Error::other("file already committed")),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        match &mut self.writer {
-            Some(w) => w.flush(),
-            None => Ok(()),
-        }
-    }
-}
-
 impl Drop for AtomicFile {
     fn drop(&mut self) {
         drop(self.writer.take());
@@ -183,10 +168,13 @@ impl Drop for AtomicFile {
 
 fn write_atomic<R, F>(output: &Path, write_fn: F) -> Result<R, IngestError>
 where
-    F: FnOnce(&mut AtomicFile) -> Result<R, IngestError>,
+    F: FnOnce(&mut io::BufWriter<fs::File>) -> Result<R, IngestError>,
 {
     let mut file = AtomicFile::create(output)?;
-    let value = write_fn(&mut file)?;
+    let value = match file.writer.as_mut() {
+        Some(w) => write_fn(w)?,
+        None => unreachable!(),
+    };
     file.commit()?;
     Ok(value)
 }
@@ -195,6 +183,30 @@ where
 mod tests {
     use super::super::temp_dir;
     use super::*;
+
+    #[test]
+    fn stdout_overflow_writes_nothing_to_stream() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::core::policy::MAX_OUTPUT_SIZE;
+        use crate::core::storage::FileStorage;
+
+        let mut storage = FileStorage::new();
+        storage.push("a.txt", "hello\n");
+        let large_content = "x".repeat(MAX_OUTPUT_SIZE as usize - 16);
+        storage.push("b.txt", &large_content);
+
+        let collection = CollectionResult {
+            label: "overflow-repo".into(),
+            revision: None,
+            files: storage,
+            skipped: 0,
+        };
+
+        let mut sink = Vec::new();
+        let res = render_stdout_to(&mut sink, &collection, DigestFormat::Text);
+        assert!(matches!(res, Err(IngestError::OutputTooLarge(_))));
+        assert!(sink.is_empty(), "stdout sink must remain empty on overflow");
+        Ok(())
+    }
 
     #[test]
     fn atomic_write_ignores_stale_temporary_file() -> Result<(), Box<dyn std::error::Error>> {

@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Module Consolidation (`source` & `github_url`)**: Consolidated `source.rs` into `model.rs` via `Source::parse` and `Source::parse_os`, and inlined GitHub URL construction and origin verification directly into `src/shell/github.rs`, eliminating tiny file sprawl and dead module boundaries.
+- **XML Directory Structure Escaping**: Unified `<directory_structure>` tree node escaping with `<file path="...">` attributes via `write_xml_attr_escaped` (`&#9;`, `&#10;`, `&#13;` character references without doubling backslashes), removing redundant `xml_tree_special_at` and `write_xml_tree_escaped`.
+- **Atomic Stdout Delivery**: Buffered stdout delivery into memory bounded by `MAX_OUTPUT_SIZE` prior to emission, ensuring zero bytes reach standard output on overflow error (matching the rollback contract of file targets).
 - **Core Storage Separation**: Extracted memory arena buffer and hierarchical path sorting (`FileStorage`, `FileSpan`, `FileRecord`, `FileRecordIter`, `cmp_path`) from `src/core/model.rs` into a dedicated `src/core/storage.rs` module, keeping `model.rs` focused on domain configurations and collection results with idiomatic `IntoIterator` and zero heap allocations.
 - **Symlink Output Preservation**: Checked `symlink_metadata` in `resolve_output_target` to prevent canonicalizing existing leaf symlinks to target source files.
 - **Archive Path Sanitization**: Rejected embedded NUL bytes and leading `.` / `..` archive root prefixes in `normalize_tar_entry_path`.

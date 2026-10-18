@@ -56,8 +56,8 @@ impl<'a, W: Write + ?Sized> BoundedEstimatingWriter<'a, W> {
         }
     }
 
-    fn finish(self) -> std::io::Result<usize> {
-        Ok(estimate_tokens(self.written))
+    fn finish(self) -> usize {
+        estimate_tokens(self.written)
     }
 }
 
@@ -103,7 +103,7 @@ pub(crate) fn render_to_writer<W: Write + ?Sized>(
     }
 
     render_res?;
-    estimating_writer.finish().map_err(Into::into)
+    Ok(estimating_writer.finish())
 }
 
 fn output_too_large_error(collection: &CollectionResult) -> IngestError {
@@ -372,7 +372,7 @@ z &lt; 10
     #[test]
     fn xml_attr_escapes_whitespace_and_preserves_body() -> Result<(), Box<dyn std::error::Error>> {
         let files = [FileRecord {
-            path: "dir\nname\r\t/file.rs",
+            path: "dir\nname\r\t\\back/file.rs",
             content: "fn main() {\n\tprintln!(\"hello\");\r\n}\n",
         }];
         let mut storage: FileStorage = files.into_iter().collect();
@@ -390,7 +390,8 @@ z &lt; 10
         assert!(
             xml_str.contains("<repository name=\"my&#9;repo&#10;\" revision=\"rev&#13;&#10;1\">")
         );
-        assert!(xml_str.contains("<file path=\"dir&#10;name&#13;&#9;/file.rs\">"));
+        assert!(xml_str.contains("<file path=\"dir&#10;name&#13;&#9;\\back/file.rs\">"));
+        assert!(xml_str.contains("dir&#10;name&#13;&#9;\\back/"));
         assert!(xml_str.contains("fn main() {\n\tprintln!(&quot;hello&quot;);\r\n}\n"));
         Ok(())
     }
@@ -418,9 +419,7 @@ z &lt; 10
         let mut inner = BrokenPipeOnFlushWriter { buf: Vec::new() };
         let mut writer = BoundedEstimatingWriter::new(&mut inner);
         writer.write_all(b"hello world\n").unwrap();
-        let tokens = writer
-            .finish()
-            .expect("finish must succeed even if inner flush fails");
+        let tokens = writer.finish();
         assert!(tokens > 0);
         assert_eq!(inner.buf, b"hello world\n");
     }

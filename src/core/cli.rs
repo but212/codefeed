@@ -2,8 +2,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::core::error::IngestError;
-use crate::core::model::{DigestFormat, OutputTarget, RunConfig};
-use crate::core::source::parse_os;
+use crate::core::model::{DigestFormat, OutputTarget, RunConfig, Source};
 
 const HELP: &str =
     "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]";
@@ -67,39 +66,30 @@ where
             if s == "-h" || s == "--help" {
                 return Ok(CliAction::Help);
             }
-            if s == "-o" || s == "--output" || s.starts_with("-o=") || s.starts_with("--output=") {
+            if let Some(flag) = ["-o", "--output", "-r", "--ref", "-f", "--format"]
+                .into_iter()
+                .find(|&f| s == f || s.starts_with(&format!("{f}=")))
+            {
                 let inline = s.split_once('=').map(|(_, v)| v);
-                let flag = inline.map_or(s, |_| {
-                    if s.starts_with("-o=") {
-                        "-o"
-                    } else {
-                        "--output"
+                let val = extract_opt_val(
+                    flag,
+                    &mut args_iter,
+                    inline,
+                    flag == "-o" || flag == "--output",
+                )?;
+                match flag {
+                    "-o" | "--output" => output = Some(val),
+                    "-r" | "--ref" => {
+                        let val_str = val
+                            .into_string()
+                            .map_err(|_| IngestError::usage("git reference must be valid utf-8"))?;
+                        reference = Some(val_str);
                     }
-                });
-                output = Some(extract_opt_val(flag, &mut args_iter, inline, true)?);
-                continue;
-            }
-            if s == "-r" || s == "--ref" || s.starts_with("-r=") || s.starts_with("--ref=") {
-                let inline = s.split_once('=').map(|(_, v)| v);
-                let flag = inline.map_or(s, |_| if s.starts_with("-r=") { "-r" } else { "--ref" });
-                let val = extract_opt_val(flag, &mut args_iter, inline, false)?;
-                let val_str = val
-                    .into_string()
-                    .map_err(|_| IngestError::usage("git reference must be valid utf-8"))?;
-                reference = Some(val_str);
-                continue;
-            }
-            if s == "-f" || s == "--format" || s.starts_with("-f=") || s.starts_with("--format=") {
-                let inline = s.split_once('=').map(|(_, v)| v);
-                let flag = inline.map_or(s, |_| {
-                    if s.starts_with("-f=") {
-                        "-f"
-                    } else {
-                        "--format"
+                    "-f" | "--format" => {
+                        format = parse_format(&val.to_string_lossy())?;
                     }
-                });
-                let val = extract_opt_val(flag, &mut args_iter, inline, false)?;
-                format = parse_format(val.to_str().unwrap_or(""))?;
+                    _ => unreachable!(),
+                }
                 continue;
             }
             if s.starts_with('-') && s != "-" {
@@ -126,7 +116,7 @@ where
         None => OutputTarget::File(PathBuf::from("digest.txt")),
     };
 
-    let resolved_source = parse_os(&source_os)?.with_reference(reference)?;
+    let resolved_source = Source::parse_os(&source_os)?.with_reference(reference)?;
     Ok(CliAction::Run(RunConfig::new(
         resolved_source,
         output_target,
@@ -287,6 +277,36 @@ mod tests {
             assert!(
                 parse(args.iter().copied()).is_err(),
                 "expected error for: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_non_utf8_format_reports_lossy_value() {
+        #[cfg(unix)]
+        let raw_val = {
+            use std::os::unix::ffi::OsStringExt;
+            std::ffi::OsString::from_vec(vec![0xff])
+        };
+        #[cfg(windows)]
+        let raw_val = {
+            use std::os::windows::ffi::OsStringExt;
+            std::ffi::OsString::from_wide(&[0xD800])
+        };
+
+        #[cfg(any(unix, windows))]
+        {
+            let args = [
+                std::ffi::OsString::from("codefeed"),
+                std::ffi::OsString::from("."),
+                std::ffi::OsString::from("-f"),
+                raw_val,
+            ];
+            let err = parse(args.iter()).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("invalid value '\u{FFFD}' for '--format <text|xml>'"),
+                "unexpected error: {err}"
             );
         }
     }

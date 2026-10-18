@@ -91,10 +91,18 @@ enum LocalFileRead<'b> {
     TooLarge,
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static BODY_READ_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn read_local_file_into<'b>(
     path: &Path,
     buf: &'b mut Vec<u8>,
 ) -> Result<LocalFileRead<'b>, IngestError> {
+    #[cfg(test)]
+    BODY_READ_COUNT.with(|c| c.set(c.get() + 1));
+
     let meta = match fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(LocalFileRead::Missing),
@@ -497,19 +505,12 @@ mod tests {
     fn candidate_overflow_does_not_read_file_bodies() -> Result<(), Box<dyn std::error::Error>> {
         use crate::core::policy::MAX_FILE_COUNT;
 
-        #[cfg(windows)]
-        use std::os::windows::fs::OpenOptionsExt;
-
         let root = temp_dir("candidate_overflow_no_read")?;
         for i in 0..=MAX_FILE_COUNT {
             fs::write(root.join(format!("file_{i:05}.txt")), b"")?;
         }
 
-        #[cfg(windows)]
-        let _lock = fs::OpenOptions::new()
-            .write(true)
-            .share_mode(0)
-            .open(root.join("file_00000.txt"))?;
+        BODY_READ_COUNT.with(|c| c.set(0));
 
         let err = collect(&root, None).unwrap_err();
         match err {
@@ -519,6 +520,12 @@ mod tests {
             }
             other => panic!("expected CandidateLimitExceeded, got {other:?}"),
         }
+
+        assert_eq!(
+            BODY_READ_COUNT.with(|c| c.get()),
+            0,
+            "must not read any file bodies when candidate count exceeds budget during walk"
+        );
         Ok(())
     }
 }
