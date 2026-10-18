@@ -144,13 +144,13 @@ impl Drop for TempPathGuard {
     }
 }
 
-struct AtomicWriter {
-    target: PathBuf,
-    temp_guard: TempPathGuard,
+struct AtomicFile {
     writer: io::BufWriter<fs::File>,
+    temp_guard: TempPathGuard,
+    target: PathBuf,
 }
 
-impl AtomicWriter {
+impl AtomicFile {
     fn create(target: &Path) -> Result<Self, IngestError> {
         let file_name = target
             .file_name()
@@ -182,9 +182,9 @@ impl AtomicWriter {
         };
 
         Ok(Self {
-            target: target.to_path_buf(),
-            temp_guard: TempPathGuard::new(temporary),
             writer: io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, file),
+            temp_guard: TempPathGuard::new(temporary),
+            target: target.to_path_buf(),
         })
     }
 
@@ -210,9 +210,9 @@ fn write_atomic<R, F>(output: &Path, write_fn: F) -> Result<R, IngestError>
 where
     F: FnOnce(&mut io::BufWriter<fs::File>) -> Result<R, IngestError>,
 {
-    let mut writer = AtomicWriter::create(output)?;
-    let value = write_fn(writer.writer())?;
-    writer.commit()?;
+    let mut file = AtomicFile::create(output)?;
+    let value = write_fn(file.writer())?;
+    file.commit()?;
     Ok(value)
 }
 

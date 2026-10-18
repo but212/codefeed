@@ -50,15 +50,15 @@ pub(super) fn collect(
             .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
 
         let status = classify_local_path(relative, &mut path_scratch);
-        let size_hint = if status == PathStatus::Valid {
-            entry.metadata().ok().map(|m| m.len())
-        } else {
-            None
-        };
-        selector.record_entry(status, &path_scratch, size_hint, |limit| {
-            scratch.clear();
-            read_local_file_into(entry_path, limit, &mut scratch)
-        })?;
+        selector.record_entry(
+            status,
+            &path_scratch,
+            || entry.metadata().ok().map(|m| m.len()),
+            |limit| {
+                scratch.clear();
+                read_local_file_into(entry_path, limit, &mut scratch)
+            },
+        )?;
     }
 
     Ok(selector.finish(label, None))

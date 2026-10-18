@@ -12,6 +12,7 @@ pub(crate) fn normalize_tar_entry_path(
     raw_bytes: &[u8],
     out: &mut String,
 ) -> Result<PathStatus, IngestError> {
+    out.clear();
     if raw_bytes.contains(&0) {
         return Err(IngestError::invalid_metadata(
             "Tar entry path contains NUL byte",

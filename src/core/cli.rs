@@ -24,10 +24,7 @@ pub(crate) enum CliAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParseState {
     Normal,
-    ExpectValue {
-        flag: &'static str,
-        allow_dash: bool,
-    },
+    ExpectValue(&'static str),
     PositionalOnly,
 }
 
@@ -70,15 +67,7 @@ where
 
     for arg in args_iter {
         match state {
-            ParseState::ExpectValue { flag, allow_dash } => {
-                if let Some(s) = arg.to_str()
-                    && s.starts_with('-')
-                    && !(allow_dash && s == "-")
-                {
-                    return Err(IngestError::usage(format!(
-                        "a value is required for '{flag}' but none was supplied"
-                    )));
-                }
+            ParseState::ExpectValue(flag) => {
                 apply_flag_value(flag, arg, &mut output, &mut reference, &mut format)?;
                 state = ParseState::Normal;
             }
@@ -103,13 +92,7 @@ where
                         return Ok(CliAction::Help);
                     }
                     if let Some((flag, inline_val)) = match_flag(s) {
-                        let allow_dash = flag == "-o" || flag == "--output";
                         if let Some(inline) = inline_val {
-                            if inline.starts_with('-') && !(allow_dash && inline == "-") {
-                                return Err(IngestError::usage(format!(
-                                    "a value is required for '{flag}' but none was supplied"
-                                )));
-                            }
                             apply_flag_value(
                                 flag,
                                 OsString::from(inline),
@@ -118,7 +101,7 @@ where
                                 &mut format,
                             )?;
                         } else {
-                            state = ParseState::ExpectValue { flag, allow_dash };
+                            state = ParseState::ExpectValue(flag);
                         }
                         continue;
                     }
@@ -138,7 +121,7 @@ where
         }
     }
 
-    if let ParseState::ExpectValue { flag, .. } = state {
+    if let ParseState::ExpectValue(flag) = state {
         return Err(IngestError::usage(format!(
             "a value is required for '{flag}' but none was supplied"
         )));
@@ -169,6 +152,15 @@ fn apply_flag_value(
     reference: &mut Option<String>,
     format: &mut DigestFormat,
 ) -> Result<(), IngestError> {
+    let allow_dash = flag == "-o" || flag == "--output";
+    if let Some(s) = val.to_str()
+        && s.starts_with('-')
+        && !(allow_dash && s == "-")
+    {
+        return Err(IngestError::usage(format!(
+            "a value is required for '{flag}' but none was supplied"
+        )));
+    }
     match flag {
         "-o" | "--output" => *output = Some(val),
         "-r" | "--ref" => {

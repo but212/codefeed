@@ -93,10 +93,8 @@ where
     scratch.clear();
     let mut state = PathClassifierState::ValidUtf8;
     let mut last_segment: Option<&'a [u8]> = None;
-    let mut has_segments = false;
 
     for segment in segments {
-        has_segments = true;
         if is_hidden_segment(segment) {
             scratch.clear();
             return PathStatus::Ignored;
@@ -123,19 +121,17 @@ where
         }
     }
 
-    if !has_segments {
+    let Some(last) = last_segment else {
+        return PathStatus::Ignored;
+    };
+
+    if last.is_empty() {
+        scratch.clear();
         return PathStatus::Ignored;
     }
-
-    if let Some(last) = last_segment {
-        if last.is_empty() {
-            scratch.clear();
-            return PathStatus::Ignored;
-        }
-        if matches!(std::str::from_utf8(last), Ok(filename) if is_ignored_filename(filename)) {
-            scratch.clear();
-            return PathStatus::Ignored;
-        }
+    if matches!(std::str::from_utf8(last), Ok(filename) if is_ignored_filename(filename)) {
+        scratch.clear();
+        return PathStatus::Ignored;
     }
 
     match state {
