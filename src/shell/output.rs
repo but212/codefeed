@@ -117,27 +117,80 @@ fn render_stdout_to<W: Write>(
 
 const BUF_WRITER_CAPACITY: usize = 64 * 1024;
 
-struct TempPathGuard {
+/// RAII guard managing a temporary file that cleans up on drop unless committed.
+///
+/// Encapsulates the buffered writer and path together so that drop explicitly closes
+/// and flushes the underlying file handle before attempting to unlink the file.
+/// This guarantees Windows-safe file deletion without relying on struct field order
+/// or pattern let-binding declaration order invariants.
+struct TempFile {
     path: PathBuf,
+    writer: Option<io::BufWriter<fs::File>>,
     active: bool,
 }
 
-impl TempPathGuard {
-    fn new(path: PathBuf) -> Self {
-        Self { path, active: true }
+impl TempFile {
+    fn create(parent: &Path, file_name: &str) -> Result<Self, IngestError> {
+        let timestamp = current_epoch_nanos();
+        loop {
+            let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = parent.join(format!(".{file_name}.{timestamp}.{counter}.tmp"));
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    return Ok(Self {
+                        path,
+                        writer: Some(io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, file)),
+                        active: true,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(IngestError::Io(error)),
+            }
+        }
     }
 
+    #[cfg(test)]
     fn path(&self) -> &Path {
         &self.path
     }
 
-    fn disarm(&mut self) {
+    fn writer(&mut self) -> &mut io::BufWriter<fs::File> {
+        self.writer
+            .as_mut()
+            .expect("temporary file writer is active before commit")
+    }
+
+    #[cfg(unix)]
+    fn set_permissions(&self, permissions: fs::Permissions) -> io::Result<()> {
+        self.writer
+            .as_ref()
+            .expect("temporary file writer is active before commit")
+            .get_ref()
+            .set_permissions(permissions)
+    }
+
+    fn commit(mut self, target: &Path) -> Result<(), IngestError> {
+        let writer = self
+            .writer
+            .take()
+            .expect("temporary file writer is active during commit");
+        let file = writer
+            .into_inner()
+            .map_err(|e| IngestError::Io(e.into_error()))?;
+        file.sync_all()?;
+        drop(file);
+
+        fs::rename(&self.path, target)?;
         self.active = false;
+        Ok(())
     }
 }
 
-impl Drop for TempPathGuard {
+impl Drop for TempFile {
     fn drop(&mut self) {
+        // Drop the writer first to close the open OS file handle before removing the file.
+        // On Windows, unlinking an open file fails with an access error.
+        drop(self.writer.take());
         if self.active {
             let _ = fs::remove_file(&self.path);
         }
@@ -145,15 +198,8 @@ impl Drop for TempPathGuard {
 }
 
 /// Manages atomic output writing via a temporary file that is synced and renamed on commit.
-///
-/// # Field Order Invariant
-///
-/// `writer` is declared before `temp_guard` so that Rust's top-to-bottom drop order flushes and
-/// closes the open file handle in `writer` before `temp_guard`'s [`Drop`] runs to remove the
-/// temporary file. On Windows, attempting to delete an open file fails with an access error.
 struct AtomicFile {
-    writer: io::BufWriter<fs::File>,
-    temp_guard: TempPathGuard,
+    temp_file: TempFile,
     target: PathBuf,
 }
 
@@ -167,39 +213,26 @@ impl AtomicFile {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let timestamp = current_epoch_nanos();
-        let (temporary, file) = loop {
-            let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let temporary = parent.join(format!(".{file_name}.{timestamp}.{counter}.tmp"));
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-            {
-                Ok(file) => break (temporary, file),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(IngestError::Io(error)),
-            }
-        };
+
+        let temp_file = TempFile::create(parent, &file_name)?;
 
         #[cfg(unix)]
         match fs::metadata(target) {
             Ok(metadata) => {
-                file.set_permissions(metadata.permissions())?;
+                temp_file.set_permissions(metadata.permissions())?;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(IngestError::Io(error)),
         }
 
         Ok(Self {
-            writer: io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, file),
-            temp_guard: TempPathGuard::new(temporary),
+            temp_file,
             target: target.to_path_buf(),
         })
     }
 
     fn writer(&mut self) -> &mut io::BufWriter<fs::File> {
-        &mut self.writer
+        self.temp_file.writer()
     }
 
     /// Commits the atomic file write by syncing content, renaming to the target path,
@@ -210,16 +243,8 @@ impl AtomicFile {
     /// Returns [`IngestError::Io`] if flushing, renaming, or directory syncing fails.
     /// If parent directory sync fails on Unix after rename, target replacement has already
     /// completed and durability synchronization failed.
-    fn commit(mut self) -> Result<(), IngestError> {
-        let file = self
-            .writer
-            .into_inner()
-            .map_err(|e| IngestError::Io(e.into_error()))?;
-        file.sync_all()?;
-        drop(file);
-
-        fs::rename(self.temp_guard.path(), &self.target)?;
-        self.temp_guard.disarm();
+    fn commit(self) -> Result<(), IngestError> {
+        self.temp_file.commit(&self.target)?;
 
         #[cfg(unix)]
         {
@@ -553,6 +578,49 @@ mod tests {
             );
             assert_eq!(resolved, out_link);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn temp_file_drop_cleans_up_on_scope_exit() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("temp_file_cleanup")?;
+        let temp = TempFile::create(&root, "sample.txt")?;
+        let temp_path = temp.path().to_path_buf();
+        assert!(temp_path.exists());
+        drop(temp);
+        assert!(
+            !temp_path.exists(),
+            "temporary file must be removed when TempFile is dropped"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_file_create_cleans_up_temp_file_on_metadata_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("create_metadata_error")?;
+        let loop_a = root.join("loop_a");
+        let loop_b = root.join("loop_b");
+        symlink(&loop_b, &loop_a)?;
+        symlink(&loop_a, &loop_b)?;
+
+        let result = AtomicFile::create(&loop_a);
+        assert!(
+            result.is_err(),
+            "AtomicFile::create on symlink loop must fail"
+        );
+
+        let temp_count = fs::read_dir(&root)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".loop_a."))
+            .count();
+        assert_eq!(
+            temp_count, 0,
+            "temporary file must be unlinked when AtomicFile::create fails during metadata check"
+        );
         Ok(())
     }
 }
