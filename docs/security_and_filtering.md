@@ -86,12 +86,12 @@ Any path containing a component starting with a leading dot (`.`) is considered 
 
 `codefeed` enforces deterministic bounds on computation and memory allocations via `src/core/policy.rs`:
 
-| Parameter | Limit | Enforcement Mechanism | Failure Mode |
-| :--- | :--- | :--- | :--- |
-| `MAX_FILE_COUNT` | 10,000 files | `CandidateBudget` slot check before reading content | `IngestError::CandidateLimitExceeded` with directory diagnostics |
-| `MAX_FILE_SIZE` | 1 MiB (1,048,576 B) | Stream boundary read (`take(MAX_FILE_SIZE + 1)`) | Skipped; tallied in `skipped_files` report |
-| `MAX_OUTPUT_SIZE` | 20 MiB (20,971,520 B) | `BoundedEstimatingWriter` byte counter | `IngestError::OutputTooLarge` with Top-5 largest files |
-| `ARCHIVE_MAX_SECS` | 300 seconds | Whole-archive stream transfer timeout | `IngestError::Http` timeout |
+| Parameter (`policy.rs`) | Enforcement Mechanism | Failure Mode |
+| :--- | :--- | :--- |
+| `MAX_FILE_COUNT` | `CandidateBudget` slot check before reading content | `IngestError::CandidateLimitExceeded` with directory diagnostics |
+| `MAX_FILE_SIZE` | Pre-I/O `size_hint` evaluation and stream boundary read (`take(MAX_FILE_SIZE + 1)`) | Skipped; tallied in `skipped_files` report |
+| `MAX_OUTPUT_SIZE` | Early arena total check (`Selector::add_file`) and `BoundedEstimatingWriter` byte counter | `IngestError::OutputTooLarge` with Top-5 largest files |
+| `ARCHIVE_MAX_SECS` | Whole-archive stream transfer timeout | `IngestError::Http` timeout |
 
 ### Candidate vs. Skipped Accounting Rules
 
@@ -130,7 +130,7 @@ Remote ingestion via `src/shell/github.rs` operates under strict isolation:
    - Remote repositories are streamed directly from `/repos/{owner}/{repo}/tarball/{ref}` as a single HTTP response.
    - Archive entries are unpacked via `flate2` and `tar` directly into memory arena buffers (`FileStorage`) without writing tarballs or unpacked files to disk.
 3. **Bounded Retries:**
-   - Bounded exponential backoff (`MAX_RETRIES = 3`, initial delay 250 ms, cap 5,000 ms).
+   - Bounded exponential backoff (`MAX_ATTEMPTS = 3`, initial delay 250 ms, cap 5,000 ms).
    - Only retryable transport errors (I/O, timeout, connection drop) and HTTP 429 / 5xx status codes trigger retries. 4xx client errors fail immediately.
 
 ---

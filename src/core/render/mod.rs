@@ -34,6 +34,17 @@ impl DigestFormat {
 ///
 /// Binds output generation to [`MAX_OUTPUT_SIZE`] and calculates the estimated token count.
 ///
+/// # Output Size Invariant
+///
+/// Final output size bounding relies on a two-stage guarantee:
+/// 1. `Selector::add_file` performs early-fail bounding against `MAX_OUTPUT_SIZE` using raw arena byte totals.
+/// 2. `render_to_writer` via [`BoundedEstimatingWriter`] enforces `MAX_OUTPUT_SIZE` during final streaming rendering.
+///
+/// For early-fail checks to be sound (never rejecting a collection that would pass final rendering),
+/// the invariant `rendered_bytes >= raw_bytes` (`files.total_bytes()`) must hold for both Text and XML formats.
+/// Text rendering appends framing, headers, and tree structure while preserving raw content bytes.
+/// XML rendering escapes entities and sanitizes control characters, which strictly increases or preserves length.
+///
 /// # Errors
 ///
 /// Returns [`IngestError::OutputTooLarge`] if output exceeds the maximum size limit,
@@ -208,6 +219,60 @@ hello\n\
         assert!(rendered.contains("FILE: a.txt"));
         assert!(rendered.contains("FILE: b.txt"));
         assert!(!rendered.contains("excluded.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn rendered_size_is_at_least_raw_stored_bytes() -> Result<(), Box<dyn std::error::Error>> {
+        let test_cases = [
+            ("empty", vec![]),
+            (
+                "single_plain",
+                vec![FileRecord {
+                    path: "main.rs",
+                    content: "fn main() {}",
+                }],
+            ),
+            (
+                "xml_special",
+                vec![FileRecord {
+                    path: "sub/test.xml",
+                    content: "a & b < c > d \"quote\" 'single'",
+                }],
+            ),
+            (
+                "control_chars",
+                vec![FileRecord {
+                    path: "ctrl.txt",
+                    content: "\x00\x01\x08\x0B\x0C\x0E\x1F",
+                }],
+            ),
+        ];
+
+        for (label, records) in test_cases {
+            let mut storage = FileStorage::new();
+            for r in records {
+                storage.push(r.path, r.content);
+            }
+            let raw_bytes = storage.total_bytes() as usize;
+
+            let collection = CollectionResult {
+                label: label.to_string(),
+                revision: None,
+                files: SortedFiles::new(storage),
+                skipped: 0,
+            };
+
+            for format in [DigestFormat::Text, DigestFormat::Xml] {
+                let mut buf = Vec::new();
+                render_to_writer(&mut buf, &collection, format)?;
+                assert!(
+                    buf.len() >= raw_bytes,
+                    "Format {format:?} output length ({}) must be >= raw arena bytes ({raw_bytes}) for {label}",
+                    buf.len()
+                );
+            }
+        }
         Ok(())
     }
 

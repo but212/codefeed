@@ -6,17 +6,26 @@ use std::error::Error;
 use std::fs;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::output::current_epoch_nanos;
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 pub(super) struct TempDirGuard(PathBuf);
 
 impl TempDirGuard {
     pub(super) fn new(label: &str) -> Result<Self, Box<dyn Error>> {
-        let nanos = current_epoch_nanos();
-        let path = std::env::temp_dir().join(format!("local_ingest_{label}_{nanos}"));
-        fs::create_dir_all(&path)?;
+        let pid = std::process::id();
+        let path = loop {
+            let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let candidate =
+                std::env::temp_dir().join(format!("local_ingest_{label}_{pid}_{counter}"));
+            match fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(Box::new(err)),
+            }
+        };
         Ok(Self(fs::canonicalize(&path)?))
     }
 }

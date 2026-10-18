@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::core::error::IngestError;
-use crate::core::model::{CollectionResult, output_too_large_error};
+use crate::core::model::CollectionResult;
 use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE, PathStatus};
 use crate::core::storage::{FileStorage, SortedFiles};
 
@@ -69,7 +69,7 @@ struct CandidateBudget {
 impl CandidateBudget {
     /// Adds a single observed candidate path to the budget accounting.
     pub(crate) fn add(&mut self, path: &str) -> Result<(), IngestError> {
-        self.count = self.count.checked_add(1).ok_or_else(file_count_overflow)?;
+        self.count = self.count.saturating_add(1);
         let dir = extract_dir_slice(path);
         if let Some(count) = self.dir_counts.get_mut(dir) {
             *count += 1;
@@ -89,10 +89,6 @@ impl CandidateBudget {
             top_overflow_directories(&self.dir_counts),
         )
     }
-}
-
-fn file_count_overflow() -> IngestError {
-    IngestError::invalid_metadata("file count overflow")
 }
 
 fn extract_dir_slice(path: &str) -> &str {
@@ -172,11 +168,7 @@ impl Selector {
     }
 
     /// Reserves a candidate slot and immediately records it as skipped without reading content.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IngestError::CandidateLimitExceeded`] if file count overflows the policy limit.
-    pub(crate) fn record_skipped(
+    fn record_skipped(
         &mut self,
         path: &str,
         reason: SkipReason,
@@ -218,14 +210,10 @@ impl Selector {
     /// passes the file size limit to the reader callback if within budget,
     /// and accumulates the file or increments skipped count based on core policy decisions.
     ///
-    /// If `size_hint()` exceeds [`MAX_FILE_SIZE`], the reader callback is never invoked.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IngestError::CandidateLimitExceeded`] if file count overflows the policy limit,
-    /// [`IngestError::OutputTooLarge`] if output size exceeds the policy limit, or propagates
-    /// any error returned by `read`.
-    pub(crate) fn record_with<'b, H, F>(
+    /// Per-file size enforcement occurs in two stages:
+    /// 1. Pre-I/O size hint evaluation (`size_hint() > MAX_FILE_SIZE`) skips reading the file body entirely.
+    /// 2. Body inspection in [`record_observation`] verifies actual read bytes against [`MAX_FILE_SIZE`].
+    fn record_with<'b, H, F>(
         &mut self,
         path: &str,
         size_hint: H,
@@ -248,8 +236,14 @@ impl Selector {
 
     fn add_file(&mut self, path: &str, content: &str) -> Result<(), IngestError> {
         self.storage.push(path, content);
+        // Early fail output bounding check:
+        // Accumulated raw arena bytes (path_arena + content_arena) serve as a strict lower
+        // bound for final rendered digest size (rendered_bytes >= raw_bytes). Checking here
+        // aborts ingestion early to save memory and I/O before final rendering pass.
         if self.storage.total_bytes() > MAX_OUTPUT_SIZE {
-            return Err(output_too_large_error(self.storage.iter()));
+            return Err(IngestError::output_too_large(
+                crate::core::storage::largest_files(self.storage.iter()),
+            ));
         }
         Ok(())
     }
