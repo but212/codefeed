@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Atomic File Delivery**:
-  - Replaced temporary file handling in `src/shell/output.rs` with `AtomicFile` and an inner `TempPathGuard` RAII guard, guaranteeing cleanup on unexpected I/O errors or panic unwinding.
+  - Replaced temporary file handling in `src/shell/output.rs` with `AtomicFile` and an inner `TempFile` RAII guard (closing the OS file handle before unlinking on `Drop`), guaranteeing cleanup on unexpected I/O errors or panic unwinding across Windows and Unix.
   - Added Unix parent directory sync (`sync_all`) on atomic commit to ensure rename metadata is persisted across crashes.
   - Preserved existing file permissions when overwriting target files on Unix.
 - **Local Walk Error Kind**: Preserved the inner `std::io::ErrorKind` when formatting traversal errors in `src/shell/local.rs` rather than wrapping in `io::ErrorKind::Other`.
@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Refactored CLI argument parsing into a single-pass token state machine (`ParseState`) in `src/core/cli.rs`, eliminating nested iterator overhead while maintaining flag validation and error precedence rules.
   - Refactored path segment classification into a single-pass state machine (`PathClassifierState`) in `src/core/policy.rs`, integrating noise and sensitive filtering while strictly preserving tar entry traversal (`..`) error precedence.
   - Consolidated HTTP retry orchestration into a deterministic state machine (`AttemptState::step`) across core and shell boundaries.
+- **Shell Pipeline & Testing Harness**:
+  - Replaced inverted `Result<ureq::Error, Response>` handling in `src/shell/github.rs` `stream_url` retry loop with a dedicated `Attempt` enum, and encapsulated HTTP test listener lifecycle in `MockServer`.
+  - Extracted `format_completion_message` in `src/shell/mod.rs` and added unit tests covering completion reporting and CLI exit codes.
+  - Removed redundant `#![cfg(test)]` inner attribute in `src/shell/testing.rs`.
 - **Diagnostics & Scope**:
   - Unified `output_too_large_error` diagnostic construction across early memory guards and streaming serializers.
   - Privatized `CandidateBudget` visibility to `src/core/selector.rs` internal visibility.
