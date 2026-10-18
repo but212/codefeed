@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Module Architecture Consolidation**: Consolidated `src/core/render/{mod.rs, text.rs, xml.rs}` into `src/core/render.rs` and inlined pipeline orchestration (`orchestrate.rs`) into `src/shell/mod.rs`, re-exporting `ingest` via `pub use shell::ingest;` at crate root.
 - **Module Consolidation (`source` & `github_url`)**: Consolidated `source.rs` into `model.rs` via `Source::parse` and `Source::parse_os`, and inlined GitHub URL construction and origin verification directly into `src/shell/github.rs`, eliminating tiny file sprawl and dead module boundaries.
 - **XML Directory Structure Escaping**: Unified `<directory_structure>` tree node escaping with `<file path="...">` attributes via `write_xml_attr_escaped` (`&#9;`, `&#10;`, `&#13;` character references without doubling backslashes), removing redundant `xml_tree_special_at` and `write_xml_tree_escaped`.
 - **Atomic Stdout Delivery**: Buffered stdout delivery into memory bounded by `MAX_OUTPUT_SIZE` prior to emission, ensuring zero bytes reach standard output on overflow error (matching the rollback contract of file targets).

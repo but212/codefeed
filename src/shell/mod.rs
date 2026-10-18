@@ -3,10 +3,43 @@
 //! Shell modules perform all effects and feed observations to the functional
 //! core in `crate::core`.
 
+use crate::{IngestError, IngestReport, RunConfig, Source};
+
 pub(crate) mod github;
 pub(crate) mod local;
-pub(crate) mod orchestrate;
 pub(crate) mod output;
+
+/// Executes the end-to-end repository ingestion pipeline.
+///
+/// Dispatches collection across local filesystem or GitHub remote sources, renders
+/// the digest into the target format (plain text or XML), and atomically emits the
+/// result to standard output or a destination file.
+///
+/// # Errors
+///
+/// Returns [`IngestError`] if input sources are invalid, candidate budgets or output size
+/// limits are exceeded, filesystem operations fail, or network requests error.
+pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
+    let resolved_output = output::resolve_output_target(&config.output)?;
+
+    let collection = match &config.source {
+        Source::Local(path) => local::collect(path, resolved_output.as_deref())?,
+        Source::Github {
+            owner,
+            repo,
+            reference,
+        } => github::collect(owner, repo, reference.as_deref())?,
+    };
+
+    let estimated_tokens = output::emit(resolved_output.as_deref(), &collection, config.format)?;
+
+    Ok(IngestReport {
+        output: config.output.clone(),
+        included_files: collection.files.len(),
+        skipped_files: collection.skipped,
+        estimated_tokens,
+    })
+}
 
 /// Returns the elapsed duration since the Unix epoch in nanoseconds.
 pub(crate) fn current_epoch_nanos() -> u128 {

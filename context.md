@@ -83,12 +83,11 @@ never depends on shell code; shell code depends on the core in one direction.
   - `error.rs`: domain error enum `IngestError` and diagnostic payloads (`CandidateLimitExceededError`).
   - `selector.rs`: candidate observation (`CandidateInput`), candidate budget directory accounting (`CandidateBudget`), `Selector` storage accumulation, and `largest_files` diagnostic selection.
   - `tree.rs`: Format-neutral ASCII hierarchy tree rendering (`render_tree`) directly from `FileStorage` with zero allocations.
-  - `render/` (`mod.rs`, `text.rs`, `xml.rs`): Format-specific streaming serializers (Text/XML), single-pass streaming escaping (`escape_header`, `write_escaped`, `write_xml_attr_escaped`) preserving newline injection defense, token estimation heuristic (`estimate_tokens`), and `BoundedEstimatingWriter`.
+  - `render.rs`: Format-specific streaming serializers (Text/XML), single-pass streaming escaping (`escape_header`, `write_escaped`, `write_xml_attr_escaped`) preserving newline injection defense, token estimation heuristic (`estimate_tokens`), and `BoundedEstimatingWriter`.
   - `archive.rs`: Pax header comment extraction and in-place tar entry path normalization (`normalize_tar_entry_path`).
 - Imperative shell (`src/shell/`):
   - `src/main.rs`: binary entry point and user-facing CLI completion report formatting.
-  - `shell/orchestrate.rs`: Pipeline orchestration (`ingest`).
+  - `shell/mod.rs`: shell module declarations, pipeline orchestration (`ingest`), and scoped test fixture isolation (`TempDirGuard`).
   - `shell/local.rs`: 2-step linear filesystem candidate discovery, non-symlink metadata validation, and direct `Selector` collection.
   - `shell/github.rs`: streaming archive tarball collection (`collect_archive`), HTTP transport (`GithubClient`), retry handling, body bounding, and token resolution.
   - `shell/output.rs`: atomic file writing via RAII commit guard (`AtomicFile`), standard output stream emission, and canonical output path resolution (`resolve_output_target`).
-  - `shell/mod.rs`: shell module declarations and scoped test fixture isolation (`TempDirGuard`).

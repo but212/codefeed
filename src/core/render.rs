@@ -3,14 +3,33 @@
 //! Coordinates layout rendering across text and XML formats, streaming
 //! token estimation, and output size cap enforcement.
 
+use std::borrow::Cow;
 use std::io::Write;
-
-pub(crate) mod text;
-pub(crate) mod xml;
 
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat};
 use crate::core::policy::MAX_OUTPUT_SIZE;
+
+const REPOSITORY_PREFIX: &str = "Repository: ";
+const REVISION_PREFIX: &str = "Revision: ";
+const FILES_PREFIX: &str = "Files: ";
+const SKIPPED_PREFIX: &str = "\nSkipped: ";
+const DIRECTORY_HEADER: &str = "Directory structure:\n";
+const FILES_HEADER: &str = "\nFiles:\n\n";
+const FILE_BLOCK_PREFIX: &str = "==================================================\nFILE: ";
+const FILE_BLOCK_SUFFIX: &str = "\n==================================================\n\n";
+const NEWLINE: &str = "\n";
+const METADATA_SUFFIX: &str = "\n\n";
+const XML_REPO_START: &str = "<repository name=\"";
+const XML_REVISION_ATTR: &str = "\" revision=\"";
+const XML_TAG_CLOSE: &str = "\">\n";
+const XML_DIR_START: &str = "<directory_structure>\n";
+const XML_DIR_END: &str = "</directory_structure>\n";
+const XML_FILES_START: &str = "<files>\n";
+const XML_FILES_END: &str = "</files>\n";
+const XML_REPO_END: &str = "</repository>\n";
+const XML_FILE_START: &str = "<file path=\"";
+const FILE_TAILS: [&[u8]; 2] = [b"</file>\n", b"\n</file>\n"];
 
 /// Heuristic token estimation (~4 bytes per token for typical ASCII code).
 ///
@@ -35,8 +54,8 @@ impl DigestFormat {
         collection: &CollectionResult,
     ) -> Result<(), IngestError> {
         match self {
-            Self::Text => text::render_text(writer, collection),
-            Self::Xml => xml::render_xml(writer, collection),
+            Self::Text => render_text(writer, collection),
+            Self::Xml => render_xml(writer, collection),
         }
     }
 }
@@ -110,6 +129,153 @@ fn output_too_large_error(collection: &CollectionResult) -> IngestError {
     IngestError::output_too_large(crate::core::selector::largest_files(
         collection.files.iter(),
     ))
+}
+
+/// Escapes backslashes, carriage returns, and newlines in metadata header strings.
+fn escape_header(value: &str) -> Cow<'_, str> {
+    if !value.contains(['\\', '\r', '\n']) {
+        Cow::Borrowed(value)
+    } else {
+        Cow::Owned(
+            value
+                .replace('\\', "\\\\")
+                .replace('\r', "\\r")
+                .replace('\n', "\\n"),
+        )
+    }
+}
+
+pub(crate) fn render_text<W: Write + ?Sized>(
+    writer: &mut W,
+    collection: &CollectionResult,
+) -> Result<(), IngestError> {
+    writer.write_all(REPOSITORY_PREFIX.as_bytes())?;
+    writer.write_all(escape_header(&collection.label).as_bytes())?;
+    writer.write_all(NEWLINE.as_bytes())?;
+    if let Some(ref revision) = collection.revision {
+        writer.write_all(REVISION_PREFIX.as_bytes())?;
+        writer.write_all(escape_header(revision).as_bytes())?;
+        writer.write_all(NEWLINE.as_bytes())?;
+    }
+    writer.write_all(FILES_PREFIX.as_bytes())?;
+    write!(writer, "{}", collection.files.len())?;
+    writer.write_all(SKIPPED_PREFIX.as_bytes())?;
+    write!(writer, "{}", collection.skipped)?;
+    writer.write_all(METADATA_SUFFIX.as_bytes())?;
+    writer.write_all(DIRECTORY_HEADER.as_bytes())?;
+    crate::core::tree::render_tree(writer, &collection.files, |w, name| {
+        w.write_all(escape_header(name).as_bytes())
+    })?;
+    writer.write_all(FILES_HEADER.as_bytes())?;
+    for file in collection.files.iter() {
+        const TAIL: [&[u8]; 2] = [b"\n", b"\n\n"];
+        let needs_extra_nl = (!file.content.ends_with('\n')) as usize;
+        writer.write_all(FILE_BLOCK_PREFIX.as_bytes())?;
+        writer.write_all(escape_header(file.path).as_bytes())?;
+        writer.write_all(FILE_BLOCK_SUFFIX.as_bytes())?;
+        writer.write_all(file.content.as_bytes())?;
+        writer.write_all(TAIL[needs_extra_nl])?;
+    }
+
+    Ok(())
+}
+
+#[inline(always)]
+fn xml_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
+    match bytes[i] {
+        0..=8 | 11 | 12 | 14..=31 => Some((1, "\u{FFFD}")),
+        b'"' => Some((1, "&quot;")),
+        b'&' => Some((1, "&amp;")),
+        b'\'' => Some((1, "&apos;")),
+        b'<' => Some((1, "&lt;")),
+        b'>' => Some((1, "&gt;")),
+        0xEF if i + 2 < bytes.len()
+            && bytes[i + 1] == 0xBF
+            && (bytes[i + 2] == 0xBE || bytes[i + 2] == 0xBF) =>
+        {
+            Some((3, "\u{FFFD}"))
+        }
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn xml_attr_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
+    match bytes[i] {
+        b'\t' => Some((1, "&#9;")),
+        b'\n' => Some((1, "&#10;")),
+        b'\r' => Some((1, "&#13;")),
+        _ => xml_special_at(bytes, i),
+    }
+}
+
+fn write_stream_escaped<W, F>(writer: &mut W, value: &str, special_at: F) -> std::io::Result<()>
+where
+    W: Write + ?Sized,
+    F: Fn(&[u8], usize) -> Option<(usize, &'static str)>,
+{
+    let bytes = value.as_bytes();
+    let Some(first) = (0..bytes.len()).find(|&i| special_at(bytes, i).is_some()) else {
+        return writer.write_all(bytes);
+    };
+
+    writer.write_all(&bytes[..first])?;
+    let mut last = first;
+    let mut i = first;
+    while i < bytes.len() {
+        if let Some((consumed, esc)) = special_at(bytes, i) {
+            if last < i {
+                writer.write_all(&bytes[last..i])?;
+            }
+            writer.write_all(esc.as_bytes())?;
+            i += consumed;
+            last = i;
+        } else {
+            i += 1;
+        }
+    }
+    if last < bytes.len() {
+        writer.write_all(&bytes[last..])?;
+    }
+    Ok(())
+}
+
+/// Escapes standard XML characters and control bytes while streaming to `writer`.
+fn write_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
+    write_stream_escaped(writer, value, xml_special_at)
+}
+
+/// Escapes XML attribute specials including whitespace (`\t`, `\n`, `\r`) to prevent attribute normalization.
+fn write_xml_attr_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
+    write_stream_escaped(writer, value, xml_attr_special_at)
+}
+
+pub(crate) fn render_xml<W: Write + ?Sized>(
+    writer: &mut W,
+    collection: &CollectionResult,
+) -> Result<(), IngestError> {
+    writer.write_all(XML_REPO_START.as_bytes())?;
+    write_xml_attr_escaped(writer, &collection.label)?;
+    if let Some(ref revision) = collection.revision {
+        writer.write_all(XML_REVISION_ATTR.as_bytes())?;
+        write_xml_attr_escaped(writer, revision)?;
+    }
+    writer.write_all(XML_TAG_CLOSE.as_bytes())?;
+    writer.write_all(XML_DIR_START.as_bytes())?;
+    crate::core::tree::render_tree(writer, &collection.files, write_xml_attr_escaped)?;
+    writer.write_all(XML_DIR_END.as_bytes())?;
+    writer.write_all(XML_FILES_START.as_bytes())?;
+    for file in collection.files.iter() {
+        writer.write_all(XML_FILE_START.as_bytes())?;
+        write_xml_attr_escaped(writer, file.path)?;
+        writer.write_all(XML_TAG_CLOSE.as_bytes())?;
+        write_escaped(writer, file.content)?;
+        let needs_nl = (!file.content.ends_with('\n')) as usize;
+        writer.write_all(FILE_TAILS[needs_nl])?;
+    }
+    writer.write_all(XML_FILES_END.as_bytes())?;
+    writer.write_all(XML_REPO_END.as_bytes())?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -432,5 +598,94 @@ z &lt; 10
         assert_eq!(estimate_tokens(4), 1);
         assert_eq!(estimate_tokens(5), 1);
         assert_eq!(estimate_tokens(8), 2);
+    }
+
+    #[test]
+    fn escape_header_borrows_clean_input() {
+        assert!(matches!(escape_header("clean_path"), Cow::Borrowed(_)));
+        assert!(matches!(
+            escape_header("path\nwith\nnewline"),
+            Cow::Owned(_)
+        ));
+    }
+
+    #[test]
+    fn escape_header_replaces_all_target_characters_in_single_string() {
+        let input = "a\\b\rc\nd\\\\e\r\n";
+        let expected = "a\\\\b\\rc\\nd\\\\\\\\e\\r\\n";
+        assert_eq!(escape_header(input).as_ref(), expected);
+    }
+
+    fn xml_escape(value: &str) -> String {
+        let mut buf = Vec::new();
+        write_escaped(&mut buf, value).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn xml_escape_and_streaming_consistency() {
+        let cases: &[(&str, &str)] = &[
+            ("", ""),
+            ("plain text", "plain text"),
+            ("plain text\n", "plain text\n"),
+            ("a & b < c > d", "a &amp; b &lt; c &gt; d"),
+            ("let x = a && b;", "let x = a &amp;&amp; b;"),
+            (
+                "<tag attr=\"val\">'hello'</tag>",
+                "&lt;tag attr=&quot;val&quot;&gt;&apos;hello&apos;&lt;/tag&gt;",
+            ),
+            ("hello\x0Cworld", "hello\u{FFFD}world"),
+            ("valid\t\n\rwhitespace", "valid\t\n\rwhitespace"),
+            (
+                "code\u{0000}\u{0001}\u{0008}\u{000B}\u{001F}",
+                "code\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}",
+            ),
+            (
+                "한글과 이모지 🦀 & 특수문자\n",
+                "한글과 이모지 🦀 &amp; 특수문자\n",
+            ),
+            ("끝이 개행이 아닌 &amp", "끝이 개행이 아닌 &amp;amp"),
+        ];
+
+        for &(text, expected_escaped) in cases {
+            let escaped = xml_escape(text);
+            assert_eq!(
+                escaped.as_str(),
+                expected_escaped,
+                "escape mismatch for {text:?}"
+            );
+
+            let mut streamed = Vec::new();
+            write_escaped(&mut streamed, text).unwrap();
+            assert_eq!(
+                String::from_utf8(streamed).unwrap(),
+                escaped.as_str(),
+                "streamed content mismatch for {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_xml_escape_and_streaming_handles_non_escaping_ef_lead_bytes() {
+        let input = "prefix \u{FFFD} & <\u{FEFF}> middle \u{FF01} suffix \u{FFFE} and \u{FFFF}";
+        let escaped = xml_escape(input);
+        assert_eq!(
+            escaped.as_str(),
+            "prefix \u{FFFD} &amp; &lt;\u{FEFF}&gt; middle \u{FF01} suffix \u{FFFD} and \u{FFFD}"
+        );
+        let mut streamed = Vec::new();
+        write_escaped(&mut streamed, input).unwrap();
+        assert_eq!(String::from_utf8(streamed).unwrap(), escaped.as_str());
+    }
+
+    #[test]
+    fn test_write_xml_attr_escaped_preserves_whitespace_char_refs() {
+        let input = "tab\tnewline\r\nquote\"amp&apos'<tag>";
+        let mut out = Vec::new();
+        write_xml_attr_escaped(&mut out, input).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "tab&#9;newline&#13;&#10;quote&quot;amp&amp;apos&apos;&lt;tag&gt;"
+        );
     }
 }

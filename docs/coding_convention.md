@@ -11,7 +11,7 @@ Project-wide coding standards and API design principles for `codefeed`. Combines
 | Item | Convention | Example |
 | :--- | :--- | :--- |
 | Crates | `snake_case` (prefer single word) | `codefeed` |
-| Modules, files | `snake_case` | `github_url`, `orchestrate` |
+| Modules, files | `snake_case` | `selector`, `storage` |
 | Types, traits, enums, variants | `UpperCamelCase` | `FileRecord`, `Option::Some` |
 | Functions, methods, variables | `snake_case` | `render_text`, `path_arena` |
 | Static items, constants | `SCREAMING_SNAKE_CASE` | `MAX_FILE_COUNT`, `MAX_OUTPUT_SIZE` |
