@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, output_too_large_error};
-use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE};
+use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE, PathStatus};
 use crate::core::storage::{FileStorage, SortedFiles};
 
 /// Shell observation of a candidate file content pass.
@@ -186,28 +186,57 @@ impl Selector {
         Ok(RecordOutcome::Skipped(reason))
     }
 
-    /// Reserves a candidate slot, checks optional pre-I/O size hint against limits,
+    /// Handles entry classification state (`PathStatus`), reserving candidate slots,
+    /// evaluating pre-I/O size hints lazily after slot reservation, and executing content reading only when valid.
+    ///
+    /// Returns `Ok(None)` if the entry is [`PathStatus::Ignored`].
+    pub(crate) fn record_entry<'b, H, F>(
+        &mut self,
+        status: PathStatus,
+        path: &str,
+        size_hint: H,
+        read: F,
+    ) -> Result<Option<RecordOutcome>, IngestError>
+    where
+        H: FnOnce() -> Option<u64>,
+        F: FnOnce(u64) -> Result<Observation<'b>, IngestError>,
+    {
+        match status {
+            PathStatus::Ignored => Ok(None),
+            PathStatus::NonUtf8Candidate => {
+                let outcome = self.record_skipped(path, SkipReason::NonUtf8Path)?;
+                Ok(Some(outcome))
+            }
+            PathStatus::Valid => {
+                let outcome = self.record_with(path, size_hint, read)?;
+                Ok(Some(outcome))
+            }
+        }
+    }
+
+    /// Reserves a candidate slot, evaluates optional pre-I/O size hint against limits after reservation,
     /// passes the file size limit to the reader callback if within budget,
     /// and accumulates the file or increments skipped count based on core policy decisions.
     ///
-    /// If `size_hint` exceeds [`MAX_FILE_SIZE`], the reader callback is never invoked.
+    /// If `size_hint()` exceeds [`MAX_FILE_SIZE`], the reader callback is never invoked.
     ///
     /// # Errors
     ///
     /// Returns [`IngestError::CandidateLimitExceeded`] if file count overflows the policy limit,
     /// [`IngestError::OutputTooLarge`] if output size exceeds the policy limit, or propagates
     /// any error returned by `read`.
-    pub(crate) fn record_with<'b, F>(
+    pub(crate) fn record_with<'b, H, F>(
         &mut self,
         path: &str,
-        size_hint: Option<u64>,
+        size_hint: H,
         read: F,
     ) -> Result<RecordOutcome, IngestError>
     where
+        H: FnOnce() -> Option<u64>,
         F: FnOnce(u64) -> Result<Observation<'b>, IngestError>,
     {
         let slot = self.reserve_candidate(path)?;
-        if let Some(hint) = size_hint
+        if let Some(hint) = size_hint()
             && hint > MAX_FILE_SIZE
         {
             self.skipped = self.skipped.saturating_add(1);
@@ -492,10 +521,14 @@ mod tests {
         let mut selector = Selector::new();
         let mut reader_called = false;
         let outcome = selector
-            .record_with("big.bin", Some(MAX_FILE_SIZE + 1), |_| {
-                reader_called = true;
-                Ok(Observation::Unavailable)
-            })
+            .record_with(
+                "big.bin",
+                || Some(MAX_FILE_SIZE + 1),
+                |_| {
+                    reader_called = true;
+                    Ok(Observation::Unavailable)
+                },
+            )
             .unwrap();
         assert!(
             !reader_called,
@@ -511,10 +544,14 @@ mod tests {
         let mut selector = Selector::new();
         let mut reader_called = false;
         selector
-            .record_with("valid.rs", None, |_limit| {
-                reader_called = true;
-                Ok(Observation::Bytes(b"pub fn test() {}"))
-            })
+            .record_with(
+                "valid.rs",
+                || None,
+                |_limit| {
+                    reader_called = true;
+                    Ok(Observation::Bytes(b"pub fn test() {}"))
+                },
+            )
             .unwrap();
         assert!(reader_called);
         let res = selector.finish("test".to_string(), None);
@@ -529,10 +566,14 @@ mod tests {
                 .unwrap();
         }
         let mut overflow_reader_called = false;
-        let err = overflow_selector.record_with("overflow.rs", None, |_limit| {
-            overflow_reader_called = true;
-            Ok(Observation::Bytes(b"content"))
-        });
+        let err = overflow_selector.record_with(
+            "overflow.rs",
+            || None,
+            |_limit| {
+                overflow_reader_called = true;
+                Ok(Observation::Bytes(b"content"))
+            },
+        );
         assert!(err.is_err());
         assert!(
             !overflow_reader_called,

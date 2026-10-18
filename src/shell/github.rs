@@ -13,12 +13,12 @@ use ureq::tls::{RootCerts, TlsConfig};
 use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::error::IngestError;
 use crate::core::github::{
-    MAX_RETRIES, RequestOutcome, RetryDecision, TransportKind, decide_retry, is_github_api_origin,
+    AttemptState, MAX_RETRIES, RequestOutcome, Transition, TransportKind, is_github_api_origin,
     tarball_url,
 };
 use crate::core::model::CollectionResult;
-use crate::core::policy::{ARCHIVE_MAX_SECS, PathStatus};
-use crate::core::selector::{Observation, Selector, SkipReason};
+use crate::core::policy::ARCHIVE_MAX_SECS;
+use crate::core::selector::{Observation, Selector};
 
 const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 const GITHUB_TIMEOUT_SECS: u64 = 30;
@@ -72,7 +72,7 @@ impl GithubClient {
     }
 
     fn stream_url(&self, url: &str) -> Result<Box<dyn Read + Send>, IngestError> {
-        let mut attempt = 0;
+        let mut attempt_state = AttemptState::new();
         loop {
             let mut request = self.agent.get(url);
 
@@ -83,52 +83,52 @@ impl GithubClient {
                 request = request.header("X-Github-Api-Version", "2022-11-28");
             }
 
-            let response = match request.call() {
-                Ok(resp) => resp,
-                Err(error) => {
-                    let kind = if is_retryable_transport_error(&error) {
-                        TransportKind::Retryable
-                    } else {
-                        TransportKind::Permanent
-                    };
-                    let outcome = RequestOutcome::TransportError(kind);
-                    if let RetryDecision::Retry(delay) = decide_retry(attempt, &outcome) {
-                        attempt += 1;
-                        eprintln!(
-                            "warning: GitHub transport error: {error} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
-                        );
-                        std::thread::sleep(delay);
-                        continue;
-                    }
-                    return Err(IngestError::http(error.to_string()));
+            let failure = match request.call() {
+                Ok(resp) if resp.status().is_success() => {
+                    return Ok(Box::new(BufReader::with_capacity(
+                        64 * 1024,
+                        resp.into_body().into_reader(),
+                    )));
                 }
+                Ok(resp) => Err(resp),
+                Err(error) => Ok(error),
             };
 
-            let status = response.status();
-            let outcome = RequestOutcome::HttpStatus(status.as_u16());
-            if let RetryDecision::Retry(delay) = decide_retry(attempt, &outcome) {
-                attempt += 1;
-                eprintln!(
-                    "warning: GitHub HTTP status {status} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
-                );
-                std::thread::sleep(delay);
-                continue;
-            }
+            let outcome = match &failure {
+                Err(resp) => RequestOutcome::HttpStatus(resp.status().as_u16()),
+                Ok(error) if is_retryable_transport_error(error) => {
+                    RequestOutcome::TransportError(TransportKind::Retryable)
+                }
+                Ok(_) => RequestOutcome::TransportError(TransportKind::Permanent),
+            };
 
-            if !status.is_success() {
-                let mut body_bytes = Vec::new();
-                let _ = response
-                    .into_body()
-                    .into_reader()
-                    .take(4096)
-                    .read_to_end(&mut body_bytes);
-                return Err(api_error(status, &body_bytes));
+            match attempt_state.step(&outcome) {
+                Transition::Retry { attempt, delay } => {
+                    match &failure {
+                        Err(resp) => eprintln!(
+                            "warning: GitHub HTTP status {} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}",
+                            resp.status()
+                        ),
+                        Ok(error) => eprintln!(
+                            "warning: GitHub transport error: {error} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
+                        ),
+                    }
+                    std::thread::sleep(delay);
+                }
+                Transition::Fail => match failure {
+                    Err(response) => {
+                        let status = response.status();
+                        let mut body_bytes = Vec::new();
+                        let _ = response
+                            .into_body()
+                            .into_reader()
+                            .take(4096)
+                            .read_to_end(&mut body_bytes);
+                        return Err(api_error(status, &body_bytes));
+                    }
+                    Ok(error) => return Err(IngestError::http(error.to_string())),
+                },
             }
-
-            return Ok(Box::new(BufReader::with_capacity(
-                64 * 1024,
-                response.into_body().into_reader(),
-            )));
         }
     }
 }
@@ -228,22 +228,18 @@ fn process_tar_entry<R: Read>(
 
     // 3. Path decoding, root stripping, normalization & policy classification
     let path_bytes = entry.path_bytes();
-    match normalize_tar_entry_path(&path_bytes, path_scratch)? {
-        PathStatus::Ignored => return Ok(None),
-        PathStatus::NonUtf8Candidate => {
-            selector.record_skipped(path_scratch, SkipReason::NonUtf8Path)?;
-            return Ok(None);
-        }
-        PathStatus::Valid => {}
-    }
+    let status = normalize_tar_entry_path(&path_bytes, path_scratch)?;
 
     let rel_path = path_scratch.as_str();
     let size_hint = entry.header().size().ok();
 
     // 4. Pre-I/O candidate reservation before reading entry body
-    selector.record_with(rel_path, size_hint, |limit| {
-        read_tar_entry_into(entry, limit, content_scratch)
-    })?;
+    selector.record_entry(
+        status,
+        rel_path,
+        || size_hint,
+        |limit| read_tar_entry_into(entry, limit, content_scratch),
+    )?;
 
     Ok(None)
 }

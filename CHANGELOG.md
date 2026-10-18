@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **FSM and Typestate Architecture Refactoring**:
+  - Refactored path segment classification into a single-pass state machine (`PathClassifierState`) in `src/core/policy.rs`, while strictly preserving tar entry traversal (`..`) error precedence in `src/core/archive.rs`.
+  - Refactored CLI argument parsing into a single-pass token state machine (`ParseState`) in `src/core/cli.rs`, eliminating nested iterator consumption while maintaining flag value validation and error precedence rules.
+  - Consolidated HTTP retry orchestration into `AttemptState::step` in `src/core/github.rs` and `src/shell/github.rs`, eliminating duplicate retry logic and warnings in transport and HTTP status branches.
+  - Unified `PathStatus` candidate entry processing in `Selector::record_entry` (`src/core/selector.rs`), standardizing local filesystem walk and archive entry selection while maintaining lazy body evaluation.
+  - Refactored atomic file delivery in `src/shell/output.rs` into `AtomicWriter` with an inner `TempPathGuard` RAII guard, eliminating invalid Option combinations, `expect()`, and `unreachable!()` while guaranteeing cleanup on error or panic unwinding.
 - **Deduplication Cleanup**:
   - Removed redundant in-place path deduplication (`dedup_by`) from `FileStorage::sort_by_path`, removing unreachable logic and updating invariants in `context.md`.
 - **Candidate Pipeline Encapsulation**:
