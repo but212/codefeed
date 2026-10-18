@@ -3,7 +3,6 @@
 //! Coordinates layout rendering across text and XML formats, streaming
 //! token estimation, and output size cap enforcement.
 
-use std::borrow::Cow;
 use std::io::Write;
 
 use crate::core::error::IngestError;
@@ -131,18 +130,19 @@ fn output_too_large_error(collection: &CollectionResult) -> IngestError {
     ))
 }
 
-/// Escapes backslashes, carriage returns, and newlines in metadata header strings.
-fn escape_header(value: &str) -> Cow<'_, str> {
-    if !value.contains(['\\', '\r', '\n']) {
-        Cow::Borrowed(value)
-    } else {
-        Cow::Owned(
-            value
-                .replace('\\', "\\\\")
-                .replace('\r', "\\r")
-                .replace('\n', "\\n"),
-        )
+#[inline(always)]
+fn header_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
+    match bytes[i] {
+        b'\\' => Some((1, "\\\\")),
+        b'\r' => Some((1, "\\r")),
+        b'\n' => Some((1, "\\n")),
+        _ => None,
     }
+}
+
+/// Escapes backslashes, carriage returns, and newlines in metadata header strings while streaming to `writer`.
+fn write_header_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
+    write_stream_escaped(writer, value, header_special_at)
 }
 
 pub(crate) fn render_text<W: Write + ?Sized>(
@@ -150,11 +150,11 @@ pub(crate) fn render_text<W: Write + ?Sized>(
     collection: &CollectionResult,
 ) -> Result<(), IngestError> {
     writer.write_all(REPOSITORY_PREFIX.as_bytes())?;
-    writer.write_all(escape_header(&collection.label).as_bytes())?;
+    write_header_escaped(writer, &collection.label)?;
     writer.write_all(NEWLINE.as_bytes())?;
     if let Some(ref revision) = collection.revision {
         writer.write_all(REVISION_PREFIX.as_bytes())?;
-        writer.write_all(escape_header(revision).as_bytes())?;
+        write_header_escaped(writer, revision)?;
         writer.write_all(NEWLINE.as_bytes())?;
     }
     writer.write_all(FILES_PREFIX.as_bytes())?;
@@ -163,15 +163,13 @@ pub(crate) fn render_text<W: Write + ?Sized>(
     write!(writer, "{}", collection.skipped)?;
     writer.write_all(METADATA_SUFFIX.as_bytes())?;
     writer.write_all(DIRECTORY_HEADER.as_bytes())?;
-    crate::core::tree::render_tree(writer, &collection.files, |w, name| {
-        w.write_all(escape_header(name).as_bytes())
-    })?;
+    crate::core::tree::render_tree(writer, &collection.files, write_header_escaped)?;
     writer.write_all(FILES_HEADER.as_bytes())?;
     for file in collection.files.iter() {
         const TAIL: [&[u8]; 2] = [b"\n", b"\n\n"];
         let needs_extra_nl = (!file.content.ends_with('\n')) as usize;
         writer.write_all(FILE_BLOCK_PREFIX.as_bytes())?;
-        writer.write_all(escape_header(file.path).as_bytes())?;
+        write_header_escaped(writer, file.path)?;
         writer.write_all(FILE_BLOCK_SUFFIX.as_bytes())?;
         writer.write_all(file.content.as_bytes())?;
         writer.write_all(TAIL[needs_extra_nl])?;
@@ -215,18 +213,11 @@ where
     F: Fn(&[u8], usize) -> Option<(usize, &'static str)>,
 {
     let bytes = value.as_bytes();
-    let Some(first) = (0..bytes.len()).find(|&i| special_at(bytes, i).is_some()) else {
-        return writer.write_all(bytes);
-    };
-
-    writer.write_all(&bytes[..first])?;
-    let mut last = first;
-    let mut i = first;
+    let mut last = 0;
+    let mut i = 0;
     while i < bytes.len() {
         if let Some((consumed, esc)) = special_at(bytes, i) {
-            if last < i {
-                writer.write_all(&bytes[last..i])?;
-            }
+            writer.write_all(&bytes[last..i])?;
             writer.write_all(esc.as_bytes())?;
             i += consumed;
             last = i;
@@ -234,10 +225,7 @@ where
             i += 1;
         }
     }
-    if last < bytes.len() {
-        writer.write_all(&bytes[last..])?;
-    }
-    Ok(())
+    writer.write_all(&bytes[last..])
 }
 
 /// Escapes standard XML characters and control bytes while streaming to `writer`.
@@ -601,19 +589,23 @@ z &lt; 10
     }
 
     #[test]
-    fn escape_header_borrows_clean_input() {
-        assert!(matches!(escape_header("clean_path"), Cow::Borrowed(_)));
-        assert!(matches!(
-            escape_header("path\nwith\nnewline"),
-            Cow::Owned(_)
-        ));
+    fn write_header_escaped_preserves_clean_input() {
+        let mut buf = Vec::new();
+        write_header_escaped(&mut buf, "clean_path").unwrap();
+        assert_eq!(std::str::from_utf8(&buf).unwrap(), "clean_path");
+
+        buf.clear();
+        write_header_escaped(&mut buf, "").unwrap();
+        assert_eq!(buf.len(), 0);
     }
 
     #[test]
-    fn escape_header_replaces_all_target_characters_in_single_string() {
+    fn write_header_escaped_replaces_all_target_characters() {
         let input = "a\\b\rc\nd\\\\e\r\n";
         let expected = "a\\\\b\\rc\\nd\\\\\\\\e\\r\\n";
-        assert_eq!(escape_header(input).as_ref(), expected);
+        let mut buf = Vec::new();
+        write_header_escaped(&mut buf, input).unwrap();
+        assert_eq!(std::str::from_utf8(&buf).unwrap(), expected);
     }
 
     fn xml_escape(value: &str) -> String {

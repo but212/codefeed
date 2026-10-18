@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Stream Escaping & Path Normalization Simplification**: Streamlined `write_stream_escaped` to a single pass without pre-scan or empty-slice guards; replaced `escape_header` with streaming `write_header_escaped`, eliminating `std::borrow::Cow` across the crate; simplified `cmp_path` using standard `Iterator::cmp`; unified `local::normalize_relative_path_into` loop via `!scratch.is_empty()`; removed redundant empty segment filtering in `tree::component_at` with a debug invariant assertion in `FileStorage::push`.
 - **Module Architecture Consolidation**: Consolidated `src/core/render/{mod.rs, text.rs, xml.rs}` into `src/core/render.rs` and inlined pipeline orchestration (`orchestrate.rs`) into `src/shell/mod.rs`, re-exporting `ingest` via `pub use shell::ingest;` at crate root.
 - **Module Consolidation (`source` & `github_url`)**: Consolidated `source.rs` into `model.rs` via `Source::parse` and `Source::parse_os`, and inlined GitHub URL construction and origin verification directly into `src/shell/github.rs`, eliminating tiny file sprawl and dead module boundaries.
 - **XML Directory Structure Escaping**: Unified `<directory_structure>` tree node escaping with `<file path="...">` attributes via `write_xml_attr_escaped` (`&#9;`, `&#10;`, `&#13;` character references without doubling backslashes), removing redundant `xml_tree_special_at` and `write_xml_tree_escaped`.

@@ -201,22 +201,16 @@ fn walk_candidates(root: &Path, resolved_output: Option<&Path>) -> Result<PathAr
 
 fn normalize_relative_path_into(relative: &Path, scratch: &mut String) -> bool {
     scratch.clear();
-    let mut parts = relative.components();
-    let Some(first) = parts.next() else {
-        return false;
-    };
-    let Some(first_str) = first.as_os_str().to_str() else {
-        return false;
-    };
-    scratch.push_str(first_str);
-    for part in parts {
+    for part in relative.components() {
         let Some(s) = part.as_os_str().to_str() else {
             return false;
         };
-        scratch.push('/');
+        if !scratch.is_empty() {
+            scratch.push('/');
+        }
         scratch.push_str(s);
     }
-    true
+    !scratch.is_empty()
 }
 
 fn local_label(root: &Path) -> String {

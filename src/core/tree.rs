@@ -95,7 +95,7 @@ where
 }
 
 fn component_at(path: &str, depth: usize) -> Option<(&str, bool)> {
-    let mut parts = path.split('/').filter(|s| !s.is_empty());
+    let mut parts = path.split('/');
     let name = parts.nth(depth)?;
     let is_dir = parts.next().is_some();
     Some((name, is_dir))

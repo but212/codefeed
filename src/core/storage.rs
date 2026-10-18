@@ -98,6 +98,7 @@ impl FileStorage {
 
     /// Appends path and content to the arenas and records a [`FileSpan`].
     pub(crate) fn push(&mut self, path: &str, content: &str) {
+        debug_assert!(!path.is_empty(), "file path must not be empty");
         debug_assert!(u32::try_from(self.path_arena.len()).is_ok());
         debug_assert!(u32::try_from(path.len()).is_ok());
         debug_assert!(u32::try_from(self.content_arena.len()).is_ok());
@@ -194,19 +195,7 @@ impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
 
 /// Compares two normalized slash-separated relative paths hierarchically by path components.
 fn cmp_path(a: &str, b: &str) -> Ordering {
-    let mut a_parts = a.split('/');
-    let mut b_parts = b.split('/');
-    loop {
-        match (a_parts.next(), b_parts.next()) {
-            (Some(seg_a), Some(seg_b)) => match seg_a.cmp(seg_b) {
-                Ordering::Equal => continue,
-                other => return other,
-            },
-            (Some(_), None) => return Ordering::Greater,
-            (None, Some(_)) => return Ordering::Less,
-            (None, None) => return Ordering::Equal,
-        }
-    }
+    a.split('/').cmp(b.split('/'))
 }
 
 #[cfg(test)]
