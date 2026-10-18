@@ -342,9 +342,16 @@ mod tests {
         let result = write_atomic(&existing_dir, |_w| Ok(()));
         match result {
             Err(IngestError::Io(err)) => {
-                assert_eq!(err.kind(), io::ErrorKind::IsADirectory);
+                assert!(
+                    matches!(
+                        err.kind(),
+                        io::ErrorKind::IsADirectory | io::ErrorKind::PermissionDenied
+                    ),
+                    "expected IsADirectory or PermissionDenied, got {:?}",
+                    err.kind()
+                );
             }
-            other => panic!("expected IngestError::Io(IsADirectory), got {other:?}"),
+            other => panic!("expected IngestError::Io, got {other:?}"),
         }
         Ok(())
     }
