@@ -11,12 +11,17 @@ use crate::core::render::render_to_writer;
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-pub(super) fn write_stdout_line_to<W: io::Write>(out: &mut W, line: &str) -> io::Result<()> {
-    match writeln!(out, "{line}") {
+#[inline]
+fn ignore_broken_pipe(result: io::Result<()>) -> io::Result<()> {
+    match result {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         Err(e) => Err(e),
     }
+}
+
+pub(super) fn write_stdout_line_to<W: io::Write>(out: &mut W, line: &str) -> io::Result<()> {
+    ignore_broken_pipe(writeln!(out, "{line}"))
 }
 
 pub(super) fn write_stdout_line(line: &str) {
@@ -105,15 +110,9 @@ fn render_stdout_to<W: Write>(
 ) -> Result<usize, IngestError> {
     let mut buffer = Vec::new();
     let tokens = render_to_writer(&mut buffer, collection, format)?;
-    match out.write_all(&buffer) {
-        Ok(()) => match out.flush() {
-            Ok(()) => Ok(tokens),
-            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(tokens),
-            Err(e) => Err(IngestError::Io(e)),
-        },
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(tokens),
-        Err(e) => Err(IngestError::Io(e)),
-    }
+    ignore_broken_pipe(out.write_all(&buffer).and_then(|()| out.flush()))
+        .map_err(IngestError::Io)?;
+    Ok(tokens)
 }
 
 const BUF_WRITER_CAPACITY: usize = 64 * 1024;

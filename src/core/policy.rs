@@ -24,13 +24,6 @@ const NOISE: &[&str] = &[
 /// and is also matched as a filename prefix in [`is_sensitive_file`] (`credentials*`, e.g., `credentials.json`).
 const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "credentials"];
 
-/// Maximum total HTTP request attempts (1 initial + up to 2 retries).
-pub(crate) const MAX_RETRIES: usize = 3;
-/// Base initial delay in milliseconds for exponential backoff.
-const RETRY_INITIAL_DELAY_MS: u64 = 250;
-/// Maximum delay cap in milliseconds for exponential backoff.
-const RETRY_MAX_DELAY_MS: u64 = 5_000;
-
 /// Path classification outcome from a single-pass policy evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PathStatus {
@@ -147,65 +140,9 @@ where
     PathStatus::Valid
 }
 
-/// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
-#[inline]
-pub(crate) const fn is_retryable_status(status_code: u16) -> bool {
-    matches!(status_code, 429 | 500..=599)
-}
-
-/// Calculates bounded exponential backoff duration for the given attempt.
-#[inline]
-pub(crate) const fn retry_delay(attempt: usize) -> std::time::Duration {
-    let shift = if attempt < 5 { attempt as u32 } else { 5 };
-    let exponential = RETRY_INITIAL_DELAY_MS.saturating_mul(1_u64 << shift);
-    let millis = if exponential < RETRY_MAX_DELAY_MS {
-        exponential
-    } else {
-        RETRY_MAX_DELAY_MS
-    };
-
-    std::time::Duration::from_millis(millis)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn classifies_retryable_status_codes() {
-        const {
-            assert!(is_retryable_status(429));
-            assert!(is_retryable_status(500));
-            assert!(!is_retryable_status(200));
-        }
-        for code in [429, 500, 502, 503, 504] {
-            assert!(is_retryable_status(code), "code {code} should be retryable");
-        }
-        for code in [200, 400, 401, 403, 404] {
-            assert!(
-                !is_retryable_status(code),
-                "code {code} should not be retryable"
-            );
-        }
-    }
-
-    #[test]
-    fn calculates_bounded_exponential_backoff() {
-        const {
-            assert!(retry_delay(0).as_millis() == 250);
-            assert!(retry_delay(1).as_millis() == 500);
-            assert!(retry_delay(2).as_millis() == 1000);
-            assert!(retry_delay(5).as_millis() == 5000);
-            assert!(retry_delay(10).as_millis() == 5000);
-        }
-        assert_eq!(retry_delay(0).as_millis(), 250);
-        assert_eq!(retry_delay(1).as_millis(), 500);
-        assert_eq!(retry_delay(2).as_millis(), 1000);
-        assert_eq!(retry_delay(3).as_millis(), 2000);
-        assert_eq!(retry_delay(4).as_millis(), 4000);
-        assert_eq!(retry_delay(5).as_millis(), 5000);
-        assert_eq!(retry_delay(10).as_millis(), 5000);
-    }
 
     #[test]
     fn test_is_hidden_segment() {

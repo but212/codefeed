@@ -13,11 +13,12 @@ use ureq::tls::{RootCerts, TlsConfig};
 use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::error::IngestError;
 use crate::core::github::{
-    RequestOutcome, RetryDecision, decide_retry, is_github_api_origin, tarball_url,
+    MAX_RETRIES, RequestOutcome, RetryDecision, TransportKind, decide_retry, is_github_api_origin,
+    tarball_url,
 };
 use crate::core::model::CollectionResult;
-use crate::core::policy::{ARCHIVE_MAX_SECS, MAX_RETRIES, PathStatus};
-use crate::core::selector::{Observation, Selector};
+use crate::core::policy::{ARCHIVE_MAX_SECS, PathStatus};
+use crate::core::selector::{Observation, Selector, SkipReason};
 
 const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 const GITHUB_TIMEOUT_SECS: u64 = 30;
@@ -85,8 +86,12 @@ impl GithubClient {
             let response = match request.call() {
                 Ok(resp) => resp,
                 Err(error) => {
-                    let outcome =
-                        RequestOutcome::TransportError(is_retryable_transport_error(&error));
+                    let kind = if is_retryable_transport_error(&error) {
+                        TransportKind::Retryable
+                    } else {
+                        TransportKind::Permanent
+                    };
+                    let outcome = RequestOutcome::TransportError(kind);
                     if let RetryDecision::Retry(delay) = decide_retry(attempt, &outcome) {
                         attempt += 1;
                         eprintln!(
@@ -226,16 +231,17 @@ fn process_tar_entry<R: Read>(
     match normalize_tar_entry_path(&path_bytes, path_scratch)? {
         PathStatus::Ignored => return Ok(None),
         PathStatus::NonUtf8Candidate => {
-            selector.record_skipped(path_scratch)?;
+            selector.record_skipped(path_scratch, SkipReason::NonUtf8Path)?;
             return Ok(None);
         }
         PathStatus::Valid => {}
     }
 
     let rel_path = path_scratch.as_str();
+    let size_hint = entry.header().size().ok();
 
     // 4. Pre-I/O candidate reservation before reading entry body
-    selector.record_with(rel_path, |limit| {
+    selector.record_with(rel_path, size_hint, |limit| {
         read_tar_entry_into(entry, limit, content_scratch)
     })?;
 

@@ -63,7 +63,7 @@ mod tests {
         escape_header, escape_xml_body, escape_xml_single_line, write_escaped,
     };
     use crate::core::render::tree::{component_at_offset, render_tree};
-    use crate::core::storage::{FileRecord, FileStorage};
+    use crate::core::storage::{FileRecord, FileStorage, SortedFiles};
 
     fn render_digest(
         label: &str,
@@ -494,10 +494,10 @@ z &lt; 10
         storage.push("Cargo.toml", "");
         storage.push("src/core/a.rs", "");
         storage.push("src/lib.rs", "");
-        storage.sort_by_path();
+        let files = SortedFiles::new(storage);
 
         let mut buf = Vec::new();
-        render_tree(&mut buf, &storage, |w, s| w.write_all(s.as_bytes()))?;
+        render_tree(&mut buf, &files, |w, s| w.write_all(s.as_bytes()))?;
         let tree_str = std::str::from_utf8(&buf)?;
         let expected = "\
 ├── Cargo.toml
@@ -514,9 +514,10 @@ z &lt; 10
     fn formats_tree_nodes_custom_formatter() -> std::io::Result<()> {
         let mut storage = FileStorage::new();
         storage.push("dir_name/file_name.txt", "");
+        let files = SortedFiles::new(storage);
 
         let mut out = Vec::new();
-        render_tree(&mut out, &storage, |w, name| {
+        render_tree(&mut out, &files, |w, name| {
             w.write_all(name.to_uppercase().as_bytes())
         })?;
         let s = String::from_utf8_lossy(&out);
@@ -531,10 +532,10 @@ z &lt; 10
         storage.push("a/x.txt", "");
         storage.push("a/y.txt", "");
         storage.push("b/z.txt", "");
-        storage.sort_by_path();
+        let files = SortedFiles::new(storage);
 
         let mut buf = Vec::new();
-        render_tree(&mut buf, &storage, |w, s| w.write_all(s.as_bytes()))?;
+        render_tree(&mut buf, &files, |w, s| w.write_all(s.as_bytes()))?;
         let tree_str = std::str::from_utf8(&buf)?;
         let expected = "\
 ├── a/
@@ -571,10 +572,10 @@ z &lt; 10
         storage.push("a/b/c/f.txt", "");
         storage.push("a/b/g.txt", "");
         storage.push("root.txt", "");
-        storage.sort_by_path();
+        let files = SortedFiles::new(storage);
 
         let mut buf = Vec::new();
-        render_tree(&mut buf, &storage, |w, s| w.write_all(s.as_bytes()))?;
+        render_tree(&mut buf, &files, |w, s| w.write_all(s.as_bytes()))?;
         let tree_str = std::str::from_utf8(&buf)?;
         let expected = "\
 ├── a/

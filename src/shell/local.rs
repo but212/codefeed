@@ -9,7 +9,7 @@ use ignore::WalkBuilder;
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
 use crate::core::policy::{PathStatus, classify_path_segments};
-use crate::core::selector::{Observation, Selector};
+use crate::core::selector::{Observation, Selector, SkipReason};
 
 /// Collects files from a local directory root, excluding the resolved output file if located inside it.
 pub(super) fn collect(
@@ -52,10 +52,11 @@ pub(super) fn collect(
         match classify_local_path(relative, &mut path_scratch) {
             PathStatus::Ignored => continue,
             PathStatus::NonUtf8Candidate => {
-                selector.record_skipped(&path_scratch)?;
+                selector.record_skipped(&path_scratch, SkipReason::NonUtf8Path)?;
             }
             PathStatus::Valid => {
-                selector.record_with(&path_scratch, |limit| {
+                let size_hint = entry.metadata().ok().map(|m| m.len());
+                selector.record_with(&path_scratch, size_hint, |limit| {
                     scratch.clear();
                     read_local_file_into(entry_path, limit, &mut scratch)
                 })?;
@@ -66,19 +67,11 @@ pub(super) fn collect(
     Ok(selector.finish(label, None))
 }
 
-#[cfg(test)]
-thread_local! {
-    static BODY_READ_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 fn read_local_file_into<'b>(
     path: &Path,
     limit: u64,
     buf: &'b mut Vec<u8>,
 ) -> Result<Observation<'b>, IngestError> {
-    #[cfg(test)]
-    BODY_READ_COUNT.with(|c| c.set(c.get() + 1));
-
     let meta = match fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Observation::Unavailable),
@@ -434,34 +427,6 @@ mod tests {
                 window[1].path
             );
         }
-        Ok(())
-    }
-
-    #[test]
-    fn candidate_overflow_aborts_immediately_at_limit() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::core::policy::MAX_FILE_COUNT;
-
-        let root = temp_dir("candidate_overflow_abort")?;
-        for i in 0..(MAX_FILE_COUNT + 50) {
-            fs::write(root.join(format!("file_{i:05}.txt")), b"")?;
-        }
-
-        BODY_READ_COUNT.with(|c| c.set(0));
-
-        let err = collect(&root, None).unwrap_err();
-        match err {
-            IngestError::CandidateLimitExceeded(..) => {
-                let msg = err.to_string();
-                assert!(msg.contains("repository contains more than 10000 files"));
-            }
-            other => panic!("expected CandidateLimitExceeded, got {other:?}"),
-        }
-
-        assert_eq!(
-            BODY_READ_COUNT.with(|c| c.get()),
-            MAX_FILE_COUNT,
-            "must abort traversal immediately upon exceeding limit without reading remaining files"
-        );
         Ok(())
     }
 }

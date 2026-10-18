@@ -1,9 +1,14 @@
 //! Pure GitHub domain rules, URL formatting, origin security policy, and retry decisions.
 
 use crate::core::error::IngestError;
-use crate::core::model::Source;
-use crate::core::policy::{MAX_RETRIES, is_retryable_status, retry_delay};
 use std::time::Duration;
+
+/// Maximum total HTTP request attempts (1 initial + up to 2 retries).
+pub(crate) const MAX_RETRIES: usize = 3;
+/// Base initial delay in milliseconds for exponential backoff.
+const RETRY_INITIAL_DELAY_MS: u64 = 250;
+/// Maximum delay cap in milliseconds for exponential backoff.
+const RETRY_MAX_DELAY_MS: u64 = 5_000;
 
 pub(crate) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 
@@ -13,7 +18,7 @@ pub(crate) fn is_github_api_origin(url: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
-/// Constructs the tarball download URL for the given repository and optional Git reference.
+/// Validates whether the given string conforms to valid GitHub owner or repository name rules.
 pub(crate) fn valid_github_name(value: &str) -> bool {
     !value.is_empty()
         && value != "."
@@ -27,7 +32,8 @@ pub(crate) fn valid_github_name(value: &str) -> bool {
         })
 }
 
-pub(crate) fn parse_github_url(value: &str) -> Result<Source, IngestError> {
+/// Parses a GitHub repository URL into an `(owner, repo)` string pair.
+pub(crate) fn parse_github_url(value: &str) -> Result<(String, String), IngestError> {
     let remainder = value.strip_prefix("https://").ok_or_else(|| {
         IngestError::unsupported_source("only https://github.com/{owner}/{repo} is supported")
     })?;
@@ -67,9 +73,15 @@ pub(crate) fn parse_github_url(value: &str) -> Result<Source, IngestError> {
     };
 
     let repo = repo_segment.strip_suffix(".git").unwrap_or(repo_segment);
-    Source::github(owner, repo, None)
+    if !valid_github_name(owner) || !valid_github_name(repo) {
+        return Err(IngestError::invalid_source(
+            "owner and repository names contain invalid characters",
+        ));
+    }
+    Ok((owner.to_string(), repo.to_string()))
 }
 
+/// Constructs the tarball download URL for the given repository and optional Git reference.
 pub(crate) fn tarball_url(owner: &str, repo: &str, reference: Option<&str>) -> String {
     let mut url = String::from(GITHUB_API_BASE_URL);
     for segment in ["repos", owner, repo, "tarball"] {
@@ -105,11 +117,40 @@ fn push_encoded_segment(url: &mut String, segment: &str) {
     }
 }
 
+/// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
+#[inline]
+pub(crate) const fn is_retryable_status(status_code: u16) -> bool {
+    matches!(status_code, 429 | 500..=599)
+}
+
+/// Calculates bounded exponential backoff duration for the given attempt.
+#[inline]
+pub(crate) const fn retry_delay(attempt: usize) -> Duration {
+    let shift = if attempt < 5 { attempt as u32 } else { 5 };
+    let exponential = RETRY_INITIAL_DELAY_MS.saturating_mul(1_u64 << shift);
+    let millis = if exponential < RETRY_MAX_DELAY_MS {
+        exponential
+    } else {
+        RETRY_MAX_DELAY_MS
+    };
+
+    Duration::from_millis(millis)
+}
+
+/// Classification of transport-level errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransportKind {
+    /// Transient network or timeout errors suitable for retry.
+    Retryable,
+    /// Permanent failures that should not be retried.
+    Permanent,
+}
+
 /// Action outcome from a network / HTTP attempt.
 #[derive(Debug)]
 pub(crate) enum RequestOutcome {
     HttpStatus(u16),
-    TransportError(bool), // true if retryable transport error
+    TransportError(TransportKind),
 }
 
 /// Retry decision derived purely from attempt count and attempt outcome.
@@ -126,7 +167,7 @@ pub(crate) fn decide_retry(attempt: usize, outcome: &RequestOutcome) -> RetryDec
     }
     let should_retry = match outcome {
         RequestOutcome::HttpStatus(status) => is_retryable_status(*status),
-        RequestOutcome::TransportError(retryable) => *retryable,
+        RequestOutcome::TransportError(kind) => matches!(kind, TransportKind::Retryable),
     };
 
     if should_retry {
@@ -180,6 +221,45 @@ mod tests {
     }
 
     #[test]
+    fn classifies_retryable_status_codes() {
+        for code in [429, 500, 502, 503, 504] {
+            assert!(is_retryable_status(code), "code {code} should be retryable");
+        }
+        for code in [200, 400, 401, 403, 404] {
+            assert!(
+                !is_retryable_status(code),
+                "code {code} should not be retryable"
+            );
+        }
+    }
+
+    #[test]
+    fn calculates_bounded_exponential_backoff() {
+        assert_eq!(retry_delay(0).as_millis(), 250);
+        assert_eq!(retry_delay(1).as_millis(), 500);
+        assert_eq!(retry_delay(2).as_millis(), 1000);
+        assert_eq!(retry_delay(3).as_millis(), 2000);
+        assert_eq!(retry_delay(4).as_millis(), 4000);
+        assert_eq!(retry_delay(5).as_millis(), 5000);
+        assert_eq!(retry_delay(10).as_millis(), 5000);
+    }
+
+    #[test]
+    fn parses_owner_and_repo() {
+        let (owner, repo) = parse_github_url("https://github.com/rust-lang/cargo").unwrap();
+        assert_eq!(owner, "rust-lang");
+        assert_eq!(repo, "cargo");
+
+        let (owner, repo) = parse_github_url("https://github.com/owner/repo.git").unwrap();
+        assert_eq!(owner, "owner");
+        assert_eq!(repo, "repo");
+
+        assert!(parse_github_url("https://notgithub.com/a/b").is_err());
+        assert!(parse_github_url("https://github.com/a/b/c").is_err());
+        assert!(parse_github_url("https://github.com/../b").is_err());
+    }
+
+    #[test]
     fn decides_retry_correctly() {
         // Attempt 0 (1st try), 500 status -> Retry initial delay
         assert_eq!(
@@ -201,9 +281,14 @@ mod tests {
             decide_retry(0, &RequestOutcome::HttpStatus(404)),
             RetryDecision::Fail
         );
+        // Retryable transport error -> Retry
+        assert_eq!(
+            decide_retry(0, &RequestOutcome::TransportError(TransportKind::Retryable)),
+            RetryDecision::Retry(retry_delay(0))
+        );
         // Non-retryable transport error -> Fail
         assert_eq!(
-            decide_retry(0, &RequestOutcome::TransportError(false)),
+            decide_retry(0, &RequestOutcome::TransportError(TransportKind::Permanent)),
             RetryDecision::Fail
         );
     }

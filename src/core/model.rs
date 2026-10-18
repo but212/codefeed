@@ -104,7 +104,8 @@ impl Source {
     /// (such as SSH) or [`IngestError::InvalidSource`] if the GitHub URL is malformed.
     fn parse(value: &str) -> Result<Self, IngestError> {
         if value.starts_with("http://") || value.starts_with("https://") {
-            return crate::core::github::parse_github_url(value);
+            let (owner, repo) = crate::core::github::parse_github_url(value)?;
+            return Self::github(owner, repo, None);
         }
         if value.starts_with("git@") || value.starts_with("ssh://") {
             return Err(IngestError::unsupported_source(

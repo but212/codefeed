@@ -1,6 +1,4 @@
-//! Format-neutral ASCII hierarchy tree rendering.
-
-use crate::core::storage::{FileSpan, FileStorage};
+use crate::core::storage::{FileSpan, SortedFiles};
 use std::io::Write;
 
 const TREE_BRANCH: &str = "├── ";
@@ -8,10 +6,10 @@ const TREE_LAST: &str = "└── ";
 const TREE_VERT: &str = "│   ";
 const TREE_SPACE: &str = "    ";
 
-/// Renders an ASCII tree representation of the provided pre-sorted [`FileStorage`] to the writer.
+/// Renders an ASCII tree representation of the provided pre-sorted [`SortedFiles`] to the writer.
 pub(crate) fn render_tree<W: Write + ?Sized, F>(
     writer: &mut W,
-    storage: &FileStorage,
+    files: &SortedFiles,
     mut format_name: F,
 ) -> std::io::Result<()>
 where
@@ -20,8 +18,8 @@ where
     let mut prefix = String::new();
     render_level(
         writer,
-        storage.spans(),
-        storage.path_arena(),
+        files.spans(),
+        files.path_arena(),
         0,
         &mut prefix,
         &mut format_name,
