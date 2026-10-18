@@ -31,7 +31,7 @@ pub(super) fn write_stdout_line(line: &str) {
 }
 
 /// Returns the elapsed duration since the Unix epoch in nanoseconds.
-pub(super) fn current_epoch_nanos() -> u128 {
+fn current_epoch_nanos() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())

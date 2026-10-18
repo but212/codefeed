@@ -33,7 +33,7 @@ Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_
 
 - Use table-driven slice fixtures (`let cases = [...]`) over repetitive test functions.
 - Test `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` in memory via `Selector` / `CandidateBudget`, not disk loops.
-- Use `crate::shell::testing::temp_dir("label")` (`TempDirGuard`) for all filesystem tests.
+- Use `crate::shell::testing::temp_dir("label")` (`TempDirGuard`) for unit tests in `src/`. Integration tests in `tests/` maintain a local `TempDir` helper.
 - Mock HTTP with local `TcpListener` (`127.0.0.1:0`) threads.
 
 ## 4. Sync

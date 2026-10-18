@@ -209,16 +209,9 @@ pub(crate) struct CollectionResult {
     pub(crate) skipped: usize,
 }
 
-/// Constructs an [`IngestError::OutputTooLarge`] diagnostic error from an iterator of file records.
-pub(crate) fn output_too_large_error<'a>(
-    records: impl IntoIterator<Item = crate::core::storage::FileRecord<'a>>,
-) -> IngestError {
-    IngestError::output_too_large(crate::core::storage::largest_files(records))
-}
-
 impl CollectionResult {
     pub(crate) fn output_too_large_error(&self) -> IngestError {
-        output_too_large_error(self.files.iter())
+        IngestError::output_too_large(crate::core::storage::largest_files(self.files.iter()))
     }
 }
 

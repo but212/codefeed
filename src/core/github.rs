@@ -1,14 +1,8 @@
 //! Pure GitHub domain rules, URL formatting, origin security policy, and retry decisions.
 
 use crate::core::error::IngestError;
+use crate::core::policy::{MAX_ATTEMPTS, RETRY_INITIAL_DELAY_MS, RETRY_MAX_DELAY_MS};
 use std::time::Duration;
-
-/// Maximum total HTTP request attempts (1 initial + up to 2 retries).
-pub(crate) const MAX_RETRIES: usize = 3;
-/// Base initial delay in milliseconds for exponential backoff.
-const RETRY_INITIAL_DELAY_MS: u64 = 250;
-/// Maximum delay cap in milliseconds for exponential backoff.
-const RETRY_MAX_DELAY_MS: u64 = 5_000;
 
 pub(crate) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 
@@ -173,7 +167,7 @@ impl AttemptState {
 
     /// Advances state given an attempt outcome, returning next transition action.
     pub(crate) fn step(&mut self, outcome: &RequestOutcome) -> Transition {
-        if self.attempt + 1 >= MAX_RETRIES {
+        if self.attempt + 1 >= MAX_ATTEMPTS {
             return Transition::Fail;
         }
         let should_retry = match outcome {
@@ -300,7 +294,7 @@ mod tests {
                 delay: retry_delay(1)
             }
         );
-        // Attempt 2 (3rd try) -> Exceeds MAX_RETRIES (3), Fail
+        // Attempt 2 (3rd try) -> Exceeds MAX_ATTEMPTS (3), Fail
         assert_eq!(
             decide_retry(2, &RequestOutcome::HttpStatus(500)),
             Transition::Fail

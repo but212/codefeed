@@ -1,18 +1,21 @@
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
 
+static CLI_TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+// Note: Integration tests in tests/ cannot access internal pub(super) helpers in src/shell/testing.rs.
+// Per AGENTS.md policy, unit tests use shell::testing::temp_dir while integration tests maintain
+// this lightweight local fixture.
 struct TempDir {
     path: PathBuf,
 }
 
 impl TempDir {
     fn new(label: &str) -> Self {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should be after Unix epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("codefeed_cli_{label}_{suffix}"));
+        let pid = std::process::id();
+        let counter = CLI_TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("codefeed_cli_{label}_{pid}_{counter}"));
         std::fs::create_dir_all(&path).expect("temporary directory should be created");
         Self { path }
     }

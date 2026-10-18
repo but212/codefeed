@@ -8,6 +8,14 @@ pub(crate) const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
 pub(crate) const MAX_FILE_COUNT: usize = 10_000;
 /// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
 pub(crate) const ARCHIVE_MAX_SECS: u64 = 300;
+/// Maximum total HTTP request attempts (1 initial + up to 2 retries).
+pub(crate) const MAX_ATTEMPTS: usize = 3;
+/// Base initial delay in milliseconds for exponential backoff.
+pub(crate) const RETRY_INITIAL_DELAY_MS: u64 = 250;
+/// Maximum delay cap in milliseconds for exponential backoff.
+pub(crate) const RETRY_MAX_DELAY_MS: u64 = 5_000;
+/// HTTP response headers timeout in seconds for GitHub API requests (30 seconds).
+pub(crate) const GITHUB_TIMEOUT_SECS: u64 = 30;
 
 /// Conventional lockfiles excluded before candidate budget accounting.
 const NOISE: &[&str] = &[

@@ -13,15 +13,13 @@ use ureq::tls::{RootCerts, TlsConfig};
 use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::error::IngestError;
 use crate::core::github::{
-    AttemptState, MAX_RETRIES, RequestOutcome, Transition, TransportKind, is_github_api_origin,
-    tarball_url,
+    AttemptState, RequestOutcome, Transition, TransportKind, is_github_api_origin, tarball_url,
 };
 use crate::core::model::CollectionResult;
-use crate::core::policy::ARCHIVE_MAX_SECS;
+use crate::core::policy::{ARCHIVE_MAX_SECS, GITHUB_TIMEOUT_SECS, MAX_ATTEMPTS};
 use crate::core::selector::{Observation, Selector};
 
 const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
-const GITHUB_TIMEOUT_SECS: u64 = 30;
 
 /// Collects files from a remote GitHub repository via streaming tarball download.
 pub(super) fn collect(
@@ -106,11 +104,11 @@ impl GithubClient {
                 Transition::Retry { attempt, delay } => {
                     match &failure {
                         Err(resp) => eprintln!(
-                            "warning: GitHub HTTP status {} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}",
+                            "warning: GitHub HTTP status {} on attempt {attempt}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}",
                             resp.status()
                         ),
                         Ok(error) => eprintln!(
-                            "warning: GitHub transport error: {error} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
+                            "warning: GitHub transport error: {error} on attempt {attempt}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}"
                         ),
                     }
                     std::thread::sleep(delay);
@@ -385,7 +383,7 @@ mod tests {
         let attempts_clone = Arc::clone(&attempts);
 
         let handle = thread::spawn(move || {
-            for _ in 0..MAX_RETRIES {
+            for _ in 0..MAX_ATTEMPTS {
                 let (mut stream, _) = listener.accept().expect("accept");
                 attempts_clone.fetch_add(1, Ordering::SeqCst);
                 let mut buf = [0u8; 1024];
@@ -403,7 +401,7 @@ mod tests {
         assert!(err.to_string().contains("503"));
 
         handle.join().expect("server thread finish");
-        assert_eq!(attempts.load(Ordering::SeqCst), MAX_RETRIES);
+        assert_eq!(attempts.load(Ordering::SeqCst), MAX_ATTEMPTS);
     }
 
     #[test]

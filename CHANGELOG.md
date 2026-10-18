@@ -11,8 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Policy & Limits**:
+  - Centralized operational constants and limits (`MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS`, `GITHUB_TIMEOUT_SECS`) into `src/core/policy.rs` as single source of truth.
+  - Renamed `MAX_RETRIES` to `MAX_ATTEMPTS` to accurately reflect total attempt budget.
 - **Candidate Pipeline & Ingestion**:
-  - Unified candidate entry recording into `record_content(slot, Option<&[u8]>)`, standardizing local filesystem walk and archive entry ingestion while preserving lazy file body evaluation.
+  - Unified candidate entry recording into `record_observation`, standardizing local filesystem walk and archive entry ingestion while preserving lazy file body evaluation.
   - Streamlined collection loops to delegate candidate slot reservation and deferred reading, preventing unnecessary I/O when candidate budget overflows.
   - Preserved valid directory prefixes for non-UTF-8 path candidates, routing them directly through candidate accounting as skipped entries.
   - Guaranteed deterministic path alignment across tree, header, and body outputs via stable sorting and in-place last-wins deduplication in `FileStorage`.
@@ -23,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Atomic File Delivery**: Replaced temporary file handling in `src/shell/output.rs` with `AtomicWriter` and an inner `TempPathGuard` RAII guard, guaranteeing cleanup on unexpected I/O errors or panic unwinding.
+- **Atomic File Delivery**: Replaced temporary file handling in `src/shell/output.rs` with `AtomicFile` and an inner `TempPathGuard` RAII guard, guaranteeing cleanup on unexpected I/O errors or panic unwinding.
 
 ### Internal
 
