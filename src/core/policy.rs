@@ -79,35 +79,9 @@ pub(crate) fn is_hidden_segment(segment: &[u8]) -> bool {
 
 /// Returns `true` if `file_name` matches a known noise file or a sensitive credentials pattern.
 #[inline]
-fn is_ignored_filename(file_name: &str) -> bool {
+pub(crate) fn is_ignored_filename(file_name: &str) -> bool {
     let extension = file_name.rsplit_once('.').map(|(_, e)| e);
     is_noise_file(file_name) || is_sensitive_file(file_name, extension)
-}
-
-/// Classifies a path string into [`PathStatus`].
-///
-/// Returns [`PathStatus::Ignored`] if any path segment starts with `.` (hidden)
-/// or if the file name matches known noise or sensitive credential patterns.
-/// Otherwise returns [`PathStatus::Valid`].
-#[inline]
-pub(crate) fn classify_path(path: &str) -> PathStatus {
-    let mut last_component = None;
-    for segment in path.split('/') {
-        if is_hidden_segment(segment.as_bytes()) {
-            return PathStatus::Ignored;
-        }
-        if !segment.is_empty() {
-            last_component = Some(segment);
-        }
-    }
-
-    if let Some(filename) = last_component
-        && is_ignored_filename(filename)
-    {
-        return PathStatus::Ignored;
-    }
-
-    PathStatus::Valid
 }
 
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
@@ -168,67 +142,6 @@ mod tests {
         assert_eq!(retry_delay(4).as_millis(), 4000);
         assert_eq!(retry_delay(5).as_millis(), 5000);
         assert_eq!(retry_delay(10).as_millis(), 5000);
-    }
-
-    #[test]
-    fn test_classify_path() {
-        let ignored = [
-            "Cargo.lock",
-            "nested/dir/package-lock.json",
-            ".env",
-            "config/.env.local",
-            "certs/server.pem",
-            "certs/privkey.key",
-            "id_rsa",
-            ".ssh/id_rsa_deploy",
-            "id_ed25519",
-            ".ssh/id_ed25519_backup",
-            "secrets/credentials.json",
-            "auth/aws.credentials",
-            "aws/credentials",
-            "config/credentials.yaml",
-            "Credentials.json",
-            "keys/ID_RSA",
-            "ID_ED25519_backup",
-            "config/.ENV.prod",
-            ".git/config",
-            "src/.hidden.rs",
-            ".env.production",
-            ".envrc",
-            ".hidden",
-            "dir/.hidden",
-            "a/b/.c/d",
-        ];
-        for path in ignored {
-            assert_eq!(
-                classify_path(path),
-                PathStatus::Ignored,
-                "expected {path} to be ignored"
-            );
-        }
-
-        let kept = [
-            "assets/logo.png",
-            "image.PNG",
-            "assets/font.woff2",
-            "src/main.rs",
-            "src//main.rs",
-            "/src/main.rs",
-            "Cargo.toml",
-            "Makefile",
-            "environment.rs",
-            "not_hidden",
-            "dir/not_hidden.txt",
-            "ends_with_dot.",
-            "a/b",
-        ];
-        for path in kept {
-            assert_eq!(
-                classify_path(path),
-                PathStatus::Valid,
-                "expected {path} to be valid"
-            );
-        }
     }
 
     #[test]

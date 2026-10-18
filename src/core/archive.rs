@@ -1,5 +1,5 @@
 use crate::core::error::IngestError;
-use crate::core::policy::{PathStatus, classify_path, is_hidden_segment};
+use crate::core::policy::{PathStatus, is_hidden_segment, is_ignored_filename};
 
 /// Normalizes a raw tar entry path into `out`, stripping the root directory prefix,
 /// collapsing multiple slashes, removing `.` segments, and classifying against policy.
@@ -40,6 +40,7 @@ pub(crate) fn normalize_tar_entry_path(
 
     let mut has_hidden = false;
     let mut has_invalid_utf8 = false;
+    let mut last_segment_start = 0;
 
     for segment in rel.split(|&b| b == b'/') {
         if segment.is_empty() || segment == b"." {
@@ -61,10 +62,14 @@ pub(crate) fn normalize_tar_entry_path(
                 if !out.is_empty() {
                     out.push('/');
                 }
+                last_segment_start = out.len();
                 out.push_str(seg_str);
             }
             Err(_) => {
                 has_invalid_utf8 = true;
+                if !out.is_empty() {
+                    out.push('/');
+                }
             }
         }
     }
@@ -75,19 +80,15 @@ pub(crate) fn normalize_tar_entry_path(
     }
 
     if has_invalid_utf8 {
-        out.clear();
         return Ok(PathStatus::NonUtf8Candidate);
     }
 
-    if out.is_empty() {
+    if out.is_empty() || is_ignored_filename(&out[last_segment_start..]) {
+        out.clear();
         return Ok(PathStatus::Ignored);
     }
 
-    let status = classify_path(out);
-    if status == PathStatus::Ignored {
-        out.clear();
-    }
-    Ok(status)
+    Ok(PathStatus::Valid)
 }
 
 /// Parses a 40-character commit SHA from PAX global header comment bytes.
@@ -194,10 +195,19 @@ mod tests {
             normalize_tar_entry_path(b"repo-root/invalid/\xff\xfe", &mut out).unwrap(),
             PathStatus::NonUtf8Candidate
         );
+        assert_eq!(out, "invalid/");
+
+        assert_eq!(
+            normalize_tar_entry_path(b"repo-root/\xff\xfe", &mut out).unwrap(),
+            PathStatus::NonUtf8Candidate
+        );
+        assert_eq!(out, "");
+
         assert_eq!(
             normalize_tar_entry_path(b"repo-root/.hidden/\xff\xfe", &mut out).unwrap(),
             PathStatus::Ignored
         );
+        assert_eq!(out, "");
     }
 
     #[test]

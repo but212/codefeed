@@ -9,9 +9,9 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 - `Source` — `Local(PathBuf)` or `Github { owner, repo, reference }` (`#[non_exhaustive]`, constructed via `Source::github`). Enforces owner/repo identifier validation and reference invariants via `GitRef`.
 - `GitRef` — Validated non-empty Git revision reference (branch, tag, or commit SHA), rejecting empty and whitespace-only strings.
 - `RunConfig` — Execution configuration unifying `source`, `output`, and `format`.
-- `CandidateSlot<'a>` — Linear proof token demonstrating a candidate slot was reserved in `CandidateBudget` for `path: &'a str`. `Selector::reserve_candidate` validates candidate counts before reading body bytes; `Selector::record_file` consumes the slot to validate UTF-8 text and NUL-free content, updating storage; `Selector::record_skipped` consumes the slot for empty, missing, or oversized files; `Selector::record_non_utf8` accounts for non-UTF-8 paths directly. Shell collectors filter non-regular files (FIFOs, sockets, devices, symlinks) and noise/sensitive/hidden paths pre-candidate (`policy::classify_path`, `policy::is_hidden_segment`), map files unlinked/missing after discovery to `Skipped`, and abort unexpected I/O errors as `IngestError::Io`.
+- `CandidateSlot<'a>` — Linear proof token demonstrating a candidate slot was reserved in `CandidateBudget` for `path: &'a str`. `Selector::reserve_candidate` validates candidate counts before reading body bytes; `Selector::record_content` consumes the slot to validate UTF-8 text and NUL-free content (updating storage when valid text, or incrementing `skipped` when absent, oversized, or binary); non-UTF-8 paths reserve candidates with their valid directory prefix (`"dir/"` or `""`) and route through `record_content(slot, None)` directly. Shell collectors filter non-regular files (FIFOs, sockets, devices, symlinks) and noise/sensitive/hidden paths pre-candidate (`policy::is_ignored_filename`, `policy::is_hidden_segment`), map files unlinked/missing after discovery to `Skipped`, and abort unexpected I/O errors as `IngestError::Io`.
 - `FileSpan` — POD indexing path and content byte spans via private offsets, accessed through borrowed slice methods (`path(&arena)`, `content(&arena)`).
-- `FileStorage` — Append-only arena buffer (`path_arena`, `content_arena`, `spans`). Provides zero-copy `FileRecord<'a>` borrowed views throughout ingestion and in-place lexicographical sorting (`sort_by_path`) by swapping 16-byte `FileSpan` offsets without string reallocations.
+- `FileStorage` — Append-only arena buffer (`path_arena`, `content_arena`, `spans`). Provides zero-copy `FileRecord<'a>` borrowed views throughout ingestion, in-place lexicographical sorting (`sort_by_path`), and last-wins deduplication of identical paths without string reallocations.
 - `FileRecord<'a>` — Zero-copy borrowed digest entry view: `path: &'a str`, `content: &'a str`.
 - `CollectionResult` — Uniform format-neutral collection record: `label`, optional `revision`, `files: FileStorage`, `skipped`.
 - `IngestReport` — Output summary report: `output`, `included_files`, `skipped_files`, `estimated_tokens` (`#[non_exhaustive]`).
@@ -70,12 +70,12 @@ Boundary rule: Pure core performs no I/O, clock, or network calls and never depe
 
 - Pure core (`src/core/`):
   - `cli.rs`: CLI argument parsing, help detection, and `CliAction` generation (`parse`).
-  - `policy.rs`: Operational limits, noise patterns, sensitive patterns, and path classification (`PathStatus`, `classify_path`, `is_hidden_segment`). Single source of truth for limits and path exclusion rules.
+  - `policy.rs`: Operational limits, noise patterns, sensitive patterns, and path classification (`PathStatus`, `is_ignored_filename`, `is_hidden_segment`). Single source of truth for limits and path exclusion rules.
   - `model.rs`: Domain value types (`Source`, `CollectionResult`, `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`) and source parsing (`Source::parse`, `Source::parse_os`).
   - `storage.rs`: Continuous arena storage (`FileStorage`, `FileSpan`, `FileRecord`, `FileRecordIter`, `cmp_path`, `largest_files`).
   - `error.rs`: Domain error enum `IngestError` and diagnostic payloads (`CandidateLimitExceededError`).
   - `selector.rs`: Candidate reservation (`CandidateSlot`), directory accounting (`CandidateBudget`), and storage accumulation (`Selector`).
-  - `render.rs`: Format-specific streaming serializers (Text/XML), format-neutral ASCII hierarchy tree rendering (`render_tree`), single-pass streaming escaping (`write_header_escaped`, `write_escaped`, `write_xml_attr_escaped`), token estimation heuristic (`estimate_tokens`), and `BoundedEstimatingWriter`.
+  - `render.rs`: Format-specific streaming serializers (Text/XML), format-neutral ASCII hierarchy tree rendering (`render_tree`), single-pass streaming escaping (`write_escaped`), token estimation heuristic (`estimate_tokens`), and `BoundedEstimatingWriter`.
   - `archive.rs`: Pax header comment extraction and single-pass tar entry path normalization & policy classification (`normalize_tar_entry_path`).
 - Imperative shell (`src/shell/`):
   - `src/main.rs`: Binary entry point and CLI completion report formatting.

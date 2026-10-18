@@ -20,7 +20,7 @@ Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_
 
 - Store paths and contents in contiguous `FileStorage` arenas (`path_arena`, `content_arena`) indexed by 16-byte `FileSpan`. Provides zero-copy `FileRecord<'a>` borrowed views throughout ingestion and in-place lexicographical sorting (`sort_by_path`) without reallocating string data.
 - Keep data structures direct and minimal; avoid speculative micro-optimizations.
-- Stream output directly to `impl Write + ?Sized` using single-pass streaming escape helpers (`write_escaped`, `write_xml_attr_escaped`, `write_header_escaped`).
+- Stream output directly to `impl Write + ?Sized` using single-pass streaming escape helper (`write_escaped`) with format-specific rules (`escape_header`, `escape_xml_body`, `escape_xml_single_line`).
 - Default to `std`. Add external crates only when in-tree maintenance introduces disproportionate complexity or security risk (e.g., `ignore` for `.gitignore`, `ureq` for HTTP). Document rationale as an inline comment in `Cargo.toml`.
 
 ### OS & Network Safety
