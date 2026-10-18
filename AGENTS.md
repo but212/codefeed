@@ -26,7 +26,7 @@ Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_
 ### OS & Network Safety
 
 - **Local reads (`src/shell/local.rs`):** Validate regular, non-symlink metadata (`fs::symlink_metadata`) before opening bounded files (`fs::File::open`). Never follow symlinks.
-- **File writes (`src/shell/output.rs`):** Write through `AtomicFile` so errors or panics unlink temp files on `Drop`.
+- **File writes (`src/shell/output.rs`):** Write through `AtomicFile` with inner `TempFile` RAII guard (closing OS handle before unlink on `Drop`), preserving existing target permissions and syncing parent directory on Unix commit.
 - **HTTP (`src/shell/github.rs`):** Keep `RedirectAuthHeaders::Never` and gate `Authorization` with `is_github_api_origin(url)`.
 
 ## 3. Test
@@ -34,7 +34,7 @@ Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_
 - Use table-driven slice fixtures (`let cases = [...]`) over repetitive test functions.
 - Test `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` in memory via `Selector` / `CandidateBudget`, not disk loops.
 - Use `crate::shell::testing::temp_dir("label")` (`TempDirGuard`) for unit tests in `src/`. Integration tests in `tests/` maintain a local `TempDir` helper.
-- Mock HTTP with local `TcpListener` (`127.0.0.1:0`) threads.
+- Mock HTTP with local `TcpListener` (`127.0.0.1:0`) threads (via `MockServer` helper in `src/shell/github.rs`).
 
 ## 4. Sync
 

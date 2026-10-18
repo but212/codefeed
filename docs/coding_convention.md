@@ -116,7 +116,7 @@ Minimize memory footprints, eliminate allocations in loops, and keep dependencie
 Enforce defense-in-depth across filesystem and network interactions:
 
 - **Symlink Protection:** Always verify candidate filesystem entries are regular, non-symlink files using `fs::symlink_metadata`. Never traverse symlinks.
-- **Atomic File Writes:** Perform all disk writes through `AtomicFile` temp guards, unlinking partially written files on drop in error or panic scenarios.
+- **Atomic File Writes:** Perform all disk writes through `AtomicFile` with inner `TempFile` RAII guards, closing OS file handles before unlinking on `Drop` (cross-platform Windows safety), preserving existing file permissions on Unix, and syncing the parent directory on commit.
 - **Scoped HTTP Headers:** Enforce `RedirectAuthHeaders::Never`. Gate `Authorization` headers strictly to `is_github_api_origin(url)`.
 
 ---
@@ -176,4 +176,4 @@ Structure item documentation using standard Markdown level-1 (`#`) section heade
 - **Table-Driven Fixtures:** Prefer slice fixtures (`let cases = [...]`) over repetitive individual test functions.
 - **In-Memory Limits:** Test file count and byte limit boundaries (`MAX_FILE_COUNT`, `MAX_OUTPUT_SIZE`) via in-memory data structures (`Selector`, `CandidateBudget`) rather than physical disk loops.
 - **Isolated I/O Tests:** Guard all filesystem-touching tests with `crate::shell::temp_dir` (`TempDirGuard`).
-- **Deterministic Network Tests:** Mock network responses using local `TcpListener` (`127.0.0.1:0`) threads instead of external endpoints.
+- **Deterministic Network Tests:** Mock network responses using local `TcpListener` (`127.0.0.1:0`) threads (encapsulated via `MockServer` helpers) instead of external endpoints.

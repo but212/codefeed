@@ -21,6 +21,11 @@ use crate::core::selector::{Observation, Selector};
 
 const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 
+enum Attempt {
+    Status(ureq::http::Response<ureq::Body>),
+    Transport(ureq::Error),
+}
+
 /// Collects files from a remote GitHub repository via streaming tarball download.
 pub(super) fn collect(
     owner: &str,
@@ -81,40 +86,44 @@ impl GithubClient {
                 request = request.header("X-Github-Api-Version", "2022-11-28");
             }
 
-            let failure = match request.call() {
+            let attempt = match request.call() {
                 Ok(resp) if resp.status().is_success() => {
                     return Ok(Box::new(BufReader::with_capacity(
                         64 * 1024,
                         resp.into_body().into_reader(),
                     )));
                 }
-                Ok(resp) => Err(resp),
-                Err(error) => Ok(error),
+                Ok(resp) => Attempt::Status(resp),
+                Err(error) => Attempt::Transport(error),
             };
 
-            let outcome = match &failure {
-                Err(resp) => RequestOutcome::HttpStatus(resp.status().as_u16()),
-                Ok(error) if is_retryable_transport_error(error) => {
+            let outcome = match &attempt {
+                Attempt::Status(resp) => RequestOutcome::HttpStatus(resp.status().as_u16()),
+                Attempt::Transport(error) if is_retryable_transport_error(error) => {
                     RequestOutcome::TransportError(TransportKind::Retryable)
                 }
-                Ok(_) => RequestOutcome::TransportError(TransportKind::Permanent),
+                Attempt::Transport(_) => RequestOutcome::TransportError(TransportKind::Permanent),
             };
 
             match attempt_state.step(&outcome) {
-                Transition::Retry { attempt, delay } => {
-                    match &failure {
-                        Err(resp) => eprintln!(
-                            "warning: GitHub HTTP status {} on attempt {attempt}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}",
+                Transition::Retry {
+                    attempt: count,
+                    delay,
+                } => {
+                    match &attempt {
+                        Attempt::Status(resp) => eprintln!(
+                            "warning: GitHub HTTP status {} on attempt {count}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}",
                             resp.status()
                         ),
-                        Ok(error) => eprintln!(
-                            "warning: GitHub transport error: {error} on attempt {attempt}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}"
+                        Attempt::Transport(error) => eprintln!(
+                            "warning: GitHub transport error: {} on attempt {count}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}",
+                            sanitize_error_detail(&error.to_string())
                         ),
                     }
                     std::thread::sleep(delay);
                 }
-                Transition::Fail => match failure {
-                    Err(response) => {
+                Transition::Fail => match attempt {
+                    Attempt::Status(response) => {
                         let status = response.status();
                         let mut body_bytes = Vec::new();
                         let _ = response
@@ -124,7 +133,9 @@ impl GithubClient {
                             .read_to_end(&mut body_bytes);
                         return Err(api_error(status, &body_bytes));
                     }
-                    Ok(error) => return Err(IngestError::http(error.to_string())),
+                    Attempt::Transport(error) => {
+                        return Err(IngestError::http(sanitize_error_detail(&error.to_string())));
+                    }
                 },
             }
         }
@@ -138,8 +149,25 @@ const fn is_retryable_transport_error(error: &ureq::Error) -> bool {
     )
 }
 
+/// Sanitizes control characters in error detail string.
+/// Converts `\t`, `\r`, `\n` to space `' '` for single-line output formatting.
+/// Converts all other Unicode control characters (`c.is_control()`) to `\u{FFFD}`.
+/// Note: Unlike digest header escaping which escapes `\n` and `\r` as `\n` / `\r` literals,
+/// error message formatting converts line breaks to spaces for compact single-line stderr diagnostics.
+fn sanitize_error_detail(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| match c {
+            '\t' | '\r' | '\n' => ' ',
+            c if c.is_control() => '\u{FFFD}',
+            c => c,
+        })
+        .collect()
+}
+
 fn api_error(status: StatusCode, body_bytes: &[u8]) -> IngestError {
-    let detail = String::from_utf8_lossy(body_bytes).replace('\n', " ");
+    let raw_detail = String::from_utf8_lossy(body_bytes);
+    let detail = sanitize_error_detail(&raw_detail);
     if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::FORBIDDEN {
         IngestError::api(format!(
             "HTTP {status}: {detail} (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
@@ -181,10 +209,7 @@ fn collect_archive<R: Read>(
     let mut content_scratch = Vec::with_capacity(32 * 1024);
 
     for entry_res in entries {
-        let mut entry = match entry_res {
-            Ok(e) => e,
-            Err(err) => return Err(IngestError::Io(err)),
-        };
+        let mut entry = entry_res.map_err(IngestError::Io)?;
         path_scratch.clear();
         content_scratch.clear();
         if let Some(sha) = process_tar_entry(
@@ -262,7 +287,78 @@ mod tests {
     use flate2::write::GzEncoder;
     use std::collections::HashMap;
     use std::env::VarError;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::thread;
     use tar::Builder;
+
+    struct MockServer {
+        port: u16,
+        handle: thread::JoinHandle<(Vec<String>, usize)>,
+    }
+
+    impl MockServer {
+        fn spawn<F>(expected_connections: usize, mut handler: F) -> Self
+        where
+            F: FnMut(usize, &str, u16) -> Vec<u8> + Send + 'static,
+        {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+            let port = listener.local_addr().expect("local addr").port();
+
+            let handle = thread::spawn(move || {
+                let mut recorded = Vec::new();
+                let mut count = 0;
+
+                for index in 0..expected_connections {
+                    let (mut stream, _) = match listener.accept() {
+                        Ok(res) => res,
+                        Err(_) => break,
+                    };
+                    count += 1;
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+
+                    let mut req_buf = Vec::new();
+                    let mut temp = [0u8; 512];
+                    loop {
+                        if req_buf.windows(4).any(|w| w == b"\r\n\r\n") || req_buf.len() >= 8192 {
+                            break;
+                        }
+                        match stream.read(&mut temp) {
+                            Ok(0) => break,
+                            Ok(n) => req_buf.extend_from_slice(&temp[..n]),
+                            Err(ref e)
+                                if e.kind() == std::io::ErrorKind::WouldBlock
+                                    || e.kind() == std::io::ErrorKind::TimedOut =>
+                            {
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+
+                    let req_str = String::from_utf8_lossy(&req_buf).to_string();
+                    recorded.push(req_str.clone());
+
+                    let response_bytes = handler(index, &req_str, port);
+                    if !response_bytes.is_empty() {
+                        let _ = stream.write_all(&response_bytes);
+                    }
+                }
+
+                (recorded, count)
+            });
+
+            Self { port, handle }
+        }
+
+        fn join(self) -> (Vec<String>, usize) {
+            self.handle.join().expect("mock server thread finish")
+        }
+
+        fn url(&self, path: &str) -> String {
+            format!("http://127.0.0.1:{}{path}", self.port)
+        }
+    }
 
     #[test]
     fn resolves_token_with_correct_precedence_and_trimming() {
@@ -307,30 +403,32 @@ mod tests {
     }
 
     #[test]
+    fn sanitizes_control_characters_in_api_error_detail() {
+        let raw = b"error\twith\nnewlines\r\nand\x1b[31mANSI\x07bell\x7fdel\x80c1";
+        let err = api_error(StatusCode::BAD_REQUEST, raw);
+        let err_msg = err.to_string();
+
+        assert!(
+            !err_msg.contains('\n') && !err_msg.contains('\r') && !err_msg.contains('\t'),
+            "newlines, tabs, and carriage returns should be converted to spaces: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("\u{FFFD}[31mANSI\u{FFFD}bell\u{FFFD}del"),
+            "C0, DEL, and C1 control characters should be replaced with replacement char: {err_msg}"
+        );
+    }
+
+    #[test]
     fn retries_on_server_error_and_succeeds() {
-        use std::io::Write;
-        use std::net::TcpListener;
-        use std::thread;
-
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
-        let port = listener.local_addr().expect("local addr").port();
-
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept 1");
-            let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf);
-            let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nerror";
-            let _ = stream.write_all(response.as_bytes());
-
-            let (mut stream, _) = listener.accept().expect("accept 2");
-            let _ = stream.read(&mut buf);
-            let response =
-                "HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess";
-            let _ = stream.write_all(response.as_bytes());
+        let server = MockServer::spawn(2, |index, _req, _port| {
+            match index {
+            0 => b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nerror".to_vec(),
+            _ => b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess".to_vec(),
+        }
         });
 
         let client = GithubClient::new();
-        let url = format!("http://127.0.0.1:{port}/test");
+        let url = server.url("/test");
         let mut reader = client
             .stream_url(&url)
             .expect("stream_url should succeed on retry");
@@ -338,80 +436,47 @@ mod tests {
         reader.read_to_string(&mut body).expect("read body");
         assert_eq!(body, "success");
 
-        handle.join().expect("server thread finish");
+        let (_, connections) = server.join();
+        assert_eq!(connections, 2);
     }
 
     #[test]
     fn does_not_retry_on_client_error() {
-        use std::io::Write;
-        use std::net::TcpListener;
-        use std::thread;
-
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
-        let port = listener.local_addr().expect("local addr").port();
-
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept 1");
-            let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf);
-            let response =
-                "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found";
-            let _ = stream.write_all(response.as_bytes());
+        let server = MockServer::spawn(1, |_index, _req, _port| {
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found"
+                .to_vec()
         });
 
         let client = GithubClient::new();
-        let url = format!("http://127.0.0.1:{port}/test");
+        let url = server.url("/test");
         let Err(err) = client.stream_url(&url) else {
             panic!("expected error");
         };
         assert!(err.to_string().contains("404"));
 
-        handle.join().expect("server thread finish");
+        let (_, connections) = server.join();
+        assert_eq!(connections, 1);
     }
 
     #[test]
     fn retries_up_to_max_budget_and_returns_final_error() {
-        use std::io::Write;
-        use std::net::TcpListener;
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::thread;
-
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
-        let port = listener.local_addr().expect("local addr").port();
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let attempts_clone = Arc::clone(&attempts);
-
-        let handle = thread::spawn(move || {
-            for _ in 0..MAX_ATTEMPTS {
-                let (mut stream, _) = listener.accept().expect("accept");
-                attempts_clone.fetch_add(1, Ordering::SeqCst);
-                let mut buf = [0u8; 1024];
-                let _ = stream.read(&mut buf);
-                let response = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 11\r\nConnection: close\r\n\r\nunavailable";
-                let _ = stream.write_all(response.as_bytes());
-            }
+        let server = MockServer::spawn(MAX_ATTEMPTS, |_index, _req, _port| {
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 11\r\nConnection: close\r\n\r\nunavailable".to_vec()
         });
 
         let client = GithubClient::new();
-        let url = format!("http://127.0.0.1:{port}/test");
+        let url = server.url("/test");
         let Err(err) = client.stream_url(&url) else {
             panic!("expected error");
         };
         assert!(err.to_string().contains("503"));
 
-        handle.join().expect("server thread finish");
-        assert_eq!(attempts.load(Ordering::SeqCst), MAX_ATTEMPTS);
+        let (_, connections) = server.join();
+        assert_eq!(connections, MAX_ATTEMPTS);
     }
 
     #[test]
     fn does_not_retry_non_transient_transport_error() {
-        use std::io::Write;
-        use std::net::TcpListener;
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::thread;
-
         assert!(is_retryable_transport_error(&ureq::Error::Timeout(
             ureq::Timeout::Global
         )));
@@ -424,74 +489,54 @@ mod tests {
             "cert error"
         )));
 
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
-        let port = listener.local_addr().expect("local addr").port();
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let attempts_clone = Arc::clone(&attempts);
-
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept 1");
-            attempts_clone.fetch_add(1, Ordering::SeqCst);
-            let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf);
-            let _ = stream.write_all(b"NOT_HTTP/1.1\r\n\r\n");
-        });
+        let server = MockServer::spawn(1, |_index, _req, _port| b"NOT_HTTP/1.1\r\n\r\n".to_vec());
 
         let client = GithubClient::new();
-        let url = format!("http://127.0.0.1:{port}/test");
+        let url = server.url("/test");
         assert!(client.stream_url(&url).is_err());
 
-        handle.join().expect("server thread finish");
-        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        let (_, connections) = server.join();
+        assert_eq!(connections, 1);
     }
 
     #[test]
-    fn user_agent_matches_cargo_package_version() {
-        assert_eq!(
-            GITHUB_USER_AGENT,
-            concat!("codefeed/", env!("CARGO_PKG_VERSION"))
+    fn transmits_user_agent_header_in_http_request() {
+        let server = MockServer::spawn(1, |_index, _req, _port| {
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".to_vec()
+        });
+
+        let client = GithubClient::new();
+        let url = server.url("/user-agent-check");
+        let mut reader = client.stream_url(&url).expect("stream_url should succeed");
+        let mut body = String::new();
+        reader.read_to_string(&mut body).expect("read body");
+        assert_eq!(body, "ok");
+
+        let (requests, connections) = server.join();
+        assert_eq!(connections, 1);
+
+        let req = &requests[0];
+        let expected_ua_header = format!("user-agent: {GITHUB_USER_AGENT}");
+        assert!(
+            req.to_ascii_lowercase().contains(&expected_ua_header),
+            "HTTP request must transmit expected User-Agent header ({expected_ua_header}): {req}"
         );
     }
 
     #[test]
     fn strips_authorization_header_on_redirect() {
-        use std::io::Write;
-        use std::net::TcpListener;
-        use std::thread;
-
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
-        let port = listener.local_addr().expect("local addr").port();
-
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept 1");
-            let mut buf = [0u8; 2048];
-            let n = stream.read(&mut buf).expect("read 1");
-            let req1 = String::from_utf8_lossy(&buf[..n]);
-            assert!(
-                req1.to_ascii_lowercase()
-                    .contains("authorization: bearer test-token"),
-                "first request must contain authorization header: {req1}"
-            );
-            let response = format!(
+        let server = MockServer::spawn(2, |index, _req, port| {
+            match index {
+            0 => format!(
                 "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/dest\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            );
-            let _ = stream.write_all(response.as_bytes());
-
-            let (mut stream, _) = listener.accept().expect("accept 2");
-            let mut buf = [0u8; 2048];
-            let n = stream.read(&mut buf).expect("read 2");
-            let req2 = String::from_utf8_lossy(&buf[..n]);
-            assert!(
-                !req2.to_ascii_lowercase().contains("authorization"),
-                "redirected request must not contain authorization header: {req2}"
-            );
-            let response =
-                "HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess";
-            let _ = stream.write_all(response.as_bytes());
+            )
+            .into_bytes(),
+            _ => b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess".to_vec(),
+        }
         });
 
         let client = GithubClient::new();
-        let url = format!("http://127.0.0.1:{port}/start");
+        let url = server.url("/start");
         let resp = client
             .agent
             .get(&url)
@@ -500,7 +545,21 @@ mod tests {
             .expect("call should follow redirect and succeed");
         assert_eq!(resp.status(), StatusCode::OK);
 
-        handle.join().expect("server thread finish");
+        let (requests, connections) = server.join();
+        assert_eq!(connections, 2);
+
+        let req1 = &requests[0];
+        assert!(
+            req1.to_ascii_lowercase()
+                .contains("authorization: bearer test-token"),
+            "first request must contain authorization header: {req1}"
+        );
+
+        let req2 = &requests[1];
+        assert!(
+            !req2.to_ascii_lowercase().contains("authorization"),
+            "redirected request must not contain authorization header: {req2}"
+        );
     }
 
     fn create_mock_tarball(entries: &[(&str, &[u8], EntryType)]) -> Vec<u8> {

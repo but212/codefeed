@@ -115,11 +115,13 @@ Local directory traversal in `src/shell/local.rs` adheres to the following invar
    - Files matching the canonical target path are excluded during traversal to prevent recursive ingestion loops when generating digests inside the source directory.
 3. **Atomic Writes (`AtomicFile`):**
    - Digest files are written to a temporary sibling file in the resolved parent directory.
+   - Preserves existing file permissions when overwriting target files on Unix.
    - Flushed and synced to disk before being atomically renamed to the destination path.
-   - Temporary files are immediately unlinked on `Drop` if an error occurs or the process panics.
+   - Syncs the parent directory on Unix upon rename commit to ensure metadata durability across crashes.
+   - Temporary file writer handle is closed before unlinking on `Drop` (`TempFile`), ensuring reliable cleanup on Windows and Unix during error or panic unwinding.
 4. **Directory Traversal Fail-Fast:**
    - Unreadable individual files are recorded as unavailable and tallied in `skipped_files`.
-   - Unreadable directories during local traversal fail fast with explicit path context to prevent silent emission of incomplete digests.
+   - Unreadable directories during local traversal fail fast with explicit path context and preserve the underlying `std::io::ErrorKind` (e.g., `PermissionDenied`) to prevent silent emission of incomplete digests while retaining actionable error categories.
 
 ---
 

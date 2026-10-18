@@ -42,7 +42,7 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 
 ### I/O & Output Target Contracts
 
-- File target: Validates and resolves output path at startup (`resolve_output_target`). Writes atomically via RAII guard (`AtomicFile`) under the canonical parent directory, syncs to disk, and renames on commit; automatically unlinks temp files on error or panic.
+- File target: Validates and resolves output path at startup (`resolve_output_target`). Writes atomically via RAII guard (`AtomicFile` with inner `TempFile` closing open handles before unlinking on `Drop`) under the canonical parent directory (preserving existing permissions on Unix), syncs to disk, renames on commit, disarms temporary cleanup, and syncs parent directory on Unix; automatically unlinks temp files on error or panic.
 - Stdout target: Buffers output into memory up to `MAX_OUTPUT_SIZE` and writes to stdout only on success, preventing partial emission on overflow.
 - Completion messages: Emitted to stdout for file targets and stderr for stdout targets via `shell/mod.rs::run_cli`.
 - Broken pipe: Downstream pipe closure (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0 (preserves estimated tokens on buffer flush; defaults to 0 on mid-stream write termination).
@@ -84,4 +84,4 @@ Boundary rule: Pure core performs no I/O, clock, or network calls and never depe
   - `shell/testing.rs`: Scoped test fixture isolation (`TempDirGuard`, `temp_dir`).
   - `shell/local.rs`: Single-pass filesystem candidate traversal, non-symlink metadata validation, and pre-I/O candidate reservation in `Selector`.
   - `shell/github.rs`: Streaming archive tarball collection (`collect_archive`), HTTP transport (`GithubClient`), retry handling, body bounding, and token resolution.
-  - `shell/output.rs`: Atomic file writing via RAII commit guard (`AtomicFile`), stdout streaming, and canonical output path resolution (`resolve_output_target`).
+  - `shell/output.rs`: Atomic file writing via RAII commit guard (`AtomicFile`) and inner `TempFile` guard, stdout streaming, and canonical output path resolution (`resolve_output_target`).
