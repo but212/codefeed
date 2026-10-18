@@ -15,16 +15,19 @@ Comprehensive specification of security boundaries, pattern-based exclusion, can
 
 `codefeed` addresses these risks through strict boundary classification, zero-copy bounded memory arenas, and non-following I/O policies.
 
+> [!NOTE]
+> **Quiescent Local Tree Threat Model:** Local directory traversal assumes the target tree is quiescent during scanning (no concurrent writer or adversary swapping paths or replacing regular files with symlinks mid-scan). Bounding hostile concurrent filesystem mutations is explicitly outside the CLI tool's scope.
+
 ---
 
 ## 2. Path Classification & Filtering Hierarchy
 
-Every encountered entry (local filesystem or remote archive) passes through path filtering and candidate evaluation defined in `src/core/policy.rs` (`is_ignored_path`):
+Every encountered entry (local filesystem or remote archive) passes through path filtering and candidate evaluation defined in `src/core/policy.rs` (`classify_path`):
 
 ```
 Entry Discovered (Local Walk or Tar Stream)
    │
-   ├── Ignored (Pre-candidate Filter: is_ignored_path)
+   ├── Ignored (Pre-candidate Filter: classify_path)
    │     ├── Noise Lockfiles (Cargo.lock, package-lock.json, etc.)
    │     ├── Sensitive Patterns (.env*, id_rsa*, credentials*, *.key, *.pem, etc.)
    │     ├── Hidden Components (.git, .github, .config, etc.)
@@ -86,7 +89,7 @@ Any path containing a component starting with a leading dot (`.`) is considered 
 | `MAX_FILE_COUNT` | 10,000 files | `CandidateBudget` slot check before reading content | `IngestError::CandidateLimitExceeded` with directory diagnostics |
 | `MAX_FILE_SIZE` | 1 MiB (1,048,576 B) | Stream boundary read (`take(MAX_FILE_SIZE + 1)`) | Skipped; tallied in `skipped_files` report |
 | `MAX_OUTPUT_SIZE` | 20 MiB (20,971,520 B) | `BoundedEstimatingWriter` byte counter | `IngestError::OutputTooLarge` with Top-5 largest files |
-| `ARCHIVE_MAX_SECS` | 300 seconds | Whole-archive stream transfer timeout | `IngestError::Network` timeout |
+| `ARCHIVE_MAX_SECS` | 300 seconds | Whole-archive stream transfer timeout | `IngestError::Http` timeout |
 
 ### Candidate vs. Skipped Accounting Rules
 
@@ -103,6 +106,7 @@ Local directory traversal in `src/shell/local.rs` adheres to the following invar
    - Traversal configures `WalkBuilder::new().follow_links(false)`.
    - File inspection verifies non-symlink metadata (`fs::symlink_metadata(path)?.file_type().is_file()`).
    - Symlinks to files, directories, or special devices are completely ignored, avoiding infinite symlink recursion and arbitrary file reads outside the root.
+   - Assumes a quiescent directory tree during scan; TOCTOU symlink substitution by concurrent local processes is outside the threat model.
 2. **Output Target Exclusion:**
    - The destination digest path is resolved and validated once at startup (`resolve_output_target`).
    - Files matching the canonical target path are excluded during traversal to prevent recursive ingestion loops when generating digests inside the source directory.

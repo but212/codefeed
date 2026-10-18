@@ -2,23 +2,35 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::core::error::IngestError;
-use crate::core::model::{DigestFormat, OutputTarget, RunConfig};
-use crate::core::source::parse_os;
+use crate::core::model::{DigestFormat, OutputTarget, RunConfig, Source};
 
-pub const HELP: &str =
+const HELP: &str =
     "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]";
 
-pub const fn help_text() -> &'static str {
+/// Returns the static command-line help message.
+pub(crate) const fn help_text() -> &'static str {
     HELP
 }
 
+/// Action determined by parsing command-line arguments.
 #[derive(Debug, PartialEq, Eq)]
-pub enum CliAction {
+pub(crate) enum CliAction {
+    /// Print help text and exit successfully.
     Help,
+    /// Execute ingestion using the resolved [`RunConfig`].
     Run(RunConfig),
 }
 
-pub fn parse<I, T>(args: I) -> Result<CliAction, IngestError>
+/// Parses command-line arguments into a [`CliAction`].
+///
+/// Skips the first element (the binary name) and interprets remaining arguments
+/// according to the CLI specification.
+///
+/// # Errors
+///
+/// Returns [`IngestError::Usage`] if required arguments are missing, unknown options
+/// are passed, or flags receive invalid values.
+pub(crate) fn parse<I, T>(args: I) -> Result<CliAction, IngestError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
@@ -54,76 +66,30 @@ where
             if s == "-h" || s == "--help" {
                 return Ok(CliAction::Help);
             }
-            if s == "-o" || s == "--output" {
-                let val = match args_iter.next() {
-                    Some(v)
-                        if v.to_str()
-                            .is_none_or(|v_str| v_str == "-" || !v_str.starts_with('-')) =>
-                    {
-                        v
-                    }
-                    _ => {
-                        return Err(IngestError::usage(format!(
-                            "a value is required for '{s}' but none was supplied"
-                        )));
-                    }
-                };
-                output = Some(val);
-                continue;
-            }
-            if let Some(val) = s
-                .strip_prefix("-o=")
-                .or_else(|| s.strip_prefix("--output="))
+            if let Some(flag) = ["-o", "--output", "-r", "--ref", "-f", "--format"]
+                .into_iter()
+                .find(|&f| s == f || s.starts_with(&format!("{f}=")))
             {
-                output = Some(OsString::from(val));
-                continue;
-            }
-            if s == "-r" || s == "--ref" {
-                let val = match args_iter.next() {
-                    Some(v)
-                        if v.to_str()
-                            .is_none_or(|v_str| v_str == "-" || !v_str.starts_with('-')) =>
-                    {
-                        v
+                let inline = s.split_once('=').map(|(_, v)| v);
+                let val = extract_opt_val(
+                    flag,
+                    &mut args_iter,
+                    inline,
+                    flag == "-o" || flag == "--output",
+                )?;
+                match flag {
+                    "-o" | "--output" => output = Some(val),
+                    "-r" | "--ref" => {
+                        let val_str = val
+                            .into_string()
+                            .map_err(|_| IngestError::usage("git reference must be valid utf-8"))?;
+                        reference = Some(val_str);
                     }
-                    _ => {
-                        return Err(IngestError::usage(format!(
-                            "a value is required for '{s}' but none was supplied"
-                        )));
+                    "-f" | "--format" => {
+                        format = parse_format(&val.to_string_lossy())?;
                     }
-                };
-                let val_str = val
-                    .into_string()
-                    .map_err(|_| IngestError::usage("git reference must be valid utf-8"))?;
-                reference = Some(val_str);
-                continue;
-            }
-            if let Some(val) = s.strip_prefix("-r=").or_else(|| s.strip_prefix("--ref=")) {
-                reference = Some(val.to_string());
-                continue;
-            }
-            if s == "-f" || s == "--format" {
-                let val = match args_iter.next() {
-                    Some(v)
-                        if v.to_str()
-                            .is_none_or(|v_str| v_str == "-" || !v_str.starts_with('-')) =>
-                    {
-                        v
-                    }
-                    _ => {
-                        return Err(IngestError::usage(format!(
-                            "a value is required for '{s}' but none was supplied"
-                        )));
-                    }
-                };
-                format = parse_format(val.to_str().unwrap_or(""))?;
-                continue;
-            }
-            if let Some(val) = s
-                .strip_prefix("-f=")
-                .or_else(|| s.strip_prefix("--format="))
-            {
-                format = parse_format(val)?;
+                    _ => unreachable!(),
+                }
                 continue;
             }
             if s.starts_with('-') && s != "-" {
@@ -150,12 +116,44 @@ where
         None => OutputTarget::File(PathBuf::from("digest.txt")),
     };
 
-    let resolved_source = parse_os(&source_os)?.with_reference(reference)?;
+    let resolved_source = Source::parse_os(&source_os)?.with_reference(reference)?;
     Ok(CliAction::Run(RunConfig::new(
         resolved_source,
         output_target,
         format,
     )))
+}
+
+fn extract_opt_val<I>(
+    flag: &str,
+    args: &mut I,
+    inline_val: Option<&str>,
+    allow_dash: bool,
+) -> Result<OsString, IngestError>
+where
+    I: Iterator<Item = OsString>,
+{
+    let val = match inline_val {
+        Some(v) => OsString::from(v),
+        None => match args.next() {
+            Some(v) => v,
+            None => {
+                return Err(IngestError::usage(format!(
+                    "a value is required for '{flag}' but none was supplied"
+                )));
+            }
+        },
+    };
+
+    if let Some(s) = val.to_str()
+        && s.starts_with('-')
+        && !(allow_dash && s == "-")
+    {
+        return Err(IngestError::usage(format!(
+            "a value is required for '{flag}' but none was supplied"
+        )));
+    }
+    Ok(val)
 }
 
 fn parse_format(val: &str) -> Result<DigestFormat, IngestError> {
@@ -171,7 +169,7 @@ fn parse_format(val: &str) -> Result<DigestFormat, IngestError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::Source;
+    use crate::core::model::{GitRef, Source};
 
     #[test]
     fn cli_parses_valid_invocations() {
@@ -239,7 +237,7 @@ mod tests {
                     Source::Github {
                         owner: "rust-lang".into(),
                         repo: "cargo".into(),
-                        reference: Some("main".into()),
+                        reference: Some(GitRef::new("main").unwrap()),
                     }
                 );
             }
@@ -265,6 +263,15 @@ mod tests {
                 "--ref",
                 "   ",
             ],
+            &["codefeed", "https://github.com/rust-lang/cargo", "-r", "-"],
+            &[
+                "codefeed",
+                "https://github.com/rust-lang/cargo",
+                "--ref",
+                "-",
+            ],
+            &["codefeed", "src", "-f", "-"],
+            &["codefeed", "src", "--format", "-"],
         ];
         for args in invalid_cases {
             assert!(
@@ -272,5 +279,75 @@ mod tests {
                 "expected error for: {args:?}"
             );
         }
+    }
+
+    #[test]
+    fn cli_non_utf8_format_reports_lossy_value() {
+        #[cfg(unix)]
+        let raw_val = {
+            use std::os::unix::ffi::OsStringExt;
+            std::ffi::OsString::from_vec(vec![0xff])
+        };
+        #[cfg(windows)]
+        let raw_val = {
+            use std::os::windows::ffi::OsStringExt;
+            std::ffi::OsString::from_wide(&[0xD800])
+        };
+
+        #[cfg(any(unix, windows))]
+        {
+            let args = [
+                std::ffi::OsString::from("codefeed"),
+                std::ffi::OsString::from("."),
+                std::ffi::OsString::from("-f"),
+                raw_val,
+            ];
+            let err = parse(args.iter()).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("invalid value '\u{FFFD}' for '--format <text|xml>'"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_ref_precedence_and_validation() {
+        assert!(matches!(
+            parse(["codefeed", "--ref", "", "--help"]),
+            Ok(CliAction::Help)
+        ));
+        assert!(matches!(
+            parse(["codefeed", "--help", "--ref", ""]),
+            Ok(CliAction::Help)
+        ));
+
+        let missing_source = parse(["codefeed", "--ref", ""]).unwrap_err();
+        assert!(
+            missing_source
+                .to_string()
+                .contains("required arguments were not provided"),
+            "unexpected error: {missing_source}"
+        );
+
+        let local_ref = parse(["codefeed", ".", "--ref", ""]).unwrap_err();
+        assert!(
+            local_ref
+                .to_string()
+                .contains("--ref is only valid for GitHub sources"),
+            "unexpected error: {local_ref}"
+        );
+
+        let github_ref = parse([
+            "codefeed",
+            "https://github.com/rust-lang/cargo",
+            "--ref",
+            "",
+        ])
+        .unwrap_err();
+        assert!(
+            github_ref.to_string().contains("--ref cannot be empty"),
+            "unexpected error: {github_ref}"
+        );
     }
 }

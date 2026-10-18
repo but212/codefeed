@@ -77,7 +77,7 @@ cargo build --release
 
 ## Output and Exit Contracts
 
-- **File output (`--output <PATH>`)**: Writes to a temporary file, syncs to disk, and atomically renames. Prints `<PATH> (<N> files, <N> skipped, ~<N> tokens)` to stdout. Preserves existing files on failure. The token summary (`~<N> tokens`) is estimated via a fast byte heuristic (~4 bytes per token for ASCII source code); CJK and other multibyte texts may be underestimated.
+- **File output (`--output <PATH>`)**: Writes to a temporary file, syncs to disk, and atomically renames. Prints `Wrote <PATH> (<N> files, <N> skipped, ~<N> tokens)` to stdout. Preserves existing files on failure. The token summary (`~<N> tokens`) is estimated via a fast byte heuristic (~4 bytes per token for ASCII source code); CJK and other multibyte texts may be underestimated.
 - **Stream output (`--output -`)**: Writes raw digest to stdout and completion summary to stderr.
 - **Format fidelity**: Plain text (`--format text`) preserves valid UTF-8 file content verbatim (rejecting NUL bytes); ANSI sequences remain intact. XML (`--format xml`) sanitizes disallowed XML 1.0 control characters to `\u{FFFD}`.
 - **Pipe termination**: Downstream pipe closure (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0.
@@ -100,10 +100,10 @@ Credentials are sent as `Authorization: Bearer <token>` strictly to exact-origin
 - **Traversal**: Traverses local filesystems via `ignore::WalkBuilder` (`follow_links(false)`) with deterministic sorting, sequential reads, non-symlink metadata validation, and canonical output path exclusion.
 - **Remote Ingestion**: Streams GitHub repository archives (`/repos/{owner}/{repo}/tarball/{ref}`) in a single HTTP request via `flate2` and `tar` directly into the selection pipeline with zero intermediate disk files. Extracts commit SHA from `pax_global_header`.
 - **Limits**:
-  - Candidate files: bounded candidate budget; aborts on overflow with deterministically sorted largest-directory diagnostics from observed candidates at termination.
-  - Per-file size: individual file cap (`MAX_FILE_SIZE`); exceeding files increment `skipped`.
-  - Digest size: strictly enforced total digest cap; aborts with largest-file diagnostics on overflow.
-  - Archive transfer: bounded whole-archive transfer timeout (`ARCHIVE_MAX_SECS`).
+  - Candidate files: Bounded candidate budget; aborts on overflow with deterministically sorted largest-directory diagnostics from observed candidates.
+  - Per-file size: Individual file cap (`MAX_FILE_SIZE`); exceeding files increment `skipped`.
+  - Digest size: Enforced total digest cap (`MAX_OUTPUT_SIZE`); aborts with largest-file diagnostics on overflow.
+  - Archive transfer: Bounded whole-archive transfer timeout (`ARCHIVE_MAX_SECS`).
 - **Network Resilience**: Retries transient transport errors (`Io`, `Timeout`, `ConnectionFailed`) and HTTP 429/5xx with exponential backoff up to 3 total attempts. Fails immediately on non-transient transport errors and 4xx client errors.
 - **Central Policy**: Operational constants, budgets, and patterns reside in `src/core/policy.rs` as the single source of truth.
 

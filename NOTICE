@@ -21,7 +21,6 @@ THIRD-PARTY SOFTWARE NOTICES
 This software contains components licensed under the following open-source licenses:
 
 1. MIT OR Apache-2.0:
-   - clap (https://github.com/clap-rs/clap)
    - ureq (https://github.com/algesten/ureq)
    - tar (https://github.com/alexcrichton/tar-rs)
    - flate2 (https://github.com/rust-lang/flate2-rs)

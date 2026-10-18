@@ -10,29 +10,70 @@ use ureq::config::RedirectAuthHeaders;
 use ureq::http::StatusCode;
 use ureq::tls::{RootCerts, TlsConfig};
 
-use crate::core::archive::{parse_pax_comment, strip_archive_root};
+use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::error::IngestError;
-use crate::core::github_url::{is_github_api_origin, tarball_url};
+use crate::core::model::CollectionResult;
 use crate::core::policy::{
-    ARCHIVE_MAX_SECS, MAX_FILE_SIZE, MAX_RETRIES, is_ignored_path, is_retryable_status, retry_delay,
+    ARCHIVE_MAX_SECS, MAX_FILE_SIZE, MAX_RETRIES, PathStatus, is_retryable_status, retry_delay,
 };
-use crate::core::selector::{CandidateInput, text_str};
+use crate::core::selector::Selector;
 
-use super::orchestrate::{SourceStream, StreamInfo};
+const GITHUB_API_BASE_URL: &str = "https://api.github.com";
+
+/// Exact-origin match: returns `true` if `url == GITHUB_API_BASE_URL` or starts with `GITHUB_API_BASE_URL + "/"`.
+fn is_github_api_origin(url: &str) -> bool {
+    url.strip_prefix(GITHUB_API_BASE_URL)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// Constructs the tarball download URL for the given repository and optional Git reference.
+fn tarball_url(owner: &str, repo: &str, reference: Option<&str>) -> String {
+    let mut url = String::from(GITHUB_API_BASE_URL);
+    for segment in ["repos", owner, repo, "tarball"] {
+        push_encoded_segment(&mut url, segment);
+    }
+    if let Some(reference) = reference {
+        push_encoded_segment(&mut url, reference);
+    }
+    url
+}
+
+#[inline(always)]
+const fn is_unreserved(b: u8) -> bool {
+    ((b | 32).wrapping_sub(b'a') < 26)
+        | (b.wrapping_sub(b'0') < 10)
+        | (b == b'-')
+        | (b == b'.')
+        | (b == b'_')
+        | (b == b'~')
+}
+
+fn push_encoded_segment(url: &mut String, segment: &str) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    url.push('/');
+    for &b in segment.as_bytes() {
+        if is_unreserved(b) {
+            url.push(b as char);
+        } else {
+            url.push('%');
+            url.push(HEX[(b >> 4) as usize] as char);
+            url.push(HEX[(b & 0xF) as usize] as char);
+        }
+    }
+}
 
 const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 const GITHUB_TIMEOUT_SECS: u64 = 30;
 
-pub(crate) fn collect(
+/// Collects files from a remote GitHub repository via streaming tarball download.
+pub(super) fn collect(
     owner: &str,
     repo: &str,
     reference: Option<&str>,
-) -> Result<crate::core::model::CollectionResult, IngestError> {
+) -> Result<CollectionResult, IngestError> {
     let client = GithubClient::new();
     let reader = client.tarball_stream(owner, repo, reference)?;
-    let mut archive = Archive::new(GzDecoder::new(reader));
-    let stream = GithubStream::new(&mut archive, owner, repo, reference)?;
-    super::orchestrate::collect_stream(stream)
+    collect_archive(reader, owner, repo, reference)
 }
 
 struct GithubClient {
@@ -84,16 +125,13 @@ impl GithubClient {
                 request = request.header("X-Github-Api-Version", "2022-11-28");
             }
 
-            let retry = |attempt: &mut usize,
-                         reason: &dyn std::fmt::Display|
-             -> std::time::Duration {
+            let retry = |attempt: &mut usize, reason: &dyn std::fmt::Display| {
                 *attempt += 1;
                 let delay = retry_delay(*attempt - 1);
                 eprintln!(
                     "warning: {reason} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
                 );
                 std::thread::sleep(delay);
-                delay
             };
 
             let response = match request.call() {
@@ -168,74 +206,49 @@ fn resolve_token_from_env() -> Option<String> {
     resolve_token_with(|k| std::env::var(k))
 }
 
-pub struct GithubStream<'a, R: Read> {
-    label: String,
-    reference: Option<String>,
-    parsed_revision: Option<String>,
-    entries: tar::Entries<'a, GzDecoder<R>>,
-}
+/// Collects files from an uncompressed or compressed tarball reader directly into a CollectionResult.
+fn collect_archive<R: Read>(
+    reader: R,
+    owner: &str,
+    repo: &str,
+    reference: Option<&str>,
+) -> Result<CollectionResult, IngestError> {
+    let mut archive = Archive::new(GzDecoder::new(reader));
+    let entries = archive.entries().map_err(IngestError::Io)?;
+    let label = format!("https://github.com/{owner}/{repo}");
+    let mut parsed_revision = None;
+    let mut selector = Selector::new();
+    let mut path_scratch = String::with_capacity(256);
+    let mut content_scratch = Vec::with_capacity(32 * 1024);
 
-impl<'a, R: Read> GithubStream<'a, R> {
-    pub fn new(
-        archive: &'a mut Archive<GzDecoder<R>>,
-        owner: &str,
-        repo: &str,
-        reference: Option<&str>,
-    ) -> Result<Self, IngestError> {
-        let entries = archive.entries().map_err(IngestError::Io)?;
-        Ok(Self {
-            label: format!("https://github.com/{owner}/{repo}"),
-            reference: reference.map(str::to_string),
-            parsed_revision: None,
-            entries,
-        })
-    }
-}
-
-impl<'a, R: Read> SourceStream for GithubStream<'a, R> {
-    fn for_each_item<F>(mut self, mut callback: F) -> Result<StreamInfo, IngestError>
-    where
-        F: FnMut(CandidateInput<'_>) -> Result<(), IngestError>,
-    {
-        let mut path_scratch = String::with_capacity(256);
-        let mut content_scratch = Vec::with_capacity(32 * 1024);
-        for entry_res in self.entries.by_ref() {
-            let mut entry = match entry_res {
-                Ok(e) => e,
-                Err(err) => return Err(IngestError::Io(err)),
-            };
-            path_scratch.clear();
-            content_scratch.clear();
-            match probe_tar_entry(&mut entry, &mut path_scratch, &mut content_scratch)? {
-                ArchiveEntryOutcome::PaxHeader(sha) => {
-                    if self.parsed_revision.is_none() {
-                        self.parsed_revision = Some(sha);
-                    }
-                }
-                ArchiveEntryOutcome::Candidate(candidate) => {
-                    callback(candidate)?;
-                }
-                ArchiveEntryOutcome::Ignored => {}
-            }
+    for entry_res in entries {
+        let mut entry = match entry_res {
+            Ok(e) => e,
+            Err(err) => return Err(IngestError::Io(err)),
+        };
+        path_scratch.clear();
+        content_scratch.clear();
+        if let Some(sha) = process_tar_entry(
+            &mut entry,
+            &mut selector,
+            &mut path_scratch,
+            &mut content_scratch,
+        )? && parsed_revision.is_none()
+        {
+            parsed_revision = Some(sha);
         }
-        Ok(StreamInfo {
-            label: self.label,
-            revision: self.parsed_revision.or(self.reference),
-        })
     }
+
+    let revision = parsed_revision.or_else(|| reference.map(str::to_string));
+    Ok(selector.finish(label, revision))
 }
 
-enum ArchiveEntryOutcome<'a> {
-    PaxHeader(String),
-    Candidate(CandidateInput<'a>),
-    Ignored,
-}
-
-fn probe_tar_entry<'a, R: Read>(
+fn process_tar_entry<R: Read>(
     entry: &mut tar::Entry<R>,
-    path_scratch: &'a mut String,
-    content_scratch: &'a mut Vec<u8>,
-) -> Result<ArchiveEntryOutcome<'a>, IngestError> {
+    selector: &mut Selector,
+    path_scratch: &mut String,
+    content_scratch: &mut Vec<u8>,
+) -> Result<Option<String>, IngestError> {
     let entry_type = entry.header().entry_type();
 
     // 1. PAX Global Header: Extract git commit SHA from comment
@@ -244,47 +257,34 @@ fn probe_tar_entry<'a, R: Read>(
             .take(1024)
             .read_to_end(content_scratch)
             .map_err(IngestError::Io)?;
-        if let Some(sha) = parse_pax_comment(content_scratch) {
-            return Ok(ArchiveEntryOutcome::PaxHeader(sha));
-        }
-        return Ok(ArchiveEntryOutcome::Ignored);
+        return Ok(parse_pax_comment(content_scratch));
     }
 
     // 2. Skip directories, symlinks, and special entries before path decoding
     if !matches!(entry_type, EntryType::Regular | EntryType::Continuous) {
-        return Ok(ArchiveEntryOutcome::Ignored);
+        return Ok(None);
     }
 
-    // 3. Path decoding & root stripping
+    // 3. Path decoding, root stripping, normalization & policy classification
     let path_bytes = entry.path_bytes();
-    let Some(rel_bytes) = strip_archive_root(&path_bytes) else {
-        // Root directory entry itself (e.g. "{owner}-{repo}-{sha}/")
-        return Ok(ArchiveEntryOutcome::Ignored);
-    };
-
-    let Some(rel_str) = text_str(rel_bytes) else {
-        if crate::core::policy::is_hidden_bytes(rel_bytes) {
-            return Ok(ArchiveEntryOutcome::Ignored);
+    match normalize_tar_entry_path(&path_bytes, path_scratch)? {
+        PathStatus::Ignored => return Ok(None),
+        PathStatus::NonUtf8Candidate => {
+            selector.record_non_utf8()?;
+            return Ok(None);
         }
-        return Ok(ArchiveEntryOutcome::Candidate(CandidateInput::Skipped {
-            path: None,
-        }));
-    };
-
-    // 4. Conventional filtering (noise, sensitive, hidden)
-    if is_ignored_path(rel_str) {
-        return Ok(ArchiveEntryOutcome::Ignored);
+        PathStatus::Valid => {}
     }
 
-    path_scratch.push_str(rel_str);
     let rel_path = path_scratch.as_str();
 
-    // 5. Content reading with MAX_FILE_SIZE limit
+    // 4. Pre-I/O candidate reservation before reading entry body
+    let slot = selector.reserve_candidate(rel_path)?;
+
     let header_size = entry.header().size().unwrap_or(0);
     if header_size > MAX_FILE_SIZE {
-        return Ok(ArchiveEntryOutcome::Candidate(CandidateInput::TooLarge {
-            path: rel_path,
-        }));
+        selector.record_skipped(slot);
+        return Ok(None);
     }
 
     entry
@@ -292,16 +292,13 @@ fn probe_tar_entry<'a, R: Read>(
         .read_to_end(content_scratch)
         .map_err(IngestError::Io)?;
 
-    let candidate = if content_scratch.len() as u64 > MAX_FILE_SIZE {
-        CandidateInput::TooLarge { path: rel_path }
+    if content_scratch.len() as u64 > MAX_FILE_SIZE {
+        selector.record_skipped(slot);
     } else {
-        CandidateInput::File {
-            path: rel_path,
-            bytes: content_scratch.as_slice(),
-        }
-    };
+        selector.record_file(slot, content_scratch.as_slice())?;
+    }
 
-    Ok(ArchiveEntryOutcome::Candidate(candidate))
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -589,11 +586,8 @@ mod tests {
             ),
         ]);
 
-        let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
-        let stream = GithubStream::new(&mut archive, "but212", "codefeed", None)
-            .expect("stream should open");
-        let result =
-            crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
+        let result = collect_archive(mock_data.as_slice(), "but212", "codefeed", None)
+            .expect("collection should succeed");
 
         assert_eq!(
             result.revision.as_deref(),
@@ -620,11 +614,8 @@ mod tests {
             ),
         ]);
 
-        let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
-        let stream = GithubStream::new(&mut archive, "owner", "repo", Some("main"))
-            .expect("stream should open");
-        let result =
-            crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
+        let result = collect_archive(mock_data.as_slice(), "owner", "repo", Some("main"))
+            .expect("collection should succeed");
 
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files.iter().next().unwrap().path, "small.txt");
@@ -639,11 +630,8 @@ mod tests {
             EntryType::Regular,
         )]);
 
-        let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
-        let stream =
-            GithubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
-        let result =
-            crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
+        let result = collect_archive(mock_data.as_slice(), "owner", "repo", None)
+            .expect("collection should succeed");
 
         assert_eq!(result.files.len(), 1);
         let first = result.files.iter().next().unwrap();
@@ -679,11 +667,8 @@ mod tests {
         }
         let mock_data = gz.finish().unwrap();
 
-        let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
-        let stream =
-            GithubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
-        let result =
-            crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
+        let result = collect_archive(mock_data.as_slice(), "owner", "repo", None)
+            .expect("collection should succeed");
 
         assert_eq!(result.files.len(), 0);
         assert_eq!(result.skipped, 0);
@@ -706,11 +691,8 @@ mod tests {
         }
         let mock_data = gz.finish().unwrap();
 
-        let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
-        let stream =
-            GithubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
-        let result =
-            crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
+        let result = collect_archive(mock_data.as_slice(), "owner", "repo", None)
+            .expect("collection should succeed");
 
         assert_eq!(result.files.len(), 0);
         assert_eq!(
@@ -727,16 +709,71 @@ mod tests {
             ("pax_global_header", pax_comment, EntryType::XGlobalHeader),
         ]);
 
-        let mut archive = Archive::new(GzDecoder::new(mock_data.as_slice()));
-        let stream =
-            GithubStream::new(&mut archive, "owner", "repo", None).expect("stream should open");
-        let result =
-            crate::shell::orchestrate::collect_stream(stream).expect("collection should succeed");
+        let result = collect_archive(mock_data.as_slice(), "owner", "repo", None)
+            .expect("collection should succeed");
 
         assert_eq!(
             result.revision.as_deref(),
             Some("c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950")
         );
         assert_eq!(result.files.len(), 1);
+    }
+
+    fn encode_segment(segment: &str) -> String {
+        let mut out = String::new();
+        push_encoded_segment(&mut out, segment);
+        out.strip_prefix('/').unwrap().to_string()
+    }
+
+    #[test]
+    fn percent_encodes_url_path_segments() {
+        assert_eq!(encode_segment("AZaz09-._~"), "AZaz09-._~");
+        assert_eq!(encode_segment("feature/x"), "feature%2Fx");
+        assert_eq!(encode_segment("a b"), "a%20b");
+        assert_eq!(encode_segment("100%"), "100%25");
+        assert_eq!(encode_segment("a#b?c"), "a%23b%3Fc");
+        assert_eq!(encode_segment("café"), "caf%C3%A9");
+    }
+
+    #[test]
+    fn origin_classification_identifies_github_api_correctly() {
+        let cases = [
+            ("https://api.github.com/repos/owner/repo", true),
+            ("https://api.github.com", true),
+            (
+                "https://raw.githubusercontent.com/owner/repo/main/lib.rs",
+                false,
+            ),
+            ("https://raw.githubusercontent.com", false),
+            ("https://api.github.com.evil.example/x", false),
+            ("https://api.github.com@evil.example/x", false),
+            ("https://raw.githubusercontent.com.evil.example/x", false),
+            ("https://raw.githubusercontent.com@evil.example/x", false),
+            ("http://127.0.0.1:8080/repos/owner/repo", false),
+            ("https://evil.example/", false),
+        ];
+        for (url, expected) in cases {
+            assert_eq!(
+                is_github_api_origin(url),
+                expected,
+                "unexpected auth scope for: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn builds_tarball_urls() {
+        assert_eq!(
+            tarball_url("rust-lang", "cargo", None),
+            "https://api.github.com/repos/rust-lang/cargo/tarball"
+        );
+        assert_eq!(
+            tarball_url("rust-lang", "cargo", Some("main")),
+            "https://api.github.com/repos/rust-lang/cargo/tarball/main"
+        );
+        assert_eq!(
+            tarball_url("owner", "repo", Some("feature/test")),
+            "https://api.github.com/repos/owner/repo/tarball/feature%2Ftest"
+        );
     }
 }

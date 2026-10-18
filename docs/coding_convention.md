@@ -11,7 +11,7 @@ Project-wide coding standards and API design principles for `codefeed`. Combines
 | Item | Convention | Example |
 | :--- | :--- | :--- |
 | Crates | `snake_case` (prefer single word) | `codefeed` |
-| Modules, files | `snake_case` | `github_url`, `orchestrate` |
+| Modules, files | `snake_case` | `selector`, `storage` |
 | Types, traits, enums, variants | `UpperCamelCase` | `FileRecord`, `Option::Some` |
 | Functions, methods, variables | `snake_case` | `render_text`, `path_arena` |
 | Static items, constants | `SCREAMING_SNAKE_CASE` | `MAX_FILE_COUNT`, `MAX_OUTPUT_SIZE` |
@@ -96,7 +96,7 @@ Codebase is strictly partitioned into pure logic and effectful shell:
 ### `src/shell/` (Imperative Shell)
 
 - **Side Effects:** All I/O, network calls, filesystem operations, and process interactions live here.
-- **Delegation:** Collect external inputs, map them into domain types (`CandidateInput`), and delegate computation/decisions directly to `src/core/`.
+- **Delegation:** Collect external inputs, reserve budget via domain tokens (`CandidateSlot`), and delegate computation/storage directly to `src/core/`.
 
 ---
 
@@ -106,7 +106,7 @@ Minimize memory footprints, eliminate allocations in loops, and keep dependencie
 
 - **Arena Storage:** Store file paths and contents in contiguous `FileStorage` arenas (`path_arena`, `content_arena`) indexed by 16-byte `FileSpan`. Iterate via zero-copy `FileRecord<'a>`. Enables in-place lexicographical sorting by swapping offsets without moving string data.
 - **Direct Data Structures:** Use direct, standard data structures (`Vec`, `HashMap`). Avoid speculative layout packing, premature micro-tuning, or pointer-indirected trees; prioritize structural simplicity.
-- **Zero-Copy Streaming:** Stream render output directly to `impl Write + ?Sized` using `Cow<'_, str>` or streaming chunks. Avoid staging full output in memory.
+- **Zero-Copy Streaming:** Stream render output directly to `impl Write + ?Sized` using streaming chunks or single-pass escape helpers. File delivery streams directly into an atomic temporary file; stdout buffers up to `MAX_OUTPUT_SIZE` before writing to guarantee all-or-nothing delivery on overflow.
 - **Std-First Dependencies:** Default to `std`. Introduce external crates only when in-tree maintenance introduces disproportionate complexity or security risk (e.g., `.gitignore` parsing via `ignore`, HTTP via `ureq`). Document crate rationale inline in `Cargo.toml`.
 
 ---
@@ -129,11 +129,49 @@ Enforce defense-in-depth across filesystem and network interactions:
 
 ---
 
-## 7. Testing & Verification
+## 7. Documentation & Comments (Rust API Guidelines: `C-CRATE-DOC`, `C-EXAMPLE`, `C-FAILURE`, `C-LINK`, `C-QUESTION-MARK`; RFC 1574)
+
+Clear, accurate documentation is enforced across the codebase as a primary architectural and API contract:
+
+### Rustdoc Standards (RFC 1574, `C-CRATE-DOC`)
+
+- **Doc Comment Syntax:** Use `///` for item-level documentation and `//!` for enclosing crate (`src/lib.rs`) and module documentation (`mod.rs` or file roots).
+- **Opening Summary Line:** The first line must be a concise, single-sentence summary ending with a period. Written in the third-person singular present indicative ("Returns ...", "Parses ...", "Creates ...", not "Return ..." or "This function ...").
+- **Explanatory Body:** Follow the summary line with a blank line before providing detailed operational contracts, background context, or implementation invariants.
+- **Language & Tone:** English only (RFC 1574). High-density, crisp, reader-first prose. Avoid filler, conversational hedging, or repeating method signatures in prose.
+
+### Standard Section Headers
+
+Structure item documentation using standard Markdown level-1 (`#`) section headers:
+
+- **`# Errors`:** Mandatory on any public or crate-visible function returning `Result`. Exhaustively documents all failure conditions, error variants returned, and triggering preconditions.
+- **`# Panics`:** Mandatory on any function that can panic. Explicitly states all conditions triggering `panic!` or `expect!`.
+- **`# Safety`:** Mandatory for any `unsafe` function or trait. Explicitly details all safety invariants that callers must uphold.
+- **`# Examples`:** Practical usage snippets written as runnable, testable doctests (verified via `cargo test --doc`). Mark with `no_run` when side effects or external environments are required.
+
+### Visibility & Lint Enforcement
+
+- **Compiler Enforcement:** The crate root (`src/lib.rs`) enforces `#![warn(missing_docs)]`. All public items (`pub`) re-exported by the library must be documented without warnings.
+- **Scope & Depth by Visibility:**
+  - **Public API (`pub` in `src/lib.rs`):** Exhaustive rustdoc documentation with summary line, detailed contracts, `# Errors`, and `# Examples` where applicable.
+  - **Crate-Internal Items (`pub(crate)`):** Single-line summary and doc comments documenting boundary assumptions, invariants, and performance characteristics.
+  - **Private Items (`fn`, `const`):** Keep self-documenting through direct naming; document non-trivial bitwise operations, regex-free parsers, or specific security policies.
+- **Intra-Doc Links (`C-LINK`):** Use bracketed intra-doc links (`[`Type`]`, [`Module::func`]) to cross-reference types. Public items must not link to private/internal items (`warn(rustdoc::private_intra_doc_links)`); use backticks (`` `core` ``) when referencing internal modules from public documentation.
+
+### Implementation Comments (`//`)
+
+- **"Why, Not What":** Code explains *what* happens; comments explain *why* non-obvious choices were made (e.g., protocol quirks, PAX header RFC specifications, ASCII case folding performance, avoidance of allocations).
+- **Step Annotations:** In complex multi-phase algorithms (e.g., tarball entry probing, candidate filtering), use numbered inline comments (`// 1. PAX Global Header: ...`) to delineate execution stages.
+- **No Dead Code:** Never leave commented-out code blocks in the repository. Version control preserves prior implementations.
+
+---
+
+## 8. Testing & Verification
 
 - **Verification Matrix:**
   - Lint: `cargo clippy --all-targets -- -D warnings`
   - Format: `cargo fmt --check`
+  - Documentation: `cargo doc --no-deps`
   - Tests: `cargo test`
 - **Table-Driven Fixtures:** Prefer slice fixtures (`let cases = [...]`) over repetitive individual test functions.
 - **In-Memory Limits:** Test file count and byte limit boundaries (`MAX_FILE_COUNT`, `MAX_OUTPUT_SIZE`) via in-memory data structures (`Selector`, `CandidateBudget`) rather than physical disk loops.

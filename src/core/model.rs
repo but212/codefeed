@@ -1,6 +1,47 @@
 use std::path::PathBuf;
 
 use crate::core::error::IngestError;
+use crate::core::storage::FileStorage;
+
+/// Validated non-empty Git revision reference (branch, tag, or commit SHA).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GitRef(String);
+
+impl GitRef {
+    /// Creates a new `GitRef`, rejecting empty or whitespace-only strings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IngestError::InvalidSource`] if `value` is empty or only whitespace.
+    pub fn new(value: impl Into<String>) -> Result<Self, IngestError> {
+        let string = value.into();
+        if string.trim_ascii().is_empty() {
+            return Err(IngestError::invalid_source("--ref cannot be empty"));
+        }
+        Ok(Self(string))
+    }
+
+    /// Borrows the reference as a string slice.
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for GitRef {
+    type Target = str;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for GitRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 /// Ingestion source location.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8,30 +49,77 @@ pub enum Source {
     /// Local filesystem directory.
     Local(PathBuf),
     /// Public or authenticated GitHub repository.
+    #[non_exhaustive]
     Github {
         /// Repository owner (user or organization).
         owner: String,
         /// Repository name.
         repo: String,
         /// Optional GitHub branch, tag, or commit SHA.
-        reference: Option<String>,
+        reference: Option<GitRef>,
     },
 }
 
 impl Source {
-    pub fn with_reference(self, reference: Option<String>) -> Result<Self, IngestError> {
-        if reference
-            .as_ref()
-            .is_some_and(|r| r.trim_ascii().is_empty())
-        {
-            return Err(IngestError::invalid_source("--ref cannot be empty"));
+    /// Creates a new validated [`Source::Github`] instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IngestError::InvalidSource`] if `owner` or `repo` contain invalid characters,
+    /// empty strings, or path traversals.
+    pub fn github(
+        owner: impl Into<String>,
+        repo: impl Into<String>,
+        reference: Option<GitRef>,
+    ) -> Result<Self, IngestError> {
+        let owner = owner.into();
+        let repo = repo.into();
+        if !valid_github_name(&owner) || !valid_github_name(&repo) {
+            return Err(IngestError::invalid_source(
+                "owner and repository names contain invalid characters",
+            ));
         }
+        Ok(Self::Github {
+            owner,
+            repo,
+            reference,
+        })
+    }
+
+    /// Parses an OS-native string argument into a [`Source`].
+    pub(super) fn parse_os(value: &std::ffi::OsStr) -> Result<Self, IngestError> {
+        match value.to_str() {
+            Some(value) => Self::parse(value),
+            None => Ok(Self::Local(PathBuf::from(value))),
+        }
+    }
+
+    /// Parses a string slice into either a [`Source::Local`] or [`Source::Github`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IngestError::UnsupportedSource`] if given an unsupported protocol
+    /// (such as SSH) or [`IngestError::InvalidSource`] if the GitHub URL is malformed.
+    fn parse(value: &str) -> Result<Self, IngestError> {
+        if value.starts_with("http://") || value.starts_with("https://") {
+            return parse_github_url(value);
+        }
+        if value.starts_with("git@") || value.starts_with("ssh://") {
+            return Err(IngestError::unsupported_source(
+                "only local paths and public HTTPS GitHub URLs are supported",
+            ));
+        }
+        Ok(Self::Local(value.into()))
+    }
+
+    /// Returns a new `Source` instance with the specified Git revision reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IngestError::InvalidSource`] if `reference` is [`Some`] when called on a [`Source::Local`] variant,
+    /// or if the reference string is empty or only whitespace.
+    pub fn with_reference(self, reference: Option<impl Into<String>>) -> Result<Self, IngestError> {
         match self {
-            Self::Github { owner, repo, .. } => Ok(Self::Github {
-                owner,
-                repo,
-                reference,
-            }),
             Self::Local(_) => {
                 if reference.is_some() {
                     Err(IngestError::invalid_source(
@@ -41,8 +129,72 @@ impl Source {
                     Ok(self)
                 }
             }
+            Self::Github { owner, repo, .. } => {
+                let reference = reference.map(GitRef::new).transpose()?;
+                Ok(Self::Github {
+                    owner,
+                    repo,
+                    reference,
+                })
+            }
         }
     }
+}
+
+fn parse_github_url(value: &str) -> Result<Source, IngestError> {
+    let remainder = value.strip_prefix("https://").ok_or_else(|| {
+        IngestError::unsupported_source("only https://github.com/{owner}/{repo} is supported")
+    })?;
+    let (authority, path) = match remainder.find('/') {
+        Some(index) => (&remainder[..index], &remainder[index..]),
+        None => (remainder, ""),
+    };
+    if authority.is_empty() {
+        return Err(IngestError::invalid_source(value));
+    }
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    let host = match host_port.split_once(':') {
+        Some((host, port)) => {
+            if !port.is_empty() && port.parse::<u16>().is_err() {
+                return Err(IngestError::invalid_source(value));
+            }
+            host
+        }
+        None => host_port,
+    };
+    if !host.eq_ignore_ascii_case("github.com") {
+        return Err(IngestError::unsupported_source(
+            "only https://github.com/{owner}/{repo} is supported",
+        ));
+    }
+    if path.contains('?') || path.contains('#') {
+        return Err(IngestError::invalid_source(
+            "repository URLs cannot contain a query or fragment",
+        ));
+    }
+
+    let mut parts = path.split('/').filter(|part| !part.is_empty());
+    let (Some(owner), Some(repo_segment), None) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(IngestError::invalid_source(
+            "expected https://github.com/{owner}/{repo}",
+        ));
+    };
+
+    let repo = repo_segment.strip_suffix(".git").unwrap_or(repo_segment);
+    Source::github(owner, repo, None)
+}
+
+fn valid_github_name(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value.bytes().all(|byte| {
+            (byte.wrapping_sub(b'0') < 10)
+                | ((byte | 32).wrapping_sub(b'a') < 26)
+                | (byte == b'-')
+                | (byte == b'_')
+                | (byte == b'.')
+        })
 }
 
 /// Where the digest is delivered. Distinguishes a filesystem path from the
@@ -77,6 +229,7 @@ pub struct RunConfig {
 }
 
 impl RunConfig {
+    /// Creates a new `RunConfig` with the given source, output target, and format.
     pub const fn new(source: Source, output: OutputTarget, format: DigestFormat) -> Self {
         Self {
             source,
@@ -88,6 +241,7 @@ impl RunConfig {
 
 /// Summary report emitted upon successful digest generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct IngestReport {
     /// Target destination where the digest was delivered.
     pub output: OutputTarget,
@@ -99,138 +253,13 @@ pub struct IngestReport {
     pub estimated_tokens: usize,
 }
 
-/// 16-byte POD indexing a file path and content slice in [`FileStorage`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct FileSpan {
-    pub(crate) path_offset: u32,
-    pub(crate) path_len: u32,
-    pub(crate) content_offset: u32,
-    pub(crate) content_len: u32,
-}
-
-impl FileSpan {
-    #[inline(always)]
-    pub(crate) fn path<'a>(&self, arena: &'a str) -> &'a str {
-        let start = self.path_offset as usize;
-        let end = start + self.path_len as usize;
-        &arena[start..end]
-    }
-
-    #[inline(always)]
-    pub(crate) fn content<'a>(&self, arena: &'a str) -> &'a str {
-        let start = self.content_offset as usize;
-        let end = start + self.content_len as usize;
-        &arena[start..end]
-    }
-}
-
-/// Continuous arena storage for file paths and contents.
-/// Eliminates per-file heap allocations and preserves cache locality.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FileStorage {
-    spans: Vec<FileSpan>,
-    path_arena: String,
-    content_arena: String,
-}
-
-impl FileStorage {
-    #[inline]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    #[inline]
-    pub fn with_capacity(spans_cap: usize, path_bytes: usize, content_bytes: usize) -> Self {
-        Self {
-            spans: Vec::with_capacity(spans_cap),
-            path_arena: String::with_capacity(path_bytes),
-            content_arena: String::with_capacity(content_bytes),
-        }
-    }
-
-    #[inline]
-    pub const fn len(&self) -> usize {
-        self.spans.len()
-    }
-
-    /// Sorts spans lexicographically by path in-place within the path arena.
-    pub fn sort_by_path(&mut self) {
-        let path_arena = &self.path_arena;
-        let is_sorted = self
-            .spans
-            .windows(2)
-            .all(|w| w[0].path(path_arena) <= w[1].path(path_arena));
-        if is_sorted {
-            return;
-        }
-        self.spans
-            .sort_unstable_by(|a, b| a.path(path_arena).cmp(b.path(path_arena)));
-    }
-
-    /// Appends path and content to the arenas and records a [`FileSpan`].
-    pub fn push(&mut self, path: &str, content: &str) -> FileSpan {
-        debug_assert!(u32::try_from(self.path_arena.len()).is_ok());
-        debug_assert!(u32::try_from(path.len()).is_ok());
-        debug_assert!(u32::try_from(self.content_arena.len()).is_ok());
-        debug_assert!(u32::try_from(content.len()).is_ok());
-
-        let path_offset = self.path_arena.len() as u32;
-        let path_len = path.len() as u32;
-        self.path_arena.push_str(path);
-
-        let content_offset = self.content_arena.len() as u32;
-        let content_len = content.len() as u32;
-        self.content_arena.push_str(content);
-
-        let span = FileSpan {
-            path_offset,
-            path_len,
-            content_offset,
-            content_len,
-        };
-        self.spans.push(span);
-        span
-    }
-
-    /// Resolves a [`FileSpan`] into a borrowed [`FileRecord`].
-    #[inline]
-    pub fn get(&self, span: FileSpan) -> FileRecord<'_> {
-        FileRecord {
-            path: span.path(&self.path_arena),
-            content: span.content(&self.content_arena),
-        }
-    }
-
-    /// Iterator yielding borrowed [`FileRecord`] views over the arena.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = FileRecord<'_>> {
-        self.spans.iter().map(move |&span| self.get(span))
-    }
-}
-
-impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
-    fn from_iter<T: IntoIterator<Item = FileRecord<'a>>>(iter: T) -> Self {
-        let mut storage = Self::new();
-        for record in iter {
-            storage.push(record.path, record.content);
-        }
-        storage
-    }
-}
-
-/// Zero-copy borrowed view into a file record stored within [`FileStorage`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FileRecord<'a> {
-    pub path: &'a str,
-    pub content: &'a str,
-}
-
 /// Raw files and metadata collected by the shell before digest rendering.
 #[derive(Debug, Clone)]
-pub struct CollectionResult {
-    pub label: String,
-    pub revision: Option<String>,
-    pub files: FileStorage,
-    pub skipped: usize,
+pub(crate) struct CollectionResult {
+    pub(crate) label: String,
+    pub(crate) revision: Option<String>,
+    pub(crate) files: FileStorage,
+    pub(crate) skipped: usize,
 }
 
 #[cfg(test)]
@@ -238,51 +267,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn file_storage_maintains_continuous_arena_and_zero_copy_views() {
-        let mut storage = FileStorage::new();
-        assert_eq!(storage.len(), 0);
+    fn git_ref_validates_and_provides_slice_access() {
+        let valid = GitRef::new("v1.0.0").unwrap();
+        assert_eq!(valid.as_str(), "v1.0.0");
+        assert_eq!(&*valid, "v1.0.0");
+        assert_eq!(valid.to_string(), "v1.0.0");
 
-        let span1 = storage.push("path/to/first.rs", "pub fn first() {}");
-        let span2 = storage.push("second.txt", "second content\n");
-
-        assert_eq!(storage.len(), 2);
-
-        let rec1 = storage.get(span1);
-        assert_eq!(rec1.path, "path/to/first.rs");
-        assert_eq!(rec1.content, "pub fn first() {}");
-
-        let rec2 = storage.get(span2);
-        assert_eq!(rec2.path, "second.txt");
-        assert_eq!(rec2.content, "second content\n");
-
-        let mut iter = storage.iter();
-        assert_eq!(iter.next(), Some(rec1));
-        assert_eq!(iter.next(), Some(rec2));
-        assert_eq!(iter.next(), None);
-
-        let collected: Vec<FileRecord<'_>> = storage.iter().collect();
-        assert_eq!(collected, vec![rec1, rec2]);
-
-        // Arena contents verification
-        assert_eq!(storage.path_arena, "path/to/first.rssecond.txt");
-        assert_eq!(storage.content_arena, "pub fn first() {}second content\n");
-
-        // FromIterator verification
-        let reconstructed: FileStorage = collected.into_iter().collect();
-        assert_eq!(reconstructed, storage);
-    }
-
-    #[test]
-    fn file_storage_sorts_by_path_in_place() {
-        let mut storage = FileStorage::new();
-        storage.push("z/file.rs", "content_z");
-        storage.push("a/file.rs", "content_a");
-        storage.push("m/file.rs", "content_m");
-
-        storage.sort_by_path();
-
-        let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
-        assert_eq!(paths, vec!["a/file.rs", "m/file.rs", "z/file.rs"]);
+        assert!(GitRef::new("").is_err());
+        assert!(GitRef::new("   ").is_err());
+        assert!(GitRef::new("\t\n").is_err());
     }
 
     #[test]
@@ -292,17 +285,17 @@ mod tests {
             repo: "rust".into(),
             reference: None,
         };
-        let updated = gh.with_reference(Some("main".into())).unwrap();
+        let updated = gh.clone().with_reference(Some("main")).unwrap();
         assert_eq!(
             updated,
             Source::Github {
                 owner: "rust-lang".into(),
                 repo: "rust".into(),
-                reference: Some("main".into()),
+                reference: Some(GitRef::new("main").unwrap()),
             }
         );
 
-        let cleared = updated.with_reference(None).unwrap();
+        let cleared: Source = updated.with_reference(None::<&str>).unwrap();
         assert_eq!(
             cleared,
             Source::Github {
@@ -312,21 +305,98 @@ mod tests {
             }
         );
 
-        let empty_err = cleared
-            .clone()
-            .with_reference(Some("   ".into()))
-            .unwrap_err();
-        assert!(
-            matches!(empty_err, IngestError::InvalidSource(msg) if msg.contains("--ref cannot be empty"))
-        );
-
         let local = Source::Local(PathBuf::from("."));
-        let local_ok = local.clone().with_reference(None).unwrap();
+        let local_ok: Source = local.clone().with_reference(None::<&str>).unwrap();
         assert_eq!(local_ok, local);
 
-        let local_err = local.with_reference(Some("main".into())).unwrap_err();
+        let local_err = local.clone().with_reference(Some("main")).unwrap_err();
         assert!(
             matches!(local_err, IngestError::InvalidSource(msg) if msg.contains("--ref is only valid for GitHub sources"))
         );
+
+        let local_empty_err = local.with_reference(Some("")).unwrap_err();
+        assert!(
+            matches!(local_empty_err, IngestError::InvalidSource(msg) if msg.contains("--ref is only valid for GitHub sources"))
+        );
+
+        let gh_empty_err = gh.with_reference(Some("")).unwrap_err();
+        assert!(
+            matches!(gh_empty_err, IngestError::InvalidSource(msg) if msg.contains("--ref cannot be empty"))
+        );
+    }
+
+    #[test]
+    fn parses_public_github_repository() -> Result<(), Box<dyn std::error::Error>> {
+        let expected = Source::Github {
+            owner: "rust-lang".into(),
+            repo: "cargo".into(),
+            reference: None,
+        };
+        assert_eq!(
+            Source::parse("https://github.com/rust-lang/cargo.git")?,
+            expected
+        );
+        let expected_repo = Source::Github {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            reference: None,
+        };
+        assert_eq!(
+            Source::parse("https://github.com:443/owner/repo")?,
+            expected_repo
+        );
+        assert_eq!(
+            Source::parse("https://github.com:/owner/repo")?,
+            expected_repo
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_rejects_malformed_urls() {
+        let invalid_cases = [
+            "git@github.com:owner/repo.git",
+            "https://gitlab.com/owner/repo",
+            "https://github.com/owner/repo/issues",
+            "https://github.com/owner/..",
+            "https://github.com/owner/.",
+            "https://github.com/./repo",
+            "https://github.com/../repo",
+            "https://github.com:99999/owner/repo",
+            "https://github.com:abc/owner/repo",
+        ];
+        for url in invalid_cases {
+            assert!(Source::parse(url).is_err(), "expected error for: {url}");
+        }
+    }
+
+    #[test]
+    fn source_github_constructor_validates_identifiers() {
+        let valid = Source::github("rust-lang", "cargo", None).unwrap();
+        assert_eq!(
+            valid,
+            Source::Github {
+                owner: "rust-lang".into(),
+                repo: "cargo".into(),
+                reference: None,
+            }
+        );
+
+        let invalid = [
+            ("", "repo"),
+            ("owner", ""),
+            (".", "repo"),
+            ("owner", "."),
+            ("..", "repo"),
+            ("owner", ".."),
+            ("ow/ner", "repo"),
+            ("owner", "re po"),
+        ];
+        for (owner, repo) in invalid {
+            assert!(
+                Source::github(owner, repo, None).is_err(),
+                "expected error for: {owner}/{repo}"
+            );
+        }
     }
 }

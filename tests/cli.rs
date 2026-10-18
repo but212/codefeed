@@ -33,21 +33,33 @@ fn run(args: &[&str]) -> std::process::Output {
 
 #[test]
 fn public_api_types_are_accessible() {
-    use codefeed::{DigestFormat, IngestError, IngestReport, OutputTarget, RunConfig, Source};
+    use codefeed::{
+        DigestFormat, GitRef, IngestError, IngestReport, OutputTarget, RunConfig, Source,
+    };
     let config = RunConfig::new(
         Source::Local(std::path::PathBuf::from(".")),
         OutputTarget::Stdout,
         DigestFormat::Text,
     );
     assert_eq!(config.format, DigestFormat::Text);
-    let report = IngestReport {
-        output: OutputTarget::Stdout,
-        included_files: 1,
-        skipped_files: 0,
-        estimated_tokens: 42,
-    };
-    assert_eq!(report.estimated_tokens, 42);
+    let _report_type: Option<IngestReport> = None;
     let _err = IngestError::usage("test");
+    let git_ref = GitRef::new("main").expect("valid git ref");
+    assert_eq!(git_ref.as_str(), "main");
+    let source = Source::github("owner", "repo", Some(git_ref)).expect("valid github source");
+    match source {
+        Source::Github {
+            owner,
+            repo,
+            reference,
+            ..
+        } => {
+            assert_eq!(owner, "owner");
+            assert_eq!(repo, "repo");
+            assert!(reference.is_some());
+        }
+        _ => unreachable!(),
+    }
 }
 
 #[test]

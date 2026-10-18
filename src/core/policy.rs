@@ -1,16 +1,16 @@
 //! Single source of truth for ingestion policies, limits, and conventions.
 
 /// Maximum individual file size accepted (1 MiB in bytes). Larger files are skipped.
-pub const MAX_FILE_SIZE: u64 = 1024 * 1024;
+pub(crate) const MAX_FILE_SIZE: u64 = 1024 * 1024;
 /// Maximum rendered digest size (20 MiB in bytes). Overflows return [`IngestError::OutputTooLarge`](crate::core::error::IngestError::OutputTooLarge).
-pub const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
+pub(crate) const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
 /// Maximum candidate files evaluated before candidate budget overflows (10,000 files).
-pub const MAX_FILE_COUNT: usize = 10_000;
+pub(crate) const MAX_FILE_COUNT: usize = 10_000;
 /// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
-pub const ARCHIVE_MAX_SECS: u64 = 300;
+pub(crate) const ARCHIVE_MAX_SECS: u64 = 300;
 
 /// Conventional lockfiles excluded before candidate budget accounting.
-pub const NOISE: &[&str] = &[
+const NOISE: &[&str] = &[
     "Cargo.lock",
     "package-lock.json",
     "yarn.lock",
@@ -22,17 +22,29 @@ pub const NOISE: &[&str] = &[
 ///
 /// Note: `credentials` is matched as an extension here (`*.credentials`, e.g., `aws.credentials`),
 /// and is also matched as a filename prefix in [`is_sensitive_file`] (`credentials*`, e.g., `credentials.json`).
-pub const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "credentials"];
+const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "credentials"];
 
 /// Maximum total HTTP request attempts (1 initial + up to 2 retries).
-pub const MAX_RETRIES: usize = 3;
+pub(crate) const MAX_RETRIES: usize = 3;
 /// Base initial delay in milliseconds for exponential backoff.
-pub const RETRY_INITIAL_DELAY_MS: u64 = 250;
+const RETRY_INITIAL_DELAY_MS: u64 = 250;
 /// Maximum delay cap in milliseconds for exponential backoff.
-pub const RETRY_MAX_DELAY_MS: u64 = 5_000;
+const RETRY_MAX_DELAY_MS: u64 = 5_000;
 
+/// Path classification outcome from a single-pass policy evaluation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PathStatus {
+    /// Normalized valid relative UTF-8 path.
+    Valid,
+    /// Ignored path (hidden component, conventional noise, sensitive pattern, or root).
+    Ignored,
+    /// Non-UTF-8 path that is not hidden and must be counted against candidate budget as skipped.
+    NonUtf8Candidate,
+}
+
+/// Returns `true` if `file_name` matches a known noise file.
 #[inline]
-pub(crate) fn is_noise_file(file_name: &str) -> bool {
+fn is_noise_file(file_name: &str) -> bool {
     NOISE.contains(&file_name)
 }
 
@@ -42,10 +54,10 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
+/// Returns `true` if `file_name` or its `extension` indicates a sensitive credentials file.
 #[inline]
-pub(crate) fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> bool {
-    if starts_with_ignore_ascii_case(file_name, ".env")
-        || starts_with_ignore_ascii_case(file_name, "id_rsa")
+fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> bool {
+    if starts_with_ignore_ascii_case(file_name, "id_rsa")
         || starts_with_ignore_ascii_case(file_name, "id_ed25519")
         || starts_with_ignore_ascii_case(file_name, "credentials")
     {
@@ -59,36 +71,49 @@ pub(crate) fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> boo
         .any(|&s| s.eq_ignore_ascii_case(extension))
 }
 
-/// Returns `true` if `path` contains hidden directory or file components (starting with `.`, excluding `.` or `..`).
+/// Returns `true` if raw path segment bytes start with a dot (`.`), marking a hidden file or directory.
 #[inline]
-pub(crate) fn is_hidden_path(path: &str) -> bool {
-    path.split('/')
-        .any(|s| s.starts_with('.') && s != "." && s != "..")
+pub(crate) fn is_hidden_segment(segment: &[u8]) -> bool {
+    segment.first() == Some(&b'.')
 }
 
-/// Returns `true` if raw byte path contains hidden directory or file components.
+/// Returns `true` if `file_name` matches a known noise file or a sensitive credentials pattern.
 #[inline]
-pub(crate) fn is_hidden_bytes(path: &[u8]) -> bool {
-    path.split(|&b| b == b'/')
-        .any(|s| s.starts_with(b".") && s != b"." && s != b"..")
+fn is_ignored_filename(file_name: &str) -> bool {
+    let extension = file_name.rsplit_once('.').map(|(_, e)| e);
+    is_noise_file(file_name) || is_sensitive_file(file_name, extension)
 }
 
-/// Returns `true` if `path` is an ignored noise, sensitive, or hidden file.
-pub(crate) fn is_ignored_path(path: &str) -> bool {
-    if is_hidden_path(path) {
-        return true;
+/// Classifies a path string into [`PathStatus`].
+///
+/// Returns [`PathStatus::Ignored`] if any path segment starts with `.` (hidden)
+/// or if the file name matches known noise or sensitive credential patterns.
+/// Otherwise returns [`PathStatus::Valid`].
+#[inline]
+pub(crate) fn classify_path(path: &str) -> PathStatus {
+    let mut last_component = None;
+    for segment in path.split('/') {
+        if is_hidden_segment(segment.as_bytes()) {
+            return PathStatus::Ignored;
+        }
+        if !segment.is_empty() {
+            last_component = Some(segment);
+        }
     }
 
-    let file_name = path.rsplit('/').next().unwrap_or(path);
-    let extension = file_name.rsplit_once('.').map(|(_, e)| e);
+    if let Some(filename) = last_component
+        && is_ignored_filename(filename)
+    {
+        return PathStatus::Ignored;
+    }
 
-    is_noise_file(file_name) || is_sensitive_file(file_name, extension)
+    PathStatus::Valid
 }
 
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
 #[inline]
 pub(crate) const fn is_retryable_status(status_code: u16) -> bool {
-    (status_code == 429) | (status_code.wrapping_sub(500) <= 99)
+    matches!(status_code, 429 | 500..=599)
 }
 
 /// Calculates bounded exponential backoff duration for the given attempt.
@@ -146,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_ignored_path() {
+    fn test_classify_path() {
         let ignored = [
             "Cargo.lock",
             "nested/dir/package-lock.json",
@@ -170,9 +195,16 @@ mod tests {
             "src/.hidden.rs",
             ".env.production",
             ".envrc",
+            ".hidden",
+            "dir/.hidden",
+            "a/b/.c/d",
         ];
         for path in ignored {
-            assert!(is_ignored_path(path), "expected {path} to be ignored");
+            assert_eq!(
+                classify_path(path),
+                PathStatus::Ignored,
+                "expected {path} to be ignored"
+            );
         }
 
         let kept = [
@@ -185,30 +217,63 @@ mod tests {
             "Cargo.toml",
             "Makefile",
             "environment.rs",
+            "not_hidden",
+            "dir/not_hidden.txt",
+            "ends_with_dot.",
+            "a/b",
         ];
         for path in kept {
-            assert!(!is_ignored_path(path), "expected {path} not to be ignored");
+            assert_eq!(
+                classify_path(path),
+                PathStatus::Valid,
+                "expected {path} to be valid"
+            );
         }
     }
 
     #[test]
-    fn test_is_hidden_bytes_matches_is_hidden_path() {
-        let cases = [
-            (".hidden", true),
-            ("dir/.hidden", true),
-            ("a/b/.c/d", true),
-            ("not_hidden", false),
-            ("dir/not_hidden.txt", false),
-            ("ends_with_dot.", false),
-            ("./src/main.rs", false),
-            ("src/./main.rs", false),
-            ("../src/main.rs", false),
-            ("src/../main.rs", false),
-            ("a//b", false),
+    fn test_is_hidden_segment() {
+        assert!(is_hidden_segment(b".git"));
+        assert!(is_hidden_segment(b".env"));
+        assert!(is_hidden_segment(b"."));
+        assert!(is_hidden_segment(b".."));
+        assert!(!is_hidden_segment(b"src"));
+        assert!(!is_hidden_segment(b""));
+        assert!(!is_hidden_segment(b"file.txt"));
+    }
+
+    #[test]
+    fn test_is_ignored_filename() {
+        let ignored = [
+            "Cargo.lock",
+            "package-lock.json",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+            "go.sum",
+            "server.key",
+            "cert.pem",
+            "client.p12",
+            "cert.pkcs12",
+            "credentials.json",
+            "aws.credentials",
+            "credentials",
+            "id_rsa",
+            "id_rsa.pub",
+            "id_ed25519",
         ];
-        for (path, expected) in cases {
-            assert_eq!(is_hidden_path(path), expected, "path: {path}");
-            assert_eq!(is_hidden_bytes(path.as_bytes()), expected, "bytes: {path}");
+        for filename in ignored {
+            assert!(
+                is_ignored_filename(filename),
+                "expected {filename} to be ignored"
+            );
+        }
+
+        let kept = ["Cargo.toml", "main.rs", "Makefile", "environment.rs"];
+        for filename in kept {
+            assert!(
+                !is_ignored_filename(filename),
+                "expected {filename} not to be ignored"
+            );
         }
     }
 }

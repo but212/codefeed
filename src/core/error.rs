@@ -14,6 +14,7 @@ pub struct CandidateLimitExceededError {
 
 /// Domain error encountered during ingestion or CLI execution.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum IngestError {
     /// CLI usage error or missing argument.
     Usage(String),
@@ -36,13 +37,15 @@ pub enum IngestError {
 }
 
 impl IngestError {
+    /// Constructs a [`Usage`](Self::Usage) error from a descriptive message.
     #[inline]
     pub fn usage(message: impl Into<String>) -> Self {
         Self::Usage(message.into())
     }
 
+    /// Constructs a [`CandidateLimitExceeded`](Self::CandidateLimitExceeded) error with diagnostic directory counts.
     #[inline]
-    pub fn candidate_limit_exceeded(
+    pub(crate) fn candidate_limit_exceeded(
         limit: usize,
         largest_directories: Vec<(String, usize)>,
     ) -> Self {
@@ -52,33 +55,39 @@ impl IngestError {
         })
     }
 
+    /// Constructs an [`InvalidSource`](Self::InvalidSource) error from a descriptive message.
     #[inline]
-    pub fn invalid_source(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid_source(message: impl Into<String>) -> Self {
         Self::InvalidSource(message.into())
     }
 
+    /// Constructs an [`UnsupportedSource`](Self::UnsupportedSource) error from a descriptive message.
     #[inline]
-    pub fn unsupported_source(message: impl Into<String>) -> Self {
+    pub(crate) fn unsupported_source(message: impl Into<String>) -> Self {
         Self::UnsupportedSource(message.into())
     }
 
+    /// Constructs an [`Http`](Self::Http) transport error from a descriptive message.
     #[inline]
-    pub fn http(message: impl Into<String>) -> Self {
+    pub(crate) fn http(message: impl Into<String>) -> Self {
         Self::Http(message.into())
     }
 
+    /// Constructs an [`Api`](Self::Api) error from a descriptive message.
     #[inline]
-    pub fn api(message: impl Into<String>) -> Self {
+    pub(crate) fn api(message: impl Into<String>) -> Self {
         Self::Api(message.into())
     }
 
+    /// Constructs an [`InvalidMetadata`](Self::InvalidMetadata) error from a descriptive message.
     #[inline]
-    pub fn invalid_metadata(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid_metadata(message: impl Into<String>) -> Self {
         Self::InvalidMetadata(message.into())
     }
 
+    /// Constructs an [`OutputTooLarge`](Self::OutputTooLarge) error with diagnostic largest file entries.
     #[inline]
-    pub fn output_too_large(largest_files: Vec<(String, usize)>) -> Self {
+    pub(crate) fn output_too_large(largest_files: Vec<(String, usize)>) -> Self {
         Self::OutputTooLarge(largest_files)
     }
 }
