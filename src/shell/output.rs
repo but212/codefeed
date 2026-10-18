@@ -144,6 +144,13 @@ impl Drop for TempPathGuard {
     }
 }
 
+/// Manages atomic output writing via a temporary file that is synced and renamed on commit.
+///
+/// # Field Order Invariant
+///
+/// `writer` is declared before `temp_guard` so that Rust's top-to-bottom drop order flushes and
+/// closes the open file handle in `writer` before `temp_guard`'s [`Drop`] runs to remove the
+/// temporary file. On Windows, attempting to delete an open file fails with an access error.
 struct AtomicFile {
     writer: io::BufWriter<fs::File>,
     temp_guard: TempPathGuard,
@@ -175,6 +182,15 @@ impl AtomicFile {
             }
         };
 
+        #[cfg(unix)]
+        match fs::metadata(target) {
+            Ok(metadata) => {
+                file.set_permissions(metadata.permissions())?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(IngestError::Io(error)),
+        }
+
         Ok(Self {
             writer: io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, file),
             temp_guard: TempPathGuard::new(temporary),
@@ -186,6 +202,14 @@ impl AtomicFile {
         &mut self.writer
     }
 
+    /// Commits the atomic file write by syncing content, renaming to the target path,
+    /// and syncing the parent directory on Unix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IngestError::Io`] if flushing, renaming, or directory syncing fails.
+    /// If parent directory sync fails on Unix after rename, target replacement has already
+    /// completed and durability synchronization failed.
     fn commit(mut self) -> Result<(), IngestError> {
         let file = self
             .writer
@@ -196,6 +220,18 @@ impl AtomicFile {
 
         fs::rename(self.temp_guard.path(), &self.target)?;
         self.temp_guard.disarm();
+
+        #[cfg(unix)]
+        {
+            let parent = self
+                .target
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let dir = fs::File::open(parent)?;
+            dir.sync_all()?;
+        }
+
         Ok(())
     }
 }
@@ -426,6 +462,50 @@ mod tests {
             assert_eq!(cased_resolved, canonical_output);
         }
 
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_atomic_write_preserves_target_permissions() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("output_permissions_test")?;
+        let output = root.join("restricted.txt");
+
+        fs::write(&output, "initial content")?;
+        fs::set_permissions(&output, fs::Permissions::from_mode(0o600))?;
+
+        write_atomic(&output, |w| {
+            w.write_all(b"overwritten content")?;
+            Ok(())
+        })?;
+
+        let metadata = fs::metadata(&output)?;
+        assert_eq!(
+            metadata.permissions().mode() & 0o777,
+            0o600,
+            "permissions must remain 0600 after overwrite"
+        );
+        assert_eq!(fs::read_to_string(&output)?, "overwritten content");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_atomic_write_creates_non_existent_target() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("output_non_existent_test")?;
+        let output = root.join("new_file.txt");
+
+        assert!(!output.exists());
+
+        write_atomic(&output, |w| {
+            w.write_all(b"new content")?;
+            Ok(())
+        })?;
+
+        assert!(output.exists());
+        assert_eq!(fs::read_to_string(&output)?, "new content");
         Ok(())
     }
 
