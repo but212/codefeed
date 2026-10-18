@@ -5,9 +5,9 @@
 
 use crate::{IngestError, IngestReport, RunConfig, Source};
 
-pub(crate) mod github;
-pub(crate) mod local;
-pub(crate) mod output;
+mod github;
+mod local;
+mod output;
 
 /// Executes the end-to-end repository ingestion pipeline.
 ///
@@ -41,8 +41,58 @@ pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
     })
 }
 
+/// Executes the command-line interface entry point.
+///
+/// Parses arguments, renders help text or performs ingestion, formats user-facing
+/// status messages, and returns the appropriate process exit code (`0` on success, `1` on error).
+pub fn run_cli<I, T>(args: I) -> i32
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString>,
+{
+    let action = match crate::core::cli::parse(args) {
+        Ok(action) => action,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 1;
+        }
+    };
+
+    match action {
+        crate::core::cli::CliAction::Help => {
+            println!("{}", crate::core::cli::help_text());
+            0
+        }
+        crate::core::cli::CliAction::Run(config) => match ingest(&config) {
+            Ok(report) => {
+                let included = report.included_files;
+                let skipped = report.skipped_files;
+                let tokens = report.estimated_tokens;
+                match &report.output {
+                    crate::core::model::OutputTarget::File(path) => {
+                        let path_display = path.display();
+                        println!(
+                            "Wrote {path_display} ({included} files, {skipped} skipped, ~{tokens} tokens)"
+                        );
+                    }
+                    crate::core::model::OutputTarget::Stdout => {
+                        eprintln!(
+                            "Wrote to stdout ({included} files, {skipped} skipped, ~{tokens} tokens)"
+                        );
+                    }
+                }
+                0
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                1
+            }
+        },
+    }
+}
+
 /// Returns the elapsed duration since the Unix epoch in nanoseconds.
-pub(crate) fn current_epoch_nanos() -> u128 {
+fn current_epoch_nanos() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -51,11 +101,11 @@ pub(crate) fn current_epoch_nanos() -> u128 {
 
 #[cfg(test)]
 #[derive(Debug)]
-pub(crate) struct TempDirGuard(std::path::PathBuf);
+struct TempDirGuard(std::path::PathBuf);
 
 #[cfg(test)]
 impl TempDirGuard {
-    pub(crate) fn new(label: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    fn new(label: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let nanos = current_epoch_nanos();
         let path = std::env::temp_dir().join(format!("local_ingest_{label}_{nanos}"));
         std::fs::create_dir_all(&path)?;
@@ -87,7 +137,7 @@ impl Drop for TempDirGuard {
 }
 
 #[cfg(test)]
-pub(crate) fn temp_dir(label: &str) -> Result<TempDirGuard, Box<dyn std::error::Error>> {
+fn temp_dir(label: &str) -> Result<TempDirGuard, Box<dyn std::error::Error>> {
     TempDirGuard::new(label)
 }
 

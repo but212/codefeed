@@ -20,7 +20,7 @@ use crate::core::selector::CandidateInput;
 const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 
 /// Exact-origin match: returns `true` if `url == GITHUB_API_BASE_URL` or starts with `GITHUB_API_BASE_URL + "/"`.
-pub(crate) fn is_github_api_origin(url: &str) -> bool {
+fn is_github_api_origin(url: &str) -> bool {
     url.strip_prefix(GITHUB_API_BASE_URL)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
@@ -65,7 +65,7 @@ const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 const GITHUB_TIMEOUT_SECS: u64 = 30;
 
 /// Collects files from a remote GitHub repository via streaming tarball download.
-pub(crate) fn collect(
+pub(super) fn collect(
     owner: &str,
     repo: &str,
     reference: Option<&str>,

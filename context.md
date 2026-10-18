@@ -10,14 +10,15 @@ imperative-shell boundary.
 
 ## Entities and value objects
 
-- `Source` — `Local(PathBuf)` or `Github { owner, repo, reference }`. Encapsulates reference validation and assignment via `Source::with_reference`.
+- `Source` — `Local(PathBuf)` or `Github { owner, repo, reference }` (marked `#[non_exhaustive]`, constructed via `Source::github`). Encapsulates owner/repo identifier validation and reference invariants via [`GitRef`].
+- `GitRef` — validated non-empty Git revision reference (branch, tag, or commit SHA), enforcing non-empty/non-whitespace invariants at construction.
 - `RunConfig` — execution configuration unifying `source`, `output`, and `format`.
 - `CandidateInput` — one observed candidate entry handed to the pure core: `File { path, bytes }`, `TooLarge { path }`, or `Skipped { path }`. Pure evaluation in `Selector::feed` verifies UTF-8 text and NUL-free content, registers directory counts with `CandidateBudget`, and updates storage. Shell collectors filter noise and sensitive paths pre-candidate (`policy::is_ignored_path`), map disappearing (`NotFound`) or non-regular files to `Skipped`, and abort unexpected I/O errors as `IngestError::Io`.
-- `FileSpan` — POD indexing path and content byte spans (`path_offset`, `path_len`, `content_offset`, `content_len`).
+- `FileSpan` — POD indexing path and content byte spans via private offsets, accessed through borrowed slice methods (`path(&arena)`, `content(&arena)`).
 - `FileStorage` — continuous append-only arena buffer with private arenas (`path_arena`, `content_arena`, `spans`); provides zero-copy borrowed `FileRecord<'a>` views throughout ingestion and enables in-place lexicographical sorting (`sort_by_path`) by swapping 16-byte `FileSpan` offsets without string reallocations.
 - `FileRecord<'a>` — zero-copy borrowed digest entry view: `path: &'a str`, `content: &'a str`.
 - `CollectionResult` — uniform collection record: `label`, optional `revision`, `files: FileStorage`, `skipped`. Format-neutral and decoupled from presentation.
-- `IngestReport` — `output`, `included_files`, `skipped_files`, `estimated_tokens`.
+- `IngestReport` — output-only summary report: `output`, `included_files`, `skipped_files`, `estimated_tokens` (marked `#[non_exhaustive]`).
 - `OutputTarget` — digest destination: `File(PathBuf)` or `Stdout`.
 - `DigestFormat` — output serialization format: `Text` or `Xml`.
 - Budgets — `CandidateBudget` (candidate count with directory aggregation backed by standard `HashMap<String, usize>`), tracking candidate limits and diagnostic reporting.
@@ -55,7 +56,7 @@ imperative-shell boundary.
 - Digest cap (`MAX_OUTPUT_SIZE`) is strictly enforced on bytes written via `BoundedEstimatingWriter`, preventing framing/metadata overflow (both file and stdout targets emit nothing on overflow).
 - Token count is estimated on the same writer stream pass over rendered byte length.
 - ASCII directory tree renders directly from sorted `FileStorage` with zero intermediate allocations (`tree::render_tree`). It is format-neutral; XML entity and newline escaping occurs on-the-fly during rendering.
-- CLI arguments are parsed linearly into options and source in pure core (`core::cli`) using `std` only, supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters without third-party CLI dependencies.
+- CLI arguments are parsed linearly into options and source in pure core (`core::cli`) using `std` only, supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters without third-party CLI dependencies. End-to-end CLI execution, help display, and output reporting are encapsulated via `shell::run_cli`.
 - Candidate budget uses standard `HashMap<String, usize>` during collection, with deterministic overflow diagnostics sorted by count descending then directory ascending.
 - Digest budget is tracked directly in `Selector` and is error-terminal: limit breach constructs complete `IngestError::OutputTooLarge` diagnostics without internal transactional rollback.
 

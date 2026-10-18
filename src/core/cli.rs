@@ -2,19 +2,19 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::core::error::IngestError;
-use crate::core::model::{DigestFormat, OutputTarget, RunConfig, Source};
+use crate::core::model::{DigestFormat, GitRef, OutputTarget, RunConfig, Source};
 
 const HELP: &str =
     "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]";
 
 /// Returns the static command-line help message.
-pub const fn help_text() -> &'static str {
+pub(crate) const fn help_text() -> &'static str {
     HELP
 }
 
 /// Action determined by parsing command-line arguments.
 #[derive(Debug, PartialEq, Eq)]
-pub enum CliAction {
+pub(crate) enum CliAction {
     /// Print help text and exit successfully.
     Help,
     /// Execute ingestion using the resolved [`RunConfig`].
@@ -30,7 +30,7 @@ pub enum CliAction {
 ///
 /// Returns [`IngestError::Usage`] if required arguments are missing, unknown options
 /// are passed, or flags receive invalid values.
-pub fn parse<I, T>(args: I) -> Result<CliAction, IngestError>
+pub(crate) fn parse<I, T>(args: I) -> Result<CliAction, IngestError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
@@ -116,7 +116,17 @@ where
         None => OutputTarget::File(PathBuf::from("digest.txt")),
     };
 
-    let resolved_source = Source::parse_os(&source_os)?.with_reference(reference)?;
+    let parsed_source = Source::parse_os(&source_os)?;
+    let git_ref = match (&parsed_source, reference) {
+        (_, None) => None,
+        (Source::Local(_), Some(_)) => {
+            return Err(IngestError::invalid_source(
+                "--ref is only valid for GitHub sources",
+            ));
+        }
+        (Source::Github { .. }, Some(r)) => Some(GitRef::new(r)?),
+    };
+    let resolved_source = parsed_source.with_reference(git_ref)?;
     Ok(CliAction::Run(RunConfig::new(
         resolved_source,
         output_target,
@@ -237,7 +247,7 @@ mod tests {
                     Source::Github {
                         owner: "rust-lang".into(),
                         repo: "cargo".into(),
-                        reference: Some("main".into()),
+                        reference: Some(GitRef::new("main").unwrap()),
                     }
                 );
             }
@@ -309,5 +319,45 @@ mod tests {
                 "unexpected error: {err}"
             );
         }
+    }
+
+    #[test]
+    fn cli_ref_precedence_and_validation() {
+        assert!(matches!(
+            parse(["codefeed", "--ref", "", "--help"]),
+            Ok(CliAction::Help)
+        ));
+        assert!(matches!(
+            parse(["codefeed", "--help", "--ref", ""]),
+            Ok(CliAction::Help)
+        ));
+
+        let missing_source = parse(["codefeed", "--ref", ""]).unwrap_err();
+        assert!(
+            missing_source
+                .to_string()
+                .contains("required arguments were not provided"),
+            "unexpected error: {missing_source}"
+        );
+
+        let local_ref = parse(["codefeed", ".", "--ref", ""]).unwrap_err();
+        assert!(
+            local_ref
+                .to_string()
+                .contains("--ref is only valid for GitHub sources"),
+            "unexpected error: {local_ref}"
+        );
+
+        let github_ref = parse([
+            "codefeed",
+            "https://github.com/rust-lang/cargo",
+            "--ref",
+            "",
+        ])
+        .unwrap_err();
+        assert!(
+            github_ref.to_string().contains("--ref cannot be empty"),
+            "unexpected error: {github_ref}"
+        );
     }
 }

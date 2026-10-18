@@ -13,7 +13,7 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Resolves an [`OutputTarget`] into an optional canonical file destination.
 ///
 /// Returns `None` when writing directly to [`OutputTarget::Stdout`].
-pub(crate) fn resolve_output_target(target: &OutputTarget) -> Result<Option<PathBuf>, IngestError> {
+pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<Option<PathBuf>, IngestError> {
     match target {
         OutputTarget::Stdout => Ok(None),
         OutputTarget::File(path) => {
@@ -61,7 +61,7 @@ pub(crate) fn resolve_output_target(target: &OutputTarget) -> Result<Option<Path
 /// Delivers the rendered digest to its target. A file target is written
 /// atomically; the stdout target buffers into memory up to [`MAX_OUTPUT_SIZE`]
 /// and writes to the stream only on success, preventing partial output on overflow.
-pub(crate) fn emit(
+pub(super) fn emit(
     resolved_target: Option<&Path>,
     collection: &CollectionResult,
     format: DigestFormat,
@@ -77,7 +77,7 @@ pub(crate) fn emit(
     }
 }
 
-pub(crate) fn render_stdout_to<W: Write>(
+fn render_stdout_to<W: Write>(
     out: &mut W,
     collection: &CollectionResult,
     format: DigestFormat,

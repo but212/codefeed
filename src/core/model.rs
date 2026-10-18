@@ -3,25 +3,125 @@ use std::path::PathBuf;
 use crate::core::error::IngestError;
 use crate::core::storage::FileStorage;
 
+/// Validated non-empty Git revision reference (branch, tag, or commit SHA).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GitRef(String);
+
+impl GitRef {
+    /// Creates a new `GitRef`, rejecting empty or whitespace-only strings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IngestError::InvalidSource`] if `value` is empty or only whitespace.
+    pub fn new(value: impl Into<String>) -> Result<Self, IngestError> {
+        let string = value.into();
+        if string.trim_ascii().is_empty() {
+            return Err(IngestError::invalid_source("--ref cannot be empty"));
+        }
+        Ok(Self(string))
+    }
+
+    /// Borrows the reference as a string slice.
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for GitRef {
+    type Target = str;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for GitRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<&str> for GitRef {
+    type Error = IngestError;
+
+    #[inline]
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<String> for GitRef {
+    type Error = IngestError;
+
+    #[inline]
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl std::str::FromStr for GitRef {
+    type Err = IngestError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::new(s)
+    }
+}
+
+impl AsRef<str> for GitRef {
+    #[inline]
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Ingestion source location.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
     /// Local filesystem directory.
     Local(PathBuf),
     /// Public or authenticated GitHub repository.
+    #[non_exhaustive]
     Github {
         /// Repository owner (user or organization).
         owner: String,
         /// Repository name.
         repo: String,
         /// Optional GitHub branch, tag, or commit SHA.
-        reference: Option<String>,
+        reference: Option<GitRef>,
     },
 }
 
 impl Source {
+    /// Creates a new validated [`Source::Github`] instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IngestError::InvalidSource`] if `owner` or `repo` contain invalid characters,
+    /// empty strings, or path traversals.
+    pub fn github(
+        owner: impl Into<String>,
+        repo: impl Into<String>,
+        reference: Option<GitRef>,
+    ) -> Result<Self, IngestError> {
+        let owner = owner.into();
+        let repo = repo.into();
+        if !valid_github_name(&owner) || !valid_github_name(&repo) {
+            return Err(IngestError::invalid_source(
+                "owner and repository names contain invalid characters",
+            ));
+        }
+        Ok(Self::Github {
+            owner,
+            repo,
+            reference,
+        })
+    }
+
     /// Parses an OS-native string argument into a [`Source`].
-    pub(crate) fn parse_os(value: &std::ffi::OsStr) -> Result<Self, IngestError> {
+    pub(super) fn parse_os(value: &std::ffi::OsStr) -> Result<Self, IngestError> {
         match value.to_str() {
             Some(value) => Self::parse(value),
             None => Ok(Self::Local(PathBuf::from(value))),
@@ -34,7 +134,7 @@ impl Source {
     ///
     /// Returns [`IngestError::UnsupportedSource`] if given an unsupported protocol
     /// (such as SSH) or [`IngestError::InvalidSource`] if the GitHub URL is malformed.
-    pub(crate) fn parse(value: &str) -> Result<Self, IngestError> {
+    fn parse(value: &str) -> Result<Self, IngestError> {
         if value.starts_with("http://") || value.starts_with("https://") {
             return parse_github_url(value);
         }
@@ -50,15 +150,8 @@ impl Source {
     ///
     /// # Errors
     ///
-    /// Returns [`IngestError::InvalidSource`] if `reference` is empty/whitespace or
-    /// if `reference` is [`Some`] when called on a [`Source::Local`] variant.
-    pub fn with_reference(self, reference: Option<String>) -> Result<Self, IngestError> {
-        if reference
-            .as_ref()
-            .is_some_and(|r| r.trim_ascii().is_empty())
-        {
-            return Err(IngestError::invalid_source("--ref cannot be empty"));
-        }
+    /// Returns [`IngestError::InvalidSource`] if `reference` is [`Some`] when called on a [`Source::Local`] variant.
+    pub fn with_reference(self, reference: Option<GitRef>) -> Result<Self, IngestError> {
         match self {
             Self::Github { owner, repo, .. } => Ok(Self::Github {
                 owner,
@@ -118,17 +211,7 @@ fn parse_github_url(value: &str) -> Result<Source, IngestError> {
     };
 
     let repo = repo_segment.strip_suffix(".git").unwrap_or(repo_segment);
-    if repo.is_empty() || !valid_github_name(owner) || !valid_github_name(repo) {
-        return Err(IngestError::invalid_source(
-            "owner and repository names contain invalid characters",
-        ));
-    }
-
-    Ok(Source::Github {
-        owner: (*owner).to_owned(),
-        repo: repo.to_owned(),
-        reference: None,
-    })
+    Source::github(owner, repo, None)
 }
 
 fn valid_github_name(value: &str) -> bool {
@@ -188,6 +271,7 @@ impl RunConfig {
 
 /// Summary report emitted upon successful digest generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct IngestReport {
     /// Target destination where the digest was delivered.
     pub output: OutputTarget,
@@ -213,19 +297,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn git_ref_validates_and_provides_slice_access() {
+        let valid = GitRef::new("v1.0.0").unwrap();
+        assert_eq!(valid.as_str(), "v1.0.0");
+        assert_eq!(&*valid, "v1.0.0");
+        assert_eq!(valid.to_string(), "v1.0.0");
+
+        assert!(GitRef::new("").is_err());
+        assert!(GitRef::new("   ").is_err());
+        assert!(GitRef::try_from("\t\n").is_err());
+    }
+
+    #[test]
     fn source_with_reference_validates_and_updates_reference() {
         let gh = Source::Github {
             owner: "rust-lang".into(),
             repo: "rust".into(),
             reference: None,
         };
-        let updated = gh.with_reference(Some("main".into())).unwrap();
+        let git_ref = GitRef::new("main").unwrap();
+        let updated = gh.with_reference(Some(git_ref.clone())).unwrap();
         assert_eq!(
             updated,
             Source::Github {
                 owner: "rust-lang".into(),
                 repo: "rust".into(),
-                reference: Some("main".into()),
+                reference: Some(git_ref.clone()),
             }
         );
 
@@ -239,19 +336,11 @@ mod tests {
             }
         );
 
-        let empty_err = cleared
-            .clone()
-            .with_reference(Some("   ".into()))
-            .unwrap_err();
-        assert!(
-            matches!(empty_err, IngestError::InvalidSource(msg) if msg.contains("--ref cannot be empty"))
-        );
-
         let local = Source::Local(PathBuf::from("."));
         let local_ok = local.clone().with_reference(None).unwrap();
         assert_eq!(local_ok, local);
 
-        let local_err = local.with_reference(Some("main".into())).unwrap_err();
+        let local_err = local.with_reference(Some(git_ref)).unwrap_err();
         assert!(
             matches!(local_err, IngestError::InvalidSource(msg) if msg.contains("--ref is only valid for GitHub sources"))
         );
@@ -299,6 +388,36 @@ mod tests {
         ];
         for url in invalid_cases {
             assert!(Source::parse(url).is_err(), "expected error for: {url}");
+        }
+    }
+
+    #[test]
+    fn source_github_constructor_validates_identifiers() {
+        let valid = Source::github("rust-lang", "cargo", None).unwrap();
+        assert_eq!(
+            valid,
+            Source::Github {
+                owner: "rust-lang".into(),
+                repo: "cargo".into(),
+                reference: None,
+            }
+        );
+
+        let invalid = [
+            ("", "repo"),
+            ("owner", ""),
+            (".", "repo"),
+            ("owner", "."),
+            ("..", "repo"),
+            ("owner", ".."),
+            ("ow/ner", "repo"),
+            ("owner", "re po"),
+        ];
+        for (owner, repo) in invalid {
+            assert!(
+                Source::github(owner, repo, None).is_err(),
+                "expected error for: {owner}/{repo}"
+            );
         }
     }
 }

@@ -1,4 +1,5 @@
 #![warn(missing_docs)]
+#![warn(unreachable_pub)]
 
 //! Fast, memory-efficient repository ingestion and prompt generation for LLMs.
 //!
@@ -31,7 +32,6 @@
 pub(crate) mod core;
 pub(crate) mod shell;
 
-pub use core::cli::{CliAction, help_text, parse};
 pub use core::error::{CandidateLimitExceededError, IngestError};
-pub use core::model::{DigestFormat, IngestReport, OutputTarget, RunConfig, Source};
-pub use shell::ingest;
+pub use core::model::{DigestFormat, GitRef, IngestReport, OutputTarget, RunConfig, Source};
+pub use shell::{ingest, run_cli};

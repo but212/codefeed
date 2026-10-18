@@ -19,7 +19,7 @@ const TREE_SPACE: &str = "    ";
 /// # Errors
 ///
 /// Returns an [`std::io::Error`] if writing to `writer` fails.
-pub(crate) fn render_tree<W: Write + ?Sized, F>(
+pub(super) fn render_tree<W: Write + ?Sized, F>(
     writer: &mut W,
     storage: &FileStorage,
     mut format_name: F,

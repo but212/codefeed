@@ -51,7 +51,7 @@ impl PathArena {
 }
 
 /// Collects files from a local directory root, excluding the resolved output file if located inside it.
-pub(crate) fn collect(
+pub(super) fn collect(
     root: &Path,
     resolved_output: Option<&Path>,
 ) -> Result<crate::core::model::CollectionResult, IngestError> {
@@ -93,7 +93,7 @@ enum LocalFileRead<'b> {
 
 #[cfg(test)]
 thread_local! {
-    pub(crate) static BODY_READ_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static BODY_READ_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn read_local_file_into<'b>(

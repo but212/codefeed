@@ -9,11 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GitRef Domain Type**: Introduced [`GitRef`] to encapsulate Git revision reference invariants, rejecting empty and whitespace-only strings at construction and providing zero-copy borrowed slice access.
+- **Validated Source Constructor**: Added [`Source::github`] to construct and validate GitHub source repositories against character restrictions, empty names, and path traversal components.
+- **CLI Dispatch Entry Point**: Added `codefeed::run_cli` in `src/shell/mod.rs` to encapsulate argument parsing, help output, ingestion, and stdout/stderr reporting.
+- **Compiler Visibility Enforcement**: Added `#![warn(unreachable_pub)]` to `src/lib.rs` to prevent accidental public exposure of internal module items.
 - **Compiler Documentation Enforcement**: Added `#![warn(missing_docs)]` to `src/lib.rs` and documented all re-exported public API items with doctests and error contracts.
 - **Documentation Conventions**: Added Section 7 (`Documentation & Comments`) in `docs/coding_convention.md` defining Rustdoc standards (RFC 1574, `C-CRATE-DOC`, `C-EXAMPLE`, `C-FAILURE`, `C-LINK`, `C-QUESTION-MARK`), standard section headers (`# Errors`, `# Panics`, `# Safety`, `# Examples`), visibility depth, and "why, not what" comment principles.
 
 ### Changed
 
+- **CLI Option Error Precedence**: Postponed `GitRef` validation in `cli::parse` until after required `<SOURCE>` and source type checks, preserving `--help` precedence and variant compatibility errors.
+- **Breaking Change — Source::Github Encapsulation**: Marked `Source::Github` variant `#[non_exhaustive]`, requiring external callers to construct GitHub sources via `Source::github` or `Source::parse` rather than struct literals, while preserving pattern matching.
 - **Stream Escaping & Path Normalization Simplification**: Streamlined `write_stream_escaped` to a single pass without pre-scan or empty-slice guards; replaced `escape_header` with streaming `write_header_escaped`, eliminating `std::borrow::Cow` across the crate; simplified `cmp_path` using standard `Iterator::cmp`; unified `local::normalize_relative_path_into` loop via `!scratch.is_empty()`; removed redundant empty segment filtering in `tree::component_at` with a debug invariant assertion in `FileStorage::push`.
 - **Module Architecture Consolidation**: Consolidated `src/core/render/{mod.rs, text.rs, xml.rs}` into `src/core/render.rs` and inlined pipeline orchestration (`orchestrate.rs`) into `src/shell/mod.rs`, re-exporting `ingest` via `pub use shell::ingest;` at crate root.
 - **Module Consolidation (`source` & `github_url`)**: Consolidated `source.rs` into `model.rs` via `Source::parse` and `Source::parse_os`, and inlined GitHub URL construction and origin verification directly into `src/shell/github.rs`, eliminating tiny file sprawl and dead module boundaries.
@@ -24,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Archive Path Sanitization**: Rejected embedded NUL bytes and leading `.` / `..` archive root prefixes in `normalize_tar_entry_path`.
 - **XML Attribute Whitespace Escaping**: Escaped `\t`, `\n`, and `\r` as character references (`&#9;`, `&#10;`, `&#13;`) in XML attributes (`write_xml_attr_escaped`) to prevent XML 1.0 §3.3.3 attribute normalization corruption.
 - **Hidden Non-UTF-8 Path Accounting**: Dropped non-UTF-8 paths containing hidden components in `local::walk_candidates` before candidate budget and skipped accounting.
-- **Visibility & Dead Code Demotion**: Removed unreachable `.env` branch in `policy::is_sensitive_file` and demoted single-file `pub(crate)` helpers to module-private across `policy`, `github_url`, `text`, `xml`, `selector`, `model`, and `github`.
+- **Dead Code Removal**: Removed unreachable `.env` branch in `policy::is_sensitive_file`.
 - **Boundary Normalization**: Replaced `strip_archive_root` with `normalize_tar_entry_path` in `src/core/archive.rs`, normalizing consecutive slashes, stripping `.` segments, and rejecting directory traversal (`..`) at the ingestion boundary.
 - **Policy Simplification**: Removed special-case exceptions for `.` and `..` in `policy::is_hidden_path`, relying on normalized path guarantees.
 - **Hierarchical Path Sorting**: Implemented component-wise path sorting (`cmp_path`) in `FileStorage::sort_by_path()`, keeping directory subtrees adjacent.
@@ -36,7 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CLI Option Parsing**: Deduplicated flag value extraction into `extract_opt_val` and restricted `"-"` to output flags only.
 - **Third-Party Attribution**: Removed stale `clap` entry from `NOTICE`.
 - **Candidate Path Arena**: Replaced `Vec<Option<String>>` in `src/shell/local.rs` with `PathArena` (single contiguous `String` buffer + offset spans), evaluating `CandidateBudget::add` on the fly to eliminate batch `check_limit` loops and individual heap string allocations.
-- **Encapsulation & Visibility**: Demoted internal items (`FileStorage`, `FileSpan`, `FileRecord`, `CollectionResult`, `Selector`, `CandidateBudget`, `CandidateInput`, constants) from `pub` to `pub(crate)`, and single-file items (`HELP`, `NOISE`, `SENSITIVE_EXTENSIONS`, `RETRY_*`, XML/header helpers) to private.
+- **Breaking Change — IngestError Constructor Visibility**: Demoted 7 unneeded public constructors on `IngestError` (`candidate_limit_exceeded`, `invalid_source`, `unsupported_source`, `http`, `api`, `invalid_metadata`, `output_too_large`) from `pub` to `pub(crate)`, keeping `IngestError::usage` as the single public constructor.
+- **Breaking Change — Git Reference Type & Invariants**: Updated `Source::Github.reference` from `Option<String>` to `Option<GitRef>` and `Source::with_reference(Option<GitRef>)`, preventing empty or whitespace-only reference validation bypass.
+- **Breaking Change — CLI Public API Demotion**: Demoted `CliAction`, `help_text`, and `parse` from public crate re-exports to `pub(crate)` in favor of the `codefeed::run_cli` entry point.
+- **Breaking Change — Non-Exhaustive Types**: Marked `IngestError` and `IngestReport` with `#[non_exhaustive]` to ensure forward-compatible evolution.
+- **Encapsulation & Module Scoping**: Encapsulated `FileSpan` fields (`path_offset`, `path_len`, `content_offset`, `content_len`) as private to `storage.rs`, demoted internal modules (`tree`, `github`, `local`, `output`) to private `mod`, scoped parent-called items (`render_tree`, `largest_files`, `parse_os`, `collect`, `resolve_output_target`, `emit`, `FileSpan::{path, content}`) to `pub(super)`, and demoted single-module helpers (`render_text`, `render_xml`, `estimate_tokens`, `render_stdout_to`, `is_github_api_origin`, `current_epoch_nanos`, `temp_dir`, `TempDirGuard`, `BODY_READ_COUNT`, `Source::parse`) to private.
 
 ## [0.2.4]
 

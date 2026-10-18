@@ -8,22 +8,22 @@ use std::cmp::Ordering;
 /// 16-byte POD indexing a file path and content slice in [`FileStorage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct FileSpan {
-    pub(crate) path_offset: u32,
-    pub(crate) path_len: u32,
-    pub(crate) content_offset: u32,
-    pub(crate) content_len: u32,
+    path_offset: u32,
+    path_len: u32,
+    content_offset: u32,
+    content_len: u32,
 }
 
 impl FileSpan {
     #[inline(always)]
-    pub(crate) fn path<'a>(&self, arena: &'a str) -> &'a str {
+    pub(super) fn path<'a>(&self, arena: &'a str) -> &'a str {
         let start = self.path_offset as usize;
         let end = start + self.path_len as usize;
         &arena[start..end]
     }
 
     #[inline(always)]
-    pub(crate) fn content<'a>(&self, arena: &'a str) -> &'a str {
+    pub(super) fn content<'a>(&self, arena: &'a str) -> &'a str {
         let start = self.content_offset as usize;
         let end = start + self.content_len as usize;
         &arena[start..end]

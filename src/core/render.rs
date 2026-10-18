@@ -38,7 +38,7 @@ const FILE_TAILS: [&[u8]; 2] = [b"</file>\n", b"\n</file>\n"];
 /// Multibyte UTF-8 sequences (such as CJK characters, which consume 3 bytes each)
 /// are underestimated by this formula.
 #[inline]
-pub(crate) fn estimate_tokens(bytes: u64) -> usize {
+fn estimate_tokens(bytes: u64) -> usize {
     if bytes == 0 {
         0
     } else {
@@ -145,7 +145,7 @@ fn write_header_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::
     write_stream_escaped(writer, value, header_special_at)
 }
 
-pub(crate) fn render_text<W: Write + ?Sized>(
+fn render_text<W: Write + ?Sized>(
     writer: &mut W,
     collection: &CollectionResult,
 ) -> Result<(), IngestError> {
@@ -238,7 +238,7 @@ fn write_xml_attr_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std
     write_stream_escaped(writer, value, xml_attr_special_at)
 }
 
-pub(crate) fn render_xml<W: Write + ?Sized>(
+fn render_xml<W: Write + ?Sized>(
     writer: &mut W,
     collection: &CollectionResult,
 ) -> Result<(), IngestError> {

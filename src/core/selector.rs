@@ -199,7 +199,7 @@ impl Default for Selector {
 }
 
 /// Diagnostic ranking for digest size: selects up to five largest files.
-pub(crate) fn largest_files<'a>(
+pub(super) fn largest_files<'a>(
     files: impl IntoIterator<Item = FileRecord<'a>>,
 ) -> Vec<(String, usize)> {
     let mut top: Vec<(&'a str, usize)> = Vec::with_capacity(6);
