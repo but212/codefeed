@@ -299,8 +299,8 @@ fn probe_tar_entry<'a, R: Read>(
     // 5. Content reading with MAX_FILE_SIZE limit
     let header_size = entry.header().size().unwrap_or(0);
     if header_size > MAX_FILE_SIZE {
-        return Ok(ArchiveEntryOutcome::Candidate(CandidateInput::TooLarge {
-            path: rel_path,
+        return Ok(ArchiveEntryOutcome::Candidate(CandidateInput::Skipped {
+            path: Some(rel_path),
         }));
     }
 
@@ -310,7 +310,9 @@ fn probe_tar_entry<'a, R: Read>(
         .map_err(IngestError::Io)?;
 
     let candidate = if content_scratch.len() as u64 > MAX_FILE_SIZE {
-        CandidateInput::TooLarge { path: rel_path }
+        CandidateInput::Skipped {
+            path: Some(rel_path),
+        }
     } else {
         CandidateInput::File {
             path: rel_path,

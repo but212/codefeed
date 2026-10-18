@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **CandidateInput Model Simplification & LocalFileRead Elimination**: Eliminated redundant `CandidateInput::TooLarge` in favor of `CandidateInput::Skipped { path: Some(...) }`; replaced the intermediate `LocalFileRead` enum in `src/shell/local.rs` with `Option<&[u8]>`.
 - **Single-Pass Local Collection & PathArena Removal**: Replaced the 2-pass local filesystem traversal in `src/shell/local.rs` with single-pass streaming directly into `Selector::feed`, removing `walk_candidates`, `PathArena`, duplicate `CandidateBudget` calculation, and unused `Selector::from_size_hint`; updated candidate overflow contract to fail-fast immediately upon exceeding `MAX_FILE_COUNT`.
 - **Core Module Consolidation & Storage Diagnostic Decoupling**: Merged `src/core/tree.rs` into `src/core/render.rs`, removing the private `tree` module; moved `largest_files` diagnostic selection from `src/core/selector.rs` to `src/core/storage.rs` as `FileStorage::largest_files`, decoupling `render.rs` from `selector.rs`.
 - **CLI Option Error Precedence**: Deferred `GitRef` validation in `cli::parse` until after `<SOURCE>` presence and source-kind checks, preserving `--help` precedence and variant compatibility errors.

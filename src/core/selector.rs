@@ -14,9 +14,7 @@ use crate::core::storage::{FileRecord, FileStorage, largest_files};
 pub(crate) enum CandidateInput<'a> {
     /// Bounded content bytes successfully acquired from the source.
     File { path: &'a str, bytes: &'a [u8] },
-    /// Item exceeded the per-file size limit.
-    TooLarge { path: &'a str },
-    /// Item skipped due to non-UTF-8 path, disappearing file (`NotFound`), or non-regular file.
+    /// Item skipped due to size limit, non-UTF-8 path, disappearing file (`NotFound`), or non-regular file.
     Skipped { path: Option<&'a str> },
 }
 
@@ -25,7 +23,7 @@ impl<'a> CandidateInput<'a> {
     #[inline]
     pub(crate) const fn path(&self) -> Option<&'a str> {
         match self {
-            Self::File { path, .. } | Self::TooLarge { path } => Some(*path),
+            Self::File { path, .. } => Some(*path),
             Self::Skipped { path } => *path,
         }
     }
@@ -142,7 +140,7 @@ impl Selector {
                     Ok(())
                 }
             }
-            CandidateInput::TooLarge { .. } | CandidateInput::Skipped { .. } => {
+            CandidateInput::Skipped { .. } => {
                 self.skipped = self.skipped.saturating_add(1);
                 Ok(())
             }
@@ -270,7 +268,9 @@ mod tests {
         selector.feed(file_candidate("a.txt", b"hello"))?;
         selector.feed(file_candidate("bin.bin", &[0, 1, 2]))?;
         selector.feed(file_candidate("bad_utf8", &[0xff]))?;
-        selector.feed(CandidateInput::TooLarge { path: "big.txt" })?;
+        selector.feed(CandidateInput::Skipped {
+            path: Some("big.txt"),
+        })?;
         selector.feed(CandidateInput::Skipped {
             path: Some("missing.txt"),
         })?;

@@ -54,14 +54,11 @@ pub(super) fn collect(
             }
             scratch.clear();
             let input = match read_local_file_into(entry_path, &mut scratch)? {
-                LocalFileRead::Bytes(bytes) => CandidateInput::File {
+                Some(bytes) => CandidateInput::File {
                     path: &path_scratch,
                     bytes,
                 },
-                LocalFileRead::TooLarge => CandidateInput::TooLarge {
-                    path: &path_scratch,
-                },
-                LocalFileRead::Missing => CandidateInput::Skipped {
+                None => CandidateInput::Skipped {
                     path: Some(&path_scratch),
                 },
             };
@@ -77,13 +74,6 @@ pub(super) fn collect(
     Ok(selector.finish(label, None))
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum LocalFileRead<'b> {
-    Bytes(&'b [u8]),
-    Missing,
-    TooLarge,
-}
-
 #[cfg(test)]
 thread_local! {
     static BODY_READ_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -92,42 +82,36 @@ thread_local! {
 fn read_local_file_into<'b>(
     path: &Path,
     buf: &'b mut Vec<u8>,
-) -> Result<LocalFileRead<'b>, IngestError> {
+) -> Result<Option<&'b [u8]>, IngestError> {
     #[cfg(test)]
     BODY_READ_COUNT.with(|c| c.set(c.get() + 1));
 
     let meta = match fs::symlink_metadata(path) {
         Ok(m) => m,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(LocalFileRead::Missing),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(IngestError::Io(err)),
     };
-    if meta.is_symlink() || !meta.is_file() {
-        return Ok(LocalFileRead::Missing);
-    }
-    if meta.len() > MAX_FILE_SIZE {
-        return Ok(LocalFileRead::TooLarge);
+    if meta.is_symlink() || !meta.is_file() || meta.len() > MAX_FILE_SIZE {
+        return Ok(None);
     }
     let file = match fs::File::open(path) {
         Ok(f) => f,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(LocalFileRead::Missing),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(IngestError::Io(err)),
     };
     read_bounded_content_into(file, buf).map_err(Into::into)
 }
 
-fn read_bounded_content_into<'b>(
-    file: fs::File,
-    buf: &'b mut Vec<u8>,
-) -> io::Result<LocalFileRead<'b>> {
+fn read_bounded_content_into(file: fs::File, buf: &mut Vec<u8>) -> io::Result<Option<&[u8]>> {
     if !file.metadata()?.is_file() {
-        return Ok(LocalFileRead::Missing);
+        return Ok(None);
     }
     let mut handle = file.take(MAX_FILE_SIZE.saturating_add(1));
     handle.read_to_end(buf)?;
     if buf.len() as u64 > MAX_FILE_SIZE {
-        return Ok(LocalFileRead::TooLarge);
+        return Ok(None);
     }
-    Ok(LocalFileRead::Bytes(buf.as_slice()))
+    Ok(Some(buf.as_slice()))
 }
 
 fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
@@ -182,15 +166,9 @@ mod tests {
         fs::write(&too_large_path, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
 
         let mut buf = Vec::new();
-        assert!(matches!(
-            read_local_file_into(&exact_path, &mut buf)?,
-            LocalFileRead::Bytes(_)
-        ));
+        assert!(read_local_file_into(&exact_path, &mut buf)?.is_some());
         buf.clear();
-        assert!(matches!(
-            read_local_file_into(&too_large_path, &mut buf)?,
-            LocalFileRead::TooLarge
-        ));
+        assert!(read_local_file_into(&too_large_path, &mut buf)?.is_none());
         Ok(())
     }
 
@@ -200,10 +178,7 @@ mod tests {
         let path = root.join("nonexistent.txt");
 
         let mut buf = Vec::new();
-        assert!(matches!(
-            read_local_file_into(&path, &mut buf)?,
-            LocalFileRead::Missing
-        ));
+        assert!(read_local_file_into(&path, &mut buf)?.is_none());
         Ok(())
     }
 
@@ -219,10 +194,7 @@ mod tests {
         symlink(&target, &link)?;
 
         let mut buf = Vec::new();
-        assert!(matches!(
-            read_local_file_into(&link, &mut buf)?,
-            LocalFileRead::Missing
-        ));
+        assert!(read_local_file_into(&link, &mut buf)?.is_none());
         Ok(())
     }
 
@@ -238,10 +210,7 @@ mod tests {
 
         if symlink_file(&target, &link).is_ok() {
             let mut buf = Vec::new();
-            assert!(matches!(
-                read_local_file_into(&link, &mut buf)?,
-                LocalFileRead::Missing
-            ));
+            assert!(read_local_file_into(&link, &mut buf)?.is_none());
             let _ = fs::remove_file(&link);
         }
         Ok(())
