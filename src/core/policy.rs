@@ -227,14 +227,14 @@ mod tests {
         // non-UTF-8 directory segment with ignored filename (id_rsa) -> Ignored
         let segments: &[&[u8]] = &[b"\xff\xfe", b"id_rsa"];
         assert_eq!(
-            classify_path_segments(segments, &mut scratch),
+            classify_path_segments(segments.iter().copied(), &mut scratch),
             PathStatus::Ignored
         );
 
         // non-UTF-8 directory segment with valid candidate filename (main.rs) -> NonUtf8Candidate
         let segments: &[&[u8]] = &[b"\xff\xfe", b"main.rs"];
         assert_eq!(
-            classify_path_segments(segments, &mut scratch),
+            classify_path_segments(segments.iter().copied(), &mut scratch),
             PathStatus::NonUtf8Candidate
         );
         assert_eq!(scratch, "");
@@ -242,7 +242,7 @@ mod tests {
         // non-UTF-8 directory segment + valid dir + valid candidate filename -> NonUtf8Candidate with prefix
         let segments: &[&[u8]] = &[b"src", b"\xff\xfe", b"main.rs"];
         assert_eq!(
-            classify_path_segments(segments, &mut scratch),
+            classify_path_segments(segments.iter().copied(), &mut scratch),
             PathStatus::NonUtf8Candidate
         );
         assert_eq!(scratch, "src/");

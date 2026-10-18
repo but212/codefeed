@@ -164,7 +164,7 @@ impl Selector {
     fn add_file(&mut self, path: &str, content: &str) -> Result<(), IngestError> {
         self.storage.push(path, content);
         if self.storage.total_bytes() > MAX_OUTPUT_SIZE {
-            return Err(output_too_large_error(&self.storage));
+            return Err(output_too_large_error(self.storage.iter()));
         }
         Ok(())
     }
