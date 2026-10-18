@@ -18,14 +18,14 @@ Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_
 
 ### Memory & Dependencies
 
-- Store file paths and contents in contiguous `FileStorage` arenas (`path_arena`, `content_arena`) indexed by 16-byte `FileSpan`; enables zero-copy `FileRecord<'a>` borrowed views throughout ingestion and in-place lexicographical sorting by swapping offsets without moving string data.
-- Keep data structures direct and minimal. Avoid speculative optimizations or premature micro-tuning; prioritize structural simplicity.
+- Store paths and contents in contiguous `FileStorage` arenas (`path_arena`, `content_arena`) indexed by 16-byte `FileSpan`. Provides zero-copy `FileRecord<'a>` borrowed views throughout ingestion and in-place lexicographical sorting (`sort_by_path`) without reallocating string data.
+- Keep data structures direct and minimal; avoid speculative micro-optimizations.
 - Stream output directly to `impl Write + ?Sized` using single-pass streaming escape helpers (`write_escaped`, `write_xml_attr_escaped`, `write_header_escaped`).
-- Default to `std` first. Add an external crate only if implementing or maintaining the logic in-tree introduces disproportionate complexity or security risk (e.g., `.gitignore` parsing via `ignore`, HTTP via `ureq`). Document the rationale as an inline comment in `Cargo.toml`.
+- Default to `std`. Add external crates only when in-tree maintenance introduces disproportionate complexity or security risk (e.g., `ignore` for `.gitignore`, `ureq` for HTTP). Document rationale as an inline comment in `Cargo.toml`.
 
 ### OS & Network Safety
 
-- **Local reads (`src/shell/local.rs`):** Verify candidate entries are regular, non-symlink files (`fs::symlink_metadata`) and read bounded contents via standard `fs::File::open`. Never follow symlinks.
+- **Local reads (`src/shell/local.rs`):** Validate regular, non-symlink metadata (`fs::symlink_metadata`) before opening bounded files (`fs::File::open`). Never follow symlinks.
 - **File writes (`src/shell/output.rs`):** Write through `AtomicFile` so errors or panics unlink temp files on `Drop`.
 - **HTTP (`src/shell/github.rs`):** Keep `RedirectAuthHeaders::Never` and gate `Authorization` with `is_github_api_origin(url)`.
 
