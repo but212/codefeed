@@ -270,7 +270,7 @@ fn process_tar_entry<R: Read>(
     match normalize_tar_entry_path(&path_bytes, path_scratch)? {
         PathStatus::Ignored => return Ok(None),
         PathStatus::NonUtf8Candidate => {
-            selector.record_non_utf8()?;
+            selector.record_skipped(path_scratch)?;
             return Ok(None);
         }
         PathStatus::Valid => {}
@@ -279,9 +279,7 @@ fn process_tar_entry<R: Read>(
     let rel_path = path_scratch.as_str();
 
     // 4. Pre-I/O candidate reservation before reading entry body
-    let slot = selector.reserve_candidate(rel_path)?;
-    let content = read_tar_entry_into(entry, content_scratch)?;
-    selector.record_content(slot, content)?;
+    selector.record_with(rel_path, || read_tar_entry_into(entry, content_scratch))?;
 
     Ok(None)
 }

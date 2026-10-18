@@ -22,12 +22,12 @@ Comprehensive specification of security boundaries, pattern-based exclusion, can
 
 ## 2. Path Classification & Filtering Hierarchy
 
-Every encountered entry (local filesystem or remote archive) passes through path filtering and candidate evaluation defined in `src/core/policy.rs` (`classify_path`):
+Every encountered entry (local filesystem or remote archive) passes through path filtering and candidate evaluation in a single pass (`normalize_tar_entry_path` / `classify_local_path` using `is_hidden_segment` and `is_ignored_filename`):
 
 ```
 Entry Discovered (Local Walk or Tar Stream)
    │
-   ├── Ignored (Pre-candidate Filter: classify_path)
+   ├── Ignored (Pre-candidate Filter: is_hidden_segment / is_ignored_filename)
    │     ├── Noise Lockfiles (Cargo.lock, package-lock.json, etc.)
    │     ├── Sensitive Patterns (.env*, id_rsa*, credentials*, *.key, *.pem, etc.)
    │     ├── Hidden Components (.git, .github, .config, etc.)
@@ -35,8 +35,10 @@ Entry Discovered (Local Walk or Tar Stream)
    │     └── [Result: Dropped immediately. Not counted in candidate budget or skipped tally.]
    │
    └── Candidate
-         └── Regular candidate file
-         └── [Result: Candidate slot consumed; body validated for UTF-8 encoding (no NUL bytes) and MAX_FILE_SIZE. Non-text or oversized files increment skipped.]
+         ├── Non-UTF-8 path: Preserves valid top-level directory prefix ("dir/") or "" ("<unknown>/");
+         │                    reserves candidate slot and records skipped.
+         └── Regular candidate file:
+               └── [Result: Candidate slot consumed; body validated for UTF-8 encoding (no NUL bytes) and MAX_FILE_SIZE. Non-text or oversized files increment skipped.]
 ```
 
 ### 2.1 Conventional Noise Exclusions

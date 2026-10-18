@@ -296,10 +296,6 @@ where
             {
                 i += 1;
             }
-        } else {
-            while spans.get(i).and_then(|s| s.path(path_arena).get(offset..)) == Some(name) {
-                i += 1;
-            }
         }
         let end = i;
         let is_last = end == spans.len();
@@ -876,6 +872,19 @@ z &lt; 10
     └── sub.txt
 ";
         assert_eq!(tree_str, expected);
+
+        let collection = CollectionResult {
+            label: "test".into(),
+            revision: None,
+            files: storage,
+            skipped: 0,
+        };
+        let mut out = Vec::new();
+        render_to_writer(&mut out, &collection, DigestFormat::Text)?;
+        let digest_str = std::str::from_utf8(&out)?;
+        assert!(digest_str.contains("Files: 2"));
+        assert!(digest_str.contains("v2"));
+        assert!(!digest_str.contains("v1"));
         Ok(())
     }
 }

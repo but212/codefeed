@@ -8,7 +8,7 @@ use ignore::WalkBuilder;
 
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
-use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path, is_hidden_segment};
+use crate::core::policy::{MAX_FILE_SIZE, PathStatus, is_hidden_segment, is_ignored_filename};
 use crate::core::selector::Selector;
 
 /// Collects files from a local directory root, excluding the resolved output file if located inside it.
@@ -52,13 +52,13 @@ pub(super) fn collect(
         match classify_local_path(relative, &mut path_scratch) {
             PathStatus::Ignored => continue,
             PathStatus::NonUtf8Candidate => {
-                selector.record_non_utf8()?;
+                selector.record_skipped(&path_scratch)?;
             }
             PathStatus::Valid => {
-                let slot = selector.reserve_candidate(&path_scratch)?;
-                scratch.clear();
-                let bytes = read_local_file_into(entry_path, &mut scratch)?;
-                selector.record_content(slot, bytes)?;
+                selector.record_with(&path_scratch, || {
+                    scratch.clear();
+                    read_local_file_into(entry_path, &mut scratch)
+                })?;
             }
         }
     }
@@ -123,18 +123,26 @@ fn classify_local_path(relative: &Path, scratch: &mut String) -> PathStatus {
     scratch.clear();
     let mut has_hidden = false;
     let mut has_non_utf8 = false;
+    let mut last_segment_start = 0;
 
     for part in relative.components() {
         if is_hidden_segment(part.as_os_str().as_encoded_bytes()) {
             has_hidden = true;
         }
+        if has_non_utf8 {
+            continue;
+        }
         if let Some(s) = part.as_os_str().to_str() {
             if !scratch.is_empty() {
                 scratch.push('/');
             }
+            last_segment_start = scratch.len();
             scratch.push_str(s);
         } else {
             has_non_utf8 = true;
+            if !scratch.is_empty() {
+                scratch.push('/');
+            }
         }
     }
 
@@ -143,17 +151,13 @@ fn classify_local_path(relative: &Path, scratch: &mut String) -> PathStatus {
         return PathStatus::Ignored;
     }
     if has_non_utf8 {
-        scratch.clear();
         return PathStatus::NonUtf8Candidate;
     }
-    if scratch.is_empty() {
+    if scratch.is_empty() || is_ignored_filename(&scratch[last_segment_start..]) {
+        scratch.clear();
         return PathStatus::Ignored;
     }
-    let status = classify_path(scratch);
-    if status == PathStatus::Ignored {
-        scratch.clear();
-    }
-    status
+    PathStatus::Valid
 }
 
 fn local_label(root: &Path) -> String {

@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
+- **Candidate Pipeline Encapsulation**:
+  - Added `Selector::record_skipped` and `Selector::record_with`, encapsulating `CandidateSlot` reservation and consumption lifecycle inside `src/core/selector.rs`.
+  - Streamlined `src/shell/local.rs` and `src/shell/github.rs` collection loops to delegate candidate slot reservation and deferred body reading via `record_with` and `record_skipped`, preventing unnecessary I/O on budget overflow.
+  - Retained low-level `CandidateSlot` linear proof tokens and `reserve_candidate`/`record_content` within `pub(crate)` for deterministic invariant verification.
+- **Core Invariant Consolidation**:
+  - Eliminated `classify_path` 2-pass path scanning, making `is_ignored_filename` `pub(crate)` and integrating filename noise/sensitive filtering directly into the single segment pass of `normalize_tar_entry_path` and `classify_local_path`.
+  - Removed `Selector::record_non_utf8` bypass method; unified non-UTF-8 path candidates to reserve candidate slots preserving valid top-level directory prefixes (`"dir/"` or `""`) and route through `record_content(slot, None)`.
+  - Streamlined `Selector::add_file` to append to `self.storage` prior to checking `MAX_OUTPUT_SIZE`, eliminating `output_too_large_error` iterator chaining and reusing `largest_files(&self.storage)`.
+  - Replaced `FileStorage::sort_by_path` pre-check loop (`windows(2)`) with direct stable sorting (`sort_by`) and in-place last-wins deduplication via `dedup_by`, ensuring deterministic alignment across tree, header, and body outputs.
+  - Removed duplicate leaf `while` skip loop in `render_level`, maintaining single-pass tree rendering over deduplicated `FileStorage`.
 - **Render Pipeline Simplification**:
   - Removed `overflowed: bool` state flag from `BoundedEstimatingWriter`, unifying output limit tracking under `written > MAX_OUTPUT_SIZE`.
   - Simplified `render_text`, `render_xml`, and `DigestFormat::render` return signatures to pure `std::io::Result<()>`, routing size cap checks strictly through the `Err` branch of `render_to_writer`.
