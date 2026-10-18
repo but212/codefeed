@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Render Pipeline Simplification**:
+  - Removed `overflowed: bool` state flag from `BoundedEstimatingWriter`, unifying output limit tracking under `written > MAX_OUTPUT_SIZE`.
+  - Simplified `render_text`, `render_xml`, and `DigestFormat::render` return signatures to pure `std::io::Result<()>`, routing size cap checks strictly through the `Err` branch of `render_to_writer`.
+  - Added `CollectionResult::output_too_large_error` helper, consolidating digest limit diagnostics without coupling `storage.rs` to domain errors.
+  - Optimized directory and leaf file grouping in `render_level` using slice equality (`== Some(name)`) for leaf files and `starts_with(dir_prefix)` for directories, eliminating redundant `find('/')` scans while preserving duplicate path merging.
+  - Collapsed 1-line stream escape wrappers into unified `write_escaped` with dedicated rule predicates (`escape_header`, `escape_xml_body`, `escape_xml_single_line`).
+- **Candidate Recording & Output Diagnostic Simplification**:
+  - Unified `Selector` candidate consumption into single `record_content(slot, Option<&[u8]>)`, replacing separate `record_file` and `record_skipped` methods and streamlining local and archive collection loops.
+  - Symmetrized archive body ingestion in `src/shell/github.rs` via `read_tar_entry_into` returning `Option<&[u8]>`.
+  - Unified `output_too_large_error` diagnostic construction across `Selector` early memory guard and `render_to_writer` serialized stream enforcement.
+  - Privatized `CandidateBudget` to `src/core/selector.rs` internal visibility.
+
 ## [0.3.0]
 
 ### Added

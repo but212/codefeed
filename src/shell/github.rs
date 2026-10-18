@@ -280,25 +280,30 @@ fn process_tar_entry<R: Read>(
 
     // 4. Pre-I/O candidate reservation before reading entry body
     let slot = selector.reserve_candidate(rel_path)?;
+    let content = read_tar_entry_into(entry, content_scratch)?;
+    selector.record_content(slot, content)?;
 
+    Ok(None)
+}
+
+fn read_tar_entry_into<'b, R: Read>(
+    entry: &mut tar::Entry<R>,
+    buf: &'b mut Vec<u8>,
+) -> Result<Option<&'b [u8]>, IngestError> {
     let header_size = entry.header().size().unwrap_or(0);
     if header_size > MAX_FILE_SIZE {
-        selector.record_skipped(slot);
         return Ok(None);
     }
 
     entry
         .take(MAX_FILE_SIZE.saturating_add(1))
-        .read_to_end(content_scratch)
+        .read_to_end(buf)
         .map_err(IngestError::Io)?;
 
-    if content_scratch.len() as u64 > MAX_FILE_SIZE {
-        selector.record_skipped(slot);
-    } else {
-        selector.record_file(slot, content_scratch.as_slice())?;
+    if buf.len() as u64 > MAX_FILE_SIZE {
+        return Ok(None);
     }
-
-    Ok(None)
+    Ok(Some(buf.as_slice()))
 }
 
 #[cfg(test)]

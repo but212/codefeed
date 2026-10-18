@@ -57,10 +57,8 @@ pub(super) fn collect(
             PathStatus::Valid => {
                 let slot = selector.reserve_candidate(&path_scratch)?;
                 scratch.clear();
-                match read_local_file_into(entry_path, &mut scratch)? {
-                    Some(bytes) => selector.record_file(slot, bytes)?,
-                    None => selector.record_skipped(slot),
-                }
+                let bytes = read_local_file_into(entry_path, &mut scratch)?;
+                selector.record_content(slot, bytes)?;
             }
         }
     }

@@ -57,7 +57,7 @@ impl DigestFormat {
         self,
         writer: &mut W,
         collection: &CollectionResult,
-    ) -> Result<(), IngestError> {
+    ) -> std::io::Result<()> {
         match self {
             Self::Text => render_text(writer, collection),
             Self::Xml => render_xml(writer, collection),
@@ -68,16 +68,11 @@ impl DigestFormat {
 struct BoundedEstimatingWriter<'a, W: Write + ?Sized> {
     inner: &'a mut W,
     written: u64,
-    overflowed: bool,
 }
 
 impl<'a, W: Write + ?Sized> BoundedEstimatingWriter<'a, W> {
     fn new(inner: &'a mut W) -> Self {
-        Self {
-            inner,
-            written: 0,
-            overflowed: false,
-        }
+        Self { inner, written: 0 }
     }
 
     fn finish(self) -> usize {
@@ -89,7 +84,7 @@ impl<W: Write + ?Sized> Write for BoundedEstimatingWriter<'_, W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let new_written = self.written.saturating_add(buf.len() as u64);
         if new_written > MAX_OUTPUT_SIZE {
-            self.overflowed = true;
+            self.written = new_written;
             return Err(output_limit_io_error());
         }
         self.inner.write_all(buf)?;
@@ -120,22 +115,17 @@ pub(crate) fn render_to_writer<W: Write + ?Sized>(
     format: DigestFormat,
 ) -> Result<usize, IngestError> {
     let mut estimating_writer = BoundedEstimatingWriter::new(writer);
-    let render_res = format.render(&mut estimating_writer, collection);
-
-    if estimating_writer.overflowed {
-        return Err(output_too_large_error(collection));
+    if let Err(err) = format.render(&mut estimating_writer, collection) {
+        if estimating_writer.written > MAX_OUTPUT_SIZE {
+            return Err(collection.output_too_large_error());
+        }
+        return Err(IngestError::Io(err));
     }
-
-    render_res?;
     Ok(estimating_writer.finish())
 }
 
-fn output_too_large_error(collection: &CollectionResult) -> IngestError {
-    IngestError::output_too_large(crate::core::storage::largest_files(collection.files.iter()))
-}
-
 #[inline(always)]
-fn header_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
+fn escape_header(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     match bytes[i] {
         b'\\' => Some((1, "\\\\")),
         b'\r' => Some((1, "\\r")),
@@ -144,21 +134,16 @@ fn header_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     }
 }
 
-/// Escapes backslashes, carriage returns, and newlines in metadata header strings while streaming to `writer`.
-fn write_header_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
-    write_stream_escaped(writer, value, header_special_at)
-}
-
 fn render_text<W: Write + ?Sized>(
     writer: &mut W,
     collection: &CollectionResult,
-) -> Result<(), IngestError> {
+) -> std::io::Result<()> {
     writer.write_all(REPOSITORY_PREFIX.as_bytes())?;
-    write_header_escaped(writer, &collection.label)?;
+    write_escaped(writer, &collection.label, escape_header)?;
     writer.write_all(NEWLINE.as_bytes())?;
     if let Some(ref revision) = collection.revision {
         writer.write_all(REVISION_PREFIX.as_bytes())?;
-        write_header_escaped(writer, revision)?;
+        write_escaped(writer, revision, escape_header)?;
         writer.write_all(NEWLINE.as_bytes())?;
     }
     writer.write_all(FILES_PREFIX.as_bytes())?;
@@ -167,13 +152,15 @@ fn render_text<W: Write + ?Sized>(
     write!(writer, "{}", collection.skipped)?;
     writer.write_all(METADATA_SUFFIX.as_bytes())?;
     writer.write_all(DIRECTORY_HEADER.as_bytes())?;
-    render_tree(writer, &collection.files, write_header_escaped)?;
+    render_tree(writer, &collection.files, |w, name| {
+        write_escaped(w, name, escape_header)
+    })?;
     writer.write_all(FILES_HEADER.as_bytes())?;
     for file in collection.files.iter() {
         const TAIL: [&[u8]; 2] = [b"\n", b"\n\n"];
         let needs_extra_nl = (!file.content.ends_with('\n')) as usize;
         writer.write_all(FILE_BLOCK_PREFIX.as_bytes())?;
-        write_header_escaped(writer, file.path)?;
+        write_escaped(writer, file.path, escape_header)?;
         writer.write_all(FILE_BLOCK_SUFFIX.as_bytes())?;
         writer.write_all(file.content.as_bytes())?;
         writer.write_all(TAIL[needs_extra_nl])?;
@@ -183,7 +170,7 @@ fn render_text<W: Write + ?Sized>(
 }
 
 #[inline(always)]
-fn xml_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
+fn escape_xml_body(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     match bytes[i] {
         0..=8 | 11 | 12 | 14..=31 => Some((1, "\u{FFFD}")),
         b'"' => Some((1, "&quot;")),
@@ -202,16 +189,16 @@ fn xml_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
 }
 
 #[inline(always)]
-fn xml_attr_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
+fn escape_xml_single_line(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     match bytes[i] {
         b'\t' => Some((1, "&#9;")),
         b'\n' => Some((1, "&#10;")),
         b'\r' => Some((1, "&#13;")),
-        _ => xml_special_at(bytes, i),
+        _ => escape_xml_body(bytes, i),
     }
 }
 
-fn write_stream_escaped<W, F>(writer: &mut W, value: &str, special_at: F) -> std::io::Result<()>
+fn write_escaped<W, F>(writer: &mut W, value: &str, special_at: F) -> std::io::Result<()>
 where
     W: Write + ?Sized,
     F: Fn(&[u8], usize) -> Option<(usize, &'static str)>,
@@ -232,36 +219,28 @@ where
     writer.write_all(&bytes[last..])
 }
 
-/// Escapes standard XML characters and control bytes while streaming to `writer`.
-fn write_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
-    write_stream_escaped(writer, value, xml_special_at)
-}
-
-/// Escapes XML attribute specials including whitespace (`\t`, `\n`, `\r`) to prevent attribute normalization.
-fn write_xml_attr_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
-    write_stream_escaped(writer, value, xml_attr_special_at)
-}
-
 fn render_xml<W: Write + ?Sized>(
     writer: &mut W,
     collection: &CollectionResult,
-) -> Result<(), IngestError> {
+) -> std::io::Result<()> {
     writer.write_all(XML_REPO_START.as_bytes())?;
-    write_xml_attr_escaped(writer, &collection.label)?;
+    write_escaped(writer, &collection.label, escape_xml_single_line)?;
     if let Some(ref revision) = collection.revision {
         writer.write_all(XML_REVISION_ATTR.as_bytes())?;
-        write_xml_attr_escaped(writer, revision)?;
+        write_escaped(writer, revision, escape_xml_single_line)?;
     }
     writer.write_all(XML_TAG_CLOSE.as_bytes())?;
     writer.write_all(XML_DIR_START.as_bytes())?;
-    render_tree(writer, &collection.files, write_xml_attr_escaped)?;
+    render_tree(writer, &collection.files, |w, name| {
+        write_escaped(w, name, escape_xml_single_line)
+    })?;
     writer.write_all(XML_DIR_END.as_bytes())?;
     writer.write_all(XML_FILES_START.as_bytes())?;
     for file in collection.files.iter() {
         writer.write_all(XML_FILE_START.as_bytes())?;
-        write_xml_attr_escaped(writer, file.path)?;
+        write_escaped(writer, file.path, escape_xml_single_line)?;
         writer.write_all(XML_TAG_CLOSE.as_bytes())?;
-        write_escaped(writer, file.content)?;
+        write_escaped(writer, file.content, escape_xml_body)?;
         let needs_nl = (!file.content.ends_with('\n')) as usize;
         writer.write_all(FILE_TAILS[needs_nl])?;
     }
@@ -308,14 +287,18 @@ where
     {
         let start = i;
         i += 1;
-        while let Some((next_name, next_is_dir)) = spans
-            .get(i)
-            .and_then(|s| component_at_offset(s.path(path_arena), offset))
-        {
-            if next_name == name && next_is_dir == is_dir {
+        if is_dir {
+            let dir_prefix = &spans[start].path(path_arena)[offset..offset + name.len() + 1];
+            while spans
+                .get(i)
+                .and_then(|s| s.path(path_arena).get(offset..))
+                .is_some_and(|rem| rem.starts_with(dir_prefix))
+            {
                 i += 1;
-            } else {
-                break;
+            }
+        } else {
+            while spans.get(i).and_then(|s| s.path(path_arena).get(offset..)) == Some(name) {
+                i += 1;
             }
         }
         let end = i;
@@ -683,11 +666,11 @@ z &lt; 10
     #[test]
     fn write_header_escaped_preserves_clean_input() {
         let mut buf = Vec::new();
-        write_header_escaped(&mut buf, "clean_path").unwrap();
+        write_escaped(&mut buf, "clean_path", escape_header).unwrap();
         assert_eq!(std::str::from_utf8(&buf).unwrap(), "clean_path");
 
         buf.clear();
-        write_header_escaped(&mut buf, "").unwrap();
+        write_escaped(&mut buf, "", escape_header).unwrap();
         assert_eq!(buf.len(), 0);
     }
 
@@ -696,13 +679,13 @@ z &lt; 10
         let input = "a\\b\rc\nd\\\\e\r\n";
         let expected = "a\\\\b\\rc\\nd\\\\\\\\e\\r\\n";
         let mut buf = Vec::new();
-        write_header_escaped(&mut buf, input).unwrap();
+        write_escaped(&mut buf, input, escape_header).unwrap();
         assert_eq!(std::str::from_utf8(&buf).unwrap(), expected);
     }
 
     fn xml_escape(value: &str) -> String {
         let mut buf = Vec::new();
-        write_escaped(&mut buf, value).unwrap();
+        write_escaped(&mut buf, value, escape_xml_body).unwrap();
         String::from_utf8(buf).unwrap()
     }
 
@@ -740,7 +723,7 @@ z &lt; 10
             );
 
             let mut streamed = Vec::new();
-            write_escaped(&mut streamed, text).unwrap();
+            write_escaped(&mut streamed, text, escape_xml_body).unwrap();
             assert_eq!(
                 String::from_utf8(streamed).unwrap(),
                 escaped.as_str(),
@@ -758,7 +741,7 @@ z &lt; 10
             "prefix \u{FFFD} &amp; &lt;\u{FEFF}&gt; middle \u{FF01} suffix \u{FFFD} and \u{FFFD}"
         );
         let mut streamed = Vec::new();
-        write_escaped(&mut streamed, input).unwrap();
+        write_escaped(&mut streamed, input, escape_xml_body).unwrap();
         assert_eq!(String::from_utf8(streamed).unwrap(), escaped.as_str());
     }
 
@@ -766,7 +749,7 @@ z &lt; 10
     fn test_write_xml_attr_escaped_preserves_whitespace_char_refs() {
         let input = "tab\tnewline\r\nquote\"amp&apos'<tag>";
         let mut out = Vec::new();
-        write_xml_attr_escaped(&mut out, input).unwrap();
+        write_escaped(&mut out, input, escape_xml_single_line).unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "tab&#9;newline&#13;&#10;quote&quot;amp&amp;apos&apos;&lt;tag&gt;"
@@ -870,6 +853,27 @@ z &lt; 10
 │       │   └── f.txt
 │       └── g.txt
 └── root.txt
+";
+        assert_eq!(tree_str, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn tree_deduplicates_identical_file_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let mut storage = FileStorage::new();
+        storage.push("a.txt", "v1");
+        storage.push("a.txt", "v2");
+        storage.push("dir/sub.txt", "v1");
+        storage.push("dir/sub.txt", "v2");
+        storage.sort_by_path();
+
+        let mut buf = Vec::new();
+        render_tree(&mut buf, &storage, |w, s| w.write_all(s.as_bytes()))?;
+        let tree_str = std::str::from_utf8(&buf)?;
+        let expected = "\
+├── a.txt
+└── dir/
+    └── sub.txt
 ";
         assert_eq!(tree_str, expected);
         Ok(())
