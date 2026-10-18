@@ -130,11 +130,9 @@ where
             scratch.clear();
             return PathStatus::Ignored;
         }
-        if let Ok(filename) = std::str::from_utf8(last) {
-            if is_ignored_filename(filename) {
-                scratch.clear();
-                return PathStatus::Ignored;
-            }
+        if matches!(std::str::from_utf8(last), Ok(filename) if is_ignored_filename(filename)) {
+            scratch.clear();
+            return PathStatus::Ignored;
         }
     }
 
