@@ -32,7 +32,7 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 
 ### Rendering & Formats
 
-- ASCII tree (`├── `, `└── `, `│   `): Renders deterministic directory structure directly from sorted `FileStorage` with zero intermediate allocations (`tree::render_tree`). Format-neutral; escapes control codes and XML entities to prevent tree line-break injections.
+- ASCII tree (`├── `, `└── `, `│   `): Renders deterministic directory structure directly from sorted `FileStorage` with zero intermediate allocations (`render::render_tree`). Format-neutral; escapes control codes and XML entities to prevent tree line-break injections.
 - Token estimation: Pure function `estimate_tokens(bytes)` calculates `(bytes / 4).max(1)` when non-zero, `0` when empty. Reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`). Calibrated for English text and code (~4 bytes/token); multibyte text (such as Korean/CJK) will be underestimated.
 - Plain text (`--format text`): Preserves valid UTF-8 file content verbatim (rejecting NUL bytes) for LLM prompts; escapes headers and paths while leaving file bodies unmutated (interactive terminals may reflect ANSI escape codes contained in files).
 - XML (`--format xml`): Emits `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`), attribute whitespace (`\t`, `\n`, `\r` via character references), and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`.
@@ -72,11 +72,10 @@ Boundary rule: Pure core performs no I/O, clock, or network calls and never depe
   - `cli.rs`: CLI argument parsing, help detection, and `CliAction` generation (`parse`).
   - `policy.rs`: Operational limits, noise patterns, sensitive patterns, and path exclusion predicate (`is_ignored_path`). Single source of truth for limits.
   - `model.rs`: Domain value types (`Source`, `CollectionResult`, `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`) and source parsing (`Source::parse`, `Source::parse_os`).
-  - `storage.rs`: Continuous arena storage (`FileStorage`, `FileSpan`, `FileRecord`, `FileRecordIter`, `cmp_path`).
+  - `storage.rs`: Continuous arena storage (`FileStorage`, `FileSpan`, `FileRecord`, `FileRecordIter`, `cmp_path`, `largest_files`).
   - `error.rs`: Domain error enum `IngestError` and diagnostic payloads (`CandidateLimitExceededError`).
-  - `selector.rs`: Candidate observation (`CandidateInput`), directory accounting (`CandidateBudget`), storage accumulation (`Selector`), and `largest_files` diagnostic selection.
-  - `tree.rs`: Format-neutral ASCII hierarchy tree rendering (`render_tree`) directly from `FileStorage` with zero allocations.
-  - `render.rs`: Format-specific streaming serializers (Text/XML), single-pass streaming escaping (`write_header_escaped`, `write_escaped`, `write_xml_attr_escaped`), token estimation heuristic (`estimate_tokens`), and `BoundedEstimatingWriter`.
+  - `selector.rs`: Candidate observation (`CandidateInput`), directory accounting (`CandidateBudget`), and storage accumulation (`Selector`).
+  - `render.rs`: Format-specific streaming serializers (Text/XML), format-neutral ASCII hierarchy tree rendering (`render_tree`), single-pass streaming escaping (`write_header_escaped`, `write_escaped`, `write_xml_attr_escaped`), token estimation heuristic (`estimate_tokens`), and `BoundedEstimatingWriter`.
   - `archive.rs`: Pax header comment extraction and in-place tar entry path normalization (`normalize_tar_entry_path`).
 - Imperative shell (`src/shell/`):
   - `src/main.rs`: Binary entry point and CLI completion report formatting.

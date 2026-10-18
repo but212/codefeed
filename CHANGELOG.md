@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Core Module Consolidation & Storage Diagnostic Decoupling**: Merged `src/core/tree.rs` into `src/core/render.rs`, removing the private `tree` module; moved `largest_files` diagnostic selection from `src/core/selector.rs` to `src/core/storage.rs` as `FileStorage::largest_files`, decoupling `render.rs` from `selector.rs`.
 - **CLI Option Error Precedence**: Deferred `GitRef` validation in `cli::parse` until after `<SOURCE>` presence and source-kind checks, preserving `--help` precedence and variant compatibility errors.
 - **Breaking Change — Source::Github Encapsulation**: Marked `Source::Github` `#[non_exhaustive]` (constructed via `Source::github` or `Source::parse`); updated `Source::Github.reference` and `Source::with_reference` from `Option<String>` to `Option<GitRef>`.
 - **Breaking Change — Public API Surface & Non-Exhaustive Types**: Demoted `CliAction`, `help_text`, `parse`, and 7 `IngestError` constructors (`candidate_limit_exceeded`, `invalid_source`, `unsupported_source`, `http`, `api`, `invalid_metadata`, `output_too_large`) to `pub(crate)` (retaining `IngestError::usage` and `codefeed::run_cli`); marked `IngestError` and `IngestReport` `#[non_exhaustive]`.

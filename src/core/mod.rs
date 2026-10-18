@@ -11,4 +11,3 @@ pub(crate) mod policy;
 pub(crate) mod render;
 pub(crate) mod selector;
 pub(crate) mod storage;
-mod tree;
