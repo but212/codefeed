@@ -77,7 +77,7 @@ cargo build --release
 
 ## Output and Exit Contracts
 
-- **File output (`--output <PATH>`)**: Writes to a temporary file, syncs to disk, and atomically renames. Prints `<PATH> (<N> files, <N> skipped, ~<N> tokens)` to stdout. Preserves existing files on failure. The token summary (`~<N> tokens`) is estimated via a fast byte heuristic (~4 bytes per token for ASCII source code); CJK and other multibyte texts may be underestimated.
+- **File output (`--output <PATH>`)**: Writes to a temporary file, syncs to disk, and atomically renames. Prints `Wrote <PATH> (<N> files, <N> skipped, ~<N> tokens)` to stdout. Preserves existing files on failure. The token summary (`~<N> tokens`) is estimated via a fast byte heuristic (~4 bytes per token for ASCII source code); CJK and other multibyte texts may be underestimated.
 - **Stream output (`--output -`)**: Writes raw digest to stdout and completion summary to stderr.
 - **Format fidelity**: Plain text (`--format text`) preserves valid UTF-8 file content verbatim (rejecting NUL bytes); ANSI sequences remain intact. XML (`--format xml`) sanitizes disallowed XML 1.0 control characters to `\u{FFFD}`.
 - **Pipe termination**: Downstream pipe closure (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0.

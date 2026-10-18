@@ -33,7 +33,7 @@ const RETRY_MAX_DELAY_MS: u64 = 5_000;
 
 /// Returns `true` if `file_name` matches a known noise file.
 #[inline]
-pub(crate) fn is_noise_file(file_name: &str) -> bool {
+fn is_noise_file(file_name: &str) -> bool {
     NOISE.contains(&file_name)
 }
 
@@ -45,9 +45,8 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
 
 /// Returns `true` if `file_name` or its `extension` indicates a sensitive credentials file.
 #[inline]
-pub(crate) fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> bool {
-    if starts_with_ignore_ascii_case(file_name, ".env")
-        || starts_with_ignore_ascii_case(file_name, "id_rsa")
+fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> bool {
+    if starts_with_ignore_ascii_case(file_name, "id_rsa")
         || starts_with_ignore_ascii_case(file_name, "id_ed25519")
         || starts_with_ignore_ascii_case(file_name, "credentials")
     {
@@ -63,7 +62,7 @@ pub(crate) fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> boo
 
 /// Returns `true` if `path` contains hidden directory or file components (starting with `.`).
 #[inline]
-pub(crate) fn is_hidden_path(path: &str) -> bool {
+fn is_hidden_path(path: &str) -> bool {
     path.split('/').any(|s| s.starts_with('.'))
 }
 

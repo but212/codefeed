@@ -116,8 +116,8 @@ fn output_too_large_error(collection: &CollectionResult) -> IngestError {
 mod tests {
     use super::*;
     use crate::core::error::IngestError;
-    use crate::core::model::{FileRecord, FileStorage};
     use crate::core::policy::MAX_OUTPUT_SIZE;
+    use crate::core::storage::{FileRecord, FileStorage};
 
     fn render_digest(
         label: &str,
@@ -366,6 +366,32 @@ z &lt; 10
             "XML format must sanitize ESC to replacement char while preserving valid whitespace"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn xml_attr_escapes_whitespace_and_preserves_body() -> Result<(), Box<dyn std::error::Error>> {
+        let files = [FileRecord {
+            path: "dir\nname\r\t/file.rs",
+            content: "fn main() {\n\tprintln!(\"hello\");\r\n}\n",
+        }];
+        let mut storage: FileStorage = files.into_iter().collect();
+        storage.sort_by_path();
+        let collection = CollectionResult {
+            label: "my\trepo\n".into(),
+            revision: Some("rev\r\n1".into()),
+            files: storage,
+            skipped: 0,
+        };
+        let mut xml_out = Vec::new();
+        render_to_writer(&mut xml_out, &collection, DigestFormat::Xml)?;
+        let xml_str = std::str::from_utf8(&xml_out)?;
+
+        assert!(
+            xml_str.contains("<repository name=\"my&#9;repo&#10;\" revision=\"rev&#13;&#10;1\">")
+        );
+        assert!(xml_str.contains("<file path=\"dir&#10;name&#13;&#9;/file.rs\">"));
+        assert!(xml_str.contains("fn main() {\n\tprintln!(&quot;hello&quot;);\r\n}\n"));
         Ok(())
     }
 

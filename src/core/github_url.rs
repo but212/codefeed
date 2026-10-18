@@ -2,7 +2,7 @@
 //! used to scope credentials and API-only headers.
 
 /// Canonical base URL for GitHub REST API v3 endpoints.
-pub(crate) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
+const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 
 /// Exact-origin match: returns `true` if `url == GITHUB_API_BASE_URL` or starts with `GITHUB_API_BASE_URL + "/"`.
 pub(crate) fn is_github_api_origin(url: &str) -> bool {

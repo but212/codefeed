@@ -14,7 +14,7 @@ pub(crate) enum TarPathStatus {
 /// Normalizes a raw tar entry path into `out`, stripping the root directory prefix,
 /// collapsing multiple slashes, and removing `.` segments.
 ///
-/// Returns `Err(IngestError)` if the path contains `..` directory traversal.
+/// Returns `Err(IngestError)` if the path contains directory traversal, invalid root prefixes, or NUL bytes.
 /// Returns `Ok(TarPathStatus::Skipped)` if the entry is the root directory itself or empty.
 /// Returns `Ok(TarPathStatus::NonUtf8)` if the entry path contains non-UTF-8 bytes.
 /// Returns `Ok(TarPathStatus::Valid)` on success.
@@ -22,6 +22,11 @@ pub(crate) fn normalize_tar_entry_path(
     raw_bytes: &[u8],
     out: &mut String,
 ) -> Result<TarPathStatus, IngestError> {
+    if raw_bytes.contains(&0) {
+        return Err(IngestError::invalid_metadata(
+            "Tar entry path contains NUL byte",
+        ));
+    }
     let start = raw_bytes
         .iter()
         .position(|&b| b != b'/')
@@ -34,6 +39,11 @@ pub(crate) fn normalize_tar_entry_path(
     let Some(slash_index) = trimmed.iter().position(|&b| b == b'/') else {
         return Ok(TarPathStatus::Skipped);
     };
+    if matches!(&trimmed[..slash_index], b"." | b"..") {
+        return Err(IngestError::invalid_metadata(
+            "Tar entry contains directory traversal (..)",
+        ));
+    }
 
     let rel = &trimmed[slash_index + 1..];
     out.clear();
@@ -159,8 +169,14 @@ mod tests {
         );
 
         // Path traversal rejection
+        assert!(normalize_tar_entry_path(b"../etc/passwd", &mut out).is_err());
+        assert!(normalize_tar_entry_path(b"./etc/passwd", &mut out).is_err());
         assert!(normalize_tar_entry_path(b"repo-root/../etc/passwd", &mut out).is_err());
         assert!(normalize_tar_entry_path(b"repo-root/src/../../root", &mut out).is_err());
+
+        // Embedded NUL rejection
+        assert!(normalize_tar_entry_path(b"repo-root/certs/privkey.key\0", &mut out).is_err());
+        assert!(normalize_tar_entry_path(b"repo-root\0/src/main.rs", &mut out).is_err());
 
         // Non-UTF8 handling
         assert_eq!(

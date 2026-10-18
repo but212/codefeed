@@ -38,7 +38,7 @@ fn first_header_escape_index(bytes: &[u8]) -> Option<usize> {
 }
 
 /// Escapes backslashes, carriage returns, and newlines in metadata header strings.
-pub(crate) fn escape_header(value: &str) -> Cow<'_, str> {
+fn escape_header(value: &str) -> Cow<'_, str> {
     let bytes = value.as_bytes();
     let Some(first) = first_header_escape_index(bytes) else {
         return Cow::Borrowed(value);

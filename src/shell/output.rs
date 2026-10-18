@@ -46,7 +46,7 @@ pub(crate) fn resolve_output_target(target: &OutputTarget) -> Result<Option<Path
                     "output path is a directory",
                 )));
             }
-            if resolved.exists()
+            if fs::symlink_metadata(&resolved).is_ok_and(|m| !m.is_symlink())
                 && let Ok(canonical) = fs::canonicalize(&resolved)
             {
                 resolved = canonical;
@@ -361,6 +361,32 @@ mod tests {
         let resolved = resolve_output_target(&OutputTarget::File(output_via_link))?.unwrap();
         let canonical_real = fs::canonicalize(&output_via_real)?;
         assert_eq!(resolved, canonical_real);
+        Ok(())
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn resolve_output_target_preserves_symlink_leaf_and_protects_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("output_symlink_leaf")?;
+        let src_file = root.join("lib.rs");
+        fs::write(&src_file, "original content")?;
+        let out_link = root.join("out.txt");
+
+        #[cfg(unix)]
+        let created = std::os::unix::fs::symlink(&src_file, &out_link).is_ok();
+        #[cfg(windows)]
+        let created = std::os::windows::fs::symlink_file(&src_file, &out_link).is_ok();
+
+        if created {
+            let resolved = resolve_output_target(&OutputTarget::File(out_link.clone()))?.unwrap();
+            let canonical_src = fs::canonicalize(&src_file)?;
+            assert_ne!(
+                resolved, canonical_src,
+                "resolved output must not follow the leaf symlink"
+            );
+            assert_eq!(resolved, out_link);
+        }
         Ok(())
     }
 }

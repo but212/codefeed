@@ -5,7 +5,7 @@
 
 use std::io::Write;
 
-use crate::core::model::{FileSpan, FileStorage};
+use crate::core::storage::{FileSpan, FileStorage};
 
 const TREE_BRANCH: &str = "├── ";
 const TREE_LAST: &str = "└── ";

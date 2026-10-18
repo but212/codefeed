@@ -166,7 +166,7 @@ fn resolve_token_from_env() -> Option<String> {
 }
 
 /// Collects files from an uncompressed or compressed tarball reader directly into a CollectionResult.
-pub(crate) fn collect_archive<R: Read>(
+fn collect_archive<R: Read>(
     reader: R,
     owner: &str,
     repo: &str,

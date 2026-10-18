@@ -179,7 +179,10 @@ fn walk_candidates(root: &Path, resolved_output: Option<&Path>) -> Result<PathAr
             }
             budget.add(Some(&path_scratch))?;
             candidates.push_some(&path_scratch);
-        } else {
+        } else if !relative
+            .components()
+            .any(|c| c.as_os_str().as_encoded_bytes().starts_with(b"."))
+        {
             budget.add(None)?;
             candidates.push_none();
         }
@@ -220,7 +223,8 @@ fn local_label(root: &Path) -> String {
 mod tests {
     use super::super::temp_dir;
     use super::*;
-    use crate::core::model::{DigestFormat, FileRecord, OutputTarget, RunConfig, Source};
+    use crate::core::model::{DigestFormat, OutputTarget, RunConfig, Source};
+    use crate::core::storage::FileRecord;
     use crate::ingest;
 
     #[test]
@@ -442,6 +446,13 @@ mod tests {
         use std::os::unix::ffi::OsStringExt;
 
         let root = temp_dir("invalid_paths")?;
+        fs::write(root.join(".gitignore"), "!*\n")?;
+        fs::create_dir(root.join(".hidden"))?;
+        fs::write(
+            root.join(".hidden")
+                .join(OsString::from_vec(b"c\x82".to_vec())),
+            "c",
+        )?;
         fs::write(root.join(OsString::from_vec(b"a\x80".to_vec())), "a")?;
         fs::write(root.join(OsString::from_vec(b"b\x81".to_vec())), "b")?;
         let output = root.join("digest.txt");

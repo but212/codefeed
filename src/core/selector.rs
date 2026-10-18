@@ -3,8 +3,9 @@
 use std::collections::HashMap;
 
 use crate::core::error::IngestError;
-use crate::core::model::{CollectionResult, FileRecord, FileStorage};
+use crate::core::model::CollectionResult;
 use crate::core::policy::{MAX_FILE_COUNT, MAX_OUTPUT_SIZE};
+use crate::core::storage::{FileRecord, FileStorage};
 
 /// Candidate input observed by the imperative shell. Non-UTF-8 paths or unreadable
 /// items are represented as `Skipped` and still counted against the file budget.
@@ -31,7 +32,7 @@ impl<'a> CandidateInput<'a> {
 
 /// UTF-8 text predicate: NUL-free bytes only.
 #[inline]
-pub(crate) fn text_str(bytes: &[u8]) -> Option<&str> {
+fn text_str(bytes: &[u8]) -> Option<&str> {
     if bytes.contains(&0) {
         return None;
     }

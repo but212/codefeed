@@ -10,7 +10,7 @@ imperative-shell boundary.
 
 ## Entities and value objects
 
-- `Source` — `Local(PathBuf)` or `GitHub { owner, repo, reference }`. Encapsulates reference validation and assignment via `Source::with_reference`.
+- `Source` — `Local(PathBuf)` or `Github { owner, repo, reference }`. Encapsulates reference validation and assignment via `Source::with_reference`.
 - `RunConfig` — execution configuration unifying `source`, `output`, and `format`.
 - `CandidateInput` — one observed candidate entry handed to the pure core: `File { path, bytes }`, `TooLarge { path }`, or `Skipped { path }`. Pure evaluation in `Selector::feed` verifies UTF-8 text and NUL-free content, registers directory counts with `CandidateBudget`, and updates storage. Shell collectors filter noise and sensitive paths pre-candidate (`policy::is_ignored_path`).
 - `FileSpan` — POD indexing path and content byte spans (`path_offset`, `path_len`, `content_offset`, `content_len`).
@@ -38,7 +38,7 @@ imperative-shell boundary.
 - ASCII hierarchy tree (`├── `, `└── `, `│   `) renders deterministic directory structure, escaping control codes and XML entities to prevent tree line-break injections.
 - Heuristic token estimation runs via pure function `estimate_tokens(bytes)` (`(bytes / 4).max(1)` when non-zero, `0` when empty), reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`). This is a fast byte heuristic calibrated for English text and source code (~4 bytes/token); multibyte text (such as Korean/CJK) will be underestimated.
 - Plain text serialization (`--format text`) preserves all valid UTF-8 file content verbatim (rejecting only NUL bytes) to maintain raw fidelity for LLM prompts; headers and paths are escaped, but file bodies are unmutated (viewing raw digests in interactive terminals may affect emulator state if files contain ANSI escape codes).
-- XML serialization (`--format xml`) structures output into `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`) and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`.
+- XML serialization (`--format xml`) structures output into `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`), attribute whitespace (`\t`, `\n`, `\r` via character references), and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`.
 - File-path ordering is strictly lexicographical, established in-place on `spans` via `FileStorage::sort_by_path()` during `Selector::finish()`. Format renderers consume `ExactSizeIterator<Item = FileRecord<'_>>` directly with zero heap re-allocation or re-sorting.
 - Local digest headers use root directory basename (`Repository: <basename>`), omitting absolute paths and system prefixes.
 
@@ -78,12 +78,13 @@ never depends on shell code; shell code depends on the core in one direction.
   - `cli.rs`: Pure CLI argument parsing, help detection, and `CliAction` generation (`parse`).
   - `policy.rs`: all operational limits, noise patterns, sensitive patterns, and path exclusion predicate (`is_ignored_path`). Single source of truth for limits.
   - `source.rs`: source string and OS-string parsing.
-  - `model.rs`: domain value types (`Source`, `FileRecord`, `CollectionResult`,
-    `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`, `FileStorage`).
+  - `model.rs`: domain value types (`Source`, `CollectionResult`,
+    `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`).
+  - `storage.rs`: continuous arena storage (`FileStorage`, `FileSpan`, `FileRecord`, `FileRecordIter`, `cmp_path`).
   - `error.rs`: domain error enum `IngestError` and diagnostic payloads (`CandidateLimitExceededError`).
   - `selector.rs`: candidate observation (`CandidateInput`), candidate budget directory accounting (`CandidateBudget`), `Selector` storage accumulation, and `largest_files` diagnostic selection.
   - `tree.rs`: Format-neutral ASCII hierarchy tree rendering (`render_tree`) directly from `FileStorage` with zero allocations.
-  - `render/` (`mod.rs`, `text.rs`, `xml.rs`): Format-specific streaming serializers (Text/XML), single-pass streaming escaping (`escape_header`, `write_escaped`, `write_xml_tree_escaped`) preserving newline injection defense, token estimation heuristic (`estimate_tokens`), and `BoundedEstimatingWriter`.
+  - `render/` (`mod.rs`, `text.rs`, `xml.rs`): Format-specific streaming serializers (Text/XML), single-pass streaming escaping (`escape_header`, `write_escaped`, `write_xml_attr_escaped`, `write_xml_tree_escaped`) preserving newline injection defense, token estimation heuristic (`estimate_tokens`), and `BoundedEstimatingWriter`.
   - `github_url.rs`: Pure `std` URL construction with RFC 3986 percent-encoding and origin credential scoping.
   - `archive.rs`: Pax header comment extraction and in-place tar entry path normalization (`normalize_tar_entry_path`).
 - Imperative shell (`src/shell/`):

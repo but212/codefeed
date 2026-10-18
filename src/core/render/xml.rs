@@ -36,24 +36,22 @@ fn xml_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
 }
 
 #[inline(always)]
+fn xml_attr_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
+    match bytes[i] {
+        b'\t' => Some((1, "&#9;")),
+        b'\n' => Some((1, "&#10;")),
+        b'\r' => Some((1, "&#13;")),
+        _ => xml_special_at(bytes, i),
+    }
+}
+
+#[inline(always)]
 fn xml_tree_special_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     match bytes[i] {
         b'\\' => Some((1, "\\\\")),
         b'\r' => Some((1, "\\r")),
         b'\n' => Some((1, "\\n")),
-        0..=8 | 11 | 12 | 14..=31 => Some((1, "\u{FFFD}")),
-        b'"' => Some((1, "&quot;")),
-        b'&' => Some((1, "&amp;")),
-        b'\'' => Some((1, "&apos;")),
-        b'<' => Some((1, "&lt;")),
-        b'>' => Some((1, "&gt;")),
-        0xEF if i + 2 < bytes.len()
-            && bytes[i + 1] == 0xBF
-            && (bytes[i + 2] == 0xBE || bytes[i + 2] == 0xBF) =>
-        {
-            Some((3, "\u{FFFD}"))
-        }
-        _ => None,
+        _ => xml_special_at(bytes, i),
     }
 }
 
@@ -89,15 +87,17 @@ where
 }
 
 /// Escapes standard XML characters and control bytes while streaming to `writer`.
-pub(crate) fn write_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
+fn write_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
     write_stream_escaped(writer, value, xml_special_at)
 }
 
+/// Escapes XML attribute specials including whitespace (`\t`, `\n`, `\r`) to prevent attribute normalization.
+fn write_xml_attr_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
+    write_stream_escaped(writer, value, xml_attr_special_at)
+}
+
 /// Escapes newlines (`\n`, `\r`, `\`) and XML specials for tree node names in `<directory_structure>`.
-pub(crate) fn write_xml_tree_escaped<W: Write + ?Sized>(
-    writer: &mut W,
-    value: &str,
-) -> std::io::Result<()> {
+fn write_xml_tree_escaped<W: Write + ?Sized>(writer: &mut W, value: &str) -> std::io::Result<()> {
     write_stream_escaped(writer, value, xml_tree_special_at)
 }
 
@@ -106,10 +106,10 @@ pub(crate) fn render_xml<W: Write + ?Sized>(
     collection: &CollectionResult,
 ) -> Result<(), IngestError> {
     writer.write_all(XML_REPO_START.as_bytes())?;
-    write_escaped(writer, &collection.label)?;
+    write_xml_attr_escaped(writer, &collection.label)?;
     if let Some(ref revision) = collection.revision {
         writer.write_all(XML_REVISION_ATTR.as_bytes())?;
-        write_escaped(writer, revision)?;
+        write_xml_attr_escaped(writer, revision)?;
     }
     writer.write_all(XML_TAG_CLOSE.as_bytes())?;
     writer.write_all(XML_DIR_START.as_bytes())?;
@@ -118,7 +118,7 @@ pub(crate) fn render_xml<W: Write + ?Sized>(
     writer.write_all(XML_FILES_START.as_bytes())?;
     for file in collection.files.iter() {
         writer.write_all(XML_FILE_START.as_bytes())?;
-        write_escaped(writer, file.path)?;
+        write_xml_attr_escaped(writer, file.path)?;
         writer.write_all(XML_TAG_CLOSE.as_bytes())?;
         write_escaped(writer, file.content)?;
         let needs_nl = (!file.content.ends_with('\n')) as usize;
@@ -203,6 +203,17 @@ mod tests {
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "dir\\nname\\r&lt;test&gt;\\\\file"
+        );
+    }
+
+    #[test]
+    fn test_write_xml_attr_escaped_preserves_whitespace_char_refs() {
+        let input = "tab\tnewline\r\nquote\"amp&apos'<tag>";
+        let mut out = Vec::new();
+        write_xml_attr_escaped(&mut out, input).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "tab&#9;newline&#13;&#10;quote&quot;amp&amp;apos&apos;&lt;tag&gt;"
         );
     }
 }

@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Core Storage Separation**: Extracted memory arena buffer and hierarchical path sorting (`FileStorage`, `FileSpan`, `FileRecord`, `FileRecordIter`, `cmp_path`) from `src/core/model.rs` into a dedicated `src/core/storage.rs` module, keeping `model.rs` focused on domain configurations and collection results with idiomatic `IntoIterator` and zero heap allocations.
+- **Symlink Output Preservation**: Checked `symlink_metadata` in `resolve_output_target` to prevent canonicalizing existing leaf symlinks to target source files.
+- **Archive Path Sanitization**: Rejected embedded NUL bytes and leading `.` / `..` archive root prefixes in `normalize_tar_entry_path`.
+- **XML Attribute Whitespace Escaping**: Escaped `\t`, `\n`, and `\r` as character references (`&#9;`, `&#10;`, `&#13;`) in XML attributes (`write_xml_attr_escaped`) to prevent XML 1.0 §3.3.3 attribute normalization corruption.
+- **Hidden Non-UTF-8 Path Accounting**: Dropped non-UTF-8 paths containing hidden components in `local::walk_candidates` before candidate budget and skipped accounting.
+- **Visibility & Dead Code Demotion**: Removed unreachable `.env` branch in `policy::is_sensitive_file` and demoted single-file `pub(crate)` helpers to module-private across `policy`, `github_url`, `text`, `xml`, `selector`, `model`, and `github`.
 - **Boundary Normalization**: Replaced `strip_archive_root` with `normalize_tar_entry_path` in `src/core/archive.rs`, normalizing consecutive slashes, stripping `.` segments, and rejecting directory traversal (`..`) at the ingestion boundary.
 - **Policy Simplification**: Removed special-case exceptions for `.` and `..` in `policy::is_hidden_path`, relying on normalized path guarantees.
 - **Hierarchical Path Sorting**: Implemented component-wise path sorting (`cmp_path`) in `FileStorage::sort_by_path()`, keeping directory subtrees adjacent.
