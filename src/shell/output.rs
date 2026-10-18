@@ -155,12 +155,6 @@ impl AtomicFile {
         let file_name = target
             .file_name()
             .ok_or_else(|| IngestError::usage("output path has no filename"))?;
-        if target.is_dir() {
-            return Err(IngestError::Io(io::Error::new(
-                io::ErrorKind::IsADirectory,
-                "output path is a directory",
-            )));
-        }
         let file_name = file_name.to_string_lossy();
         let parent = target
             .parent()
@@ -340,12 +334,40 @@ mod tests {
     }
 
     #[test]
-    fn rejects_directory_target_immediately() -> Result<(), Box<dyn std::error::Error>> {
+    fn write_atomic_fails_and_cleans_up_for_directory_target()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("output_dir_test")?;
         let existing_dir = root.join("existing_subdir");
         fs::create_dir(&existing_dir)?;
 
         let result = write_atomic(&existing_dir, |_w| Ok(()));
+        assert!(
+            result.is_err(),
+            "write_atomic on directory target must fail"
+        );
+
+        let temp_count = fs::read_dir(&root)?
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".existing_subdir.")
+            })
+            .count();
+        assert_eq!(
+            temp_count, 0,
+            "temporary file must be unlinked on write_atomic failure"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_output_target_rejects_directory() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("output_dir_resolve_test")?;
+        let existing_dir = root.join("existing_subdir");
+        fs::create_dir(&existing_dir)?;
+
+        let result = resolve_output_target(&OutputTarget::File(existing_dir));
         match result {
             Err(IngestError::Io(err)) => {
                 assert_eq!(err.kind(), io::ErrorKind::IsADirectory);
