@@ -155,12 +155,6 @@ impl AtomicFile {
         let file_name = target
             .file_name()
             .ok_or_else(|| IngestError::usage("output path has no filename"))?;
-        if target.is_dir() {
-            return Err(IngestError::Io(io::Error::new(
-                io::ErrorKind::IsADirectory,
-                "output path is a directory",
-            )));
-        }
         let file_name = file_name.to_string_lossy();
         let parent = target
             .parent()

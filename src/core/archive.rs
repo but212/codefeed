@@ -46,6 +46,17 @@ pub(crate) fn normalize_tar_entry_path(
 
     let rel = &trimmed[slash_index + 1..];
 
+    if rel
+        .split(|&b| b == b'/')
+        .filter(|seg| !seg.is_empty() && *seg != b".")
+        .count()
+        > crate::core::policy::MAX_PATH_DEPTH
+    {
+        return Err(IngestError::invalid_metadata(
+            "Tar entry path exceeds maximum directory depth",
+        ));
+    }
+
     let filtered_segments = rel
         .split(|&b| b == b'/')
         .filter(|seg| !seg.is_empty() && *seg != b".");
@@ -153,6 +164,13 @@ mod tests {
         // Embedded NUL rejection
         assert!(normalize_tar_entry_path(b"repo-root/certs/privkey.key\0", &mut out).is_err());
         assert!(normalize_tar_entry_path(b"repo-root\0/src/main.rs", &mut out).is_err());
+
+        // Depth limit rejection
+        let normal_depth_path = format!("repo-root/{}/file.txt", vec!["d"; 255].join("/"));
+        assert!(normalize_tar_entry_path(normal_depth_path.as_bytes(), &mut out).is_ok());
+
+        let excessive_depth_path = format!("repo-root/{}/file.txt", vec!["d"; 256].join("/"));
+        assert!(normalize_tar_entry_path(excessive_depth_path.as_bytes(), &mut out).is_err());
 
         // Non-UTF8 handling
         assert_eq!(

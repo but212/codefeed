@@ -25,13 +25,6 @@ pub(crate) enum SkipReason {
     NonUtf8Path,
 }
 
-/// Outcome of processing an observed candidate file into the selector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RecordOutcome {
-    Recorded,
-    Skipped(SkipReason),
-}
-
 /// Linear proof token demonstrating a candidate slot was reserved in [`CandidateBudget`].
 #[derive(Debug)]
 #[must_use = "candidate slot must be recorded into the selector"]
@@ -149,60 +142,45 @@ impl Selector {
         &mut self,
         slot: CandidateSlot<'_>,
         observation: Observation<'b>,
-    ) -> Result<RecordOutcome, IngestError> {
+    ) -> Result<(), IngestError> {
         let content_res = match observation {
             Observation::Unavailable => ContentResult::Skipped(SkipReason::Unavailable),
             Observation::Bytes(bytes) => classify_content(bytes),
         };
 
         match content_res {
-            ContentResult::Valid(content) => {
-                self.add_file(slot.path, content)?;
-                Ok(RecordOutcome::Recorded)
-            }
-            ContentResult::Skipped(reason) => {
+            ContentResult::Valid(content) => self.add_file(slot.path, content),
+            ContentResult::Skipped(_reason) => {
                 self.skipped = self.skipped.saturating_add(1);
-                Ok(RecordOutcome::Skipped(reason))
+                Ok(())
             }
         }
     }
 
     /// Reserves a candidate slot and immediately records it as skipped without reading content.
-    fn record_skipped(
-        &mut self,
-        path: &str,
-        reason: SkipReason,
-    ) -> Result<RecordOutcome, IngestError> {
+    fn record_skipped(&mut self, path: &str, _reason: SkipReason) -> Result<(), IngestError> {
         let _slot = self.reserve_candidate(path)?;
         self.skipped = self.skipped.saturating_add(1);
-        Ok(RecordOutcome::Skipped(reason))
+        Ok(())
     }
 
     /// Handles entry classification state (`PathStatus`), reserving candidate slots,
     /// evaluating pre-I/O size hints lazily after slot reservation, and executing content reading only when valid.
-    ///
-    /// Returns `Ok(None)` if the entry is [`PathStatus::Ignored`].
     pub(crate) fn record_entry<'b, H, F>(
         &mut self,
         status: PathStatus,
         path: &str,
         size_hint: H,
         read: F,
-    ) -> Result<Option<RecordOutcome>, IngestError>
+    ) -> Result<(), IngestError>
     where
         H: FnOnce() -> Option<u64>,
         F: FnOnce(u64) -> Result<Observation<'b>, IngestError>,
     {
         match status {
-            PathStatus::Ignored => Ok(None),
-            PathStatus::NonUtf8Candidate => {
-                let outcome = self.record_skipped(path, SkipReason::NonUtf8Path)?;
-                Ok(Some(outcome))
-            }
-            PathStatus::Valid => {
-                let outcome = self.record_with(path, size_hint, read)?;
-                Ok(Some(outcome))
-            }
+            PathStatus::Ignored => Ok(()),
+            PathStatus::NonUtf8Candidate => self.record_skipped(path, SkipReason::NonUtf8Path),
+            PathStatus::Valid => self.record_with(path, size_hint, read),
         }
     }
 
@@ -218,7 +196,7 @@ impl Selector {
         path: &str,
         size_hint: H,
         read: F,
-    ) -> Result<RecordOutcome, IngestError>
+    ) -> Result<(), IngestError>
     where
         H: FnOnce() -> Option<u64>,
         F: FnOnce(u64) -> Result<Observation<'b>, IngestError>,
@@ -228,7 +206,7 @@ impl Selector {
             && hint > MAX_FILE_SIZE
         {
             self.skipped = self.skipped.saturating_add(1);
-            return Ok(RecordOutcome::Skipped(SkipReason::Oversized));
+            return Ok(());
         }
         let observation = read(MAX_FILE_SIZE)?;
         self.record_observation(slot, observation)
@@ -270,16 +248,12 @@ mod tests {
     use super::*;
     use crate::core::policy::MAX_FILE_SIZE;
 
-    fn feed_file(
-        selector: &mut Selector,
-        path: &str,
-        bytes: &[u8],
-    ) -> Result<RecordOutcome, IngestError> {
+    fn feed_file(selector: &mut Selector, path: &str, bytes: &[u8]) -> Result<(), IngestError> {
         let slot = selector.reserve_candidate(path)?;
         selector.record_observation(slot, Observation::Bytes(bytes))
     }
 
-    fn feed_skipped(selector: &mut Selector, path: &str) -> Result<RecordOutcome, IngestError> {
+    fn feed_skipped(selector: &mut Selector, path: &str) -> Result<(), IngestError> {
         selector.record_skipped(path, SkipReason::Unavailable)
     }
 
@@ -493,19 +467,19 @@ mod tests {
     }
 
     #[test]
-    fn recorded_outcome_on_success() {
+    fn record_observation_accumulates_file_on_success() {
         let mut selector = Selector::new();
-        let outcome = feed_file(&mut selector, "valid.txt", b"hello").unwrap();
-        assert_eq!(outcome, RecordOutcome::Recorded);
+        feed_file(&mut selector, "valid.txt", b"hello").unwrap();
+        let collection = selector.finish("test".into(), None);
+        assert_eq!(collection.files.len(), 1);
     }
 
     #[test]
     fn non_utf8_prefix_skipped_correctly() {
         let mut selector = Selector::new();
-        let outcome = selector
+        selector
             .record_skipped("dir/sub/", SkipReason::NonUtf8Path)
             .unwrap();
-        assert_eq!(outcome, RecordOutcome::Skipped(SkipReason::NonUtf8Path));
         let collection = selector.finish("test".into(), None);
         assert_eq!(collection.skipped, 1);
     }
@@ -514,7 +488,7 @@ mod tests {
     fn record_with_skips_io_when_size_hint_exceeds_limit() {
         let mut selector = Selector::new();
         let mut reader_called = false;
-        let outcome = selector
+        selector
             .record_with(
                 "big.bin",
                 || Some(MAX_FILE_SIZE + 1),
@@ -528,7 +502,6 @@ mod tests {
             !reader_called,
             "reader must not be called when size_hint > MAX_FILE_SIZE"
         );
-        assert_eq!(outcome, RecordOutcome::Skipped(SkipReason::Oversized));
         let collection = selector.finish("test".into(), None);
         assert_eq!(collection.skipped, 1);
     }

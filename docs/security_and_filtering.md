@@ -89,6 +89,7 @@ Any path containing a component starting with a leading dot (`.`) is considered 
 | Parameter (`policy.rs`) | Enforcement Mechanism | Failure Mode |
 | :--- | :--- | :--- |
 | `MAX_FILE_COUNT` | `CandidateBudget` slot check before reading content | `IngestError::CandidateLimitExceeded` with directory diagnostics |
+| `MAX_PATH_DEPTH` | Archive entry path nesting depth check in `normalize_tar_entry_path` | `IngestError::InvalidMetadata` |
 | `MAX_FILE_SIZE` | Pre-I/O `size_hint` evaluation and stream boundary read (`take(MAX_FILE_SIZE + 1)`) | Skipped; tallied in `skipped_files` report |
 | `MAX_OUTPUT_SIZE` | Early arena total check (`Selector::add_file`) and `BoundedEstimatingWriter` byte counter | `IngestError::OutputTooLarge` with Top-5 largest files |
 | `ARCHIVE_MAX_SECS` | Whole-archive stream transfer timeout | `IngestError::Http` timeout |
@@ -116,6 +117,9 @@ Local directory traversal in `src/shell/local.rs` adheres to the following invar
    - Digest files are written to a temporary sibling file in the resolved parent directory.
    - Flushed and synced to disk before being atomically renamed to the destination path.
    - Temporary files are immediately unlinked on `Drop` if an error occurs or the process panics.
+4. **Directory Traversal Fail-Fast:**
+   - Unreadable individual files are recorded as unavailable and tallied in `skipped_files`.
+   - Unreadable directories during local traversal fail fast with explicit path context to prevent silent emission of incomplete digests.
 
 ---
 

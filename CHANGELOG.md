@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Unified candidate entry recording into `record_observation`, standardizing local filesystem walk and archive entry ingestion while preserving lazy file body evaluation.
   - Streamlined collection loops to delegate candidate slot reservation and deferred reading, preventing unnecessary I/O when candidate budget overflows.
   - Preserved valid directory prefixes for non-UTF-8 path candidates, routing them directly through candidate accounting as skipped entries.
-  - Guaranteed deterministic path alignment across tree, header, and body outputs via stable sorting and in-place last-wins deduplication in `FileStorage`.
+  - Guaranteed deterministic path alignment across tree, header, and body outputs via stable sorting in `FileStorage`.
 - **Render Engine**:
   - Simplified digest rendering signatures (`render_text`, `render_xml`, `DigestFormat::render`) to standard `std::io::Result<()>`, routing size cap checks strictly through `written > MAX_OUTPUT_SIZE`.
   - Optimized directory hierarchy grouping in ASCII tree rendering using slice matching, eliminating redundant path scans.

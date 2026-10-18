@@ -36,7 +36,13 @@ pub(super) fn collect(
     let mut scratch = Vec::with_capacity(32 * 1024);
 
     for entry in walker {
-        let entry = entry.map_err(|err| IngestError::Io(io::Error::other(err)))?;
+        let entry = entry.map_err(|err| {
+            let message = match &err {
+                ignore::Error::WithPath { path, err } => format!("{}: {err}", path.display()),
+                _ => err.to_string(),
+            };
+            IngestError::Io(io::Error::other(message))
+        })?;
         let entry_path = entry.path();
         if entry_path == canonical_root
             || !entry.file_type().is_some_and(|kind| kind.is_file())
@@ -254,6 +260,32 @@ mod tests {
         assert_eq!(report.included_files, 1);
         assert!(!digest.contains("previous output"));
         assert!(digest.contains("FILE: source.txt"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_directory_fails_fast_with_path_context() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("unreadable_dir")?;
+        let locked = root.join("locked");
+        fs::create_dir(&locked)?;
+        fs::write(locked.join("file.txt"), "content")?;
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o0000))?;
+
+        let res = collect(&root, None);
+
+        // Restore permissions so TempDirGuard can clean up
+        let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o0755));
+
+        let err = res.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("locked"),
+            "error message should contain path context 'locked', got: {msg}"
+        );
         Ok(())
     }
 
