@@ -8,8 +8,8 @@ use ignore::WalkBuilder;
 
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
-use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path_segments};
-use crate::core::selector::Selector;
+use crate::core::policy::{PathStatus, classify_path_segments};
+use crate::core::selector::{Observation, Selector};
 
 /// Collects files from a local directory root, excluding the resolved output file if located inside it.
 pub(super) fn collect(
@@ -55,9 +55,9 @@ pub(super) fn collect(
                 selector.record_skipped(&path_scratch)?;
             }
             PathStatus::Valid => {
-                selector.record_with(&path_scratch, || {
+                selector.record_with(&path_scratch, |limit| {
                     scratch.clear();
-                    read_local_file_into(entry_path, &mut scratch)
+                    read_local_file_into(entry_path, limit, &mut scratch)
                 })?;
             }
         }
@@ -73,37 +73,39 @@ thread_local! {
 
 fn read_local_file_into<'b>(
     path: &Path,
+    limit: u64,
     buf: &'b mut Vec<u8>,
-) -> Result<Option<&'b [u8]>, IngestError> {
+) -> Result<Observation<'b>, IngestError> {
     #[cfg(test)]
     BODY_READ_COUNT.with(|c| c.set(c.get() + 1));
 
     let meta = match fs::symlink_metadata(path) {
         Ok(m) => m,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Observation::Unavailable),
         Err(err) => return Err(IngestError::Io(err)),
     };
-    if meta.is_symlink() || !meta.is_file() || meta.len() > MAX_FILE_SIZE {
-        return Ok(None);
+    if meta.is_symlink() || !meta.is_file() {
+        return Ok(Observation::Unavailable);
     }
     let file = match fs::File::open(path) {
         Ok(f) => f,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Observation::Unavailable),
         Err(err) => return Err(IngestError::Io(err)),
     };
-    read_bounded_content_into(file, buf).map_err(Into::into)
+    read_bounded_content_into(file, limit, buf).map_err(Into::into)
 }
 
-fn read_bounded_content_into(file: fs::File, buf: &mut Vec<u8>) -> io::Result<Option<&[u8]>> {
+fn read_bounded_content_into<'b>(
+    file: fs::File,
+    limit: u64,
+    buf: &'b mut Vec<u8>,
+) -> io::Result<Observation<'b>> {
     if !file.metadata()?.is_file() {
-        return Ok(None);
+        return Ok(Observation::Unavailable);
     }
-    let mut handle = file.take(MAX_FILE_SIZE.saturating_add(1));
+    let mut handle = file.take(limit.saturating_add(1));
     handle.read_to_end(buf)?;
-    if buf.len() as u64 > MAX_FILE_SIZE {
-        return Ok(None);
-    }
-    Ok(Some(buf.as_slice()))
+    Ok(Observation::Bytes(buf.as_slice()))
 }
 
 fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
@@ -136,7 +138,7 @@ fn local_label(root: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::temp_dir;
+    use super::super::testing::temp_dir;
     use super::*;
     use crate::core::model::{DigestFormat, OutputTarget, RunConfig, Source};
     use crate::core::storage::FileRecord;
@@ -144,6 +146,8 @@ mod tests {
 
     #[test]
     fn read_local_file_enforces_size_boundaries() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::core::policy::MAX_FILE_SIZE;
+
         let root = temp_dir("size_boundaries")?;
         let exact_path = root.join("exact.txt");
         let too_large_path = root.join("large.txt");
@@ -151,25 +155,37 @@ mod tests {
         fs::write(&too_large_path, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
 
         let mut buf = Vec::new();
-        assert!(read_local_file_into(&exact_path, &mut buf)?.is_some());
+        assert!(matches!(
+            read_local_file_into(&exact_path, MAX_FILE_SIZE, &mut buf)?,
+            Observation::Bytes(b) if b.len() == MAX_FILE_SIZE as usize
+        ));
         buf.clear();
-        assert!(read_local_file_into(&too_large_path, &mut buf)?.is_none());
+        assert!(matches!(
+            read_local_file_into(&too_large_path, MAX_FILE_SIZE, &mut buf)?,
+            Observation::Bytes(b) if b.len() == MAX_FILE_SIZE as usize + 1
+        ));
         Ok(())
     }
 
     #[test]
     fn handles_unlinked_file_as_missing() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::core::policy::MAX_FILE_SIZE;
+
         let root = temp_dir("missing_file")?;
         let path = root.join("nonexistent.txt");
 
         let mut buf = Vec::new();
-        assert!(read_local_file_into(&path, &mut buf)?.is_none());
+        assert!(matches!(
+            read_local_file_into(&path, MAX_FILE_SIZE, &mut buf)?,
+            Observation::Unavailable
+        ));
         Ok(())
     }
 
     #[cfg(unix)]
     #[test]
     fn rejects_symlink_file() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::core::policy::MAX_FILE_SIZE;
         use std::os::unix::fs::symlink;
 
         let root = temp_dir("symlink_test")?;
@@ -179,13 +195,17 @@ mod tests {
         symlink(&target, &link)?;
 
         let mut buf = Vec::new();
-        assert!(read_local_file_into(&link, &mut buf)?.is_none());
+        assert!(matches!(
+            read_local_file_into(&link, MAX_FILE_SIZE, &mut buf)?,
+            Observation::Unavailable
+        ));
         Ok(())
     }
 
     #[cfg(windows)]
     #[test]
     fn rejects_windows_symlink_file() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::core::policy::MAX_FILE_SIZE;
         use std::os::windows::fs::symlink_file;
 
         let root = temp_dir("win_symlink_test")?;
@@ -195,7 +215,10 @@ mod tests {
 
         if symlink_file(&target, &link).is_ok() {
             let mut buf = Vec::new();
-            assert!(read_local_file_into(&link, &mut buf)?.is_none());
+            assert!(matches!(
+                read_local_file_into(&link, MAX_FILE_SIZE, &mut buf)?,
+                Observation::Unavailable
+            ));
             let _ = fs::remove_file(&link);
         }
         Ok(())
@@ -241,6 +264,27 @@ mod tests {
         assert_eq!(report.included_files, 1);
         assert!(!digest.contains("previous output"));
         assert!(digest.contains("FILE: source.txt"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accounting_rules_non_regular_files_and_unlinked_files()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("accounting_non_regular")?;
+        let target = root.join("regular.txt");
+        let link = root.join("symlink.txt");
+
+        fs::write(&target, "hello")?;
+        symlink(&target, &link)?;
+
+        // Symlink is filtered out before candidate reservation and should not increase skipped
+        let res = collect(&root, None)?;
+        assert_eq!(res.files.len(), 1);
+        assert_eq!(res.skipped, 0);
+
         Ok(())
     }
 

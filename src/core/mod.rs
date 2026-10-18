@@ -6,6 +6,7 @@
 pub(crate) mod archive;
 pub(crate) mod cli;
 pub(crate) mod error;
+pub(crate) mod github;
 pub(crate) mod model;
 pub(crate) mod policy;
 pub(crate) mod render;

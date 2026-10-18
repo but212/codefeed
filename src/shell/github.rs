@@ -12,55 +12,12 @@ use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::error::IngestError;
-use crate::core::model::CollectionResult;
-use crate::core::policy::{
-    ARCHIVE_MAX_SECS, MAX_FILE_SIZE, MAX_RETRIES, PathStatus, is_retryable_status, retry_delay,
+use crate::core::github::{
+    RequestOutcome, RetryDecision, decide_retry, is_github_api_origin, tarball_url,
 };
-use crate::core::selector::Selector;
-
-const GITHUB_API_BASE_URL: &str = "https://api.github.com";
-
-/// Exact-origin match: returns `true` if `url == GITHUB_API_BASE_URL` or starts with `GITHUB_API_BASE_URL + "/"`.
-fn is_github_api_origin(url: &str) -> bool {
-    url.strip_prefix(GITHUB_API_BASE_URL)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-}
-
-/// Constructs the tarball download URL for the given repository and optional Git reference.
-fn tarball_url(owner: &str, repo: &str, reference: Option<&str>) -> String {
-    let mut url = String::from(GITHUB_API_BASE_URL);
-    for segment in ["repos", owner, repo, "tarball"] {
-        push_encoded_segment(&mut url, segment);
-    }
-    if let Some(reference) = reference {
-        push_encoded_segment(&mut url, reference);
-    }
-    url
-}
-
-#[inline(always)]
-const fn is_unreserved(b: u8) -> bool {
-    ((b | 32).wrapping_sub(b'a') < 26)
-        | (b.wrapping_sub(b'0') < 10)
-        | (b == b'-')
-        | (b == b'.')
-        | (b == b'_')
-        | (b == b'~')
-}
-
-fn push_encoded_segment(url: &mut String, segment: &str) {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    url.push('/');
-    for &b in segment.as_bytes() {
-        if is_unreserved(b) {
-            url.push(b as char);
-        } else {
-            url.push('%');
-            url.push(HEX[(b >> 4) as usize] as char);
-            url.push(HEX[(b & 0xF) as usize] as char);
-        }
-    }
-}
+use crate::core::model::CollectionResult;
+use crate::core::policy::{ARCHIVE_MAX_SECS, MAX_RETRIES, PathStatus};
+use crate::core::selector::{Observation, Selector};
 
 const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 const GITHUB_TIMEOUT_SECS: u64 = 30;
@@ -125,23 +82,17 @@ impl GithubClient {
                 request = request.header("X-Github-Api-Version", "2022-11-28");
             }
 
-            let retry = |attempt: &mut usize, reason: &dyn std::fmt::Display| {
-                *attempt += 1;
-                let delay = retry_delay(*attempt - 1);
-                eprintln!(
-                    "warning: {reason} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
-                );
-                std::thread::sleep(delay);
-            };
-
             let response = match request.call() {
                 Ok(resp) => resp,
                 Err(error) => {
-                    if is_retryable_transport_error(&error) && attempt + 1 < MAX_RETRIES {
-                        retry(
-                            &mut attempt,
-                            &format_args!("GitHub transport error: {error}"),
+                    let outcome =
+                        RequestOutcome::TransportError(is_retryable_transport_error(&error));
+                    if let RetryDecision::Retry(delay) = decide_retry(attempt, &outcome) {
+                        attempt += 1;
+                        eprintln!(
+                            "warning: GitHub transport error: {error} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
                         );
+                        std::thread::sleep(delay);
                         continue;
                     }
                     return Err(IngestError::http(error.to_string()));
@@ -149,8 +100,13 @@ impl GithubClient {
             };
 
             let status = response.status();
-            if is_retryable_status(status.as_u16()) && attempt + 1 < MAX_RETRIES {
-                retry(&mut attempt, &format_args!("GitHub HTTP status {status}"));
+            let outcome = RequestOutcome::HttpStatus(status.as_u16());
+            if let RetryDecision::Retry(delay) = decide_retry(attempt, &outcome) {
+                attempt += 1;
+                eprintln!(
+                    "warning: GitHub HTTP status {status} on attempt {attempt}/{MAX_RETRIES} for {url}; retrying in {delay:?}"
+                );
+                std::thread::sleep(delay);
                 continue;
             }
 
@@ -279,29 +235,24 @@ fn process_tar_entry<R: Read>(
     let rel_path = path_scratch.as_str();
 
     // 4. Pre-I/O candidate reservation before reading entry body
-    selector.record_with(rel_path, || read_tar_entry_into(entry, content_scratch))?;
+    selector.record_with(rel_path, |limit| {
+        read_tar_entry_into(entry, limit, content_scratch)
+    })?;
 
     Ok(None)
 }
 
 fn read_tar_entry_into<'b, R: Read>(
     entry: &mut tar::Entry<R>,
+    limit: u64,
     buf: &'b mut Vec<u8>,
-) -> Result<Option<&'b [u8]>, IngestError> {
-    let header_size = entry.header().size().unwrap_or(0);
-    if header_size > MAX_FILE_SIZE {
-        return Ok(None);
-    }
-
+) -> Result<Observation<'b>, IngestError> {
     entry
-        .take(MAX_FILE_SIZE.saturating_add(1))
+        .take(limit.saturating_add(1))
         .read_to_end(buf)
         .map_err(IngestError::Io)?;
 
-    if buf.len() as u64 > MAX_FILE_SIZE {
-        return Ok(None);
-    }
-    Ok(Some(buf.as_slice()))
+    Ok(Observation::Bytes(buf.as_slice()))
 }
 
 #[cfg(test)]
@@ -608,6 +559,8 @@ mod tests {
 
     #[test]
     fn skips_too_large_files() {
+        use crate::core::policy::MAX_FILE_SIZE;
+
         let mock_data = create_mock_tarball(&[
             ("repo-root/small.txt", b"small", EntryType::Regular),
             (
@@ -720,63 +673,5 @@ mod tests {
             Some("c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950")
         );
         assert_eq!(result.files.len(), 1);
-    }
-
-    fn encode_segment(segment: &str) -> String {
-        let mut out = String::new();
-        push_encoded_segment(&mut out, segment);
-        out.strip_prefix('/').unwrap().to_string()
-    }
-
-    #[test]
-    fn percent_encodes_url_path_segments() {
-        assert_eq!(encode_segment("AZaz09-._~"), "AZaz09-._~");
-        assert_eq!(encode_segment("feature/x"), "feature%2Fx");
-        assert_eq!(encode_segment("a b"), "a%20b");
-        assert_eq!(encode_segment("100%"), "100%25");
-        assert_eq!(encode_segment("a#b?c"), "a%23b%3Fc");
-        assert_eq!(encode_segment("café"), "caf%C3%A9");
-    }
-
-    #[test]
-    fn origin_classification_identifies_github_api_correctly() {
-        let cases = [
-            ("https://api.github.com/repos/owner/repo", true),
-            ("https://api.github.com", true),
-            (
-                "https://raw.githubusercontent.com/owner/repo/main/lib.rs",
-                false,
-            ),
-            ("https://raw.githubusercontent.com", false),
-            ("https://api.github.com.evil.example/x", false),
-            ("https://api.github.com@evil.example/x", false),
-            ("https://raw.githubusercontent.com.evil.example/x", false),
-            ("https://raw.githubusercontent.com@evil.example/x", false),
-            ("http://127.0.0.1:8080/repos/owner/repo", false),
-            ("https://evil.example/", false),
-        ];
-        for (url, expected) in cases {
-            assert_eq!(
-                is_github_api_origin(url),
-                expected,
-                "unexpected auth scope for: {url}"
-            );
-        }
-    }
-
-    #[test]
-    fn builds_tarball_urls() {
-        assert_eq!(
-            tarball_url("rust-lang", "cargo", None),
-            "https://api.github.com/repos/rust-lang/cargo/tarball"
-        );
-        assert_eq!(
-            tarball_url("rust-lang", "cargo", Some("main")),
-            "https://api.github.com/repos/rust-lang/cargo/tarball/main"
-        );
-        assert_eq!(
-            tarball_url("owner", "repo", Some("feature/test")),
-            "https://api.github.com/repos/owner/repo/tarball/feature%2Ftest"
-        );
     }
 }

@@ -11,6 +11,28 @@ use crate::core::render::render_to_writer;
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+pub(super) fn write_stdout_line_to<W: io::Write>(out: &mut W, line: &str) -> io::Result<()> {
+    match writeln!(out, "{line}") {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+pub(super) fn write_stdout_line(line: &str) {
+    let stdout = io::stdout();
+    let mut lock = stdout.lock();
+    let _ = write_stdout_line_to(&mut lock, line);
+}
+
+/// Returns the elapsed duration since the Unix epoch in nanoseconds.
+pub(super) fn current_epoch_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
 /// Resolves an [`OutputTarget`] into an optional canonical file destination.
 ///
 /// Returns `None` when writing directly to [`OutputTarget::Stdout`].
@@ -118,7 +140,7 @@ impl AtomicFile {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let timestamp = super::current_epoch_nanos();
+        let timestamp = current_epoch_nanos();
         let (temporary, file) = loop {
             let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
             let temporary = parent.join(format!(".{file_name}.{timestamp}.{counter}.tmp"));
@@ -180,8 +202,23 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::super::temp_dir;
+    use super::super::testing::temp_dir;
     use super::*;
+
+    #[test]
+    fn write_stdout_line_ignores_broken_pipe() {
+        struct BrokenPipeWriter;
+        impl io::Write for BrokenPipeWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+            }
+        }
+        let mut writer = BrokenPipeWriter;
+        assert!(write_stdout_line_to(&mut writer, "hello").is_ok());
+    }
 
     #[test]
     fn stdout_overflow_writes_nothing_to_stream() -> Result<(), Box<dyn std::error::Error>> {
@@ -196,7 +233,7 @@ mod tests {
         let collection = CollectionResult {
             label: "overflow-repo".into(),
             revision: None,
-            files: storage,
+            files: crate::core::storage::SortedFiles::new(storage),
             skipped: 0,
         };
 

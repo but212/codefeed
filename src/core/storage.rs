@@ -37,6 +37,27 @@ pub(crate) struct FileRecord<'a> {
     pub(crate) content: &'a str,
 }
 
+/// Wrapper guaranteeing that [`FileStorage`] is sorted lexicographically by path.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SortedFiles(FileStorage);
+
+impl SortedFiles {
+    #[inline]
+    pub(crate) fn new(mut storage: FileStorage) -> Self {
+        storage.sort_by_path();
+        Self(storage)
+    }
+}
+
+impl std::ops::Deref for SortedFiles {
+    type Target = FileStorage;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// Continuous arena storage for file paths and contents.
 /// Eliminates per-file heap allocations and preserves cache locality.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -239,7 +260,6 @@ mod tests {
         let collected: Vec<FileRecord<'_>> = storage.iter().collect();
         assert_eq!(collected, vec![rec1, rec2]);
 
-
         // Arena contents verification
         assert_eq!(storage.path_arena, "path/to/first.rssecond.txt");
         assert_eq!(storage.content_arena, "pub fn first() {}second content\n");
@@ -273,5 +293,4 @@ mod tests {
         let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
         assert_eq!(paths, vec!["src/a.rs", "src-test/b.rs"]);
     }
-
 }
