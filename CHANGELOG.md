@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Atomic File Delivery**: Replaced temporary file handling in `src/shell/output.rs` with `AtomicFile` and an inner `TempPathGuard` RAII guard, guaranteeing cleanup on unexpected I/O errors or panic unwinding.
+- **Local Walk Error Kind**: Preserved the inner `std::io::ErrorKind` when formatting traversal errors in `src/shell/local.rs` rather than wrapping in `io::ErrorKind::Other`.
 
 ### Internal
 

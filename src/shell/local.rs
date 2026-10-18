@@ -36,8 +36,7 @@ pub(super) fn collect(
     let mut scratch = Vec::with_capacity(32 * 1024);
 
     for entry in walker {
-        let entry =
-            entry.map_err(|err| IngestError::Io(io::Error::other(format_ignore_error(&err))))?;
+        let entry = entry.map_err(|err| IngestError::Io(format_ignore_error(&err)))?;
         let entry_path = entry.path();
         if entry_path == canonical_root
             || !entry.file_type().is_some_and(|kind| kind.is_file())
@@ -119,7 +118,7 @@ fn classify_local_path(relative: &Path, scratch: &mut String) -> PathStatus {
     classify_path_segments(segments, scratch)
 }
 
-fn format_ignore_error(err: &ignore::Error) -> String {
+fn format_ignore_error(err: &ignore::Error) -> io::Error {
     let mut current = err;
     let mut path = None;
     loop {
@@ -139,10 +138,13 @@ fn format_ignore_error(err: &ignore::Error) -> String {
             _ => break,
         }
     }
-    match path {
-        Some(p) => format!("{}: {current}", p.display()),
-        None => current.to_string(),
-    }
+    let (kind, msg) = match (path, current) {
+        (Some(p), ignore::Error::Io(inner)) => (inner.kind(), format!("{}: {inner}", p.display())),
+        (None, ignore::Error::Io(inner)) => (inner.kind(), inner.to_string()),
+        (Some(p), _) => (io::ErrorKind::Other, format!("{}: {current}", p.display())),
+        (None, _) => (io::ErrorKind::Other, current.to_string()),
+    };
+    io::Error::new(kind, msg)
 }
 
 fn local_label(root: &Path) -> String {
@@ -307,6 +309,10 @@ mod tests {
         let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o0755));
 
         let err = res.unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Io(io_err) if io_err.kind() == std::io::ErrorKind::PermissionDenied),
+            "expected IngestError::Io with ErrorKind::PermissionDenied, got: {err:?}"
+        );
         let msg = err.to_string();
         assert!(
             msg.contains("locked"),
@@ -459,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_walk_preserves_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
+    fn walk_preserves_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("parallel_order")?;
         for dir in ["b_dir", "a_dir", "c_dir"] {
             fs::create_dir_all(root.join(dir))?;
