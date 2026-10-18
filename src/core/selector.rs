@@ -15,16 +15,6 @@ pub(crate) enum Observation<'b> {
     Bytes(&'b [u8]),
 }
 
-/// Reason for a candidate file being skipped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SkipReason {
-    Unavailable,
-    Oversized,
-    Binary,
-    NonUtf8Content,
-    NonUtf8Path,
-}
-
 /// Linear proof token demonstrating a candidate slot was reserved in [`CandidateBudget`].
 #[derive(Debug)]
 #[must_use = "candidate slot must be recorded into the selector"]
@@ -34,21 +24,21 @@ pub(crate) struct CandidateSlot<'a> {
 
 enum ContentResult<'a> {
     Valid(&'a str),
-    Skipped(SkipReason),
+    Skipped,
 }
 
 /// UTF-8 text predicate: NUL-free bytes only, returning classified result.
 #[inline]
 fn classify_content(bytes: &[u8]) -> ContentResult<'_> {
     if bytes.len() as u64 > MAX_FILE_SIZE {
-        return ContentResult::Skipped(SkipReason::Oversized);
+        return ContentResult::Skipped;
     }
     if bytes.contains(&0) {
-        return ContentResult::Skipped(SkipReason::Binary);
+        return ContentResult::Skipped;
     }
     match std::str::from_utf8(bytes) {
         Ok(s) => ContentResult::Valid(s),
-        Err(_) => ContentResult::Skipped(SkipReason::NonUtf8Content),
+        Err(_) => ContentResult::Skipped,
     }
 }
 
@@ -144,13 +134,13 @@ impl Selector {
         observation: Observation<'b>,
     ) -> Result<(), IngestError> {
         let content_res = match observation {
-            Observation::Unavailable => ContentResult::Skipped(SkipReason::Unavailable),
+            Observation::Unavailable => ContentResult::Skipped,
             Observation::Bytes(bytes) => classify_content(bytes),
         };
 
         match content_res {
             ContentResult::Valid(content) => self.add_file(slot.path, content),
-            ContentResult::Skipped(_reason) => {
+            ContentResult::Skipped => {
                 self.skipped = self.skipped.saturating_add(1);
                 Ok(())
             }
@@ -158,7 +148,7 @@ impl Selector {
     }
 
     /// Reserves a candidate slot and immediately records it as skipped without reading content.
-    fn record_skipped(&mut self, path: &str, _reason: SkipReason) -> Result<(), IngestError> {
+    fn record_skipped(&mut self, path: &str) -> Result<(), IngestError> {
         let _slot = self.reserve_candidate(path)?;
         self.skipped = self.skipped.saturating_add(1);
         Ok(())
@@ -179,7 +169,7 @@ impl Selector {
     {
         match status {
             PathStatus::Ignored => Ok(()),
-            PathStatus::NonUtf8Candidate => self.record_skipped(path, SkipReason::NonUtf8Path),
+            PathStatus::NonUtf8Candidate => self.record_skipped(path),
             PathStatus::Valid => self.record_with(path, size_hint, read),
         }
     }
@@ -254,7 +244,7 @@ mod tests {
     }
 
     fn feed_skipped(selector: &mut Selector, path: &str) -> Result<(), IngestError> {
-        selector.record_skipped(path, SkipReason::Unavailable)
+        selector.record_skipped(path)
     }
 
     #[test]
@@ -311,16 +301,13 @@ mod tests {
     fn classify_content_detects_binary_nul_anywhere() {
         let mut bin = vec![b'a'; 1024];
         bin[12] = 0;
-        assert!(matches!(
-            classify_content(&bin),
-            ContentResult::Skipped(SkipReason::Binary)
-        ));
+        assert!(matches!(classify_content(&bin), ContentResult::Skipped));
 
         let mut bin_tail = vec![b'b'; 5000];
         bin_tail[4500] = 0;
         assert!(matches!(
             classify_content(&bin_tail),
-            ContentResult::Skipped(SkipReason::Binary)
+            ContentResult::Skipped
         ));
 
         let mut bytes = vec![b'a'; 4095];
@@ -332,7 +319,7 @@ mod tests {
         bytes_with_nul.extend_from_slice("€\0tail\n".as_bytes());
         assert!(matches!(
             classify_content(&bytes_with_nul),
-            ContentResult::Skipped(SkipReason::Binary)
+            ContentResult::Skipped
         ));
     }
 
@@ -458,9 +445,7 @@ mod tests {
     #[test]
     fn record_skipped_records_slot_and_increments_skipped_count() {
         let mut selector = Selector::new();
-        selector
-            .record_skipped("skipped.bin", SkipReason::Unavailable)
-            .unwrap();
+        selector.record_skipped("skipped.bin").unwrap();
         let res = selector.finish("test".to_string(), None);
         assert_eq!(res.files.len(), 0);
         assert_eq!(res.skipped, 1);
@@ -477,9 +462,7 @@ mod tests {
     #[test]
     fn non_utf8_prefix_skipped_correctly() {
         let mut selector = Selector::new();
-        selector
-            .record_skipped("dir/sub/", SkipReason::NonUtf8Path)
-            .unwrap();
+        selector.record_skipped("dir/sub/").unwrap();
         let collection = selector.finish("test".into(), None);
         assert_eq!(collection.skipped, 1);
     }
@@ -528,9 +511,7 @@ mod tests {
         let mut overflow_selector = Selector::new();
         for i in 0..MAX_FILE_COUNT {
             let path = format!("file_{i}.txt");
-            overflow_selector
-                .record_skipped(&path, SkipReason::Unavailable)
-                .unwrap();
+            overflow_selector.record_skipped(&path).unwrap();
         }
         let mut overflow_reader_called = false;
         let err = overflow_selector.record_with(

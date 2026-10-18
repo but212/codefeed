@@ -36,13 +36,8 @@ pub(super) fn collect(
     let mut scratch = Vec::with_capacity(32 * 1024);
 
     for entry in walker {
-        let entry = entry.map_err(|err| {
-            let message = match &err {
-                ignore::Error::WithPath { path, err } => format!("{}: {err}", path.display()),
-                _ => err.to_string(),
-            };
-            IngestError::Io(io::Error::other(message))
-        })?;
+        let entry =
+            entry.map_err(|err| IngestError::Io(io::Error::other(format_ignore_error(&err))))?;
         let entry_path = entry.path();
         if entry_path == canonical_root
             || !entry.file_type().is_some_and(|kind| kind.is_file())
@@ -122,6 +117,32 @@ fn classify_local_path(relative: &Path, scratch: &mut String) -> PathStatus {
         .components()
         .map(|c| c.as_os_str().as_encoded_bytes());
     classify_path_segments(segments, scratch)
+}
+
+fn format_ignore_error(err: &ignore::Error) -> String {
+    let mut current = err;
+    let mut path = None;
+    loop {
+        match current {
+            ignore::Error::WithPath {
+                path: p,
+                err: inner,
+            } => {
+                if path.is_none() {
+                    path = Some(p.as_path());
+                }
+                current = inner;
+            }
+            ignore::Error::WithDepth { err: inner, .. } => {
+                current = inner;
+            }
+            _ => break,
+        }
+    }
+    match path {
+        Some(p) => format!("{}: {current}", p.display()),
+        None => current.to_string(),
+    }
 }
 
 fn local_label(root: &Path) -> String {
@@ -274,6 +295,11 @@ mod tests {
         fs::create_dir(&locked)?;
         fs::write(locked.join("file.txt"), "content")?;
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o0000))?;
+
+        if fs::read_dir(&locked).is_ok() {
+            let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o0755));
+            return Ok(());
+        }
 
         let res = collect(&root, None);
 

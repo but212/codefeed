@@ -12,13 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Policy & Limits**:
-  - Centralized operational constants and limits (`MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS`, `GITHUB_TIMEOUT_SECS`) into `src/core/policy.rs` as single source of truth.
+  - Centralized operational constants and limits (`MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS`, `GITHUB_TIMEOUT_SECS`, `MAX_PATH_DEPTH`) into `src/core/policy.rs` as single source of truth.
   - Renamed `MAX_RETRIES` to `MAX_ATTEMPTS` to accurately reflect total attempt budget.
+  - Added `MAX_PATH_DEPTH` limit (256 directory levels) enforced during tar archive normalization for valid candidate paths.
 - **Candidate Pipeline & Ingestion**:
   - Unified candidate entry recording into `record_observation`, standardizing local filesystem walk and archive entry ingestion while preserving lazy file body evaluation.
   - Streamlined collection loops to delegate candidate slot reservation and deferred reading, preventing unnecessary I/O when candidate budget overflows.
   - Preserved valid directory prefixes for non-UTF-8 path candidates, routing them directly through candidate accounting as skipped entries.
   - Guaranteed deterministic path alignment across tree, header, and body outputs via stable sorting in `FileStorage`.
+  - Enforced `GitRef` validation rejecting `.` and `..` segment references.
+  - Added explicit directory path context to local traversal I/O error diagnostics.
 - **Render Engine**:
   - Simplified digest rendering signatures (`render_text`, `render_xml`, `DigestFormat::render`) to standard `std::io::Result<()>`, routing size cap checks strictly through `written > MAX_OUTPUT_SIZE`.
   - Optimized directory hierarchy grouping in ASCII tree rendering using slice matching, eliminating redundant path scans.
