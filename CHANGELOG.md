@@ -9,14 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pre-I/O Candidate Token**: Added [`CandidateSlot`] (`src/core/selector.rs`) linear proof token demonstrating candidate budget reservation prior to content acquisition.
+- **Path Classification Status & Classifier**: Added [`PathStatus`] and pure domain path classifier [`classify_path`] (`src/core/policy.rs`) unifying hidden segment checks, noise files, and sensitive pattern filtering into a single classifier.
 - **GitRef Domain Type**: Added [`GitRef`] enforcing non-empty, non-whitespace Git revision invariants with zero-copy `&str` access.
 - **Validated Source Constructor**: Added [`Source::github`] validating repository owner/name characters, non-emptiness, and traversal segments.
 - **CLI Dispatch Entry Point**: Added `codefeed::run_cli` (`src/shell/mod.rs`) encapsulating CLI parsing, help output, ingestion, and stdio reporting.
 - **Compiler Visibility & Doc Enforcement**: Added `#![warn(unreachable_pub)]` and `#![warn(missing_docs)]` to `src/lib.rs`; documented all re-exported public API items with doctests and error contracts.
 - **Documentation Conventions**: Added Section 7 (`Documentation & Comments`) in `docs/coding_convention.md` defining Rustdoc standards (RFC 1574, `C-CRATE-DOC`, `C-EXAMPLE`, `C-FAILURE`, `C-LINK`, `C-QUESTION-MARK`), section headers (`# Errors`, `# Panics`, `# Safety`, `# Examples`), visibility depth, and "why, not what" comment rules.
 
+### Removed
+
+- **Legacy Test-Only Core APIs**: Completely removed `CandidateInput` and `Selector::feed` from `src/core/selector.rs`, migrating all unit tests to the production `reserve_candidate` and `record_file`/`record_skipped` API; removed deprecated `is_ignored_path` and `is_hidden_path` from `src/core/policy.rs`.
+
 ### Changed
 
+- **Pre-I/O Candidate Budget Reservation**: Enforced `Selector::reserve_candidate` before reading local file bodies or archive entry bytes in `src/shell/local.rs` and `src/shell/github.rs`, ensuring candidate budget overflow aborts immediately with 0 bytes read for the 10,001st candidate.
+- **Single-Pass Path Normalization & Policy Filtering**: Integrated hidden-segment, noise, and sensitive credentials filtering (`is_ignored_filename`) into `archive::normalize_tar_entry_path` and `local::classify_local_path`, eliminating secondary `is_ignored_path` string re-scans while strictly maintaining tar traversal invariants.
+- **Monotonic Byte-Offset Tree Rendering**: Replaced depth-indexed `path.split('/').nth(depth)` re-traversal in `render::render_level` with monotonic byte-offset slicing (`component_at_offset`), eliminating redundant prefix scans during ASCII tree generation.
 - **CandidateInput Model Simplification & LocalFileRead Elimination**: Eliminated redundant `CandidateInput::TooLarge` in favor of `CandidateInput::Skipped { path: Some(...) }`; replaced the intermediate `LocalFileRead` enum in `src/shell/local.rs` with `Option<&[u8]>`.
 - **Single-Pass Local Collection & PathArena Removal**: Replaced the 2-pass local filesystem traversal in `src/shell/local.rs` with single-pass streaming directly into `Selector::feed`, removing `walk_candidates`, `PathArena`, duplicate `CandidateBudget` calculation, and unused `Selector::from_size_hint`; updated candidate overflow contract to fail-fast immediately upon exceeding `MAX_FILE_COUNT`.
 - **Core Module Consolidation & Storage Diagnostic Decoupling**: Merged `src/core/tree.rs` into `src/core/render.rs`, removing the private `tree` module; moved `largest_files` diagnostic selection from `src/core/selector.rs` to `src/core/storage.rs` as `FileStorage::largest_files`, decoupling `render.rs` from `selector.rs`.

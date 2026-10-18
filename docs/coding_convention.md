@@ -96,7 +96,7 @@ Codebase is strictly partitioned into pure logic and effectful shell:
 ### `src/shell/` (Imperative Shell)
 
 - **Side Effects:** All I/O, network calls, filesystem operations, and process interactions live here.
-- **Delegation:** Collect external inputs, map them into domain types (`CandidateInput`), and delegate computation/decisions directly to `src/core/`.
+- **Delegation:** Collect external inputs, reserve budget via domain tokens (`CandidateSlot`), and delegate computation/storage directly to `src/core/`.
 
 ---
 

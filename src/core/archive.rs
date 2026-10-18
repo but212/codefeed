@@ -1,27 +1,17 @@
 use crate::core::error::IngestError;
-
-/// Status of normalized tar entry path decoding.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum TarPathStatus {
-    /// Valid normalized relative path written to the output buffer.
-    Valid,
-    /// Root directory or empty path that should be ignored.
-    Skipped,
-    /// Path contains invalid UTF-8 bytes.
-    NonUtf8 { is_hidden: bool },
-}
+use crate::core::policy::{PathStatus, is_ignored_filename};
 
 /// Normalizes a raw tar entry path into `out`, stripping the root directory prefix,
-/// collapsing multiple slashes, and removing `.` segments.
+/// collapsing multiple slashes, removing `.` segments, and classifying against policy.
 ///
 /// Returns `Err(IngestError)` if the path contains directory traversal, invalid root prefixes, or NUL bytes.
-/// Returns `Ok(TarPathStatus::Skipped)` if the entry is the root directory itself or empty.
-/// Returns `Ok(TarPathStatus::NonUtf8)` if the entry path contains non-UTF-8 bytes.
-/// Returns `Ok(TarPathStatus::Valid)` on success.
+/// Returns `Ok(PathStatus::Ignored)` if the entry is the root directory itself, empty, hidden, noise, or sensitive.
+/// Returns `Ok(PathStatus::NonUtf8Candidate)` if the entry path contains non-UTF-8 bytes and is not hidden.
+/// Returns `Ok(PathStatus::Valid)` on success.
 pub(crate) fn normalize_tar_entry_path(
     raw_bytes: &[u8],
     out: &mut String,
-) -> Result<TarPathStatus, IngestError> {
+) -> Result<PathStatus, IngestError> {
     if raw_bytes.contains(&0) {
         return Err(IngestError::invalid_metadata(
             "Tar entry path contains NUL byte",
@@ -37,7 +27,7 @@ pub(crate) fn normalize_tar_entry_path(
         .map_or(start, |i| i + 1);
     let trimmed = &raw_bytes[start..end];
     let Some(slash_index) = trimmed.iter().position(|&b| b == b'/') else {
-        return Ok(TarPathStatus::Skipped);
+        return Ok(PathStatus::Ignored);
     };
     if matches!(&trimmed[..slash_index], b"." | b"..") {
         return Err(IngestError::invalid_metadata(
@@ -50,6 +40,7 @@ pub(crate) fn normalize_tar_entry_path(
 
     let mut has_hidden = false;
     let mut has_invalid_utf8 = false;
+    let mut last_segment: Option<&str> = None;
 
     for segment in rel.split(|&b| b == b'/') {
         if segment.is_empty() || segment == b"." {
@@ -72,6 +63,7 @@ pub(crate) fn normalize_tar_entry_path(
                     out.push('/');
                 }
                 out.push_str(seg_str);
+                last_segment = Some(seg_str);
             }
             Err(_) => {
                 has_invalid_utf8 = true;
@@ -79,18 +71,28 @@ pub(crate) fn normalize_tar_entry_path(
         }
     }
 
+    if has_hidden {
+        out.clear();
+        return Ok(PathStatus::Ignored);
+    }
+
     if has_invalid_utf8 {
         out.clear();
-        return Ok(TarPathStatus::NonUtf8 {
-            is_hidden: has_hidden,
-        });
+        return Ok(PathStatus::NonUtf8Candidate);
     }
 
     if out.is_empty() {
-        Ok(TarPathStatus::Skipped)
-    } else {
-        Ok(TarPathStatus::Valid)
+        return Ok(PathStatus::Ignored);
     }
+
+    if let Some(last) = last_segment
+        && is_ignored_filename(last)
+    {
+        out.clear();
+        return Ok(PathStatus::Ignored);
+    }
+
+    Ok(PathStatus::Valid)
 }
 
 /// Parses a 40-character commit SHA from PAX global header comment bytes.
@@ -129,43 +131,57 @@ mod tests {
 
         assert_eq!(
             normalize_tar_entry_path(b"but212-codefeed-c1863c8/src/main.rs", &mut out).unwrap(),
-            TarPathStatus::Valid
+            PathStatus::Valid
         );
         assert_eq!(out, "src/main.rs");
 
         assert_eq!(
             normalize_tar_entry_path(b"repo-root//src/main.rs", &mut out).unwrap(),
-            TarPathStatus::Valid
+            PathStatus::Valid
         );
         assert_eq!(out, "src/main.rs");
 
         assert_eq!(
             normalize_tar_entry_path(b"repo-root///deep//nested/./file.txt", &mut out).unwrap(),
-            TarPathStatus::Valid
+            PathStatus::Valid
         );
         assert_eq!(out, "deep/nested/file.txt");
 
         assert_eq!(
             normalize_tar_entry_path(b"repo-root/././a.rs", &mut out).unwrap(),
-            TarPathStatus::Valid
+            PathStatus::Valid
         );
         assert_eq!(out, "a.rs");
 
         assert_eq!(
             normalize_tar_entry_path(b"but212-codefeed-c1863c8/", &mut out).unwrap(),
-            TarPathStatus::Skipped
+            PathStatus::Ignored
         );
         assert_eq!(
             normalize_tar_entry_path(b"but212-codefeed-c1863c8///", &mut out).unwrap(),
-            TarPathStatus::Skipped
+            PathStatus::Ignored
         );
         assert_eq!(
             normalize_tar_entry_path(b"but212-codefeed-c1863c8", &mut out).unwrap(),
-            TarPathStatus::Skipped
+            PathStatus::Ignored
         );
         assert_eq!(
             normalize_tar_entry_path(b"", &mut out).unwrap(),
-            TarPathStatus::Skipped
+            PathStatus::Ignored
+        );
+
+        // Policy exclusion: noise lockfile and sensitive credentials
+        assert_eq!(
+            normalize_tar_entry_path(b"repo-root/Cargo.lock", &mut out).unwrap(),
+            PathStatus::Ignored
+        );
+        assert_eq!(
+            normalize_tar_entry_path(b"repo-root/id_rsa", &mut out).unwrap(),
+            PathStatus::Ignored
+        );
+        assert_eq!(
+            normalize_tar_entry_path(b"repo-root/secret.pem", &mut out).unwrap(),
+            PathStatus::Ignored
         );
 
         // Path traversal rejection
@@ -181,11 +197,11 @@ mod tests {
         // Non-UTF8 handling
         assert_eq!(
             normalize_tar_entry_path(b"repo-root/invalid/\xff\xfe", &mut out).unwrap(),
-            TarPathStatus::NonUtf8 { is_hidden: false }
+            PathStatus::NonUtf8Candidate
         );
         assert_eq!(
             normalize_tar_entry_path(b"repo-root/.hidden/\xff\xfe", &mut out).unwrap(),
-            TarPathStatus::NonUtf8 { is_hidden: true }
+            PathStatus::Ignored
         );
     }
 

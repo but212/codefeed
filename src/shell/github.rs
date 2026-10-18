@@ -10,12 +10,12 @@ use ureq::config::RedirectAuthHeaders;
 use ureq::http::StatusCode;
 use ureq::tls::{RootCerts, TlsConfig};
 
-use crate::core::archive::{TarPathStatus, normalize_tar_entry_path, parse_pax_comment};
+use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::error::IngestError;
 use crate::core::policy::{
-    ARCHIVE_MAX_SECS, MAX_FILE_SIZE, MAX_RETRIES, is_ignored_path, is_retryable_status, retry_delay,
+    ARCHIVE_MAX_SECS, MAX_FILE_SIZE, MAX_RETRIES, PathStatus, is_retryable_status, retry_delay,
 };
-use crate::core::selector::CandidateInput;
+use crate::core::selector::Selector;
 
 const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 
@@ -227,16 +227,14 @@ fn collect_archive<R: Read>(
         };
         path_scratch.clear();
         content_scratch.clear();
-        match probe_tar_entry(&mut entry, &mut path_scratch, &mut content_scratch)? {
-            ArchiveEntryOutcome::PaxHeader(sha) => {
-                if parsed_revision.is_none() {
-                    parsed_revision = Some(sha);
-                }
-            }
-            ArchiveEntryOutcome::Candidate(candidate) => {
-                selector.feed(candidate)?;
-            }
-            ArchiveEntryOutcome::Ignored => {}
+        if let Some(sha) = process_tar_entry(
+            &mut entry,
+            &mut selector,
+            &mut path_scratch,
+            &mut content_scratch,
+        )? && parsed_revision.is_none()
+        {
+            parsed_revision = Some(sha);
         }
     }
 
@@ -244,17 +242,12 @@ fn collect_archive<R: Read>(
     Ok(selector.finish(label, revision))
 }
 
-enum ArchiveEntryOutcome<'a> {
-    PaxHeader(String),
-    Candidate(CandidateInput<'a>),
-    Ignored,
-}
-
-fn probe_tar_entry<'a, R: Read>(
+fn process_tar_entry<R: Read>(
     entry: &mut tar::Entry<R>,
-    path_scratch: &'a mut String,
-    content_scratch: &'a mut Vec<u8>,
-) -> Result<ArchiveEntryOutcome<'a>, IngestError> {
+    selector: &mut Selector,
+    path_scratch: &mut String,
+    content_scratch: &mut Vec<u8>,
+) -> Result<Option<String>, IngestError> {
     let entry_type = entry.header().entry_type();
 
     // 1. PAX Global Header: Extract git commit SHA from comment
@@ -263,45 +256,35 @@ fn probe_tar_entry<'a, R: Read>(
             .take(1024)
             .read_to_end(content_scratch)
             .map_err(IngestError::Io)?;
-        if let Some(sha) = parse_pax_comment(content_scratch) {
-            return Ok(ArchiveEntryOutcome::PaxHeader(sha));
-        }
-        return Ok(ArchiveEntryOutcome::Ignored);
+        return Ok(parse_pax_comment(content_scratch));
     }
 
     // 2. Skip directories, symlinks, and special entries before path decoding
     if !matches!(entry_type, EntryType::Regular | EntryType::Continuous) {
-        return Ok(ArchiveEntryOutcome::Ignored);
+        return Ok(None);
     }
 
-    // 3. Path decoding, root stripping & normalization
+    // 3. Path decoding, root stripping, normalization & policy classification
     let path_bytes = entry.path_bytes();
     match normalize_tar_entry_path(&path_bytes, path_scratch)? {
-        TarPathStatus::Skipped => return Ok(ArchiveEntryOutcome::Ignored),
-        TarPathStatus::NonUtf8 { is_hidden } => {
-            if is_hidden {
-                return Ok(ArchiveEntryOutcome::Ignored);
-            }
-            return Ok(ArchiveEntryOutcome::Candidate(CandidateInput::Skipped {
-                path: None,
-            }));
+        PathStatus::Ignored => return Ok(None),
+        PathStatus::NonUtf8Candidate => {
+            let slot = selector.reserve_candidate(None)?;
+            selector.record_skipped(slot);
+            return Ok(None);
         }
-        TarPathStatus::Valid => {}
-    }
-
-    // 4. Conventional filtering (noise, sensitive, hidden)
-    if is_ignored_path(path_scratch) {
-        return Ok(ArchiveEntryOutcome::Ignored);
+        PathStatus::Valid => {}
     }
 
     let rel_path = path_scratch.as_str();
 
-    // 5. Content reading with MAX_FILE_SIZE limit
+    // 4. Pre-I/O candidate reservation before reading entry body
+    let slot = selector.reserve_candidate(Some(rel_path))?;
+
     let header_size = entry.header().size().unwrap_or(0);
     if header_size > MAX_FILE_SIZE {
-        return Ok(ArchiveEntryOutcome::Candidate(CandidateInput::Skipped {
-            path: Some(rel_path),
-        }));
+        selector.record_skipped(slot);
+        return Ok(None);
     }
 
     entry
@@ -309,18 +292,13 @@ fn probe_tar_entry<'a, R: Read>(
         .read_to_end(content_scratch)
         .map_err(IngestError::Io)?;
 
-    let candidate = if content_scratch.len() as u64 > MAX_FILE_SIZE {
-        CandidateInput::Skipped {
-            path: Some(rel_path),
-        }
+    if content_scratch.len() as u64 > MAX_FILE_SIZE {
+        selector.record_skipped(slot);
     } else {
-        CandidateInput::File {
-            path: rel_path,
-            bytes: content_scratch.as_slice(),
-        }
-    };
+        selector.record_file(slot, rel_path, content_scratch.as_slice())?;
+    }
 
-    Ok(ArchiveEntryOutcome::Candidate(candidate))
+    Ok(None)
 }
 
 #[cfg(test)]

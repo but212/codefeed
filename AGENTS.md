@@ -14,7 +14,7 @@ Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_
 ### FCIS Boundary
 
 - `src/core/`: Pure logic only. No `std::fs`, `std::net`, `std::env`, `SystemTime`, `eprintln!`, or `crate::shell` imports. Pass parameters as deterministic values (e.g., `retry_delay(attempt)`).
-- `src/shell/`: Side effects only. Map I/O into `CandidateInput` and delegate decisions to `src/core/`.
+- `src/shell/`: Side effects only. Reserve `CandidateSlot` and delegate storage/decisions to `src/core/`.
 
 ### Memory & Dependencies
 

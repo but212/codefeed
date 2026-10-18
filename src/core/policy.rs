@@ -31,6 +31,17 @@ const RETRY_INITIAL_DELAY_MS: u64 = 250;
 /// Maximum delay cap in milliseconds for exponential backoff.
 const RETRY_MAX_DELAY_MS: u64 = 5_000;
 
+/// Path classification outcome from a single-pass policy evaluation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PathStatus {
+    /// Normalized valid relative UTF-8 path.
+    Valid,
+    /// Ignored path (hidden component, conventional noise, sensitive pattern, or root).
+    Ignored,
+    /// Non-UTF-8 path that is not hidden and must be counted against candidate budget as skipped.
+    NonUtf8Candidate,
+}
+
 /// Returns `true` if `file_name` matches a known noise file.
 #[inline]
 fn is_noise_file(file_name: &str) -> bool {
@@ -60,22 +71,37 @@ fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> bool {
         .any(|&s| s.eq_ignore_ascii_case(extension))
 }
 
-/// Returns `true` if `path` contains hidden directory or file components (starting with `.`).
+/// Returns `true` if `file_name` matches a known noise file or a sensitive credentials pattern.
 #[inline]
-fn is_hidden_path(path: &str) -> bool {
-    path.split('/').any(|s| s.starts_with('.'))
+pub(crate) fn is_ignored_filename(file_name: &str) -> bool {
+    let extension = file_name.rsplit_once('.').map(|(_, e)| e);
+    is_noise_file(file_name) || is_sensitive_file(file_name, extension)
 }
 
-/// Returns `true` if `path` is an ignored noise, sensitive, or hidden file.
-pub(crate) fn is_ignored_path(path: &str) -> bool {
-    if is_hidden_path(path) {
-        return true;
+/// Classifies a path string into [`PathStatus`].
+///
+/// Returns [`PathStatus::Ignored`] if any path segment starts with `.` (hidden)
+/// or if the file name matches known noise or sensitive credential patterns.
+/// Otherwise returns [`PathStatus::Valid`].
+#[inline]
+pub(crate) fn classify_path(path: &str) -> PathStatus {
+    let mut last_component = None;
+    for segment in path.split('/') {
+        if segment.starts_with('.') {
+            return PathStatus::Ignored;
+        }
+        if !segment.is_empty() {
+            last_component = Some(segment);
+        }
     }
 
-    let file_name = path.rsplit('/').next().unwrap_or(path);
-    let extension = file_name.rsplit_once('.').map(|(_, e)| e);
+    if let Some(filename) = last_component
+        && is_ignored_filename(filename)
+    {
+        return PathStatus::Ignored;
+    }
 
-    is_noise_file(file_name) || is_sensitive_file(file_name, extension)
+    PathStatus::Valid
 }
 
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
@@ -139,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_ignored_path() {
+    fn test_classify_path() {
         let ignored = [
             "Cargo.lock",
             "nested/dir/package-lock.json",
@@ -163,9 +189,16 @@ mod tests {
             "src/.hidden.rs",
             ".env.production",
             ".envrc",
+            ".hidden",
+            "dir/.hidden",
+            "a/b/.c/d",
         ];
         for path in ignored {
-            assert!(is_ignored_path(path), "expected {path} to be ignored");
+            assert_eq!(
+                classify_path(path),
+                PathStatus::Ignored,
+                "expected {path} to be ignored"
+            );
         }
 
         let kept = [
@@ -178,25 +211,52 @@ mod tests {
             "Cargo.toml",
             "Makefile",
             "environment.rs",
+            "not_hidden",
+            "dir/not_hidden.txt",
+            "ends_with_dot.",
+            "a/b",
         ];
         for path in kept {
-            assert!(!is_ignored_path(path), "expected {path} not to be ignored");
+            assert_eq!(
+                classify_path(path),
+                PathStatus::Valid,
+                "expected {path} to be valid"
+            );
         }
     }
 
     #[test]
-    fn test_is_hidden_path() {
-        let cases = [
-            (".hidden", true),
-            ("dir/.hidden", true),
-            ("a/b/.c/d", true),
-            ("not_hidden", false),
-            ("dir/not_hidden.txt", false),
-            ("ends_with_dot.", false),
-            ("a/b", false),
+    fn test_is_ignored_filename() {
+        let ignored = [
+            "Cargo.lock",
+            "package-lock.json",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+            "go.sum",
+            "server.key",
+            "cert.pem",
+            "client.p12",
+            "cert.pkcs12",
+            "credentials.json",
+            "aws.credentials",
+            "credentials",
+            "id_rsa",
+            "id_rsa.pub",
+            "id_ed25519",
         ];
-        for (path, expected) in cases {
-            assert_eq!(is_hidden_path(path), expected, "path: {path}");
+        for filename in ignored {
+            assert!(
+                is_ignored_filename(filename),
+                "expected {filename} to be ignored"
+            );
+        }
+
+        let kept = ["Cargo.toml", "main.rs", "Makefile", "environment.rs"];
+        for filename in kept {
+            assert!(
+                !is_ignored_filename(filename),
+                "expected {filename} not to be ignored"
+            );
         }
     }
 }

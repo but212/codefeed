@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use ignore::WalkBuilder;
 
 use crate::core::error::IngestError;
-use crate::core::policy::MAX_FILE_SIZE;
-use crate::core::selector::{CandidateInput, Selector};
+use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path};
+use crate::core::selector::Selector;
 
 /// Collects files from a local directory root, excluding the resolved output file if located inside it.
 pub(super) fn collect(
@@ -48,26 +48,20 @@ pub(super) fn collect(
             .strip_prefix(&canonical_root)
             .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
 
-        if normalize_relative_path_into(relative, &mut path_scratch) {
-            if crate::core::policy::is_ignored_path(&path_scratch) {
-                continue;
+        match classify_local_path(relative, &mut path_scratch) {
+            PathStatus::Ignored => continue,
+            PathStatus::NonUtf8Candidate => {
+                let slot = selector.reserve_candidate(None)?;
+                selector.record_skipped(slot);
             }
-            scratch.clear();
-            let input = match read_local_file_into(entry_path, &mut scratch)? {
-                Some(bytes) => CandidateInput::File {
-                    path: &path_scratch,
-                    bytes,
-                },
-                None => CandidateInput::Skipped {
-                    path: Some(&path_scratch),
-                },
-            };
-            selector.feed(input)?;
-        } else if !relative
-            .components()
-            .any(|c| c.as_os_str().as_encoded_bytes().starts_with(b"."))
-        {
-            selector.feed(CandidateInput::Skipped { path: None })?;
+            PathStatus::Valid => {
+                let slot = selector.reserve_candidate(Some(&path_scratch))?;
+                scratch.clear();
+                match read_local_file_into(entry_path, &mut scratch)? {
+                    Some(bytes) => selector.record_file(slot, &path_scratch, bytes)?,
+                    None => selector.record_skipped(slot),
+                }
+            }
         }
     }
 
@@ -127,18 +121,41 @@ fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
     Ok(canonical)
 }
 
-fn normalize_relative_path_into(relative: &Path, scratch: &mut String) -> bool {
+fn classify_local_path(relative: &Path, scratch: &mut String) -> PathStatus {
     scratch.clear();
+    let mut has_hidden = false;
+    let mut has_non_utf8 = false;
+
     for part in relative.components() {
-        let Some(s) = part.as_os_str().to_str() else {
-            return false;
-        };
-        if !scratch.is_empty() {
-            scratch.push('/');
+        if part.as_os_str().as_encoded_bytes().starts_with(b".") {
+            has_hidden = true;
         }
-        scratch.push_str(s);
+        if let Some(s) = part.as_os_str().to_str() {
+            if !scratch.is_empty() {
+                scratch.push('/');
+            }
+            scratch.push_str(s);
+        } else {
+            has_non_utf8 = true;
+        }
     }
-    !scratch.is_empty()
+
+    if has_hidden {
+        scratch.clear();
+        return PathStatus::Ignored;
+    }
+    if has_non_utf8 {
+        scratch.clear();
+        return PathStatus::NonUtf8Candidate;
+    }
+    if scratch.is_empty() {
+        return PathStatus::Ignored;
+    }
+    let status = classify_path(scratch);
+    if status == PathStatus::Ignored {
+        scratch.clear();
+    }
+    status
 }
 
 fn local_label(root: &Path) -> String {
@@ -430,7 +447,7 @@ mod tests {
 
         assert_eq!(
             BODY_READ_COUNT.with(|c| c.get()),
-            MAX_FILE_COUNT + 1,
+            MAX_FILE_COUNT,
             "must abort traversal immediately upon exceeding limit without reading remaining files"
         );
         Ok(())

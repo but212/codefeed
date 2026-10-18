@@ -294,7 +294,7 @@ fn render_level<W: Write + ?Sized, F>(
     writer: &mut W,
     spans: &[FileSpan],
     path_arena: &str,
-    depth: usize,
+    offset: usize,
     prefix: &mut String,
     format_name: &mut F,
 ) -> std::io::Result<()>
@@ -304,13 +304,13 @@ where
     let mut i = 0;
     while let Some((name, is_dir)) = spans
         .get(i)
-        .and_then(|s| component_at(s.path(path_arena), depth))
+        .and_then(|s| component_at_offset(s.path(path_arena), offset))
     {
         let start = i;
         i += 1;
         while let Some((next_name, next_is_dir)) = spans
             .get(i)
-            .and_then(|s| component_at(s.path(path_arena), depth))
+            .and_then(|s| component_at_offset(s.path(path_arena), offset))
         {
             if next_name == name && next_is_dir == is_dir {
                 i += 1;
@@ -333,7 +333,7 @@ where
                 writer,
                 &spans[start..end],
                 path_arena,
-                depth + 1,
+                offset + name.len() + 1,
                 prefix,
                 format_name,
             )?;
@@ -346,11 +346,16 @@ where
     Ok(())
 }
 
-fn component_at(path: &str, depth: usize) -> Option<(&str, bool)> {
-    let mut parts = path.split('/');
-    let name = parts.nth(depth)?;
-    let is_dir = parts.next().is_some();
-    Some((name, is_dir))
+#[inline]
+fn component_at_offset(path: &str, offset: usize) -> Option<(&str, bool)> {
+    let remainder = path.get(offset..)?;
+    if remainder.is_empty() {
+        return None;
+    }
+    match remainder.find('/') {
+        Some(idx) => Some((&remainder[..idx], true)),
+        None => Some((remainder, false)),
+    }
 }
 
 #[cfg(test)]
@@ -822,6 +827,49 @@ z &lt; 10
 │   └── y.txt
 └── b/
     └── z.txt
+";
+        assert_eq!(tree_str, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn component_at_offset_slices_correctly_and_handles_boundaries() {
+        let path = "alpha/beta/gamma.rs";
+        assert_eq!(component_at_offset(path, 0), Some(("alpha", true)));
+        assert_eq!(component_at_offset(path, 6), Some(("beta", true)));
+        assert_eq!(component_at_offset(path, 11), Some(("gamma.rs", false)));
+        assert_eq!(component_at_offset(path, 19), None);
+        assert_eq!(component_at_offset(path, 100), None);
+
+        let single = "root_file.txt";
+        assert_eq!(
+            component_at_offset(single, 0),
+            Some(("root_file.txt", false))
+        );
+        assert_eq!(component_at_offset(single, 13), None);
+    }
+
+    #[test]
+    fn renders_deep_multi_level_tree_correctly() -> Result<(), Box<dyn std::error::Error>> {
+        let mut storage = FileStorage::new();
+        storage.push("a/b/c/d/e.txt", "");
+        storage.push("a/b/c/f.txt", "");
+        storage.push("a/b/g.txt", "");
+        storage.push("root.txt", "");
+        storage.sort_by_path();
+
+        let mut buf = Vec::new();
+        render_tree(&mut buf, &storage, |w, s| w.write_all(s.as_bytes()))?;
+        let tree_str = std::str::from_utf8(&buf)?;
+        let expected = "\
+├── a/
+│   └── b/
+│       ├── c/
+│       │   ├── d/
+│       │   │   └── e.txt
+│       │   └── f.txt
+│       └── g.txt
+└── root.txt
 ";
         assert_eq!(tree_str, expected);
         Ok(())

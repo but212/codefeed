@@ -25,14 +25,14 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 ### Filtering & Accounting
 
 - Pre-candidate exclusions: `.git`, hidden entries (empty path segments from redundant delimiters are filtered to prevent false positives), symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and conventional sensitive files matched case-insensitively by prefix (`.env*`, `id_rsa*`, `id_ed25519*`, `credentials*`) and extension (`*.key`/`*.pem`, `*.p12`/`*.pkcs12`, `*.credentials`). Matches path conventions, not file content. Excluded paths consume neither candidate slots nor `skipped` counts.
-- Candidate accounting: Consumes candidate slots before evaluating content, size, or encoding.
+- Candidate accounting: Consumes candidate slots before reading file body bytes or evaluating content, size, or encoding (`CandidateSlot`).
 - `skipped` count: Tracks candidates rejected for content, size, or encoding (including binary files containing NUL bytes or invalid UTF-8). Ignored paths are never counted in `skipped`.
 - Output bounding: Rejects content exceeding `MAX_OUTPUT_SIZE`; overflow content is never emitted.
 - Diagnostic ranking: `largest_files` uses bounded Top-5 selection with linear position lookup, avoiding full-collection cloning or $O(N \log N)$ sorting while preserving insertion stability for tie-breakers.
 
 ### Rendering & Formats
 
-- ASCII tree (`├── `, `└── `, `│   `): Renders deterministic directory structure directly from sorted `FileStorage` with zero intermediate allocations (`render::render_tree`). Format-neutral; escapes control codes and XML entities to prevent tree line-break injections.
+- ASCII tree (`├── `, `└── `, `│   `): Renders deterministic directory structure directly from sorted `FileStorage` with monotonic byte-offset slicing (`render::render_tree`). Format-neutral; escapes control codes and XML entities to prevent tree line-break injections.
 - Token estimation: Pure function `estimate_tokens(bytes)` calculates `(bytes / 4).max(1)` when non-zero, `0` when empty. Reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`). Calibrated for English text and code (~4 bytes/token); multibyte text (such as Korean/CJK) will be underestimated.
 - Plain text (`--format text`): Preserves valid UTF-8 file content verbatim (rejecting NUL bytes) for LLM prompts; escapes headers and paths while leaving file bodies unmutated (interactive terminals may reflect ANSI escape codes contained in files).
 - XML (`--format xml`): Emits `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`), attribute whitespace (`\t`, `\n`, `\r` via character references), and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`.
@@ -46,9 +46,9 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 - Completion messages: Emitted to stdout for file targets and stderr for stdout targets.
 - Broken pipe: Downstream pipe closure (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0 (preserves estimated tokens on buffer flush; defaults to 0 on mid-stream write termination).
 - Local walk exclusion: Excludes existing output files via canonical path comparison resolved once at startup (`resolve_output_target`), avoiding repeated syscalls during traversal. Assumes a quiescent directory tree during scan (see `docs/security_and_filtering.md`).
-- Local walk pipeline (2-step linear):
-  1. `ignore::WalkBuilder` with `follow_links(false)` and `.sort_by_file_name(|a, b| a.cmp(b))` buffers candidate paths into a contiguous `PathArena` (single `String` arena + offset spans), evaluating `CandidateBudget::add` to fail fast on candidate budget breach before reading file bodies.
-  2. Bounded sequential reads (validating regular non-symlink metadata before opening) stream observations into `Selector` directly from `PathArena`.
+- Local walk pipeline:
+  1. `ignore::WalkBuilder` with `follow_links(false)` and `.sort_by_file_name(|a, b| a.cmp(b))` traverses entries, classifies paths via `classify_local_path`, and reserves a candidate slot in `Selector` (`CandidateSlot`) before reading file bodies.
+  2. Bounded sequential reads stream observations directly into `Selector` without intermediate path allocations.
 - Size cap enforcement: `MAX_OUTPUT_SIZE` is strictly enforced on bytes written via `BoundedEstimatingWriter`, preventing framing/metadata overflow (both file and stdout targets emit nothing on overflow). Token count is estimated on the same writer stream pass over rendered byte length.
 - CLI argument parsing: Linearly parsed into options and source in pure core (`core::cli`) using `std` only, supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters without third-party CLI dependencies. CLI execution, help display, and output reporting are encapsulated via `shell::run_cli`.
 - Candidate budget tracking: Uses standard `HashMap<String, usize>` during collection, with deterministic overflow diagnostics sorted by count descending then directory ascending.
@@ -56,7 +56,7 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 
 ### Network & GitHub
 
-- Streaming archive: Single HTTP request streams GitHub repository archive (`/repos/{owner}/{repo}/tarball/{ref}`) via `flate2` and `tar` over a 64 KiB `BufReader` stream, streaming entries into `Selector::feed` with zero intermediate disk files and fail-fast budget termination. Commit revision is extracted from `pax_global_header`.
+- Streaming archive: Single HTTP request streams GitHub repository archive (`/repos/{owner}/{repo}/tarball/{ref}`) via `flate2` and `tar` over a 64 KiB `BufReader` stream, streaming entries into `Selector` (`CandidateSlot`) with zero intermediate disk files and fail-fast budget termination. Commit revision is extracted from `pax_global_header`.
 - Credential isolation: `Authorization: Bearer <token>` attaches strictly to exact-origin GitHub API (`https://api.github.com`); foreign origins and redirects never receive credentials.
 - Retry policy: Retries transient transport errors (`Io`, `Timeout`, `ConnectionFailed`) and HTTP 429 / 5xx with bounded exponential backoff up to `MAX_RETRIES` total attempts (1 initial + up to 2 retries). Fails immediately on non-transient transport errors and 4xx client errors (except 429).
 
@@ -70,16 +70,16 @@ Boundary rule: Pure core performs no I/O, clock, or network calls and never depe
 
 - Pure core (`src/core/`):
   - `cli.rs`: CLI argument parsing, help detection, and `CliAction` generation (`parse`).
-  - `policy.rs`: Operational limits, noise patterns, sensitive patterns, and path exclusion predicate (`is_ignored_path`). Single source of truth for limits.
+  - `policy.rs`: Operational limits, noise patterns, sensitive patterns, and path classification (`PathStatus`, `classify_path`, `is_ignored_filename`). Single source of truth for limits.
   - `model.rs`: Domain value types (`Source`, `CollectionResult`, `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`) and source parsing (`Source::parse`, `Source::parse_os`).
   - `storage.rs`: Continuous arena storage (`FileStorage`, `FileSpan`, `FileRecord`, `FileRecordIter`, `cmp_path`, `largest_files`).
   - `error.rs`: Domain error enum `IngestError` and diagnostic payloads (`CandidateLimitExceededError`).
-  - `selector.rs`: Candidate observation (`CandidateInput`), directory accounting (`CandidateBudget`), and storage accumulation (`Selector`).
+  - `selector.rs`: Candidate reservation (`CandidateSlot`), directory accounting (`CandidateBudget`), and storage accumulation (`Selector`).
   - `render.rs`: Format-specific streaming serializers (Text/XML), format-neutral ASCII hierarchy tree rendering (`render_tree`), single-pass streaming escaping (`write_header_escaped`, `write_escaped`, `write_xml_attr_escaped`), token estimation heuristic (`estimate_tokens`), and `BoundedEstimatingWriter`.
-  - `archive.rs`: Pax header comment extraction and in-place tar entry path normalization (`normalize_tar_entry_path`).
+  - `archive.rs`: Pax header comment extraction and single-pass tar entry path normalization & policy classification (`normalize_tar_entry_path`).
 - Imperative shell (`src/shell/`):
   - `src/main.rs`: Binary entry point and CLI completion report formatting.
   - `shell/mod.rs`: Shell module declarations, pipeline orchestration (`ingest`), and scoped test fixture isolation (`TempDirGuard`).
-  - `shell/local.rs`: 2-step linear filesystem candidate discovery, non-symlink metadata validation, and direct `Selector` collection.
+  - `shell/local.rs`: Single-pass filesystem candidate traversal, non-symlink metadata validation, and pre-I/O candidate reservation in `Selector`.
   - `shell/github.rs`: Streaming archive tarball collection (`collect_archive`), HTTP transport (`GithubClient`), retry handling, body bounding, and token resolution.
   - `shell/output.rs`: Atomic file writing via RAII commit guard (`AtomicFile`), stdout streaming, and canonical output path resolution (`resolve_output_target`).

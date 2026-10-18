@@ -22,12 +22,12 @@ Comprehensive specification of security boundaries, pattern-based exclusion, can
 
 ## 2. Path Classification & Filtering Hierarchy
 
-Every encountered entry (local filesystem or remote archive) passes through path filtering and candidate evaluation defined in `src/core/policy.rs` (`is_ignored_path`):
+Every encountered entry (local filesystem or remote archive) passes through path filtering and candidate evaluation defined in `src/core/policy.rs` (`classify_path`):
 
 ```
 Entry Discovered (Local Walk or Tar Stream)
    │
-   ├── Ignored (Pre-candidate Filter: is_ignored_path)
+   ├── Ignored (Pre-candidate Filter: classify_path)
    │     ├── Noise Lockfiles (Cargo.lock, package-lock.json, etc.)
    │     ├── Sensitive Patterns (.env*, id_rsa*, credentials*, *.key, *.pem, etc.)
    │     ├── Hidden Components (.git, .github, .config, etc.)

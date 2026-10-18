@@ -7,26 +7,11 @@ use crate::core::model::CollectionResult;
 use crate::core::policy::{MAX_FILE_COUNT, MAX_OUTPUT_SIZE};
 use crate::core::storage::{FileRecord, FileStorage, largest_files};
 
-/// Candidate input observed by the imperative shell. Non-UTF-8 paths, entries that
-/// disappeared (`NotFound`), or non-regular files are represented as `Skipped` and
-/// still counted against the candidate budget. Other I/O failures abort ingestion as [`IngestError::Io`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CandidateInput<'a> {
-    /// Bounded content bytes successfully acquired from the source.
-    File { path: &'a str, bytes: &'a [u8] },
-    /// Item skipped due to size limit, non-UTF-8 path, disappearing file (`NotFound`), or non-regular file.
-    Skipped { path: Option<&'a str> },
-}
-
-impl<'a> CandidateInput<'a> {
-    /// Returns the optional path of the candidate input.
-    #[inline]
-    pub(crate) const fn path(&self) -> Option<&'a str> {
-        match self {
-            Self::File { path, .. } => Some(*path),
-            Self::Skipped { path } => *path,
-        }
-    }
+/// Linear proof token demonstrating a candidate slot was reserved in [`CandidateBudget`].
+#[derive(Debug)]
+#[must_use = "candidate slot must be recorded into the selector"]
+pub(crate) struct CandidateSlot {
+    _priv: (),
 }
 
 /// UTF-8 text predicate: NUL-free bytes only.
@@ -123,28 +108,41 @@ impl Selector {
         }
     }
 
-    /// Evaluates a candidate input against budget and output limits, accumulating accepted files.
+    /// Reserves a candidate slot against budget limits before reading content bytes.
     ///
     /// # Errors
     ///
-    /// Returns [`IngestError::CandidateLimitExceeded`] if file count overflows, or
-    /// [`IngestError::OutputTooLarge`] if output size exceeds the policy limit.
-    pub(crate) fn feed(&mut self, input: CandidateInput<'_>) -> Result<(), IngestError> {
-        self.candidates.add(input.path())?;
-        match input {
-            CandidateInput::File { path, bytes } => {
-                if let Some(content) = text_str(bytes) {
-                    self.add_file(path, content)
-                } else {
-                    self.skipped = self.skipped.saturating_add(1);
-                    Ok(())
-                }
-            }
-            CandidateInput::Skipped { .. } => {
-                self.skipped = self.skipped.saturating_add(1);
-                Ok(())
-            }
+    /// Returns [`IngestError::CandidateLimitExceeded`] if file count overflows the policy limit.
+    pub(crate) fn reserve_candidate(
+        &mut self,
+        path: Option<&str>,
+    ) -> Result<CandidateSlot, IngestError> {
+        self.candidates.add(path)?;
+        Ok(CandidateSlot { _priv: () })
+    }
+
+    /// Consumes a reserved candidate slot and accumulates the file if UTF-8 text and within output limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IngestError::OutputTooLarge`] if output size exceeds the policy limit.
+    pub(crate) fn record_file(
+        &mut self,
+        _slot: CandidateSlot,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<(), IngestError> {
+        if let Some(content) = text_str(bytes) {
+            self.add_file(path, content)
+        } else {
+            self.skipped = self.skipped.saturating_add(1);
+            Ok(())
         }
+    }
+
+    /// Consumes a reserved candidate slot for a skipped candidate.
+    pub(crate) fn record_skipped(&mut self, _slot: CandidateSlot) {
+        self.skipped = self.skipped.saturating_add(1);
     }
 
     fn add_file(&mut self, path: &str, content: &str) -> Result<(), IngestError> {
@@ -187,8 +185,15 @@ mod tests {
     use super::*;
     use crate::core::policy::MAX_FILE_SIZE;
 
-    fn file_candidate<'a>(path: &'a str, bytes: &'a [u8]) -> CandidateInput<'a> {
-        CandidateInput::File { path, bytes }
+    fn feed_file(selector: &mut Selector, path: &str, bytes: &[u8]) -> Result<(), IngestError> {
+        let slot = selector.reserve_candidate(Some(path))?;
+        selector.record_file(slot, path, bytes)
+    }
+
+    fn feed_skipped(selector: &mut Selector, path: Option<&str>) -> Result<(), IngestError> {
+        let slot = selector.reserve_candidate(path)?;
+        selector.record_skipped(slot);
+        Ok(())
     }
 
     #[test]
@@ -265,16 +270,12 @@ mod tests {
     fn feed_classifies_text_binary_and_size_boundaries() -> Result<(), Box<dyn std::error::Error>> {
         let mut selector = Selector::new();
         let exact_bytes = vec![b'x'; MAX_FILE_SIZE as usize];
-        selector.feed(file_candidate("a.txt", b"hello"))?;
-        selector.feed(file_candidate("bin.bin", &[0, 1, 2]))?;
-        selector.feed(file_candidate("bad_utf8", &[0xff]))?;
-        selector.feed(CandidateInput::Skipped {
-            path: Some("big.txt"),
-        })?;
-        selector.feed(CandidateInput::Skipped {
-            path: Some("missing.txt"),
-        })?;
-        selector.feed(file_candidate("exact.txt", &exact_bytes))?;
+        feed_file(&mut selector, "a.txt", b"hello")?;
+        feed_file(&mut selector, "bin.bin", &[0, 1, 2])?;
+        feed_file(&mut selector, "bad_utf8", &[0xff])?;
+        feed_skipped(&mut selector, Some("big.txt"))?;
+        feed_skipped(&mut selector, Some("missing.txt"))?;
+        feed_file(&mut selector, "exact.txt", &exact_bytes)?;
 
         let collection = selector.finish("test".into(), None);
         assert_eq!(collection.files.len(), 2);
@@ -287,10 +288,8 @@ mod tests {
     #[test]
     fn skipped_candidate_is_counted() -> Result<(), Box<dyn std::error::Error>> {
         let mut selector = Selector::new();
-        selector.feed(CandidateInput::Skipped {
-            path: Some("missing.png"),
-        })?;
-        selector.feed(file_candidate("kept.txt", b"kept"))?;
+        feed_skipped(&mut selector, Some("missing.png"))?;
+        feed_file(&mut selector, "kept.txt", b"kept")?;
         let collection = selector.finish("test".into(), None);
         assert_eq!(collection.files.len(), 1);
         assert_eq!(collection.skipped, 1);
@@ -301,10 +300,10 @@ mod tests {
     fn feed_counts_candidate_before_content() -> Result<(), Box<dyn std::error::Error>> {
         let mut selector = Selector::new();
         for _ in 0..MAX_FILE_COUNT {
-            selector.feed(file_candidate("bin.txt", &[0]))?;
+            feed_file(&mut selector, "bin.txt", &[0])?;
         }
         assert!(matches!(
-            selector.feed(file_candidate("extra.txt", b"ok")),
+            feed_file(&mut selector, "extra.txt", b"ok"),
             Err(IngestError::CandidateLimitExceeded(..))
         ));
         Ok(())
@@ -317,11 +316,9 @@ mod tests {
         let small = vec![b'a'; 100];
         let medium = vec![b'b'; 50_000];
         let large = vec![b'x'; MAX_OUTPUT_SIZE as usize];
-        selector.feed(file_candidate("small.txt", &small))?;
-        selector.feed(file_candidate("medium.txt", &medium))?;
-        let err = selector
-            .feed(file_candidate("large.txt", &large))
-            .unwrap_err();
+        feed_file(&mut selector, "small.txt", &small)?;
+        feed_file(&mut selector, "medium.txt", &medium)?;
+        let err = feed_file(&mut selector, "large.txt", &large).unwrap_err();
         let message = err.to_string();
         assert!(message.contains("digest exceeds the 20 MiB output limit"));
         assert!(message.contains("largest files:"));
@@ -333,12 +330,8 @@ mod tests {
     #[test]
     fn selector_accumulates_decisions() {
         let mut selector = Selector::new();
-        selector.feed(file_candidate("a.txt", b"hello")).unwrap();
-        selector
-            .feed(CandidateInput::Skipped {
-                path: Some("b.bin"),
-            })
-            .unwrap();
+        feed_file(&mut selector, "a.txt", b"hello").unwrap();
+        feed_skipped(&mut selector, Some("b.bin")).unwrap();
         let res = selector.finish("test".to_string(), None);
         assert_eq!(res.files.len(), 1);
         assert_eq!(res.skipped, 1);
@@ -349,17 +342,31 @@ mod tests {
         let mut selector = Selector::new();
         let long_len = 70_000;
         let path = format!("{}/file.rs", "a".repeat(long_len));
-        selector
-            .feed(CandidateInput::File {
-                path: &path,
-                bytes: b"fn main() {}",
-            })
-            .unwrap();
+        feed_file(&mut selector, &path, b"fn main() {}").unwrap();
         let res = selector.finish("test".to_string(), None);
         assert_eq!(res.files.len(), 1);
         assert_eq!(
             res.files.iter().next().unwrap().path.len(),
             long_len + "/file.rs".len()
         );
+    }
+
+    #[test]
+    fn reserve_candidate_enforces_budget_before_recording() {
+        let mut selector = Selector::new();
+        for i in 0..MAX_FILE_COUNT {
+            let path = format!("file_{i}.txt");
+            let slot = selector.reserve_candidate(Some(&path)).unwrap();
+            selector.record_file(slot, &path, b"content").unwrap();
+        }
+
+        // 10,001st candidate must fail during reservation before recording any bytes
+        let overflow_err = selector
+            .reserve_candidate(Some("overflow.txt"))
+            .unwrap_err();
+        match overflow_err {
+            IngestError::CandidateLimitExceeded(..) => {}
+            other => panic!("expected CandidateLimitExceeded, got {other:?}"),
+        }
     }
 }
