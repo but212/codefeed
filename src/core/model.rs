@@ -15,8 +15,12 @@ impl GitRef {
     /// Returns [`IngestError::InvalidSource`] if `value` is empty or only whitespace.
     pub fn new(value: impl Into<String>) -> Result<Self, IngestError> {
         let string = value.into();
-        if string.trim_ascii().is_empty() {
+        let trimmed = string.trim_ascii();
+        if trimmed.is_empty() {
             return Err(IngestError::invalid_source("--ref cannot be empty"));
+        }
+        if trimmed == "." || trimmed == ".." {
+            return Err(IngestError::invalid_source("--ref cannot be '.' or '..'"));
         }
         Ok(Self(string))
     }
@@ -229,6 +233,12 @@ mod tests {
         assert!(GitRef::new("").is_err());
         assert!(GitRef::new("   ").is_err());
         assert!(GitRef::new("\t\n").is_err());
+        assert!(
+            matches!(GitRef::new("."), Err(IngestError::InvalidSource(m)) if m.contains("--ref cannot be '.' or '..'"))
+        );
+        assert!(
+            matches!(GitRef::new(".."), Err(IngestError::InvalidSource(m)) if m.contains("--ref cannot be '.' or '..'"))
+        );
     }
 
     #[test]

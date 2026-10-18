@@ -6,6 +6,8 @@ pub(crate) const MAX_FILE_SIZE: u64 = 1024 * 1024;
 pub(crate) const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
 /// Maximum candidate files evaluated before candidate budget overflows (10,000 files).
 pub(crate) const MAX_FILE_COUNT: usize = 10_000;
+/// Maximum directory nesting depth permitted for archive entry paths (256 levels).
+pub(crate) const MAX_PATH_DEPTH: usize = 256;
 /// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
 pub(crate) const ARCHIVE_MAX_SECS: u64 = 300;
 /// Maximum total HTTP request attempts (1 initial + up to 2 retries).

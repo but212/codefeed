@@ -36,7 +36,8 @@ pub(super) fn collect(
     let mut scratch = Vec::with_capacity(32 * 1024);
 
     for entry in walker {
-        let entry = entry.map_err(|err| IngestError::Io(io::Error::other(err)))?;
+        let entry =
+            entry.map_err(|err| IngestError::Io(io::Error::other(format_ignore_error(&err))))?;
         let entry_path = entry.path();
         if entry_path == canonical_root
             || !entry.file_type().is_some_and(|kind| kind.is_file())
@@ -116,6 +117,32 @@ fn classify_local_path(relative: &Path, scratch: &mut String) -> PathStatus {
         .components()
         .map(|c| c.as_os_str().as_encoded_bytes());
     classify_path_segments(segments, scratch)
+}
+
+fn format_ignore_error(err: &ignore::Error) -> String {
+    let mut current = err;
+    let mut path = None;
+    loop {
+        match current {
+            ignore::Error::WithPath {
+                path: p,
+                err: inner,
+            } => {
+                if path.is_none() {
+                    path = Some(p.as_path());
+                }
+                current = inner;
+            }
+            ignore::Error::WithDepth { err: inner, .. } => {
+                current = inner;
+            }
+            _ => break,
+        }
+    }
+    match path {
+        Some(p) => format!("{}: {current}", p.display()),
+        None => current.to_string(),
+    }
 }
 
 fn local_label(root: &Path) -> String {
@@ -254,6 +281,37 @@ mod tests {
         assert_eq!(report.included_files, 1);
         assert!(!digest.contains("previous output"));
         assert!(digest.contains("FILE: source.txt"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_directory_fails_fast_with_path_context() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("unreadable_dir")?;
+        let locked = root.join("locked");
+        fs::create_dir(&locked)?;
+        fs::write(locked.join("file.txt"), "content")?;
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o0000))?;
+
+        if fs::read_dir(&locked).is_ok() {
+            let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o0755));
+            return Ok(());
+        }
+
+        let res = collect(&root, None);
+
+        // Restore permissions so TempDirGuard can clean up
+        let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o0755));
+
+        let err = res.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("locked"),
+            "error message should contain path context 'locked', got: {msg}"
+        );
         Ok(())
     }
 

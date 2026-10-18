@@ -51,6 +51,12 @@ pub(crate) fn normalize_tar_entry_path(
         .filter(|seg| !seg.is_empty() && *seg != b".");
 
     let status = classify_path_segments(filtered_segments, out);
+    if status == PathStatus::Valid && out.matches('/').count() > crate::core::policy::MAX_PATH_DEPTH
+    {
+        return Err(IngestError::invalid_metadata(
+            "Tar entry path exceeds maximum directory depth",
+        ));
+    }
     Ok(status)
 }
 
@@ -153,6 +159,23 @@ mod tests {
         // Embedded NUL rejection
         assert!(normalize_tar_entry_path(b"repo-root/certs/privkey.key\0", &mut out).is_err());
         assert!(normalize_tar_entry_path(b"repo-root\0/src/main.rs", &mut out).is_err());
+
+        // Depth limit rejection (256 directory levels permitted, 257 rejected)
+        let normal_depth_path = format!("repo-root/{}/file.txt", vec!["d"; 256].join("/"));
+        assert_eq!(
+            normalize_tar_entry_path(normal_depth_path.as_bytes(), &mut out).unwrap(),
+            PathStatus::Valid
+        );
+
+        let excessive_depth_path = format!("repo-root/{}/file.txt", vec!["d"; 257].join("/"));
+        assert!(normalize_tar_entry_path(excessive_depth_path.as_bytes(), &mut out).is_err());
+
+        // Deeply nested hidden path is ignored without triggering depth error
+        let deep_hidden_path = format!("repo-root/.hidden/{}/file.txt", vec!["d"; 300].join("/"));
+        assert_eq!(
+            normalize_tar_entry_path(deep_hidden_path.as_bytes(), &mut out).unwrap(),
+            PathStatus::Ignored
+        );
 
         // Non-UTF8 handling
         assert_eq!(
