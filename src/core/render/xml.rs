@@ -45,3 +45,79 @@ pub(super) fn render_xml<W: Write + ?Sized>(
     writer.write_all(XML_REPO_END.as_bytes())?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::storage::{FileRecord, FileStorage, SortedFiles};
+
+    #[test]
+    fn renders_xml_in_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
+        let files = [
+            FileRecord {
+                path: "z.txt",
+                content: "z < 10",
+            },
+            FileRecord {
+                path: "a.txt",
+                content: "a & b",
+            },
+        ];
+        let mut storage: FileStorage = files.into_iter().collect();
+        storage.sort_by_path();
+        let collection = CollectionResult {
+            label: "my-repo".into(),
+            revision: Some("v1.0".into()),
+            files: SortedFiles::new(storage),
+            skipped: 1,
+        };
+        let mut out = Vec::new();
+        render_xml(&mut out, &collection)?;
+        let xml_str = std::str::from_utf8(&out)?;
+        let expected = "\
+<repository name=\"my-repo\" revision=\"v1.0\">
+<directory_structure>
+├── a.txt
+└── z.txt
+</directory_structure>
+<files>
+<file path=\"a.txt\">
+a &amp; b
+</file>
+<file path=\"z.txt\">
+z &lt; 10
+</file>
+</files>
+</repository>
+";
+        assert_eq!(xml_str, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn xml_attr_escapes_whitespace_and_preserves_body() -> Result<(), Box<dyn std::error::Error>> {
+        let files = [FileRecord {
+            path: "dir\nname\r\t\\back/file.rs",
+            content: "fn main() {\n\tprintln!(\"hello\");\r\n}\n",
+        }];
+        let mut storage: FileStorage = files.into_iter().collect();
+        storage.sort_by_path();
+        let collection = CollectionResult {
+            label: "my\trepo\n".into(),
+            revision: Some("rev\r\n1".into()),
+            files: SortedFiles::new(storage),
+            skipped: 0,
+        };
+        let mut xml_out = Vec::new();
+        render_xml(&mut xml_out, &collection)?;
+        let xml_str = std::str::from_utf8(&xml_out)?;
+
+        assert!(
+            xml_str.contains("<repository name=\"my&#9;repo&#10;\" revision=\"rev&#13;&#10;1\">")
+        );
+        assert!(xml_str.contains("<file path=\"dir&#10;name&#13;&#9;\\back/file.rs\">"));
+        assert!(xml_str.contains("dir&#10;name&#13;&#9;\\back/"));
+        assert!(xml_str.contains("fn main() {\n\tprintln!(&quot;hello&quot;);\r\n}\n"));
+        Ok(())
+    }
+}
