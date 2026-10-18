@@ -14,9 +14,16 @@ struct TempDir {
 impl TempDir {
     fn new(label: &str) -> Self {
         let pid = std::process::id();
-        let counter = CLI_TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("codefeed_cli_{label}_{pid}_{counter}"));
-        std::fs::create_dir_all(&path).expect("temporary directory should be created");
+        let path = loop {
+            let counter = CLI_TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let candidate =
+                std::env::temp_dir().join(format!("codefeed_cli_{label}_{pid}_{counter}"));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => panic!("failed to create temporary directory {candidate:?}: {err}"),
+            }
+        };
         Self { path }
     }
 }

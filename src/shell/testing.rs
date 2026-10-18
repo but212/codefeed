@@ -16,9 +16,16 @@ pub(super) struct TempDirGuard(PathBuf);
 impl TempDirGuard {
     pub(super) fn new(label: &str) -> Result<Self, Box<dyn Error>> {
         let pid = std::process::id();
-        let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("local_ingest_{label}_{pid}_{counter}"));
-        fs::create_dir_all(&path)?;
+        let path = loop {
+            let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let candidate =
+                std::env::temp_dir().join(format!("local_ingest_{label}_{pid}_{counter}"));
+            match fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(Box::new(err)),
+            }
+        };
         Ok(Self(fs::canonicalize(&path)?))
     }
 }
