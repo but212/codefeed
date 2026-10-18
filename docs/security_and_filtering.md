@@ -96,7 +96,7 @@ Any path containing a component starting with a leading dot (`.`) is considered 
 ### Candidate vs. Skipped Accounting Rules
 
 - **Ignored paths:** Dropped during discovery. They consume **zero** candidate slots and do **not** appear in skipped counts.
-- **Oversized / Non-UTF-8 / NUL-byte binary files:** Consume 1 candidate slot. Rejected during content inspection or probe evaluation, incrementing `skipped_files`.
+- **Oversized / Non-UTF-8 / NUL-byte binary files:** Consume 1 candidate slot. Rejected during path/content inspection, incrementing `skipped_files`.
 
 ---
 
@@ -143,5 +143,5 @@ Remote ingestion via `src/shell/github.rs` operates under strict isolation:
 2. **XML Format (`--format xml`):**
    - Standard XML entities (`&`, `<`, `>`, `"`, `'`) are escaped.
    - Disallowed XML 1.0 control characters (`\u{0000}` through `\u{001F}` excluding `\t`, `\n`, `\r`) are sanitized to `\u{FFFD}`.
-3. **Directory Tree Rendering:**
-   - Node labels in the ASCII hierarchy tree are escaped to prevent line-break injections from breaking tree visualization.
+3. **Directory Tree & Header Rendering:**
+   - Header metadata labels and node labels in the ASCII hierarchy tree are escaped (`\`, `\r`, `\n`, C0 control characters `0x00..=0x08`, `0x0B`, `0x0C`, `0x0E..=0x1F`, and DEL `0x7F` to `\u{FFFD}`) to prevent line-break injections or terminal state corruption.

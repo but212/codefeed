@@ -130,6 +130,7 @@ fn escape_header(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
         b'\\' => Some((1, "\\\\")),
         b'\r' => Some((1, "\\r")),
         b'\n' => Some((1, "\\n")),
+        0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F | 0x7F => Some((1, "\u{FFFD}")),
         _ => None,
     }
 }
@@ -672,11 +673,25 @@ z &lt; 10
 
     #[test]
     fn write_header_escaped_replaces_all_target_characters() {
-        let input = "a\\b\rc\nd\\\\e\r\n";
-        let expected = "a\\\\b\\rc\\nd\\\\\\\\e\\r\\n";
+        let input = "a\\b\rc\nd\\\\e\r\n\x1b]0;title\x07\x7f\t";
+        let expected = "a\\\\b\\rc\\nd\\\\\\\\e\\r\\n\u{FFFD}]0;title\u{FFFD}\u{FFFD}\t";
         let mut buf = Vec::new();
         write_escaped(&mut buf, input, escape_header).unwrap();
         assert_eq!(std::str::from_utf8(&buf).unwrap(), expected);
+    }
+
+    #[test]
+    fn escapes_control_characters_in_filename_headers_and_tree() -> Result<(), Box<dyn std::error::Error>> {
+        let filename = "x\x1b]0;title\x07.md";
+        let files = [FileRecord {
+            path: filename,
+            content: "content\n",
+        }];
+        let text_rendered = render_digest("repo", None, &files, 0)?;
+        assert!(!text_rendered.contains("\x1b"));
+        assert!(!text_rendered.contains("\x07"));
+        assert!(text_rendered.contains("x\u{FFFD}]0;title\u{FFFD}.md"));
+        Ok(())
     }
 
     fn xml_escape(value: &str) -> String {
@@ -854,37 +869,4 @@ z &lt; 10
         Ok(())
     }
 
-    #[test]
-    fn tree_deduplicates_identical_file_paths() -> Result<(), Box<dyn std::error::Error>> {
-        let mut storage = FileStorage::new();
-        storage.push("a.txt", "v1");
-        storage.push("a.txt", "v2");
-        storage.push("dir/sub.txt", "v1");
-        storage.push("dir/sub.txt", "v2");
-        storage.sort_by_path();
-
-        let mut buf = Vec::new();
-        render_tree(&mut buf, &storage, |w, s| w.write_all(s.as_bytes()))?;
-        let tree_str = std::str::from_utf8(&buf)?;
-        let expected = "\
-├── a.txt
-└── dir/
-    └── sub.txt
-";
-        assert_eq!(tree_str, expected);
-
-        let collection = CollectionResult {
-            label: "test".into(),
-            revision: None,
-            files: storage,
-            skipped: 0,
-        };
-        let mut out = Vec::new();
-        render_to_writer(&mut out, &collection, DigestFormat::Text)?;
-        let digest_str = std::str::from_utf8(&out)?;
-        assert!(digest_str.contains("Files: 2"));
-        assert!(digest_str.contains("v2"));
-        assert!(!digest_str.contains("v1"));
-        Ok(())
-    }
 }

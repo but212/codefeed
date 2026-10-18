@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn text_str_detects_binary_and_handles_probe_boundary() {
+    fn text_str_detects_binary_nul_anywhere() {
         let mut bin = vec![b'a'; 1024];
         bin[12] = 0;
         assert!(text_str(&bin).is_none());
