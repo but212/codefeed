@@ -3,7 +3,10 @@
 //! Shell modules perform all effects and feed observations to the functional
 //! core in `crate::core`.
 
-use crate::{IngestError, IngestReport, RunConfig, Source};
+use crate::{
+    IngestError, IngestReport, OutputTarget, RunConfig, Source,
+    core::cli::{CliAction, help_text, parse},
+};
 
 mod github;
 mod local;
@@ -50,7 +53,7 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString>,
 {
-    let action = match crate::core::cli::parse(args) {
+    let action = match parse(args) {
         Ok(action) => action,
         Err(error) => {
             eprintln!("error: {error}");
@@ -59,23 +62,23 @@ where
     };
 
     match action {
-        crate::core::cli::CliAction::Help => {
-            println!("{}", crate::core::cli::help_text());
+        CliAction::Help => {
+            write_stdout_line(help_text());
             0
         }
-        crate::core::cli::CliAction::Run(config) => match ingest(&config) {
+        CliAction::Run(config) => match ingest(&config) {
             Ok(report) => {
                 let included = report.included_files;
                 let skipped = report.skipped_files;
                 let tokens = report.estimated_tokens;
                 match &report.output {
-                    crate::core::model::OutputTarget::File(path) => {
+                    OutputTarget::File(path) => {
                         let path_display = path.display();
-                        println!(
+                        write_stdout_line(&format!(
                             "Wrote {path_display} ({included} files, {skipped} skipped, ~{tokens} tokens)"
-                        );
+                        ));
                     }
-                    crate::core::model::OutputTarget::Stdout => {
+                    OutputTarget::Stdout => {
                         eprintln!(
                             "Wrote to stdout ({included} files, {skipped} skipped, ~{tokens} tokens)"
                         );
@@ -89,6 +92,20 @@ where
             }
         },
     }
+}
+
+fn write_stdout_line_to<W: std::io::Write>(out: &mut W, line: &str) -> std::io::Result<()> {
+    match writeln!(out, "{line}") {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+fn write_stdout_line(line: &str) {
+    let stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+    let _ = write_stdout_line_to(&mut lock, line);
 }
 
 /// Returns the elapsed duration since the Unix epoch in nanoseconds.
@@ -172,5 +189,26 @@ mod tests {
             "directory should be removed even on panic"
         );
         Ok(())
+    }
+
+    #[test]
+    fn write_stdout_line_ignores_broken_pipe() {
+        struct BrokenPipeWriter;
+        impl std::io::Write for BrokenPipeWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "broken pipe",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "broken pipe",
+                ))
+            }
+        }
+        let mut writer = BrokenPipeWriter;
+        assert!(write_stdout_line_to(&mut writer, "hello").is_ok());
     }
 }

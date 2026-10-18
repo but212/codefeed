@@ -12,6 +12,7 @@ use ureq::tls::{RootCerts, TlsConfig};
 
 use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::error::IngestError;
+use crate::core::model::CollectionResult;
 use crate::core::policy::{
     ARCHIVE_MAX_SECS, MAX_FILE_SIZE, MAX_RETRIES, PathStatus, is_retryable_status, retry_delay,
 };
@@ -69,7 +70,7 @@ pub(super) fn collect(
     owner: &str,
     repo: &str,
     reference: Option<&str>,
-) -> Result<crate::core::model::CollectionResult, IngestError> {
+) -> Result<CollectionResult, IngestError> {
     let client = GithubClient::new();
     let reader = client.tarball_stream(owner, repo, reference)?;
     collect_archive(reader, owner, repo, reference)
@@ -211,12 +212,12 @@ fn collect_archive<R: Read>(
     owner: &str,
     repo: &str,
     reference: Option<&str>,
-) -> Result<crate::core::model::CollectionResult, IngestError> {
+) -> Result<CollectionResult, IngestError> {
     let mut archive = Archive::new(GzDecoder::new(reader));
     let entries = archive.entries().map_err(IngestError::Io)?;
     let label = format!("https://github.com/{owner}/{repo}");
     let mut parsed_revision = None;
-    let mut selector = crate::core::selector::Selector::new();
+    let mut selector = Selector::new();
     let mut path_scratch = String::with_capacity(256);
     let mut content_scratch = Vec::with_capacity(32 * 1024);
 
@@ -269,8 +270,7 @@ fn process_tar_entry<R: Read>(
     match normalize_tar_entry_path(&path_bytes, path_scratch)? {
         PathStatus::Ignored => return Ok(None),
         PathStatus::NonUtf8Candidate => {
-            let slot = selector.reserve_candidate(None)?;
-            selector.record_skipped(slot);
+            selector.record_non_utf8()?;
             return Ok(None);
         }
         PathStatus::Valid => {}
@@ -279,7 +279,7 @@ fn process_tar_entry<R: Read>(
     let rel_path = path_scratch.as_str();
 
     // 4. Pre-I/O candidate reservation before reading entry body
-    let slot = selector.reserve_candidate(Some(rel_path))?;
+    let slot = selector.reserve_candidate(rel_path)?;
 
     let header_size = entry.header().size().unwrap_or(0);
     if header_size > MAX_FILE_SIZE {
@@ -295,7 +295,7 @@ fn process_tar_entry<R: Read>(
     if content_scratch.len() as u64 > MAX_FILE_SIZE {
         selector.record_skipped(slot);
     } else {
-        selector.record_file(slot, rel_path, content_scratch.as_slice())?;
+        selector.record_file(slot, content_scratch.as_slice())?;
     }
 
     Ok(None)

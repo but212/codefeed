@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::core::error::IngestError;
-use crate::core::model::{DigestFormat, GitRef, OutputTarget, RunConfig, Source};
+use crate::core::model::{DigestFormat, OutputTarget, RunConfig, Source};
 
 const HELP: &str =
     "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]";
@@ -116,17 +116,7 @@ where
         None => OutputTarget::File(PathBuf::from("digest.txt")),
     };
 
-    let parsed_source = Source::parse_os(&source_os)?;
-    let git_ref = match (&parsed_source, reference) {
-        (_, None) => None,
-        (Source::Local(_), Some(_)) => {
-            return Err(IngestError::invalid_source(
-                "--ref is only valid for GitHub sources",
-            ));
-        }
-        (Source::Github { .. }, Some(r)) => Some(GitRef::new(r)?),
-    };
-    let resolved_source = parsed_source.with_reference(git_ref)?;
+    let resolved_source = Source::parse_os(&source_os)?.with_reference(reference)?;
     Ok(CliAction::Run(RunConfig::new(
         resolved_source,
         output_target,
@@ -179,7 +169,7 @@ fn parse_format(val: &str) -> Result<DigestFormat, IngestError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::Source;
+    use crate::core::model::{GitRef, Source};
 
     #[test]
     fn cli_parses_valid_invocations() {

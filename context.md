@@ -9,7 +9,7 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 - `Source` — `Local(PathBuf)` or `Github { owner, repo, reference }` (`#[non_exhaustive]`, constructed via `Source::github`). Enforces owner/repo identifier validation and reference invariants via `GitRef`.
 - `GitRef` — Validated non-empty Git revision reference (branch, tag, or commit SHA), rejecting empty and whitespace-only strings.
 - `RunConfig` — Execution configuration unifying `source`, `output`, and `format`.
-- `CandidateInput` — Entry observed by the shell and passed to core: `File { path, bytes }`, `TooLarge { path }`, or `Skipped { path }`. `Selector::feed` validates UTF-8 text and NUL-free content, registers directory counts in `CandidateBudget`, and updates storage. Shell collectors filter noise and sensitive paths pre-candidate (`policy::is_ignored_path`), map missing (`NotFound`) or non-regular files to `Skipped`, and abort unexpected I/O errors as `IngestError::Io`.
+- `CandidateSlot<'a>` — Linear proof token demonstrating a candidate slot was reserved in `CandidateBudget` for `path: &'a str`. `Selector::reserve_candidate` validates candidate counts before reading body bytes; `Selector::record_file` consumes the slot to validate UTF-8 text and NUL-free content, updating storage; `Selector::record_skipped` consumes the slot for empty, missing, or oversized files; `Selector::record_non_utf8` accounts for non-UTF-8 paths directly. Shell collectors filter non-regular files (FIFOs, sockets, devices, symlinks) and noise/sensitive/hidden paths pre-candidate (`policy::classify_path`, `policy::is_hidden_segment`), map files unlinked/missing after discovery to `Skipped`, and abort unexpected I/O errors as `IngestError::Io`.
 - `FileSpan` — POD indexing path and content byte spans via private offsets, accessed through borrowed slice methods (`path(&arena)`, `content(&arena)`).
 - `FileStorage` — Append-only arena buffer (`path_arena`, `content_arena`, `spans`). Provides zero-copy `FileRecord<'a>` borrowed views throughout ingestion and in-place lexicographical sorting (`sort_by_path`) by swapping 16-byte `FileSpan` offsets without string reallocations.
 - `FileRecord<'a>` — Zero-copy borrowed digest entry view: `path: &'a str`, `content: &'a str`.
@@ -35,7 +35,7 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 - ASCII tree (`├── `, `└── `, `│   `): Renders deterministic directory structure directly from sorted `FileStorage` with monotonic byte-offset slicing (`render::render_tree`). Format-neutral; escapes control codes and XML entities to prevent tree line-break injections.
 - Token estimation: Pure function `estimate_tokens(bytes)` calculates `(bytes / 4).max(1)` when non-zero, `0` when empty. Reported in `IngestReport.estimated_tokens` and completion messages (`~N tokens`). Calibrated for English text and code (~4 bytes/token); multibyte text (such as Korean/CJK) will be underestimated.
 - Plain text (`--format text`): Preserves valid UTF-8 file content verbatim (rejecting NUL bytes) for LLM prompts; escapes headers and paths while leaving file bodies unmutated (interactive terminals may reflect ANSI escape codes contained in files).
-- XML (`--format xml`): Emits `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`), attribute whitespace (`\t`, `\n`, `\r` via character references), and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`.
+- XML (`--format xml`): Emits `<repository>`, `<directory_structure>`, and `<files><file path="...">` tags, escaping XML entities (`&`, `<`, `>`, `"`, `'`), attribute whitespace (`\t`, `\n`, `\r` via character references), while preserving raw `\t`, `\n`, `\r` in `<file>` element bodies for LLM readability and token efficiency, and sanitizing disallowed XML 1.0 control characters to `\u{FFFD}`.
 - Lexicographical ordering: File-path ordering is established in-place on `spans` via `FileStorage::sort_by_path()` during `Selector::finish()`. Format renderers consume `ExactSizeIterator<Item = FileRecord<'_>>` directly with zero heap re-allocation or re-sorting.
 - Header format: Local digest headers use root directory basename (`Repository: <basename>`), omitting absolute paths and system prefixes.
 
@@ -70,7 +70,7 @@ Boundary rule: Pure core performs no I/O, clock, or network calls and never depe
 
 - Pure core (`src/core/`):
   - `cli.rs`: CLI argument parsing, help detection, and `CliAction` generation (`parse`).
-  - `policy.rs`: Operational limits, noise patterns, sensitive patterns, and path classification (`PathStatus`, `classify_path`, `is_ignored_filename`). Single source of truth for limits.
+  - `policy.rs`: Operational limits, noise patterns, sensitive patterns, and path classification (`PathStatus`, `classify_path`, `is_hidden_segment`). Single source of truth for limits and path exclusion rules.
   - `model.rs`: Domain value types (`Source`, `CollectionResult`, `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`) and source parsing (`Source::parse`, `Source::parse_os`).
   - `storage.rs`: Continuous arena storage (`FileStorage`, `FileSpan`, `FileRecord`, `FileRecordIter`, `cmp_path`, `largest_files`).
   - `error.rs`: Domain error enum `IngestError` and diagnostic payloads (`CandidateLimitExceededError`).

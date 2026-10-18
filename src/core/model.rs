@@ -43,40 +43,6 @@ impl std::fmt::Display for GitRef {
     }
 }
 
-impl TryFrom<&str> for GitRef {
-    type Error = IngestError;
-
-    #[inline]
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-
-impl TryFrom<String> for GitRef {
-    type Error = IngestError;
-
-    #[inline]
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-
-impl std::str::FromStr for GitRef {
-    type Err = IngestError;
-
-    #[inline]
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::new(s)
-    }
-}
-
-impl AsRef<str> for GitRef {
-    #[inline]
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
 /// Ingestion source location.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -150,14 +116,10 @@ impl Source {
     ///
     /// # Errors
     ///
-    /// Returns [`IngestError::InvalidSource`] if `reference` is [`Some`] when called on a [`Source::Local`] variant.
-    pub fn with_reference(self, reference: Option<GitRef>) -> Result<Self, IngestError> {
+    /// Returns [`IngestError::InvalidSource`] if `reference` is [`Some`] when called on a [`Source::Local`] variant,
+    /// or if the reference string is empty or only whitespace.
+    pub fn with_reference(self, reference: Option<impl Into<String>>) -> Result<Self, IngestError> {
         match self {
-            Self::Github { owner, repo, .. } => Ok(Self::Github {
-                owner,
-                repo,
-                reference,
-            }),
             Self::Local(_) => {
                 if reference.is_some() {
                     Err(IngestError::invalid_source(
@@ -166,6 +128,14 @@ impl Source {
                 } else {
                     Ok(self)
                 }
+            }
+            Self::Github { owner, repo, .. } => {
+                let reference = reference.map(GitRef::new).transpose()?;
+                Ok(Self::Github {
+                    owner,
+                    repo,
+                    reference,
+                })
             }
         }
     }
@@ -305,7 +275,7 @@ mod tests {
 
         assert!(GitRef::new("").is_err());
         assert!(GitRef::new("   ").is_err());
-        assert!(GitRef::try_from("\t\n").is_err());
+        assert!(GitRef::new("\t\n").is_err());
     }
 
     #[test]
@@ -315,18 +285,17 @@ mod tests {
             repo: "rust".into(),
             reference: None,
         };
-        let git_ref = GitRef::new("main").unwrap();
-        let updated = gh.with_reference(Some(git_ref.clone())).unwrap();
+        let updated = gh.clone().with_reference(Some("main")).unwrap();
         assert_eq!(
             updated,
             Source::Github {
                 owner: "rust-lang".into(),
                 repo: "rust".into(),
-                reference: Some(git_ref.clone()),
+                reference: Some(GitRef::new("main").unwrap()),
             }
         );
 
-        let cleared = updated.with_reference(None).unwrap();
+        let cleared: Source = updated.with_reference(None::<&str>).unwrap();
         assert_eq!(
             cleared,
             Source::Github {
@@ -337,12 +306,22 @@ mod tests {
         );
 
         let local = Source::Local(PathBuf::from("."));
-        let local_ok = local.clone().with_reference(None).unwrap();
+        let local_ok: Source = local.clone().with_reference(None::<&str>).unwrap();
         assert_eq!(local_ok, local);
 
-        let local_err = local.with_reference(Some(git_ref)).unwrap_err();
+        let local_err = local.clone().with_reference(Some("main")).unwrap_err();
         assert!(
             matches!(local_err, IngestError::InvalidSource(msg) if msg.contains("--ref is only valid for GitHub sources"))
+        );
+
+        let local_empty_err = local.with_reference(Some("")).unwrap_err();
+        assert!(
+            matches!(local_empty_err, IngestError::InvalidSource(msg) if msg.contains("--ref is only valid for GitHub sources"))
+        );
+
+        let gh_empty_err = gh.with_reference(Some("")).unwrap_err();
+        assert!(
+            matches!(gh_empty_err, IngestError::InvalidSource(msg) if msg.contains("--ref cannot be empty"))
         );
     }
 

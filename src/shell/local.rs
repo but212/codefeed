@@ -7,14 +7,15 @@ use std::path::{Path, PathBuf};
 use ignore::WalkBuilder;
 
 use crate::core::error::IngestError;
-use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path};
+use crate::core::model::CollectionResult;
+use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path, is_hidden_segment};
 use crate::core::selector::Selector;
 
 /// Collects files from a local directory root, excluding the resolved output file if located inside it.
 pub(super) fn collect(
     root: &Path,
     resolved_output: Option<&Path>,
-) -> Result<crate::core::model::CollectionResult, IngestError> {
+) -> Result<CollectionResult, IngestError> {
     let canonical_root = validate_root(root)?;
     let label = local_label(&canonical_root);
 
@@ -51,14 +52,13 @@ pub(super) fn collect(
         match classify_local_path(relative, &mut path_scratch) {
             PathStatus::Ignored => continue,
             PathStatus::NonUtf8Candidate => {
-                let slot = selector.reserve_candidate(None)?;
-                selector.record_skipped(slot);
+                selector.record_non_utf8()?;
             }
             PathStatus::Valid => {
-                let slot = selector.reserve_candidate(Some(&path_scratch))?;
+                let slot = selector.reserve_candidate(&path_scratch)?;
                 scratch.clear();
                 match read_local_file_into(entry_path, &mut scratch)? {
-                    Some(bytes) => selector.record_file(slot, &path_scratch, bytes)?,
+                    Some(bytes) => selector.record_file(slot, bytes)?,
                     None => selector.record_skipped(slot),
                 }
             }
@@ -127,7 +127,7 @@ fn classify_local_path(relative: &Path, scratch: &mut String) -> PathStatus {
     let mut has_non_utf8 = false;
 
     for part in relative.components() {
-        if part.as_os_str().as_encoded_bytes().starts_with(b".") {
+        if is_hidden_segment(part.as_os_str().as_encoded_bytes()) {
             has_hidden = true;
         }
         if let Some(s) = part.as_os_str().to_str() {

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hidden-Segment SSOT**: Added `is_hidden_segment` (`src/core/policy.rs`) predicate checking raw segment bytes for leading dot, acting as the single source of truth for hidden paths across local traversal and tar archives.
+- **Non-UTF-8 Candidate Recording**: Added `Selector::record_non_utf8` (`src/core/selector.rs`) to account for non-UTF-8 path candidates directly into candidate budget and skipped counts.
 - **Pre-I/O Candidate Token**: Added [`CandidateSlot`] (`src/core/selector.rs`) linear proof token demonstrating candidate budget reservation prior to content acquisition.
 - **Path Classification Status & Classifier**: Added [`PathStatus`] and pure domain path classifier [`classify_path`] (`src/core/policy.rs`) unifying hidden segment checks, noise files, and sensitive pattern filtering into a single classifier.
 - **GitRef Domain Type**: Added [`GitRef`] enforcing non-empty, non-whitespace Git revision invariants with zero-copy `&str` access.
@@ -19,9 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **Single-Caller Capacity & Diagnostic Wrappers**: Removed `CandidateBudget::with_capacity`, `Selector::with_capacity`, and `FileStorage::with_capacity` in favor of direct preallocated initialization in `new()`; removed `FileStorage::largest_files` delegate in favor of `storage::largest_files`.
+- **Unused GitRef Conversion Traits**: Removed `TryFrom<&str>`, `TryFrom<String>`, `FromStr`, and `AsRef<str>` from `GitRef` while retaining `new`, `as_str`, `Deref`, and `Display`.
 - **Legacy Test-Only Core APIs**: Completely removed `CandidateInput` and `Selector::feed` from `src/core/selector.rs`, migrating all unit tests to the production `reserve_candidate` and `record_file`/`record_skipped` API; removed deprecated `is_ignored_path` and `is_hidden_path` from `src/core/policy.rs`.
 
 ### Changed
+
+- **CandidateSlot Path Binding**: Bound `path: &'a str` into `CandidateSlot<'a>`, eliminating the duplicate path argument in `Selector::record_file(slot, bytes)`.
+- **Stdout BrokenPipe Resilience in run_cli**: Replaced `println!` in `run_cli` (`src/shell/mod.rs`) with `writeln!` on locked stdout, preventing exit 101 panics on closed pipe during `--help` and file completion output.
+- **Unified Source Reference Validation**: Updated `Source::with_reference` to accept `Option<impl Into<String>>`, evaluating variant compatibility before `GitRef` construction and eliminating duplicated `--ref` matching in `src/core/cli.rs`.
+- **Hidden Segment SSOT**: Made `policy::is_ignored_filename` private and routed hidden segment checks in `src/shell/local.rs` and `src/core/archive.rs` through `policy::is_hidden_segment` and `policy::classify_path`.
 
 - **Pre-I/O Candidate Budget Reservation**: Enforced `Selector::reserve_candidate` before reading local file bodies or archive entry bytes in `src/shell/local.rs` and `src/shell/github.rs`, ensuring candidate budget overflow aborts immediately with 0 bytes read for the 10,001st candidate.
 - **Single-Pass Path Normalization & Policy Filtering**: Integrated hidden-segment, noise, and sensitive credentials filtering (`is_ignored_filename`) into `archive::normalize_tar_entry_path` and `local::classify_local_path`, eliminating secondary `is_ignored_path` string re-scans while strictly maintaining tar traversal invariants.

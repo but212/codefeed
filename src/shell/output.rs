@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
+use crate::core::render::render_to_writer;
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -67,9 +68,7 @@ pub(super) fn emit(
     format: DigestFormat,
 ) -> Result<usize, IngestError> {
     match resolved_target {
-        Some(path) => write_atomic(path, |writer| {
-            crate::core::render::render_to_writer(writer, collection, format)
-        }),
+        Some(path) => write_atomic(path, |writer| render_to_writer(writer, collection, format)),
         None => {
             let stdout = io::stdout();
             render_stdout_to(&mut stdout.lock(), collection, format)
@@ -83,7 +82,7 @@ fn render_stdout_to<W: Write>(
     format: DigestFormat,
 ) -> Result<usize, IngestError> {
     let mut buffer = Vec::new();
-    let tokens = crate::core::render::render_to_writer(&mut buffer, collection, format)?;
+    let tokens = render_to_writer(&mut buffer, collection, format)?;
     match out.write_all(&buffer) {
         Ok(()) => match out.flush() {
             Ok(()) => Ok(tokens),

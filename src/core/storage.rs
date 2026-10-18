@@ -47,18 +47,12 @@ pub(crate) struct FileStorage {
 }
 
 impl FileStorage {
-    #[cfg(test)]
     #[inline]
     pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    #[inline]
-    pub(crate) fn with_capacity(spans_cap: usize, path_bytes: usize, content_bytes: usize) -> Self {
         Self {
-            spans: Vec::with_capacity(spans_cap),
-            path_arena: String::with_capacity(path_bytes),
-            content_arena: String::with_capacity(content_bytes),
+            spans: Vec::with_capacity(512),
+            path_arena: String::with_capacity(16 * 1024),
+            content_arena: String::with_capacity(256 * 1024),
         }
     }
 
@@ -136,12 +130,6 @@ impl FileStorage {
             storage: self,
             index: 0,
         }
-    }
-
-    /// Diagnostic ranking for digest size: selects up to five largest files.
-    #[inline]
-    pub(crate) fn largest_files(&self) -> Vec<(String, usize)> {
-        largest_files(self.iter())
     }
 }
 

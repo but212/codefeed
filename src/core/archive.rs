@@ -1,5 +1,5 @@
 use crate::core::error::IngestError;
-use crate::core::policy::{PathStatus, is_ignored_filename};
+use crate::core::policy::{PathStatus, classify_path, is_hidden_segment};
 
 /// Normalizes a raw tar entry path into `out`, stripping the root directory prefix,
 /// collapsing multiple slashes, removing `.` segments, and classifying against policy.
@@ -40,7 +40,6 @@ pub(crate) fn normalize_tar_entry_path(
 
     let mut has_hidden = false;
     let mut has_invalid_utf8 = false;
-    let mut last_segment: Option<&str> = None;
 
     for segment in rel.split(|&b| b == b'/') {
         if segment.is_empty() || segment == b"." {
@@ -51,7 +50,7 @@ pub(crate) fn normalize_tar_entry_path(
                 "Tar entry contains directory traversal (..)",
             ));
         }
-        if segment.starts_with(b".") {
+        if is_hidden_segment(segment) {
             has_hidden = true;
         }
         if has_invalid_utf8 {
@@ -63,7 +62,6 @@ pub(crate) fn normalize_tar_entry_path(
                     out.push('/');
                 }
                 out.push_str(seg_str);
-                last_segment = Some(seg_str);
             }
             Err(_) => {
                 has_invalid_utf8 = true;
@@ -85,14 +83,11 @@ pub(crate) fn normalize_tar_entry_path(
         return Ok(PathStatus::Ignored);
     }
 
-    if let Some(last) = last_segment
-        && is_ignored_filename(last)
-    {
+    let status = classify_path(out);
+    if status == PathStatus::Ignored {
         out.clear();
-        return Ok(PathStatus::Ignored);
     }
-
-    Ok(PathStatus::Valid)
+    Ok(status)
 }
 
 /// Parses a 40-character commit SHA from PAX global header comment bytes.
