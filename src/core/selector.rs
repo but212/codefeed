@@ -164,7 +164,7 @@ impl Selector {
     fn add_file(&mut self, path: &str, content: &str) -> Result<(), IngestError> {
         self.storage.push(path, content);
         if self.storage.total_bytes() > MAX_OUTPUT_SIZE {
-            return Err(output_too_large_error(&self.storage));
+            return Err(output_too_large_error(self.storage.iter()));
         }
         Ok(())
     }
@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn text_str_detects_binary_and_handles_probe_boundary() {
+    fn text_str_detects_binary_nul_anywhere() {
         let mut bin = vec![b'a'; 1024];
         bin[12] = 0;
         assert!(text_str(&bin).is_none());

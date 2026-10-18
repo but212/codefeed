@@ -1,5 +1,5 @@
 use crate::core::error::IngestError;
-use crate::core::policy::{PathStatus, is_hidden_segment, is_ignored_filename};
+use crate::core::policy::{PathStatus, classify_path_segments};
 
 /// Normalizes a raw tar entry path into `out`, stripping the root directory prefix,
 /// collapsing multiple slashes, removing `.` segments, and classifying against policy.
@@ -36,59 +36,22 @@ pub(crate) fn normalize_tar_entry_path(
     }
 
     let rel = &trimmed[slash_index + 1..];
-    out.clear();
 
-    let mut has_hidden = false;
-    let mut has_invalid_utf8 = false;
-    let mut last_segment_start = 0;
-
+    // Verify traversal in a quick check
     for segment in rel.split(|&b| b == b'/') {
-        if segment.is_empty() || segment == b"." {
-            continue;
-        }
         if segment == b".." {
             return Err(IngestError::invalid_metadata(
                 "Tar entry contains directory traversal (..)",
             ));
         }
-        if is_hidden_segment(segment) {
-            has_hidden = true;
-        }
-        if has_invalid_utf8 {
-            continue;
-        }
-        match std::str::from_utf8(segment) {
-            Ok(seg_str) => {
-                if !out.is_empty() {
-                    out.push('/');
-                }
-                last_segment_start = out.len();
-                out.push_str(seg_str);
-            }
-            Err(_) => {
-                has_invalid_utf8 = true;
-                if !out.is_empty() {
-                    out.push('/');
-                }
-            }
-        }
     }
 
-    if has_hidden {
-        out.clear();
-        return Ok(PathStatus::Ignored);
-    }
+    let filtered_segments = rel
+        .split(|&b| b == b'/')
+        .filter(|seg| !seg.is_empty() && *seg != b".");
 
-    if has_invalid_utf8 {
-        return Ok(PathStatus::NonUtf8Candidate);
-    }
-
-    if out.is_empty() || is_ignored_filename(&out[last_segment_start..]) {
-        out.clear();
-        return Ok(PathStatus::Ignored);
-    }
-
-    Ok(PathStatus::Valid)
+    let status = classify_path_segments(filtered_segments, out);
+    Ok(status)
 }
 
 /// Parses a 40-character commit SHA from PAX global header comment bytes.

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Deduplication Cleanup**:
+  - Removed redundant in-place path deduplication (`dedup_by`) from `FileStorage::sort_by_path`, removing unreachable logic and updating invariants in `context.md`.
 - **Candidate Pipeline Encapsulation**:
   - Added `Selector::record_skipped` and `Selector::record_with`, encapsulating `CandidateSlot` reservation and consumption lifecycle inside `src/core/selector.rs`.
   - Streamlined `src/shell/local.rs` and `src/shell/github.rs` collection loops to delegate candidate slot reservation and deferred body reading via `record_with` and `record_skipped`, preventing unnecessary I/O on budget overflow.

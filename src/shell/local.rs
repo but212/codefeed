@@ -8,7 +8,7 @@ use ignore::WalkBuilder;
 
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
-use crate::core::policy::{MAX_FILE_SIZE, PathStatus, is_hidden_segment, is_ignored_filename};
+use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path_segments};
 use crate::core::selector::Selector;
 
 /// Collects files from a local directory root, excluding the resolved output file if located inside it.
@@ -120,44 +120,10 @@ fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
 }
 
 fn classify_local_path(relative: &Path, scratch: &mut String) -> PathStatus {
-    scratch.clear();
-    let mut has_hidden = false;
-    let mut has_non_utf8 = false;
-    let mut last_segment_start = 0;
-
-    for part in relative.components() {
-        if is_hidden_segment(part.as_os_str().as_encoded_bytes()) {
-            has_hidden = true;
-        }
-        if has_non_utf8 {
-            continue;
-        }
-        if let Some(s) = part.as_os_str().to_str() {
-            if !scratch.is_empty() {
-                scratch.push('/');
-            }
-            last_segment_start = scratch.len();
-            scratch.push_str(s);
-        } else {
-            has_non_utf8 = true;
-            if !scratch.is_empty() {
-                scratch.push('/');
-            }
-        }
-    }
-
-    if has_hidden {
-        scratch.clear();
-        return PathStatus::Ignored;
-    }
-    if has_non_utf8 {
-        return PathStatus::NonUtf8Candidate;
-    }
-    if scratch.is_empty() || is_ignored_filename(&scratch[last_segment_start..]) {
-        scratch.clear();
-        return PathStatus::Ignored;
-    }
-    PathStatus::Valid
+    let segments = relative
+        .components()
+        .map(|c| c.as_os_str().as_encoded_bytes());
+    classify_path_segments(segments, scratch)
 }
 
 fn local_label(root: &Path) -> String {

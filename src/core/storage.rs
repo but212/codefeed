@@ -76,20 +76,11 @@ impl FileStorage {
         (self.path_arena.len() + self.content_arena.len()) as u64
     }
 
-    /// Sorts spans hierarchically by path components in-place within the path arena
-    /// and deduplicates identical paths, keeping the last observed entry.
+    /// Sorts spans hierarchically by path components in-place within the path arena.
     pub(crate) fn sort_by_path(&mut self) {
         let path_arena = &self.path_arena;
         self.spans
             .sort_by(|a, b| cmp_path(a.path(path_arena), b.path(path_arena)));
-        self.spans.dedup_by(|next, prev| {
-            if next.path(path_arena) == prev.path(path_arena) {
-                *prev = *next;
-                true
-            } else {
-                false
-            }
-        });
     }
 
     /// Appends path and content to the arenas and records a [`FileSpan`].
@@ -127,54 +118,8 @@ impl FileStorage {
     }
 
     /// Iterator yielding borrowed [`FileRecord`] views over the arena.
-    pub(crate) fn iter(&self) -> FileRecordIter<'_> {
-        FileRecordIter {
-            storage: self,
-            index: 0,
-        }
-    }
-}
-
-/// Zero-copy iterator yielding borrowed [`FileRecord`] items from [`FileStorage`].
-pub(crate) struct FileRecordIter<'a> {
-    storage: &'a FileStorage,
-    index: usize,
-}
-
-impl<'a> Iterator for FileRecordIter<'a> {
-    type Item = FileRecord<'a>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index < self.storage.len() {
-            let span = self.storage.spans[self.index];
-            self.index += 1;
-            Some(self.storage.get(span))
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.storage.len().saturating_sub(self.index);
-        (remaining, Some(remaining))
-    }
-}
-
-impl ExactSizeIterator for FileRecordIter<'_> {
-    #[inline]
-    fn len(&self) -> usize {
-        self.storage.len().saturating_sub(self.index)
-    }
-}
-
-impl<'a> IntoIterator for &'a FileStorage {
-    type Item = FileRecord<'a>;
-    type IntoIter = FileRecordIter<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
+    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = FileRecord<'_>> {
+        self.spans.iter().map(move |&span| self.get(span))
     }
 }
 
@@ -294,9 +239,6 @@ mod tests {
         let collected: Vec<FileRecord<'_>> = storage.iter().collect();
         assert_eq!(collected, vec![rec1, rec2]);
 
-        // IntoIterator verification
-        let into_collected: Vec<FileRecord<'_>> = (&storage).into_iter().collect();
-        assert_eq!(into_collected, vec![rec1, rec2]);
 
         // Arena contents verification
         assert_eq!(storage.path_arena, "path/to/first.rssecond.txt");
@@ -332,17 +274,4 @@ mod tests {
         assert_eq!(paths, vec!["src/a.rs", "src-test/b.rs"]);
     }
 
-    #[test]
-    fn file_storage_deduplicates_keeping_last_entry() {
-        let mut storage = FileStorage::new();
-        storage.push("a.txt", "first");
-        storage.push("b.txt", "middle");
-        storage.push("a.txt", "second");
-
-        storage.sort_by_path();
-
-        let entries: Vec<(&str, &str)> = storage.iter().map(|f| (f.path, f.content)).collect();
-        assert_eq!(entries, vec![("a.txt", "second"), ("b.txt", "middle")]);
-        assert_eq!(storage.len(), 2);
-    }
 }

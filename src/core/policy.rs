@@ -84,6 +84,69 @@ pub(crate) fn is_ignored_filename(file_name: &str) -> bool {
     is_noise_file(file_name) || is_sensitive_file(file_name, extension)
 }
 
+/// Classifies a sequence of raw path segment bytes into [`PathStatus`].
+///
+/// Builds a normalized UTF-8 path string in `scratch` for valid candidates or prefix strings for non-UTF-8 candidates.
+pub(crate) fn classify_path_segments<'a, I>(segments: I, scratch: &mut String) -> PathStatus
+where
+    I: IntoIterator<Item = &'a [u8]>,
+{
+    scratch.clear();
+    let mut has_hidden = false;
+    let mut has_non_utf8 = false;
+    let mut last_segment_bytes: Option<&'a [u8]> = None;
+
+    for segment in segments {
+        if is_hidden_segment(segment) {
+            has_hidden = true;
+        }
+        last_segment_bytes = Some(segment);
+        if has_non_utf8 {
+            continue;
+        }
+        match std::str::from_utf8(segment) {
+            Ok(s) => {
+                if !scratch.is_empty() {
+                    scratch.push('/');
+                }
+                scratch.push_str(s);
+            }
+            Err(_) => {
+                has_non_utf8 = true;
+                if !scratch.is_empty() {
+                    scratch.push('/');
+                }
+            }
+        }
+    }
+
+    if has_hidden {
+        scratch.clear();
+        return PathStatus::Ignored;
+    }
+
+    if let Some(last) = last_segment_bytes {
+        if last.is_empty() {
+            scratch.clear();
+            return PathStatus::Ignored;
+        }
+        if matches!(std::str::from_utf8(last), Ok(filename) if is_ignored_filename(filename)) {
+            scratch.clear();
+            return PathStatus::Ignored;
+        }
+    }
+
+    if has_non_utf8 {
+        return PathStatus::NonUtf8Candidate;
+    }
+
+    if scratch.is_empty() {
+        return PathStatus::Ignored;
+    }
+
+    PathStatus::Valid
+}
+
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
 #[inline]
 pub(crate) const fn is_retryable_status(status_code: u16) -> bool {
@@ -153,6 +216,34 @@ mod tests {
         assert!(!is_hidden_segment(b"src"));
         assert!(!is_hidden_segment(b""));
         assert!(!is_hidden_segment(b"file.txt"));
+    }
+
+    #[test]
+    fn test_classify_path_segments_non_utf8_with_ignored_filename() {
+        let mut scratch = String::new();
+
+        // non-UTF-8 directory segment with ignored filename (id_rsa) -> Ignored
+        let segments: &[&[u8]] = &[b"\xff\xfe", b"id_rsa"];
+        assert_eq!(
+            classify_path_segments(segments.iter().copied(), &mut scratch),
+            PathStatus::Ignored
+        );
+
+        // non-UTF-8 directory segment with valid candidate filename (main.rs) -> NonUtf8Candidate
+        let segments: &[&[u8]] = &[b"\xff\xfe", b"main.rs"];
+        assert_eq!(
+            classify_path_segments(segments.iter().copied(), &mut scratch),
+            PathStatus::NonUtf8Candidate
+        );
+        assert_eq!(scratch, "");
+
+        // non-UTF-8 directory segment + valid dir + valid candidate filename -> NonUtf8Candidate with prefix
+        let segments: &[&[u8]] = &[b"src", b"\xff\xfe", b"main.rs"];
+        assert_eq!(
+            classify_path_segments(segments.iter().copied(), &mut scratch),
+            PathStatus::NonUtf8Candidate
+        );
+        assert_eq!(scratch, "src/");
     }
 
     #[test]
