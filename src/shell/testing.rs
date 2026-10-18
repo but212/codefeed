@@ -1,7 +1,5 @@
 //! Test fixtures and temporary directory guard for shell unit tests.
 
-#![cfg(test)]
-
 use std::error::Error;
 use std::fs;
 use std::ops::Deref;

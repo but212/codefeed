@@ -70,20 +70,13 @@ where
         }
         CliAction::Run(config) => match ingest(&config) {
             Ok(report) => {
-                let included = report.included_files;
-                let skipped = report.skipped_files;
-                let tokens = report.estimated_tokens;
+                let message = format_completion_message(&report);
                 match &report.output {
-                    OutputTarget::File(path) => {
-                        let path_display = path.display();
-                        output::write_stdout_line(&format!(
-                            "Wrote {path_display} ({included} files, {skipped} skipped, ~{tokens} tokens)"
-                        ));
+                    OutputTarget::File(_) => {
+                        output::write_stdout_line(&message);
                     }
                     OutputTarget::Stdout => {
-                        eprintln!(
-                            "Wrote to stdout ({included} files, {skipped} skipped, ~{tokens} tokens)"
-                        );
+                        eprintln!("{message}");
                     }
                 }
                 0
@@ -93,5 +86,70 @@ where
                 1
             }
         },
+    }
+}
+
+fn format_completion_message(report: &IngestReport) -> String {
+    let included = report.included_files;
+    let skipped = report.skipped_files;
+    let tokens = report.estimated_tokens;
+    match &report.output {
+        OutputTarget::File(path) => {
+            let path_display = path.display();
+            format!("Wrote {path_display} ({included} files, {skipped} skipped, ~{tokens} tokens)")
+        }
+        OutputTarget::Stdout => {
+            format!("Wrote to stdout ({included} files, {skipped} skipped, ~{tokens} tokens)")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn format_completion_message_for_file_target() {
+        let report = IngestReport {
+            output: OutputTarget::File(PathBuf::from("digest.txt")),
+            included_files: 10,
+            skipped_files: 2,
+            estimated_tokens: 1500,
+        };
+        let message = format_completion_message(&report);
+        assert_eq!(
+            message,
+            "Wrote digest.txt (10 files, 2 skipped, ~1500 tokens)"
+        );
+    }
+
+    #[test]
+    fn format_completion_message_for_stdout_target() {
+        let report = IngestReport {
+            output: OutputTarget::Stdout,
+            included_files: 5,
+            skipped_files: 0,
+            estimated_tokens: 300,
+        };
+        let message = format_completion_message(&report);
+        assert_eq!(message, "Wrote to stdout (5 files, 0 skipped, ~300 tokens)");
+    }
+
+    #[test]
+    fn run_cli_returns_expected_exit_codes() {
+        // Parsing error returns 1
+        let exit_code = run_cli(["codefeed", "--invalid-flag"]);
+        assert_eq!(exit_code, 1);
+
+        // --help returns 0
+        let exit_code = run_cli(["codefeed", "--help"]);
+        assert_eq!(exit_code, 0);
+
+        // Non-existent local path returns 1
+        let temp_dir = testing::temp_dir("cli_non_existent_path").unwrap();
+        let non_existent = temp_dir.join("does_not_exist");
+        let exit_code = run_cli(["codefeed", non_existent.to_str().unwrap()]);
+        assert_eq!(exit_code, 1);
     }
 }
