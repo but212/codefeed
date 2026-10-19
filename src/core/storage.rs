@@ -14,6 +14,8 @@ pub(crate) struct FileSpan {
     content_len: u32,
 }
 
+const _: () = assert!(core::mem::size_of::<FileSpan>() == 16);
+
 impl FileSpan {
     #[inline(always)]
     pub(super) fn path<'a>(&self, arena: &'a str) -> &'a str {
@@ -42,7 +44,6 @@ pub(crate) struct FileRecord<'a> {
 pub(crate) struct SortedFiles(FileStorage);
 
 impl SortedFiles {
-    #[inline]
     pub(crate) fn new(storage: FileStorage) -> Self {
         Self(storage.sort_by_path())
     }
@@ -51,7 +52,6 @@ impl SortedFiles {
 impl std::ops::Deref for SortedFiles {
     type Target = FileStorage;
 
-    #[inline]
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -67,7 +67,6 @@ pub(crate) struct FileStorage {
 }
 
 impl FileStorage {
-    #[inline]
     pub(crate) fn new() -> Self {
         Self {
             spans: Vec::with_capacity(512),
@@ -76,22 +75,18 @@ impl FileStorage {
         }
     }
 
-    #[inline]
     pub(crate) const fn len(&self) -> usize {
         self.spans.len()
     }
 
-    #[inline]
     pub(crate) fn spans(&self) -> &[FileSpan] {
         &self.spans
     }
 
-    #[inline]
     pub(crate) fn path_arena(&self) -> &str {
         &self.path_arena
     }
 
-    #[inline]
     pub(crate) const fn total_bytes(&self) -> u64 {
         (self.path_arena.len() + self.content_arena.len()) as u64
     }
@@ -131,7 +126,6 @@ impl FileStorage {
     }
 
     /// Resolves a [`FileSpan`] into a borrowed [`FileRecord`].
-    #[inline]
     pub(crate) fn get(&self, span: FileSpan) -> FileRecord<'_> {
         FileRecord {
             path: span.path(&self.path_arena),

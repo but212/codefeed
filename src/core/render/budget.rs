@@ -3,7 +3,6 @@
 use crate::core::policy::MAX_OUTPUT_SIZE;
 
 /// Fast byte-level heuristic calibrated for English text and source code.
-#[inline]
 pub(crate) fn estimate_tokens(bytes: u64) -> usize {
     if bytes == 0 {
         0
