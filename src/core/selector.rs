@@ -12,10 +12,8 @@ use crate::core::storage::{FileStorage, SortedFiles};
 /// Outcome of evaluating an entry candidate against admission policy.
 #[derive(Debug)]
 pub(crate) enum Admission {
-    /// Path is explicitly ignored by policy (e.g., hidden files, lockfiles, sensitive credentials).
-    Ignored(Selector),
-    /// Path was admitted as a candidate but skipped (e.g., non-UTF-8 path or pre-I/O size limit exceeded).
-    Skipped(Selector),
+    /// Policy evaluation or skipped decision settled; candidate count and skipped count are already updated.
+    Settled(Selector),
     /// Path is valid and ready for content evaluation.
     Pending(PendingEntry),
 }
@@ -115,16 +113,9 @@ pub(crate) struct Selector {
 }
 
 impl Selector {
-    /// Creates a default `Selector` with initial arena preallocations.
+    /// Creates a `Selector` with initial arena preallocations.
     pub(crate) fn new() -> Self {
-        Self {
-            storage: FileStorage::new(),
-            candidates: CandidateBudget {
-                count: 0,
-                dir_counts: HashMap::with_capacity(32),
-            },
-            skipped: 0,
-        }
+        Self::default()
     }
 
     /// Evaluates entry admission against policy and budget limits.
@@ -138,11 +129,11 @@ impl Selector {
         size_hint: Option<u64>,
     ) -> Result<Admission, IngestError> {
         match status {
-            PathStatus::Ignored => Ok(Admission::Ignored(self)),
+            PathStatus::Ignored => Ok(Admission::Settled(self)),
             PathStatus::NonUtf8Candidate(path) => {
                 self.candidates = self.candidates.add(&path)?;
                 self.skipped = self.skipped.saturating_add(1);
-                Ok(Admission::Skipped(self))
+                Ok(Admission::Settled(self))
             }
             PathStatus::Valid(path) => {
                 self.candidates = self.candidates.add(&path)?;
@@ -150,7 +141,7 @@ impl Selector {
                     || size_hint.is_some_and(|hint| hint > MAX_FILE_SIZE)
                 {
                     self.skipped = self.skipped.saturating_add(1);
-                    Ok(Admission::Skipped(self))
+                    Ok(Admission::Settled(self))
                 } else {
                     Ok(Admission::Pending(PendingEntry {
                         selector: self,
@@ -188,7 +179,14 @@ impl Selector {
 
 impl Default for Selector {
     fn default() -> Self {
-        Self::new()
+        Self {
+            storage: FileStorage::new(),
+            candidates: CandidateBudget {
+                count: 0,
+                dir_counts: HashMap::with_capacity(32),
+            },
+            skipped: 0,
+        }
     }
 }
 
@@ -200,14 +198,14 @@ mod tests {
     fn feed_file(selector: Selector, path: &str, bytes: &[u8]) -> Result<Selector, IngestError> {
         match selector.admit(PathStatus::Valid(path.to_string()), None)? {
             Admission::Pending(pending) => pending.accept(bytes),
-            Admission::Ignored(s) | Admission::Skipped(s) => Ok(s),
+            Admission::Settled(s) => Ok(s),
         }
     }
 
     fn feed_skipped(selector: Selector, path: &str) -> Result<Selector, IngestError> {
         match selector.admit(PathStatus::Valid(path.to_string()), None)? {
             Admission::Pending(pending) => Ok(pending.skip()),
-            Admission::Ignored(s) | Admission::Skipped(s) => Ok(s),
+            Admission::Settled(s) => Ok(s),
         }
     }
 
@@ -363,8 +361,8 @@ mod tests {
             .admit(PathStatus::Valid(overlong_path), None)
             .unwrap();
         let selector = match admission {
-            Admission::Skipped(s) => s,
-            _ => panic!("expected skipped admission for overlong path"),
+            Admission::Settled(s) => s,
+            _ => panic!("expected settled admission for overlong path"),
         };
         let collection = selector.finish("test".into(), None);
         assert_eq!(collection.skipped, 1);
@@ -378,8 +376,8 @@ mod tests {
             .admit(PathStatus::NonUtf8Candidate("".into()), None)
             .unwrap();
         let selector = match admission {
-            Admission::Skipped(s) => s,
-            _ => panic!("expected skipped"),
+            Admission::Settled(s) => s,
+            _ => panic!("expected settled"),
         };
         let res = selector.finish("test".to_string(), None);
         assert_eq!(res.files.len(), 0);
@@ -430,9 +428,10 @@ mod tests {
         let selector = Selector::new();
         let admission = selector.admit(PathStatus::Ignored, None).unwrap();
         let selector = match admission {
-            Admission::Ignored(s) => s,
-            _ => panic!("expected ignored"),
+            Admission::Settled(s) => s,
+            _ => panic!("expected settled"),
         };
+        assert_eq!(selector.candidates.count, 0);
         let res = selector.finish("test".to_string(), None);
         assert_eq!(res.files.len(), 0);
         assert_eq!(res.skipped, 0);
@@ -445,8 +444,8 @@ mod tests {
             .admit(PathStatus::NonUtf8Candidate("dir/sub/".to_string()), None)
             .unwrap();
         let selector = match admission {
-            Admission::Skipped(s) => s,
-            _ => panic!("expected skipped"),
+            Admission::Settled(s) => s,
+            _ => panic!("expected settled"),
         };
         let collection = selector.finish("test".into(), None);
         assert_eq!(collection.skipped, 1);
@@ -462,8 +461,8 @@ mod tests {
             )
             .unwrap();
         let selector = match admission {
-            Admission::Skipped(s) => s,
-            _ => panic!("expected skipped admission"),
+            Admission::Settled(s) => s,
+            _ => panic!("expected settled admission"),
         };
         let collection = selector.finish("test".into(), None);
         assert_eq!(collection.skipped, 1);

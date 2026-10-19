@@ -36,7 +36,7 @@ pub(crate) fn normalize_tar_entry_path(raw_bytes: &[u8]) -> Result<PathStatus, I
 
     if trimmed[..slash_index] == *b"." {
         return Err(IngestError::invalid_metadata(
-            "Tar entry contains directory traversal (..)",
+            "Tar entry root segment is '.'; expected a single repository root directory",
         ));
     }
 

@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Simplified Selection Admission Typestate**:
+  - Simplified core candidate selection in `src/core/selector.rs` by consolidating `Admission::Ignored` and `Admission::Skipped` into `Admission::Settled(Selector)`.
 - **Two-Phase Selection Admission Typestate**:
   - Refactored core candidate selection in `src/core/selector.rs` into a linear two-phase admission typestate (`Admission::Ignored`, `Admission::Skipped`, `Admission::Pending(PendingEntry)`).
   - Eliminated closure-based higher-order reader functions (`record_entry`, `record_with`) and internal tokens (`CandidateSlot`, `Observation`, `ContentResult`), making selection flow strictly linear.

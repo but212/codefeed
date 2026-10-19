@@ -112,14 +112,15 @@ fn append_encoded_segment(mut url: String, segment: &str) -> String {
     url
 }
 
-/// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
-pub(crate) const fn is_retryable_status(status_code: u16) -> bool {
-    matches!(status_code, 429 | 500..=599)
+/// Returns `true` if HTTP status code is transient/retryable (HTTP 429, 5xx, or rate-limited 403).
+pub(crate) const fn is_retryable_http_status(status_code: u16, is_rate_limit: bool) -> bool {
+    matches!(status_code, 429 | 500..=599) || (status_code == 403 && is_rate_limit)
 }
 
 /// Calculates bounded exponential backoff duration for the given attempt.
 pub(crate) const fn retry_delay(attempt: usize) -> Duration {
-    let shift = if attempt < 5 { attempt as u32 } else { 5 };
+    let bounded_attempt = if attempt < 16 { attempt } else { 16 };
+    let shift = bounded_attempt as u32;
     let exponential = RETRY_INITIAL_DELAY_MS.saturating_mul(1_u64 << shift);
     let millis = if exponential < RETRY_MAX_DELAY_MS {
         exponential
@@ -140,9 +141,13 @@ pub(crate) enum TransportKind {
 }
 
 /// Action outcome from a network / HTTP attempt.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RequestOutcome {
-    HttpStatus(u16),
+    HttpStatus {
+        status: u16,
+        retry_after: Option<Duration>,
+        is_rate_limit: bool,
+    },
     TransportError(TransportKind),
 }
 
@@ -170,33 +175,54 @@ impl AttemptState {
         if self.attempt + 1 >= MAX_ATTEMPTS {
             return (self, Transition::Fail);
         }
-        let should_retry = match outcome {
-            RequestOutcome::HttpStatus(status) => is_retryable_status(*status),
-            RequestOutcome::TransportError(kind) => matches!(kind, TransportKind::Retryable),
-        };
-
-        if should_retry {
-            let next_attempt = self.attempt + 1;
-            let delay = retry_delay(self.attempt);
-            (
-                Self {
-                    attempt: next_attempt,
-                },
-                Transition::Retry {
-                    attempt: next_attempt,
-                    delay,
-                },
-            )
-        } else {
-            (self, Transition::Fail)
+        match outcome {
+            RequestOutcome::HttpStatus {
+                status,
+                retry_after,
+                is_rate_limit,
+            } => {
+                if !is_retryable_http_status(*status, *is_rate_limit) {
+                    return (self, Transition::Fail);
+                }
+                let delay = match retry_after {
+                    Some(d) => {
+                        if d.as_millis() > RETRY_MAX_DELAY_MS as u128 {
+                            return (self, Transition::Fail);
+                        }
+                        *d
+                    }
+                    None => retry_delay(self.attempt),
+                };
+                let next_attempt = self.attempt + 1;
+                (
+                    Self {
+                        attempt: next_attempt,
+                    },
+                    Transition::Retry {
+                        attempt: next_attempt,
+                        delay,
+                    },
+                )
+            }
+            RequestOutcome::TransportError(kind) => {
+                if matches!(kind, TransportKind::Retryable) {
+                    let next_attempt = self.attempt + 1;
+                    let delay = retry_delay(self.attempt);
+                    (
+                        Self {
+                            attempt: next_attempt,
+                        },
+                        Transition::Retry {
+                            attempt: next_attempt,
+                            delay,
+                        },
+                    )
+                } else {
+                    (self, Transition::Fail)
+                }
+            }
         }
     }
-}
-
-#[cfg(test)]
-pub(crate) fn decide_retry(attempt: usize, outcome: &RequestOutcome) -> Transition {
-    let state = AttemptState { attempt };
-    state.step(outcome).1
 }
 
 #[cfg(test)]
@@ -245,11 +271,22 @@ mod tests {
     #[test]
     fn classifies_retryable_status_codes() {
         for code in [429, 500, 502, 503, 504] {
-            assert!(is_retryable_status(code), "code {code} should be retryable");
-        }
-        for code in [200, 400, 401, 403, 404] {
             assert!(
-                !is_retryable_status(code),
+                is_retryable_http_status(code, false),
+                "code {code} should be retryable"
+            );
+        }
+        assert!(
+            is_retryable_http_status(403, true),
+            "403 with rate limit should be retryable"
+        );
+        assert!(
+            !is_retryable_http_status(403, false),
+            "403 without rate limit should not be retryable"
+        );
+        for code in [200, 400, 401, 404] {
+            assert!(
+                !is_retryable_http_status(code, false),
                 "code {code} should not be retryable"
             );
         }
@@ -285,15 +322,77 @@ mod tests {
     fn decides_retry_correctly() {
         // Attempt 0 (1st try), 500 status -> Retry initial delay
         assert_eq!(
-            decide_retry(0, &RequestOutcome::HttpStatus(500)),
+            AttemptState { attempt: 0 }
+                .step(&RequestOutcome::HttpStatus {
+                    status: 500,
+                    retry_after: None,
+                    is_rate_limit: false,
+                })
+                .1,
             Transition::Retry {
                 attempt: 1,
                 delay: retry_delay(0)
             }
         );
+        // Attempt 0, 429 status with Retry-After 2s (< 5s) -> Retry 2s delay
+        assert_eq!(
+            AttemptState { attempt: 0 }
+                .step(&RequestOutcome::HttpStatus {
+                    status: 429,
+                    retry_after: Some(Duration::from_secs(2)),
+                    is_rate_limit: true,
+                })
+                .1,
+            Transition::Retry {
+                attempt: 1,
+                delay: Duration::from_secs(2)
+            }
+        );
+        // Attempt 0, 429 status with Retry-After 10s (> 5s) -> Fail
+        assert_eq!(
+            AttemptState { attempt: 0 }
+                .step(&RequestOutcome::HttpStatus {
+                    status: 429,
+                    retry_after: Some(Duration::from_secs(10)),
+                    is_rate_limit: true,
+                })
+                .1,
+            Transition::Fail
+        );
+        // Attempt 0, 403 status with rate limit -> Retry
+        assert_eq!(
+            AttemptState { attempt: 0 }
+                .step(&RequestOutcome::HttpStatus {
+                    status: 403,
+                    retry_after: None,
+                    is_rate_limit: true,
+                })
+                .1,
+            Transition::Retry {
+                attempt: 1,
+                delay: retry_delay(0)
+            }
+        );
+        // Attempt 0, 403 status without rate limit -> Fail
+        assert_eq!(
+            AttemptState { attempt: 0 }
+                .step(&RequestOutcome::HttpStatus {
+                    status: 403,
+                    retry_after: None,
+                    is_rate_limit: false,
+                })
+                .1,
+            Transition::Fail
+        );
         // Attempt 1 (2nd try), 429 status -> Retry delay 1
         assert_eq!(
-            decide_retry(1, &RequestOutcome::HttpStatus(429)),
+            AttemptState { attempt: 1 }
+                .step(&RequestOutcome::HttpStatus {
+                    status: 429,
+                    retry_after: None,
+                    is_rate_limit: true,
+                })
+                .1,
             Transition::Retry {
                 attempt: 2,
                 delay: retry_delay(1)
@@ -301,17 +400,31 @@ mod tests {
         );
         // Attempt 2 (3rd try) -> Exceeds MAX_ATTEMPTS (3), Fail
         assert_eq!(
-            decide_retry(2, &RequestOutcome::HttpStatus(500)),
+            AttemptState { attempt: 2 }
+                .step(&RequestOutcome::HttpStatus {
+                    status: 500,
+                    retry_after: None,
+                    is_rate_limit: false,
+                })
+                .1,
             Transition::Fail
         );
         // Non-retryable status (404) -> Fail
         assert_eq!(
-            decide_retry(0, &RequestOutcome::HttpStatus(404)),
+            AttemptState { attempt: 0 }
+                .step(&RequestOutcome::HttpStatus {
+                    status: 404,
+                    retry_after: None,
+                    is_rate_limit: false,
+                })
+                .1,
             Transition::Fail
         );
         // Retryable transport error -> Retry
         assert_eq!(
-            decide_retry(0, &RequestOutcome::TransportError(TransportKind::Retryable)),
+            AttemptState { attempt: 0 }
+                .step(&RequestOutcome::TransportError(TransportKind::Retryable))
+                .1,
             Transition::Retry {
                 attempt: 1,
                 delay: retry_delay(0)
@@ -319,7 +432,9 @@ mod tests {
         );
         // Non-retryable transport error -> Fail
         assert_eq!(
-            decide_retry(0, &RequestOutcome::TransportError(TransportKind::Permanent)),
+            AttemptState { attempt: 0 }
+                .step(&RequestOutcome::TransportError(TransportKind::Permanent))
+                .1,
             Transition::Fail
         );
     }

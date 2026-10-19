@@ -54,7 +54,7 @@ pub(super) fn collect(
             PathStatus::Ignored | PathStatus::NonUtf8Candidate(_) => None,
         };
         match selector.admit(status, size_hint)? {
-            Admission::Ignored(s) | Admission::Skipped(s) => selector = s,
+            Admission::Settled(s) => selector = s,
             Admission::Pending(pending) => {
                 scratch.clear();
                 match read_local_file_into(entry_path, MAX_FILE_SIZE, &mut scratch)? {

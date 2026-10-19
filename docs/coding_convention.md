@@ -31,9 +31,9 @@ Project-wide coding standards and API design principles for `codefeed`. Combines
 
 - **Getters & Setters (`C-GETTER`):**
   - Do not prefix getters with `get_`. Use the field name directly: `field(&self) -> &Field`.
-  - Mutable borrow getters use `_mut` suffix: `field_mut(&mut self) -> &mut Field`.
+  - Mutable borrow getters use `_mut` suffix: `field_mut(&mut self) -> &mut Field` (applies to shell layer; `&mut self` is strictly forbidden in `src/core/`).
   - Prefix with `get_` only when returning an element that requires a key or runtime lookup (e.g., `get(&self, key)`).
-  - Prefix setters with `set_`: `set_field(&mut self, val: Field)`.
+  - Prefix setters with `set_`: `set_field(&mut self, val: Field)` (applies to shell layer; `&mut self` is strictly forbidden in `src/core/`).
 
 - **Constructors & Builders (`C-CTOR`, RFC 430):**
   - Default constructor is `new(...) -> Self`.
@@ -47,7 +47,7 @@ Project-wide coding standards and API design principles for `codefeed`. Combines
 
 - **Iterators (`C-ITER`):**
   - Shared reference iterator: `iter(&self) -> Iter`.
-  - Mutable reference iterator: `iter_mut(&mut self) -> IterMut`.
+  - Mutable reference iterator: `iter_mut(&mut self) -> IterMut` (applies to shell layer; `&mut self` is strictly forbidden in `src/core/`).
   - Consuming iterator: `into_iter(self) -> IntoIter` (via `IntoIterator`).
 
 - **Predicates & Booleans:**
