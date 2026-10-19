@@ -1,7 +1,6 @@
-//! Bounded writer and token estimation heuristic.
+//! In-memory bounded buffer and token estimation heuristic.
 
 use crate::core::policy::MAX_OUTPUT_SIZE;
-use std::io::Write;
 
 /// Fast byte-level heuristic calibrated for English text and source code.
 #[inline]
@@ -13,39 +12,71 @@ pub(crate) fn estimate_tokens(bytes: u64) -> usize {
     }
 }
 
-pub(crate) struct BoundedEstimatingWriter<'a, W: Write + ?Sized> {
-    inner: &'a mut W,
-    written: u64,
-}
+/// Error returned when rendered content exceeds [`MAX_OUTPUT_SIZE`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OutputLimitExceeded;
 
-impl<'a, W: Write + ?Sized> BoundedEstimatingWriter<'a, W> {
-    pub(crate) fn new(inner: &'a mut W) -> Self {
-        Self { inner, written: 0 }
-    }
-
-    pub(crate) fn written(&self) -> u64 {
-        self.written
-    }
-
-    pub(crate) fn finish(self) -> usize {
-        estimate_tokens(self.written)
+impl std::fmt::Display for OutputLimitExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "output size limit exceeded")
     }
 }
 
-impl<W: Write + ?Sized> Write for BoundedEstimatingWriter<'_, W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let new_written = self.written.saturating_add(buf.len() as u64);
-        if new_written > MAX_OUTPUT_SIZE {
-            self.written = new_written;
-            return Err(std::io::Error::other("output size limit exceeded"));
+impl std::error::Error for OutputLimitExceeded {}
+
+/// Rendered digest containing accumulated bytes and token estimation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RenderedDigest {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) estimated_tokens: usize,
+}
+
+/// In-memory buffer strictly bounded by [`MAX_OUTPUT_SIZE`] with value-passing operations.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct BoundedBuffer {
+    bytes: Vec<u8>,
+}
+
+impl BoundedBuffer {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(capacity),
         }
-        self.inner.write_all(buf)?;
-        self.written = new_written;
-        Ok(buf.len())
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
+    pub(crate) fn push_bytes(mut self, slice: &[u8]) -> Result<Self, OutputLimitExceeded> {
+        let new_len = self.bytes.len().saturating_add(slice.len());
+        if new_len as u64 > MAX_OUTPUT_SIZE {
+            return Err(OutputLimitExceeded);
+        }
+        self.bytes.extend_from_slice(slice);
+        Ok(self)
+    }
+
+    pub(crate) fn push_str(self, s: &str) -> Result<Self, OutputLimitExceeded> {
+        self.push_bytes(s.as_bytes())
+    }
+
+    pub(crate) fn push_usize(self, mut val: usize) -> Result<Self, OutputLimitExceeded> {
+        if val == 0 {
+            return self.push_bytes(b"0");
+        }
+        let mut buf = [0u8; 32];
+        let mut i = buf.len();
+        while val > 0 {
+            i -= 1;
+            buf[i] = b'0' + (val % 10) as u8;
+            val /= 10;
+        }
+        self.push_bytes(&buf[i..])
+    }
+
+    pub(crate) fn finish(self) -> RenderedDigest {
+        let tokens = estimate_tokens(self.bytes.len() as u64);
+        RenderedDigest {
+            bytes: self.bytes,
+            estimated_tokens: tokens,
+        }
     }
 }
 
@@ -54,31 +85,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bounded_estimating_writer_finish_does_not_flush_inner_stream() {
-        struct BrokenPipeOnFlushWriter {
-            buf: Vec<u8>,
+    fn bounded_buffer_enforces_output_limit() {
+        let buf = BoundedBuffer::default();
+        let large = vec![b'x'; (MAX_OUTPUT_SIZE + 1) as usize];
+        assert_eq!(buf.push_bytes(&large), Err(OutputLimitExceeded));
+    }
+
+    #[test]
+    fn bounded_buffer_push_usize_formats_correctly() {
+        let cases = [(0, "0"), (1, "1"), (42, "42"), (10_000, "10000")];
+        for (val, expected) in cases {
+            let buf = BoundedBuffer::default().push_usize(val).unwrap();
+            let digest = buf.finish();
+            assert_eq!(std::str::from_utf8(&digest.bytes).unwrap(), expected);
         }
-
-        impl Write for BrokenPipeOnFlushWriter {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.buf.extend_from_slice(buf);
-                Ok(buf.len())
-            }
-
-            fn flush(&mut self) -> std::io::Result<()> {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::BrokenPipe,
-                    "closed pipe",
-                ))
-            }
-        }
-
-        let mut inner = BrokenPipeOnFlushWriter { buf: Vec::new() };
-        let mut writer = BoundedEstimatingWriter::new(&mut inner);
-        writer.write_all(b"hello world\n").unwrap();
-        let tokens = writer.finish();
-        assert!(tokens > 0);
-        assert_eq!(inner.buf, b"hello world\n");
     }
 
     #[test]

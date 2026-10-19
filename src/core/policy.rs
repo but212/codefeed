@@ -35,14 +35,14 @@ const NOISE: &[&str] = &[
 const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "credentials"];
 
 /// Path classification outcome from a single-pass policy evaluation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PathStatus {
     /// Normalized valid relative UTF-8 path.
-    Valid,
+    Valid(String),
     /// Ignored path (hidden component, conventional noise, sensitive pattern, or root).
     Ignored,
     /// Non-UTF-8 path that is not hidden and must be counted against candidate budget as skipped.
-    NonUtf8Candidate,
+    NonUtf8Candidate(String),
 }
 
 /// Returns `true` if `file_name` matches a known noise file.
@@ -95,18 +95,17 @@ enum PathClassifierState {
 
 /// Classifies a sequence of raw path segment bytes into [`PathStatus`].
 ///
-/// Builds a normalized UTF-8 path string in `scratch` for valid candidates or prefix strings for non-UTF-8 candidates.
-pub(crate) fn classify_path_segments<'a, I>(segments: I, scratch: &mut String) -> PathStatus
+/// Builds a normalized UTF-8 path string for valid candidates or prefix strings for non-UTF-8 candidates.
+pub(crate) fn classify_path_segments<'a, I>(segments: I) -> PathStatus
 where
     I: IntoIterator<Item = &'a [u8]>,
 {
-    scratch.clear();
+    let mut scratch = String::new();
     let mut state = PathClassifierState::ValidUtf8;
     let mut last_segment: Option<&'a [u8]> = None;
 
     for segment in segments {
         if is_hidden_segment(segment) {
-            scratch.clear();
             return PathStatus::Ignored;
         }
 
@@ -136,11 +135,9 @@ where
     };
 
     if last.is_empty() {
-        scratch.clear();
         return PathStatus::Ignored;
     }
     if matches!(std::str::from_utf8(last), Ok(filename) if is_ignored_filename(filename)) {
-        scratch.clear();
         return PathStatus::Ignored;
     }
 
@@ -149,10 +146,10 @@ where
             if scratch.is_empty() {
                 PathStatus::Ignored
             } else {
-                PathStatus::Valid
+                PathStatus::Valid(scratch)
             }
         }
-        PathClassifierState::NonUtf8Prefix => PathStatus::NonUtf8Candidate,
+        PathClassifierState::NonUtf8Prefix => PathStatus::NonUtf8Candidate(scratch),
     }
 }
 
@@ -173,30 +170,26 @@ mod tests {
 
     #[test]
     fn test_classify_path_segments_non_utf8_with_ignored_filename() {
-        let mut scratch = String::new();
-
         // non-UTF-8 directory segment with ignored filename (id_rsa) -> Ignored
         let segments: &[&[u8]] = &[b"\xff\xfe", b"id_rsa"];
         assert_eq!(
-            classify_path_segments(segments.iter().copied(), &mut scratch),
+            classify_path_segments(segments.iter().copied()),
             PathStatus::Ignored
         );
 
         // non-UTF-8 directory segment with valid candidate filename (main.rs) -> NonUtf8Candidate
         let segments: &[&[u8]] = &[b"\xff\xfe", b"main.rs"];
         assert_eq!(
-            classify_path_segments(segments.iter().copied(), &mut scratch),
-            PathStatus::NonUtf8Candidate
+            classify_path_segments(segments.iter().copied()),
+            PathStatus::NonUtf8Candidate(String::new())
         );
-        assert_eq!(scratch, "");
 
         // non-UTF-8 directory segment + valid dir + valid candidate filename -> NonUtf8Candidate with prefix
         let segments: &[&[u8]] = &[b"src", b"\xff\xfe", b"main.rs"];
         assert_eq!(
-            classify_path_segments(segments.iter().copied(), &mut scratch),
-            PathStatus::NonUtf8Candidate
+            classify_path_segments(segments.iter().copied()),
+            PathStatus::NonUtf8Candidate("src/".to_string())
         );
-        assert_eq!(scratch, "src/");
     }
 
     #[test]

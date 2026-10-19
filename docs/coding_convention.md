@@ -89,14 +89,18 @@ Codebase is strictly partitioned into pure logic and effectful shell:
 
 ### `src/core/` (Functional Core)
 
-- **Purity:** Pure deterministic logic only.
-- **Forbidden:** No `std::fs`, `std::net`, `std::env`, `std::time::SystemTime`, `eprintln!`, or `crate::shell` imports.
+- **Purity & Referential Transparency:** Pure deterministic logic only. Functions must be referentially transparent and immutable. Side effects strictly belong in `src/shell/`.
+- **State Transitions:** State changes must occur via consuming ownership moves (`self` -> `Self` / linear typestates). `&mut self` is forbidden.
+- **Forbidden:** No `std::fs`, `std::net`, `std::env`, `std::time::SystemTime`, `eprintln!`, or `crate::shell` imports. No interior mutability (`Cell`, `RefCell`, `Atomic*`, `Mutex`, `RwLock`), no `static mut`, and no `unsafe`.
 - **Determinism:** Pass parameters explicitly as deterministic values (e.g., `retry_delay(attempt)`).
+- **Closed List of Exceptions:**
+  1. `std::fmt::Display::fmt(&self, f: &mut std::fmt::Formatter<'_>)`: Mandated by standard library formatting trait.
+  2. Local stack variables (`let mut`): Enclosed scratch computation with no caller-observable side effects.
 
 ### `src/shell/` (Imperative Shell)
 
 - **Side Effects:** All I/O, network calls, filesystem operations, and process interactions live here.
-- **Delegation:** Collect external inputs, reserve budget via domain tokens (`CandidateSlot`), and delegate computation/storage directly to `src/core/`.
+- **Delegation:** Collect external inputs, evaluate admission via typestate (`Admission` / `PendingEntry`), and delegate computation/storage directly to `src/core/`.
 
 ---
 
@@ -106,7 +110,7 @@ Minimize memory footprints, eliminate allocations in loops, and keep dependencie
 
 - **Arena Storage:** Store file paths and contents in contiguous `FileStorage` arenas (`path_arena`, `content_arena`) indexed by 16-byte `FileSpan`. Iterate via zero-copy `FileRecord<'a>`. Enables in-place lexicographical sorting by swapping offsets without moving string data.
 - **Direct Data Structures:** Use direct, standard data structures (`Vec`, `HashMap`). Avoid speculative layout packing, premature micro-tuning, or pointer-indirected trees; prioritize structural simplicity.
-- **Zero-Copy Streaming:** Stream render output directly to `impl Write + ?Sized` using streaming chunks or single-pass escape helpers. File delivery streams directly into an atomic temporary file; stdout buffers up to `MAX_OUTPUT_SIZE` before writing to guarantee all-or-nothing delivery on overflow.
+- **Bounded Value-Passing Rendering:** Render outputs into in-memory `BoundedBuffer` returning `RenderedDigest` using single-pass escape helpers, enforcing `MAX_OUTPUT_SIZE` purely in core without mutable out-parameters or I/O side effects. File delivery writes digest bytes to an atomic temporary file; stdout writes digest bytes on success to guarantee all-or-nothing delivery on overflow.
 - **Std-First Dependencies:** Default to `std`. Introduce external crates only when in-tree maintenance introduces disproportionate complexity or security risk (e.g., `.gitignore` parsing via `ignore`, HTTP via `ureq`). Document crate rationale inline in `Cargo.toml`.
 
 ---

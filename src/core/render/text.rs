@@ -1,9 +1,7 @@
-//! Plain-text format serializer.
-
+use super::budget::{BoundedBuffer, OutputLimitExceeded};
 use super::escape::{escape_header, write_escaped};
 use super::tree::render_tree;
 use crate::core::model::CollectionResult;
-use std::io::Write;
 
 const REPOSITORY_PREFIX: &str = "Repository: ";
 const REVISION_PREFIX: &str = "Revision: ";
@@ -16,39 +14,39 @@ const FILE_BLOCK_SUFFIX: &str = "\n=============================================
 const NEWLINE: &str = "\n";
 const METADATA_SUFFIX: &str = "\n\n";
 
-pub(super) fn render_text<W: Write + ?Sized>(
-    writer: &mut W,
+pub(super) fn render_text(
+    mut buf: BoundedBuffer,
     collection: &CollectionResult,
-) -> std::io::Result<()> {
-    writer.write_all(REPOSITORY_PREFIX.as_bytes())?;
-    write_escaped(writer, &collection.label, escape_header)?;
-    writer.write_all(NEWLINE.as_bytes())?;
+) -> Result<BoundedBuffer, OutputLimitExceeded> {
+    buf = buf.push_bytes(REPOSITORY_PREFIX.as_bytes())?;
+    buf = write_escaped(buf, &collection.label, escape_header)?;
+    buf = buf.push_bytes(NEWLINE.as_bytes())?;
     if let Some(ref revision) = collection.revision {
-        writer.write_all(REVISION_PREFIX.as_bytes())?;
-        write_escaped(writer, revision, escape_header)?;
-        writer.write_all(NEWLINE.as_bytes())?;
+        buf = buf.push_bytes(REVISION_PREFIX.as_bytes())?;
+        buf = write_escaped(buf, revision, escape_header)?;
+        buf = buf.push_bytes(NEWLINE.as_bytes())?;
     }
-    writer.write_all(FILES_PREFIX.as_bytes())?;
-    write!(writer, "{}", collection.files.len())?;
-    writer.write_all(SKIPPED_PREFIX.as_bytes())?;
-    write!(writer, "{}", collection.skipped)?;
-    writer.write_all(METADATA_SUFFIX.as_bytes())?;
-    writer.write_all(DIRECTORY_HEADER.as_bytes())?;
-    render_tree(writer, &collection.files, |w, name| {
-        write_escaped(w, name, escape_header)
+    buf = buf.push_bytes(FILES_PREFIX.as_bytes())?;
+    buf = buf.push_usize(collection.files.len())?;
+    buf = buf.push_bytes(SKIPPED_PREFIX.as_bytes())?;
+    buf = buf.push_usize(collection.skipped)?;
+    buf = buf.push_bytes(METADATA_SUFFIX.as_bytes())?;
+    buf = buf.push_bytes(DIRECTORY_HEADER.as_bytes())?;
+    buf = render_tree(buf, &collection.files, |b, name| {
+        write_escaped(b, name, escape_header)
     })?;
-    writer.write_all(FILES_HEADER.as_bytes())?;
+    buf = buf.push_bytes(FILES_HEADER.as_bytes())?;
     for file in collection.files.iter() {
         const TAIL: [&[u8]; 2] = [b"\n", b"\n\n"];
         let needs_extra_nl = (!file.content.ends_with('\n')) as usize;
-        writer.write_all(FILE_BLOCK_PREFIX.as_bytes())?;
-        write_escaped(writer, file.path, escape_header)?;
-        writer.write_all(FILE_BLOCK_SUFFIX.as_bytes())?;
-        writer.write_all(file.content.as_bytes())?;
-        writer.write_all(TAIL[needs_extra_nl])?;
+        buf = buf.push_bytes(FILE_BLOCK_PREFIX.as_bytes())?;
+        buf = write_escaped(buf, file.path, escape_header)?;
+        buf = buf.push_bytes(FILE_BLOCK_SUFFIX.as_bytes())?;
+        buf = buf.push_bytes(file.content.as_bytes())?;
+        buf = buf.push_bytes(TAIL[needs_extra_nl])?;
     }
 
-    Ok(())
+    Ok(buf)
 }
 
 #[cfg(test)]
@@ -61,18 +59,16 @@ mod tests {
         revision: Option<&str>,
         files: &[FileRecord<'_>],
         skipped: usize,
-    ) -> std::io::Result<String> {
-        let mut storage: FileStorage = files.iter().copied().collect();
-        storage.sort_by_path();
+    ) -> Result<String, OutputLimitExceeded> {
+        let storage: FileStorage = files.iter().copied().collect();
         let collection = CollectionResult {
             label: label.to_string(),
             revision: revision.map(str::to_string),
             files: SortedFiles::new(storage),
             skipped,
         };
-        let mut buffer = Vec::new();
-        render_text(&mut buffer, &collection)?;
-        String::from_utf8(buffer).map_err(std::io::Error::other)
+        let buf = render_text(BoundedBuffer::default(), &collection)?;
+        Ok(String::from_utf8(buf.finish().bytes).unwrap())
     }
 
     #[test]
@@ -125,17 +121,16 @@ mod tests {
                 content: "world",
             },
         ];
-        let mut storage: FileStorage = files.into_iter().collect();
-        storage.sort_by_path();
+        let storage: FileStorage = files.into_iter().collect();
         let collection = CollectionResult {
             label: "my-repo".into(),
             revision: Some("v1.0".into()),
             files: SortedFiles::new(storage),
             skipped: 2,
         };
-        let mut streamed = Vec::new();
-        render_text(&mut streamed, &collection)?;
-        let streamed_str = std::str::from_utf8(&streamed)?;
+        let buf = render_text(BoundedBuffer::default(), &collection)?;
+        let digest = buf.finish();
+        let streamed_str = std::str::from_utf8(&digest.bytes)?;
 
         let expected = "\
 Repository: my-repo\n\
@@ -181,20 +176,19 @@ hello\n\
                 content: "content_a\n",
             },
         ];
-        let mut storage = FileStorage::new();
-        for f in files.into_iter().filter(|f| f.path != "excluded.txt") {
-            storage.push(f.path, f.content);
-        }
-        storage.sort_by_path();
+        let storage = files
+            .into_iter()
+            .filter(|f| f.path != "excluded.txt")
+            .fold(FileStorage::new(), |s, f| s.push(f.path, f.content));
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,
             files: SortedFiles::new(storage),
             skipped: 1,
         };
-        let mut buf = Vec::new();
-        render_text(&mut buf, &collection)?;
-        let rendered = std::str::from_utf8(&buf)?;
+        let buf = render_text(BoundedBuffer::default(), &collection)?;
+        let digest = buf.finish();
+        let rendered = std::str::from_utf8(&digest.bytes)?;
         assert!(rendered.contains("Files: 2"));
         assert!(rendered.contains("FILE: a.txt"));
         assert!(rendered.contains("FILE: b.txt"));

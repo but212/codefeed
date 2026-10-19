@@ -13,14 +13,14 @@ Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_
 
 ### FCIS Boundary
 
-- `src/core/`: Pure logic only. No `std::fs`, `std::net`, `std::env`, `SystemTime`, `eprintln!`, or `crate::shell` imports. Pass parameters as deterministic values (e.g., `retry_delay(attempt)`).
-- `src/shell/`: Side effects only. Reserve `CandidateSlot` and delegate storage/decisions to `src/core/`.
+- `src/core/`: Pure logic and referential transparency only. Functions are immutable. State transitions use consuming ownership moves (`self` -> `Self` / linear typestates); `&mut self` is forbidden. No `std::fs`, `std::net`, `std::env`, `SystemTime`, `eprintln!`, `crate::shell` imports, interior mutability (`Cell`/`Atomic`/`Mutex`), `static mut`, or `unsafe`. Pass parameters as deterministic values (e.g., `retry_delay(attempt)`). Closed exception list: `std::fmt::Display::fmt` and function-local stack variables (`let mut`).
+- `src/shell/`: Side effects only. Obtain `Admission` / `PendingEntry` and delegate storage/decisions to `src/core/`.
 
 ### Memory & Dependencies
 
 - Store paths and contents in contiguous `FileStorage` arenas (`path_arena`, `content_arena`) indexed by 16-byte `FileSpan`. Provides zero-copy `FileRecord<'a>` borrowed views throughout ingestion and in-place lexicographical sorting (`sort_by_path`) without reallocating string data.
 - Keep data structures direct and minimal; avoid speculative micro-optimizations.
-- Stream output directly to `impl Write + ?Sized` using single-pass streaming escape helper (`write_escaped`) with format-specific rules (`escape_header`, `escape_xml_body`, `escape_xml_single_line`).
+- Render output into pure in-memory `BoundedBuffer` returning `RenderedDigest` using single-pass escape helper (`write_escaped`) with format-specific rules (`escape_header`, `escape_xml_body`, `escape_xml_single_line`).
 - Default to `std`. Add external crates only when in-tree maintenance introduces disproportionate complexity or security risk (e.g., `ignore` for `.gitignore`, `ureq` for HTTP). Document rationale as an inline comment in `Cargo.toml`.
 
 ### OS & Network Safety

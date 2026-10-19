@@ -16,8 +16,8 @@ use crate::core::github::{
     AttemptState, RequestOutcome, Transition, TransportKind, is_github_api_origin, tarball_url,
 };
 use crate::core::model::CollectionResult;
-use crate::core::policy::{ARCHIVE_MAX_SECS, GITHUB_TIMEOUT_SECS, MAX_ATTEMPTS};
-use crate::core::selector::{Observation, Selector};
+use crate::core::policy::{ARCHIVE_MAX_SECS, GITHUB_TIMEOUT_SECS, MAX_ATTEMPTS, MAX_FILE_SIZE};
+use crate::core::selector::{Admission, Selector};
 
 const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 
@@ -105,7 +105,9 @@ impl GithubClient {
                 Attempt::Transport(_) => RequestOutcome::TransportError(TransportKind::Permanent),
             };
 
-            match attempt_state.step(&outcome) {
+            let (next_state, transition) = attempt_state.step(&outcome);
+            attempt_state = next_state;
+            match transition {
                 Transition::Retry {
                     attempt: count,
                     delay,
@@ -205,19 +207,15 @@ fn collect_archive<R: Read>(
     let label = format!("https://github.com/{owner}/{repo}");
     let mut parsed_revision = None;
     let mut selector = Selector::new();
-    let mut path_scratch = String::with_capacity(256);
     let mut content_scratch = Vec::with_capacity(32 * 1024);
 
     for entry_res in entries {
         let mut entry = entry_res.map_err(IngestError::Io)?;
-        path_scratch.clear();
         content_scratch.clear();
-        if let Some(sha) = process_tar_entry(
-            &mut entry,
-            &mut selector,
-            &mut path_scratch,
-            &mut content_scratch,
-        )? && parsed_revision.is_none()
+        let (next_selector, sha) = process_tar_entry(&mut entry, selector, &mut content_scratch)?;
+        selector = next_selector;
+        if let Some(sha) = sha
+            && parsed_revision.is_none()
         {
             parsed_revision = Some(sha);
         }
@@ -229,10 +227,9 @@ fn collect_archive<R: Read>(
 
 fn process_tar_entry<R: Read>(
     entry: &mut tar::Entry<R>,
-    selector: &mut Selector,
-    path_scratch: &mut String,
+    selector: Selector,
     content_scratch: &mut Vec<u8>,
-) -> Result<Option<String>, IngestError> {
+) -> Result<(Selector, Option<String>), IngestError> {
     let entry_type = entry.header().entry_type();
 
     // 1. PAX Global Header: Extract git commit SHA from comment
@@ -241,43 +238,42 @@ fn process_tar_entry<R: Read>(
             .take(1024)
             .read_to_end(content_scratch)
             .map_err(IngestError::Io)?;
-        return Ok(parse_pax_comment(content_scratch));
+        return Ok((selector, parse_pax_comment(content_scratch)));
     }
 
     // 2. Skip directories, symlinks, and special entries before path decoding
     if !matches!(entry_type, EntryType::Regular | EntryType::Continuous) {
-        return Ok(None);
+        return Ok((selector, None));
     }
 
     // 3. Path decoding, root stripping, normalization & policy classification
     let path_bytes = entry.path_bytes();
-    let status = normalize_tar_entry_path(&path_bytes, path_scratch)?;
+    let status = normalize_tar_entry_path(&path_bytes)?;
 
-    let rel_path = path_scratch.as_str();
     let size_hint = entry.header().size().ok();
 
-    // 4. Pre-I/O candidate reservation before reading entry body
-    selector.record_entry(
-        status,
-        rel_path,
-        || size_hint,
-        |limit| read_tar_entry_into(entry, limit, content_scratch),
-    )?;
-
-    Ok(None)
+    // 4. Pre-I/O candidate admission before reading entry body
+    match selector.admit(status, size_hint)? {
+        Admission::Ignored(s) | Admission::Skipped(s) => Ok((s, None)),
+        Admission::Pending(pending) => {
+            read_tar_entry_into(entry, MAX_FILE_SIZE, content_scratch)?;
+            let selector = pending.accept(content_scratch)?;
+            Ok((selector, None))
+        }
+    }
 }
 
-fn read_tar_entry_into<'b, R: Read>(
+fn read_tar_entry_into<R: Read>(
     entry: &mut tar::Entry<R>,
     limit: u64,
-    buf: &'b mut Vec<u8>,
-) -> Result<Observation<'b>, IngestError> {
+    buf: &mut Vec<u8>,
+) -> Result<(), IngestError> {
     entry
         .take(limit.saturating_add(1))
         .read_to_end(buf)
         .map_err(IngestError::Io)?;
 
-    Ok(Observation::Bytes(buf.as_slice()))
+    Ok(())
 }
 
 #[cfg(test)]

@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Two-Phase Selection Admission Typestate**:
+  - Refactored core candidate selection in `src/core/selector.rs` into a linear two-phase admission typestate (`Admission::Ignored`, `Admission::Skipped`, `Admission::Pending(PendingEntry)`).
+  - Eliminated closure-based higher-order reader functions (`record_entry`, `record_with`) and internal tokens (`CandidateSlot`, `Observation`, `ContentResult`), making selection flow strictly linear.
+  - Required linear consumption of `PendingEntry` via `pending.accept(&[u8])` or `pending.skip()`, preventing dropped or unhandled candidates at compile time.
+  - Adapted shell collectors in `src/shell/local.rs` and `src/shell/github.rs` to read content directly into reusable scratch buffers before completing pending entries with zero per-file heap allocations.
+
+- **Referential Transparency in Pure Core**:
+  - Eliminated all `mut` and `&mut` parameters across `src/core/`, establishing complete referential transparency without mutable out-parameters or external state mutation.
+  - Converted `CandidateBudget::add`, `Selector::reserve_candidate`, `record_observation`, `record_skipped`, `record_entry`, `record_with`, and `add_file` to pure value-passing methods taking and returning `self` by value.
+  - Converted `FileStorage::push` and `FileStorage::sort_by_path` to value-passing methods taking and returning `self` by value.
+  - Converted `AttemptState::step` in `src/core/github.rs` to a pure transition function returning `(Self, Transition)`.
+  - Replaced mutable CLI flag mutation with pure `parse_flag_value`.
+  - Replaced `classify_path_segments` and `normalize_tar_entry_path` scratch out-parameters with owned `PathStatus` variants (`Valid(String)`, `Ignored`, `NonUtf8Candidate(String)`).
+  - Replaced streaming I/O writer rendering with pure in-memory `BoundedBuffer` returning `RenderedDigest`, moving physical write operations to imperative shell `output.rs`.
 - **Policy & Limits**:
   - Centralized operational constants and limits (`MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS`, `GITHUB_TIMEOUT_SECS`, `MAX_PATH_DEPTH`) into `src/core/policy.rs` as single source of truth.
   - Renamed `MAX_RETRIES` to `MAX_ATTEMPTS` to accurately reflect total attempt budget.

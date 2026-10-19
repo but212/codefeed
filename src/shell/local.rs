@@ -8,8 +8,8 @@ use ignore::WalkBuilder;
 
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
-use crate::core::policy::{PathStatus, classify_path_segments};
-use crate::core::selector::{Observation, Selector};
+use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path_segments};
+use crate::core::selector::{Admission, Selector};
 
 /// Collects files from a local directory root, excluding the resolved output file if located inside it.
 pub(super) fn collect(
@@ -32,7 +32,6 @@ pub(super) fn collect(
         .build();
 
     let mut selector = Selector::new();
-    let mut path_scratch = String::with_capacity(256);
     let mut scratch = Vec::with_capacity(32 * 1024);
 
     for entry in walker {
@@ -49,16 +48,18 @@ pub(super) fn collect(
             .strip_prefix(&canonical_root)
             .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
 
-        let status = classify_local_path(relative, &mut path_scratch);
-        selector.record_entry(
-            status,
-            &path_scratch,
-            || entry.metadata().ok().map(|m| m.len()),
-            |limit| {
+        let status = classify_local_path(relative);
+        let size_hint = entry.metadata().ok().map(|m| m.len());
+        match selector.admit(status, size_hint)? {
+            Admission::Ignored(s) | Admission::Skipped(s) => selector = s,
+            Admission::Pending(pending) => {
                 scratch.clear();
-                read_local_file_into(entry_path, limit, &mut scratch)
-            },
-        )?;
+                match read_local_file_into(entry_path, MAX_FILE_SIZE, &mut scratch)? {
+                    Some(bytes) => selector = pending.accept(bytes)?,
+                    None => selector = pending.skip(),
+                }
+            }
+        }
     }
 
     Ok(selector.finish(label, None))
@@ -68,34 +69,34 @@ fn read_local_file_into<'b>(
     path: &Path,
     limit: u64,
     buf: &'b mut Vec<u8>,
-) -> Result<Observation<'b>, IngestError> {
+) -> Result<Option<&'b [u8]>, IngestError> {
     let meta = match fs::symlink_metadata(path) {
         Ok(m) => m,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Observation::Unavailable),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(IngestError::Io(err)),
     };
     if meta.is_symlink() || !meta.is_file() {
-        return Ok(Observation::Unavailable);
+        return Ok(None);
     }
     let file = match fs::File::open(path) {
         Ok(f) => f,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Observation::Unavailable),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(IngestError::Io(err)),
     };
     read_bounded_content_into(file, limit, buf).map_err(Into::into)
 }
 
-fn read_bounded_content_into<'b>(
+fn read_bounded_content_into(
     file: fs::File,
     limit: u64,
-    buf: &'b mut Vec<u8>,
-) -> io::Result<Observation<'b>> {
+    buf: &mut Vec<u8>,
+) -> io::Result<Option<&[u8]>> {
     if !file.metadata()?.is_file() {
-        return Ok(Observation::Unavailable);
+        return Ok(None);
     }
     let mut handle = file.take(limit.saturating_add(1));
     handle.read_to_end(buf)?;
-    Ok(Observation::Bytes(buf.as_slice()))
+    Ok(Some(buf.as_slice()))
 }
 
 fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
@@ -111,11 +112,11 @@ fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
     Ok(canonical)
 }
 
-fn classify_local_path(relative: &Path, scratch: &mut String) -> PathStatus {
+fn classify_local_path(relative: &Path) -> PathStatus {
     let segments = relative
         .components()
         .map(|c| c.as_os_str().as_encoded_bytes());
-    classify_path_segments(segments, scratch)
+    classify_path_segments(segments)
 }
 
 fn format_ignore_error(err: &ignore::Error) -> io::Error {
@@ -176,12 +177,12 @@ mod tests {
         let mut buf = Vec::new();
         assert!(matches!(
             read_local_file_into(&exact_path, MAX_FILE_SIZE, &mut buf)?,
-            Observation::Bytes(b) if b.len() == MAX_FILE_SIZE as usize
+            Some(b) if b.len() == MAX_FILE_SIZE as usize
         ));
         buf.clear();
         assert!(matches!(
             read_local_file_into(&too_large_path, MAX_FILE_SIZE, &mut buf)?,
-            Observation::Bytes(b) if b.len() == MAX_FILE_SIZE as usize + 1
+            Some(b) if b.len() == MAX_FILE_SIZE as usize + 1
         ));
         Ok(())
     }
@@ -194,10 +195,7 @@ mod tests {
         let path = root.join("nonexistent.txt");
 
         let mut buf = Vec::new();
-        assert!(matches!(
-            read_local_file_into(&path, MAX_FILE_SIZE, &mut buf)?,
-            Observation::Unavailable
-        ));
+        assert_eq!(read_local_file_into(&path, MAX_FILE_SIZE, &mut buf)?, None);
         Ok(())
     }
 
@@ -214,10 +212,7 @@ mod tests {
         symlink(&target, &link)?;
 
         let mut buf = Vec::new();
-        assert!(matches!(
-            read_local_file_into(&link, MAX_FILE_SIZE, &mut buf)?,
-            Observation::Unavailable
-        ));
+        assert_eq!(read_local_file_into(&link, MAX_FILE_SIZE, &mut buf)?, None);
         Ok(())
     }
 
@@ -234,10 +229,7 @@ mod tests {
 
         if symlink_file(&target, &link).is_ok() {
             let mut buf = Vec::new();
-            assert!(matches!(
-                read_local_file_into(&link, MAX_FILE_SIZE, &mut buf)?,
-                Observation::Unavailable
-            ));
+            assert_eq!(read_local_file_into(&link, MAX_FILE_SIZE, &mut buf)?, None);
             let _ = fs::remove_file(&link);
         }
         Ok(())

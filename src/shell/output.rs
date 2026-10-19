@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
-use crate::core::render::render_to_writer;
+use crate::core::render::render;
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -95,7 +95,13 @@ pub(super) fn emit(
     format: DigestFormat,
 ) -> Result<usize, IngestError> {
     match resolved_target {
-        Some(path) => write_atomic(path, |writer| render_to_writer(writer, collection, format)),
+        Some(path) => {
+            let rendered = render(collection, format)?;
+            write_atomic(path, |writer| {
+                writer.write_all(&rendered.bytes).map_err(IngestError::Io)
+            })?;
+            Ok(rendered.estimated_tokens)
+        }
         None => {
             let stdout = io::stdout();
             render_stdout_to(&mut stdout.lock(), collection, format)
@@ -108,11 +114,10 @@ fn render_stdout_to<W: Write>(
     collection: &CollectionResult,
     format: DigestFormat,
 ) -> Result<usize, IngestError> {
-    let mut buffer = Vec::new();
-    let tokens = render_to_writer(&mut buffer, collection, format)?;
-    ignore_broken_pipe(out.write_all(&buffer).and_then(|()| out.flush()))
+    let rendered = render(collection, format)?;
+    ignore_broken_pipe(out.write_all(&rendered.bytes).and_then(|()| out.flush()))
         .map_err(IngestError::Io)?;
-    Ok(tokens)
+    Ok(rendered.estimated_tokens)
 }
 
 const BUF_WRITER_CAPACITY: usize = 64 * 1024;
@@ -296,10 +301,10 @@ mod tests {
         use crate::core::policy::MAX_OUTPUT_SIZE;
         use crate::core::storage::FileStorage;
 
-        let mut storage = FileStorage::new();
-        storage.push("a.txt", "hello\n");
         let large_content = "x".repeat(MAX_OUTPUT_SIZE as usize - 16);
-        storage.push("b.txt", &large_content);
+        let storage = FileStorage::new()
+            .push("a.txt", "hello\n")
+            .push("b.txt", &large_content);
 
         let collection = CollectionResult {
             label: "overflow-repo".into(),
