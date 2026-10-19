@@ -7,72 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.3.1]
 
 ### Changed
 
-- **Linear Selection Admission Typestate**:
-  - Refactored core candidate selection in `src/core/selector.rs` into a linear two-phase admission typestate (`Admission::Settled(Selector)`, `Admission::Pending(PendingEntry)`).
-  - Consolidated policy-ignored and skipped decisions into `Admission::Settled(Selector)`.
-  - Eliminated closure-based higher-order reader functions (`record_entry`, `record_with`) and internal tokens (`CandidateSlot`, `Observation`, `ContentResult`), making selection flow strictly linear.
-  - Required linear consumption of `PendingEntry` via `pending.accept(&[u8])` or `pending.skip()`, preventing dropped or unhandled candidates at compile time.
-  - Adapted shell collectors in `src/shell/local.rs` and `src/shell/github.rs` to read content directly into reusable scratch buffers before completing pending entries.
-- **Token Estimation**:
-  - Refined `estimate_tokens_from_bytes` in `src/core/render/budget.rs` to compute `(ascii_bytes / 4 + non_ascii_chars).max(1)`, accurately estimating tokens for Korean/CJK multibyte text.
-- **HTTP Retry & Rate Limit Handling**:
-  - Added support for `Retry-After` and `x-ratelimit-reset` header parsing in `src/shell/github.rs`.
-  - Extended retry state transitions in `src/core/github.rs` (`AttemptState::step`) to treat HTTP 403 as retryable when rate limits apply (`Retry-After` present or `x-ratelimit-remaining: 0`).
-  - Aborted retries immediately if `Retry-After` duration exceeds `RETRY_MAX_DELAY_MS` and included remaining retry wait time in error diagnostics.
-- **Storage Arena & Diagnostic Helpers**:
-  - Removed `impl Deref for SortedFiles` in `src/core/storage.rs`, exposing required storage methods explicitly to maintain sorting encapsulation.
-  - Simplified `largest_files` diagnostic ranking to stable sorting (`sort_by_key` with `Reverse`) and `truncate(5)`.
-  - Converted `FileStorage::push` length assertions to explicit `expect` checks referencing policy constant assertions.
-
-- **Referential Transparency in Pure Core**:
-  - Eliminated all `&mut` reference parameters across `src/core/` (outside `Display::fmt`), establishing referential transparency without mutable reference parameters, interior mutability, or external state mutation.
-  - Converted `CandidateBudget::add`, `Selector::admit`, `Selector::add_file`, `PendingEntry::accept`, and `PendingEntry::skip` to pure value-passing methods taking and returning `self` by value.
-  - Converted `FileStorage::push` and `FileStorage::sort_by_path` to value-passing methods taking and returning `self` by value.
-  - Converted `AttemptState::step` in `src/core/github.rs` to a pure transition function returning `(Self, Transition)`.
-  - Replaced mutable CLI flag mutation with pure `parse_flag_value`.
-  - Replaced `classify_path_segments` and `normalize_tar_entry_path` scratch out-parameters with owned `PathStatus` variants (`Valid(String)`, `Ignored`, `NonUtf8Candidate(String)`).
-  - Replaced streaming I/O writer rendering with pure in-memory `BoundedBuffer` returning `RenderedDigest`, moving physical write operations to imperative shell `output.rs`.
-- **Policy & Limits**:
-  - Centralized operational constants and limits (`MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS`, `GITHUB_TIMEOUT_SECS`, `MAX_PATH_DEPTH`) into `src/core/policy.rs` as single source of truth.
-  - Renamed `MAX_RETRIES` to `MAX_ATTEMPTS` to accurately reflect total attempt budget.
-  - Added `MAX_PATH_DEPTH` limit (256 directory levels) enforced during tar archive normalization for valid candidate paths.
-- **Candidate Pipeline & Ingestion**:
-  - Unified candidate entry admission and evaluation into `Selector::admit` and `PendingEntry`, standardizing local filesystem walk and archive entry ingestion while preserving lazy file body evaluation.
-  - Streamlined collection loops to delegate candidate admission and deferred reading, preventing unnecessary I/O when candidate budget overflows.
-  - Preserved valid directory prefixes for non-UTF-8 path candidates, routing them directly through candidate accounting as skipped entries.
-  - Guaranteed deterministic path alignment across tree, header, and body outputs via stable sorting in `FileStorage`.
-  - Enforced `GitRef` validation rejecting `.` and `..` segment references.
-  - Added explicit directory path context to local traversal I/O error diagnostics.
-- **Render Engine**:
-  - Simplified digest rendering signatures (`render_text`, `render_xml`, `DigestFormat::render`) to standard `std::io::Result<()>`, routing size cap checks strictly through `written > MAX_OUTPUT_SIZE`.
-  - Optimized directory hierarchy grouping in ASCII tree rendering using slice matching, eliminating redundant path scans.
-  - Streamlined stream escaping through a unified `write_escaped` helper with dedicated escape rule predicates (`escape_header`, `escape_xml_body`, `escape_xml_single_line`).
+- **Token estimate**: now `ascii_bytes / 4 + non_ascii_chars` (minimum 1). `estimated_tokens` is closer for Korean and CJK text, and values change for any non-ASCII input.
+- **GitHub retries**:
+  - HTTP 403 retries only when rate-limited (`Retry-After` present or `x-ratelimit-remaining: 0`).
+  - `Retry-After` and `x-ratelimit-reset` are honored. Retries stop immediately if the wait exceeds `RETRY_MAX_DELAY_MS`.
+  - API errors include the remaining wait time.
+- **Path limits**: tar entries deeper than 256 directory levels (`MAX_PATH_DEPTH`) are rejected.
+- **`GitRef`** rejects `.` and `..` segments.
+- **Non-UTF-8 paths** keep their top-level directory prefix and count as skipped.
+- **Output ordering** is deterministic across tree, header, and body.
+- **Error messages**: a tar `.` root segment now reports `root segment is '.'` instead of directory traversal. Local traversal errors include the directory path.
 
 ### Fixed
 
-- **Atomic File Delivery**:
-  - Replaced temporary file handling in `src/shell/output.rs` with `AtomicFile` and an inner `TempFile` RAII guard (closing the OS file handle before unlinking on `Drop`), guaranteeing cleanup on unexpected I/O errors or panic unwinding across Windows and Unix.
-  - Added Unix parent directory sync (`sync_all`) on atomic commit to ensure rename metadata is persisted across crashes.
-  - Preserved existing file permissions when overwriting target files on Unix.
-- **Local Walk Error Kind**: Preserved the inner `std::io::ErrorKind` when formatting traversal errors in `src/shell/local.rs` rather than wrapping in `io::ErrorKind::Other`.
+- **Atomic file output**: temp files are cleaned up via an RAII guard on error or panic, on both Windows and Unix. Unix commits sync the parent directory, and overwrites keep existing file permissions.
+- **Local walk errors** keep the original `io::ErrorKind` instead of `Other`.
 
 ### Internal
 
-- **State Machine Consolidation**:
-  - Refactored CLI argument parsing into a single-pass token state machine (`ParseState`) in `src/core/cli.rs`, eliminating nested iterator overhead while maintaining flag validation and error precedence rules.
-  - Refactored path segment classification into a single-pass state machine (`PathClassifierState`) in `src/core/policy.rs`, integrating noise and sensitive filtering while strictly preserving tar entry traversal (`..`) error precedence.
-  - Consolidated HTTP retry orchestration into a deterministic state machine (`AttemptState::step`) across core and shell boundaries.
-- **Shell Pipeline & Testing Harness**:
-  - Replaced inverted `Result<ureq::Error, Response>` handling in `src/shell/github.rs` `stream_url` retry loop with a dedicated `Attempt` enum, and encapsulated HTTP test listener lifecycle in `MockServer`.
-  - Extracted `format_completion_message` in `src/shell/mod.rs` and added unit tests covering completion reporting and CLI exit codes.
-  - Removed redundant `#![cfg(test)]` inner attribute in `src/shell/testing.rs`.
-- **Diagnostics & Scope**:
-  - Unified `output_too_large_error` diagnostic construction across early memory guards and streaming serializers.
-  - Privatized `CandidateBudget` visibility to `src/core/selector.rs` internal visibility.
+- **Admission**: `Ignored` and `Skipped` merged into `Settled(Selector)`. `PendingEntry` must be consumed by `accept` or `skip`, enforced at compile time. Removed `record_entry`, `record_with`, `CandidateSlot`, `Observation`, and `ContentResult`. Shell collectors read into reusable scratch buffers. `CandidateBudget` is private to `selector.rs`.
+- **Pure core**: no `&mut` parameters in `src/core/` (except `Display::fmt`). Selector, storage, and retry state use value-passing `self`; `AttemptState::step` returns `(Self, Transition)`. CLI parsing uses `ParseState`, and path classification uses `PathClassifierState`. `classify_path_segments` and `normalize_tar_entry_path` return owned `PathStatus`. Rendering writes into an in-memory `BoundedBuffer` returning `RenderedDigest`; physical writes moved to `shell/output.rs`.
+- **Storage**: `Deref` removed from `SortedFiles` in favor of explicit accessors. `largest_files` uses stable `sort_by_key` and `truncate(5)`. `FileStorage::push` uses `expect` on `u32` conversions.
+- **Render**: `render_text`, `render_xml`, and `DigestFormat::render` return `std::io::Result<()>`, and the size cap is `written > MAX_OUTPUT_SIZE`. ASCII tree grouping uses slice matching. Escaping goes through `write_escaped` with `escape_header`, `escape_xml_body`, and `escape_xml_single_line`. `output_too_large_error` is unified.
+- **Policy**: limits centralized in `policy.rs`. `MAX_RETRIES` renamed to `MAX_ATTEMPTS`.
+- **Shell**: retry loop uses an `Attempt` enum in place of the inverted `Result<ureq::Error, Response>`. `MockServer` wraps the test listener. `format_completion_message` is extracted and tested for completion reporting and exit codes. Removed redundant `#![cfg(test)]` in `testing.rs`.
 
 ## [0.3.0]
 
@@ -263,7 +225,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial CLI converting local directories (`.gitignore`-aware, skipping hidden files and symlinks) and GitHub repositories (`--ref <BRANCH|TAG|COMMIT>`, no local `git`) into plain-text or XML digests (`--format <text|xml>`) written atomically to files or stdout (`--output -`), with streaming token estimation, sensitive/lockfile filtering (`.env*`, `*.key`, `*.pem`, `id_rsa*`), and candidate/output size budgets.
 
-[Unreleased]: https://github.com/but212/codefeed/compare/v0.3.0...HEAD
+[0.3.1]: https://github.com/but212/codefeed/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/but212/codefeed/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/but212/codefeed/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/but212/codefeed/compare/v0.2.2...v0.2.3
