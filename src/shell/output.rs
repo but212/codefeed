@@ -97,9 +97,7 @@ pub(super) fn emit(
     match resolved_target {
         Some(path) => {
             let rendered = render(collection, format)?;
-            write_atomic(path, |writer| {
-                writer.write_all(&rendered.bytes).map_err(IngestError::Io)
-            })?;
+            write_atomic(path, &rendered.bytes)?;
             Ok(rendered.estimated_tokens)
         }
         None => {
@@ -120,17 +118,15 @@ fn render_stdout_to<W: Write>(
     Ok(rendered.estimated_tokens)
 }
 
-const BUF_WRITER_CAPACITY: usize = 64 * 1024;
-
 /// RAII guard managing a temporary file that cleans up on drop unless committed.
 ///
-/// Encapsulates the buffered writer and path together so that drop explicitly closes
-/// and flushes the underlying file handle before attempting to unlink the file.
+/// Encapsulates the file handle and path together so that drop explicitly closes
+/// the underlying file handle before attempting to unlink the file.
 /// This guarantees Windows-safe file deletion without relying on struct field order
 /// or pattern let-binding declaration order invariants.
 struct TempFile {
     path: PathBuf,
-    writer: Option<io::BufWriter<fs::File>>,
+    file: Option<fs::File>,
     active: bool,
 }
 
@@ -144,7 +140,7 @@ impl TempFile {
                 Ok(file) => {
                     return Ok(Self {
                         path,
-                        writer: Some(io::BufWriter::with_capacity(BUF_WRITER_CAPACITY, file)),
+                        file: Some(file),
                         active: true,
                     });
                 }
@@ -159,29 +155,25 @@ impl TempFile {
         &self.path
     }
 
-    fn writer(&mut self) -> &mut io::BufWriter<fs::File> {
-        self.writer
+    fn file_mut(&mut self) -> &mut fs::File {
+        self.file
             .as_mut()
-            .expect("temporary file writer is active before commit")
+            .expect("temporary file is active before commit")
     }
 
     #[cfg(unix)]
     fn set_permissions(&self, permissions: fs::Permissions) -> io::Result<()> {
-        self.writer
+        self.file
             .as_ref()
-            .expect("temporary file writer is active before commit")
-            .get_ref()
+            .expect("temporary file is active before commit")
             .set_permissions(permissions)
     }
 
     fn commit(mut self, target: &Path) -> Result<(), IngestError> {
-        let writer = self
-            .writer
+        let file = self
+            .file
             .take()
-            .expect("temporary file writer is active during commit");
-        let file = writer
-            .into_inner()
-            .map_err(|e| IngestError::Io(e.into_error()))?;
+            .expect("temporary file is active during commit");
         file.sync_all()?;
         drop(file);
 
@@ -193,9 +185,9 @@ impl TempFile {
 
 impl Drop for TempFile {
     fn drop(&mut self) {
-        // Drop the writer first to close the open OS file handle before removing the file.
+        // Drop the file handle first to close the open OS handle before removing the file.
         // On Windows, unlinking an open file fails with an access error.
-        drop(self.writer.take());
+        drop(self.file.take());
         if self.active {
             let _ = fs::remove_file(&self.path);
         }
@@ -236,8 +228,9 @@ impl AtomicFile {
         })
     }
 
-    fn writer(&mut self) -> &mut io::BufWriter<fs::File> {
-        self.temp_file.writer()
+    fn write_all(&mut self, bytes: &[u8]) -> Result<(), IngestError> {
+        self.temp_file.file_mut().write_all(bytes)?;
+        Ok(())
     }
 
     /// Commits the atomic file write by syncing content, renaming to the target path,
@@ -266,14 +259,11 @@ impl AtomicFile {
     }
 }
 
-fn write_atomic<R, F>(output: &Path, write_fn: F) -> Result<R, IngestError>
-where
-    F: FnOnce(&mut io::BufWriter<fs::File>) -> Result<R, IngestError>,
-{
+fn write_atomic(output: &Path, bytes: &[u8]) -> Result<(), IngestError> {
     let mut file = AtomicFile::create(output)?;
-    let value = write_fn(file.writer())?;
+    file.write_all(bytes)?;
     file.commit()?;
-    Ok(value)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -325,10 +315,7 @@ mod tests {
         let root = temp_dir("atomic")?;
         let output = root.join("digest.txt");
         fs::write(root.join(".digest.txt.123.tmp"), "stale")?;
-        write_atomic(&output, |w| {
-            w.write_all(b"new")?;
-            Ok(())
-        })?;
+        write_atomic(&output, b"new")?;
         assert_eq!(fs::read(&output)?, b"new");
         assert_eq!(
             fs::read_to_string(root.join(".digest.txt.123.tmp"))?,
@@ -340,10 +327,7 @@ mod tests {
     #[test]
     fn preserves_previous_output_on_atomic_failure() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("atomic_failure")?;
-        let result = write_atomic(&root, |w| {
-            w.write_all(b"new")?;
-            Ok(())
-        });
+        let result = write_atomic(&root, b"new");
         assert!(result.is_err());
         assert!(root.is_dir());
         Ok(())
@@ -355,28 +339,23 @@ mod tests {
         let root = temp_dir("atomic_cleanup")?;
         let output = root.join("digest.txt");
 
-        // 1. Cleanup on closure error
-        let err_result: Result<(), _> = write_atomic(&output, |_w| {
-            Err(IngestError::invalid_metadata("test failure"))
-        });
-        assert!(err_result.is_err());
-        assert!(!output.exists());
-        let temp_count_after_err = fs::read_dir(&root)?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with(".digest.txt."))
-            .count();
-        assert_eq!(
-            temp_count_after_err, 0,
-            "temporary file should be cleaned up on error"
+        // 1. Cleanup on atomic file drop before commit
+        let file = AtomicFile::create(&output)?;
+        let temp_path = file.temp_file.path().to_path_buf();
+        assert!(temp_path.exists());
+        drop(file);
+        assert!(
+            !temp_path.exists(),
+            "temporary file should be cleaned up on drop"
         );
 
         // 2. Cleanup on panic
         let panic_result = std::panic::catch_unwind(|| {
-            let _ = write_atomic::<(), _>(&output, |_w| {
-                panic!("intentional panic during streaming write");
-            });
+            let mut file = AtomicFile::create(&output).unwrap();
+            let _ = file.write_all(b"partial");
+            panic!("intentional panic during atomic write");
         });
-        assert!(panic_result.is_err(), "closure should have panicked");
+        assert!(panic_result.is_err(), "operation should have panicked");
         let temp_count_after_panic = fs::read_dir(&root)?
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().starts_with(".digest.txt."))
@@ -390,7 +369,7 @@ mod tests {
 
     #[test]
     fn missing_output_filename_returns_usage_error() {
-        let result = write_atomic(Path::new("."), |_w| Ok(()));
+        let result = write_atomic(Path::new("."), b"");
         match result {
             Err(IngestError::Usage(msg)) => {
                 assert!(msg.contains("output path has no filename"));
@@ -406,7 +385,7 @@ mod tests {
         let existing_dir = root.join("existing_subdir");
         fs::create_dir(&existing_dir)?;
 
-        let result = write_atomic(&existing_dir, |_w| Ok(()));
+        let result = write_atomic(&existing_dir, b"");
         assert!(
             result.is_err(),
             "write_atomic on directory target must fail"
@@ -506,10 +485,7 @@ mod tests {
         fs::write(&output, "initial content")?;
         fs::set_permissions(&output, fs::Permissions::from_mode(0o600))?;
 
-        write_atomic(&output, |w| {
-            w.write_all(b"overwritten content")?;
-            Ok(())
-        })?;
+        write_atomic(&output, b"overwritten content")?;
 
         let metadata = fs::metadata(&output)?;
         assert_eq!(
@@ -529,10 +505,7 @@ mod tests {
 
         assert!(!output.exists());
 
-        write_atomic(&output, |w| {
-            w.write_all(b"new content")?;
-            Ok(())
-        })?;
+        write_atomic(&output, b"new content")?;
 
         assert!(output.exists());
         assert_eq!(fs::read_to_string(&output)?, "new content");

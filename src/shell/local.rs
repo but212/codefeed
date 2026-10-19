@@ -49,7 +49,10 @@ pub(super) fn collect(
             .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
 
         let status = classify_local_path(relative);
-        let size_hint = entry.metadata().ok().map(|m| m.len());
+        let size_hint = match status {
+            PathStatus::Valid(_) => entry.metadata().ok().map(|m| m.len()),
+            PathStatus::Ignored | PathStatus::NonUtf8Candidate(_) => None,
+        };
         match selector.admit(status, size_hint)? {
             Admission::Ignored(s) | Admission::Skipped(s) => selector = s,
             Admission::Pending(pending) => {

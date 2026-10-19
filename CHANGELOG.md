@@ -15,11 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Refactored core candidate selection in `src/core/selector.rs` into a linear two-phase admission typestate (`Admission::Ignored`, `Admission::Skipped`, `Admission::Pending(PendingEntry)`).
   - Eliminated closure-based higher-order reader functions (`record_entry`, `record_with`) and internal tokens (`CandidateSlot`, `Observation`, `ContentResult`), making selection flow strictly linear.
   - Required linear consumption of `PendingEntry` via `pending.accept(&[u8])` or `pending.skip()`, preventing dropped or unhandled candidates at compile time.
-  - Adapted shell collectors in `src/shell/local.rs` and `src/shell/github.rs` to read content directly into reusable scratch buffers before completing pending entries with zero per-file heap allocations.
+  - Adapted shell collectors in `src/shell/local.rs` and `src/shell/github.rs` to read content directly into reusable scratch buffers before completing pending entries.
 
 - **Referential Transparency in Pure Core**:
-  - Eliminated all `mut` and `&mut` parameters across `src/core/`, establishing complete referential transparency without mutable out-parameters or external state mutation.
-  - Converted `CandidateBudget::add`, `Selector::reserve_candidate`, `record_observation`, `record_skipped`, `record_entry`, `record_with`, and `add_file` to pure value-passing methods taking and returning `self` by value.
+  - Eliminated all `&mut` reference parameters across `src/core/` (outside `Display::fmt`), establishing referential transparency without mutable reference parameters, interior mutability, or external state mutation.
+  - Converted `CandidateBudget::add`, `Selector::admit`, `Selector::add_file`, `PendingEntry::accept`, and `PendingEntry::skip` to pure value-passing methods taking and returning `self` by value.
   - Converted `FileStorage::push` and `FileStorage::sort_by_path` to value-passing methods taking and returning `self` by value.
   - Converted `AttemptState::step` in `src/core/github.rs` to a pure transition function returning `(Self, Transition)`.
   - Replaced mutable CLI flag mutation with pure `parse_flag_value`.
@@ -30,8 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Renamed `MAX_RETRIES` to `MAX_ATTEMPTS` to accurately reflect total attempt budget.
   - Added `MAX_PATH_DEPTH` limit (256 directory levels) enforced during tar archive normalization for valid candidate paths.
 - **Candidate Pipeline & Ingestion**:
-  - Unified candidate entry recording into `record_observation`, standardizing local filesystem walk and archive entry ingestion while preserving lazy file body evaluation.
-  - Streamlined collection loops to delegate candidate slot reservation and deferred reading, preventing unnecessary I/O when candidate budget overflows.
+  - Unified candidate entry admission and evaluation into `Selector::admit` and `PendingEntry`, standardizing local filesystem walk and archive entry ingestion while preserving lazy file body evaluation.
+  - Streamlined collection loops to delegate candidate admission and deferred reading, preventing unnecessary I/O when candidate budget overflows.
   - Preserved valid directory prefixes for non-UTF-8 path candidates, routing them directly through candidate accounting as skipped entries.
   - Guaranteed deterministic path alignment across tree, header, and body outputs via stable sorting in `FileStorage`.
   - Enforced `GitRef` validation rejecting `.` and `..` segment references.

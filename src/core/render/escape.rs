@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn test_xml_escape_and_streaming_handles_non_escaping_ef_lead_bytes() {
-        let input = "prefix \u{FFFD} & <\u{FEFF}> middle \u{FF01} suffix \u{FFFD} and \u{FFFF}";
+        let input = "prefix \u{FFFD} & <\u{FEFF}> middle \u{FF01} suffix \u{FFFE} and \u{FFFF}";
         let escaped = xml_escape(input);
         assert_eq!(
             escaped.as_str(),

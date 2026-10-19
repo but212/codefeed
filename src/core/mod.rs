@@ -16,8 +16,9 @@
 //! - **Closed List of Mutation Exceptions:**
 //!   1. `std::fmt::Display::fmt(&self, f: &mut std::fmt::Formatter<'_>)`: Required
 //!      by standard library trait contract.
-//!   2. Function-local stack variables (`let mut`): Fully isolated scratch
-//!      variables with zero observable caller-side side effects.
+//!   2. Function-local stack variables and owned value parameters (`let mut` / `mut self`):
+//!      Fully isolated scratch computation with zero caller-observable side effects.
+//!      Any `&mut` reference parameter (including `&mut self`) is strictly forbidden.
 
 pub(crate) mod archive;
 pub(crate) mod cli;

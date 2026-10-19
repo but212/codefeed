@@ -49,7 +49,7 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 - Local walk exclusion: Excludes existing output files via canonical path comparison resolved once at startup (`resolve_output_target`), avoiding repeated syscalls during traversal. Assumes a quiescent directory tree during scan (see `docs/security_and_filtering.md`).
 - Local walk pipeline:
   1. `ignore::WalkBuilder` with `follow_links(false)` and `.sort_by_file_name(|a, b| a.cmp(b))` traverses entries, classifies paths via `classify_local_path`, and evaluates admission in `Selector` (`Selector::admit`) before reading file bodies.
-  2. Bounded sequential reads complete pending entries (`PendingEntry::accept` / `skip`) directly into `Selector` without intermediate path allocations.
+  2. Bounded sequential reads into a reusable content scratch buffer complete pending entries (`PendingEntry::accept` / `skip`) directly into `Selector`.
 - CLI argument parsing: Linearly parsed into options and source in pure core (`core::cli`) using `std` only, supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters without third-party CLI dependencies. CLI execution, help display, and output reporting are encapsulated via `shell::run_cli`.
 - Candidate budget tracking: Uses standard `HashMap<String, usize>` during collection, with deterministic overflow diagnostics sorted by count descending then directory ascending.
 - Digest budget tracking: Tracked directly in `Selector` and error-terminal: limit breach constructs complete `IngestError::OutputTooLarge` diagnostics without internal transactional rollback.

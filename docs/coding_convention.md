@@ -95,7 +95,7 @@ Codebase is strictly partitioned into pure logic and effectful shell:
 - **Determinism:** Pass parameters explicitly as deterministic values (e.g., `retry_delay(attempt)`).
 - **Closed List of Exceptions:**
   1. `std::fmt::Display::fmt(&self, f: &mut std::fmt::Formatter<'_>)`: Mandated by standard library formatting trait.
-  2. Local stack variables (`let mut`): Enclosed scratch computation with no caller-observable side effects.
+  2. Local stack variables and owned value parameters (`let mut` / `mut self`): Enclosed computation with no caller-observable side effects. Any `&mut` reference parameter (including `&mut self`) is forbidden outside `std::fmt::Display::fmt`.
 
 ### `src/shell/` (Imperative Shell)
 
