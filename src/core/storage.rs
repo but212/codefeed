@@ -43,9 +43,8 @@ pub(crate) struct SortedFiles(FileStorage);
 
 impl SortedFiles {
     #[inline]
-    pub(crate) fn new(mut storage: FileStorage) -> Self {
-        storage.sort_by_path();
-        Self(storage)
+    pub(crate) fn new(storage: FileStorage) -> Self {
+        Self(storage.sort_by_path())
     }
 }
 
@@ -98,14 +97,15 @@ impl FileStorage {
     }
 
     /// Sorts spans hierarchically by path components in-place within the path arena.
-    pub(crate) fn sort_by_path(&mut self) {
+    pub(crate) fn sort_by_path(mut self) -> Self {
         let path_arena = &self.path_arena;
         self.spans
             .sort_by(|a, b| cmp_path(a.path(path_arena), b.path(path_arena)));
+        self
     }
 
     /// Appends path and content to the arenas and records a [`FileSpan`].
-    pub(crate) fn push(&mut self, path: &str, content: &str) {
+    pub(crate) fn push(mut self, path: &str, content: &str) -> Self {
         debug_assert!(!path.is_empty(), "file path must not be empty");
         debug_assert!(u32::try_from(self.path_arena.len()).is_ok());
         debug_assert!(u32::try_from(path.len()).is_ok());
@@ -127,6 +127,7 @@ impl FileStorage {
             content_len,
         };
         self.spans.push(span);
+        self
     }
 
     /// Resolves a [`FileSpan`] into a borrowed [`FileRecord`].
@@ -147,11 +148,9 @@ impl FileStorage {
 #[cfg(test)]
 impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
     fn from_iter<T: IntoIterator<Item = FileRecord<'a>>>(iter: T) -> Self {
-        let mut storage = Self::new();
-        for record in iter {
-            storage.push(record.path, record.content);
-        }
-        storage
+        iter.into_iter().fold(Self::new(), |storage, record| {
+            storage.push(record.path, record.content)
+        })
     }
 }
 
@@ -234,11 +233,9 @@ mod tests {
 
     #[test]
     fn file_storage_maintains_continuous_arena_and_zero_copy_views() {
-        let mut storage = FileStorage::new();
-        assert_eq!(storage.len(), 0);
-
-        storage.push("path/to/first.rs", "pub fn first() {}");
-        storage.push("second.txt", "second content\n");
+        let storage = FileStorage::new()
+            .push("path/to/first.rs", "pub fn first() {}")
+            .push("second.txt", "second content\n");
 
         assert_eq!(storage.len(), 2);
 
@@ -271,12 +268,11 @@ mod tests {
 
     #[test]
     fn file_storage_sorts_by_path_in_place() {
-        let mut storage = FileStorage::new();
-        storage.push("z/file.rs", "content_z");
-        storage.push("a/file.rs", "content_a");
-        storage.push("m/file.rs", "content_m");
-
-        storage.sort_by_path();
+        let storage = FileStorage::new()
+            .push("z/file.rs", "content_z")
+            .push("a/file.rs", "content_a")
+            .push("m/file.rs", "content_m")
+            .sort_by_path();
 
         let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
         assert_eq!(paths, vec!["a/file.rs", "m/file.rs", "z/file.rs"]);
@@ -284,11 +280,10 @@ mod tests {
 
     #[test]
     fn file_storage_sorts_hierarchically() {
-        let mut storage = FileStorage::new();
-        storage.push("src-test/b.rs", "content_b");
-        storage.push("src/a.rs", "content_a");
-
-        storage.sort_by_path();
+        let storage = FileStorage::new()
+            .push("src-test/b.rs", "content_b")
+            .push("src/a.rs", "content_a")
+            .sort_by_path();
 
         let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
         assert_eq!(paths, vec!["src/a.rs", "src-test/b.rs"]);

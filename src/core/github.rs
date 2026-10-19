@@ -79,10 +79,10 @@ pub(crate) fn parse_github_url(value: &str) -> Result<(String, String), IngestEr
 pub(crate) fn tarball_url(owner: &str, repo: &str, reference: Option<&str>) -> String {
     let mut url = String::from(GITHUB_API_BASE_URL);
     for segment in ["repos", owner, repo, "tarball"] {
-        push_encoded_segment(&mut url, segment);
+        url = append_encoded_segment(url, segment);
     }
     if let Some(reference) = reference {
-        push_encoded_segment(&mut url, reference);
+        url = append_encoded_segment(url, reference);
     }
     url
 }
@@ -97,7 +97,7 @@ const fn is_unreserved(b: u8) -> bool {
         | (b == b'~')
 }
 
-fn push_encoded_segment(url: &mut String, segment: &str) {
+fn append_encoded_segment(mut url: String, segment: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     url.push('/');
     for &b in segment.as_bytes() {
@@ -109,6 +109,7 @@ fn push_encoded_segment(url: &mut String, segment: &str) {
             url.push(HEX[(b & 0xF) as usize] as char);
         }
     }
+    url
 }
 
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
@@ -148,14 +149,14 @@ pub(crate) enum RequestOutcome {
 }
 
 /// Transition outcome from an HTTP attempt state transition.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Transition {
     Retry { attempt: usize, delay: Duration },
     Fail,
 }
 
 /// Finite state machine managing HTTP attempt state and retry transitions.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct AttemptState {
     attempt: usize,
 }
@@ -166,9 +167,9 @@ impl AttemptState {
     }
 
     /// Advances state given an attempt outcome, returning next transition action.
-    pub(crate) fn step(&mut self, outcome: &RequestOutcome) -> Transition {
+    pub(crate) const fn step(self, outcome: &RequestOutcome) -> (Self, Transition) {
         if self.attempt + 1 >= MAX_ATTEMPTS {
-            return Transition::Fail;
+            return (self, Transition::Fail);
         }
         let should_retry = match outcome {
             RequestOutcome::HttpStatus(status) => is_retryable_status(*status),
@@ -176,22 +177,27 @@ impl AttemptState {
         };
 
         if should_retry {
+            let next_attempt = self.attempt + 1;
             let delay = retry_delay(self.attempt);
-            self.attempt += 1;
-            Transition::Retry {
-                attempt: self.attempt,
-                delay,
-            }
+            (
+                Self {
+                    attempt: next_attempt,
+                },
+                Transition::Retry {
+                    attempt: next_attempt,
+                    delay,
+                },
+            )
         } else {
-            Transition::Fail
+            (self, Transition::Fail)
         }
     }
 }
 
 #[cfg(test)]
 pub(crate) fn decide_retry(attempt: usize, outcome: &RequestOutcome) -> Transition {
-    let mut state = AttemptState { attempt };
-    state.step(outcome)
+    let state = AttemptState { attempt };
+    state.step(outcome).1
 }
 
 #[cfg(test)]

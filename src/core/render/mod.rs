@@ -1,13 +1,10 @@
-//! Digest rendering and streaming token estimation.
+//! Digest rendering and token estimation.
 //!
-//! Coordinates layout rendering across text and XML formats, streaming
+//! Coordinates layout rendering across text and XML formats,
 //! token estimation, and output size cap enforcement.
-
-use std::io::Write;
 
 use crate::core::error::IngestError;
 use crate::core::model::{CollectionResult, DigestFormat};
-use crate::core::policy::MAX_OUTPUT_SIZE;
 
 mod budget;
 mod escape;
@@ -15,22 +12,22 @@ mod text;
 mod tree;
 mod xml;
 
-pub(crate) use budget::BoundedEstimatingWriter;
+pub(crate) use budget::{BoundedBuffer, OutputLimitExceeded, RenderedDigest};
 
 impl DigestFormat {
-    pub(crate) fn render<W: Write + ?Sized>(
+    pub(crate) fn render(
         self,
-        writer: &mut W,
+        buf: BoundedBuffer,
         collection: &CollectionResult,
-    ) -> std::io::Result<()> {
+    ) -> Result<BoundedBuffer, OutputLimitExceeded> {
         match self {
-            Self::Text => text::render_text(writer, collection),
-            Self::Xml => xml::render_xml(writer, collection),
+            Self::Text => text::render_text(buf, collection),
+            Self::Xml => xml::render_xml(buf, collection),
         }
     }
 }
 
-/// Renders a collection to the given writer according to the chosen digest format.
+/// Renders a collection according to the chosen digest format into a [`RenderedDigest`].
 ///
 /// Binds output generation to [`MAX_OUTPUT_SIZE`] and calculates the estimated token count.
 ///
@@ -38,7 +35,7 @@ impl DigestFormat {
 ///
 /// Final output size bounding relies on a two-stage guarantee:
 /// 1. `Selector::add_file` performs early-fail bounding against `MAX_OUTPUT_SIZE` using raw arena byte totals.
-/// 2. `render_to_writer` via [`BoundedEstimatingWriter`] enforces `MAX_OUTPUT_SIZE` during final streaming rendering.
+/// 2. `render` via [`BoundedBuffer`] enforces `MAX_OUTPUT_SIZE` during rendering passes.
 ///
 /// For early-fail checks to be sound (never rejecting a collection that would pass final rendering),
 /// the invariant `rendered_bytes >= raw_bytes` (`files.total_bytes()`) must hold for both Text and XML formats.
@@ -47,21 +44,17 @@ impl DigestFormat {
 ///
 /// # Errors
 ///
-/// Returns [`IngestError::OutputTooLarge`] if output exceeds the maximum size limit,
-/// or [`IngestError::Io`] if writing fails.
-pub(crate) fn render_to_writer<W: Write + ?Sized>(
-    writer: &mut W,
+/// Returns [`IngestError::OutputTooLarge`] if output exceeds the maximum size limit.
+pub(crate) fn render(
     collection: &CollectionResult,
     format: DigestFormat,
-) -> Result<usize, IngestError> {
-    let mut estimating_writer = BoundedEstimatingWriter::new(writer);
-    if let Err(err) = format.render(&mut estimating_writer, collection) {
-        if estimating_writer.written() > MAX_OUTPUT_SIZE {
-            return Err(collection.output_too_large_error());
-        }
-        return Err(IngestError::Io(err));
+) -> Result<RenderedDigest, IngestError> {
+    let capacity = (collection.files.total_bytes() as usize).saturating_add(4096);
+    let buf = BoundedBuffer::with_capacity(capacity);
+    match format.render(buf, collection) {
+        Ok(buf) => Ok(buf.finish()),
+        Err(OutputLimitExceeded) => Err(collection.output_too_large_error()),
     }
-    Ok(estimating_writer.finish())
 }
 
 #[cfg(test)]
@@ -99,10 +92,9 @@ mod tests {
         ];
 
         for (label, records) in test_cases {
-            let mut storage = FileStorage::new();
-            for r in records {
-                storage.push(r.path, r.content);
-            }
+            let storage = records
+                .into_iter()
+                .fold(FileStorage::new(), |s, r| s.push(r.path, r.content));
             let raw_bytes = storage.total_bytes() as usize;
 
             let collection = CollectionResult {
@@ -113,12 +105,11 @@ mod tests {
             };
 
             for format in [DigestFormat::Text, DigestFormat::Xml] {
-                let mut buf = Vec::new();
-                render_to_writer(&mut buf, &collection, format)?;
+                let digest = render(&collection, format)?;
                 assert!(
-                    buf.len() >= raw_bytes,
+                    digest.bytes.len() >= raw_bytes,
                     "Format {format:?} output length ({}) must be >= raw arena bytes ({raw_bytes}) for {label}",
-                    buf.len()
+                    digest.bytes.len()
                 );
             }
         }
@@ -126,22 +117,20 @@ mod tests {
     }
 
     #[test]
-    fn render_to_writer_enforces_output_size_cap() {
+    fn render_enforces_output_size_cap() {
         let content = "x".repeat(MAX_OUTPUT_SIZE as usize);
         let candidate = FileRecord {
             path: "large.txt",
             content: &content,
         };
-        let mut storage = FileStorage::new();
-        storage.push(candidate.path, candidate.content);
+        let storage = FileStorage::new().push(candidate.path, candidate.content);
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,
             files: SortedFiles::new(storage),
             skipped: 0,
         };
-        let mut sink = Vec::new();
-        match render_to_writer(&mut sink, &collection, DigestFormat::Text) {
+        match render(&collection, DigestFormat::Text) {
             Err(IngestError::OutputTooLarge(largest_files)) => {
                 assert_eq!(largest_files.len(), 1);
                 assert_eq!(largest_files[0].0, "large.txt");
@@ -166,17 +155,15 @@ mod tests {
             skipped: 0,
         };
 
-        let mut text_out = Vec::new();
-        render_to_writer(&mut text_out, &collection, DigestFormat::Text)?;
-        let text_rendered = std::str::from_utf8(&text_out)?;
+        let text_digest = render(&collection, DigestFormat::Text)?;
+        let text_rendered = std::str::from_utf8(&text_digest.bytes)?;
         assert!(
             text_rendered.contains(raw_ansi),
             "Text format must preserve raw ANSI/control characters for LLM fidelity"
         );
 
-        let mut xml_out = Vec::new();
-        render_to_writer(&mut xml_out, &collection, DigestFormat::Xml)?;
-        let xml_str = std::str::from_utf8(&xml_out)?;
+        let xml_digest = render(&collection, DigestFormat::Xml)?;
+        let xml_str = std::str::from_utf8(&xml_digest.bytes)?;
         assert!(
             !xml_str.contains("\x1b"),
             "XML format must not emit raw ASCII ESC"

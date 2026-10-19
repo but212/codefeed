@@ -1,18 +1,14 @@
 use crate::core::error::IngestError;
 use crate::core::policy::{PathStatus, classify_path_segments};
 
-/// Normalizes a raw tar entry path into `out`, stripping the root directory prefix,
+/// Normalizes a raw tar entry path, stripping the root directory prefix,
 /// collapsing multiple slashes, removing `.` segments, and classifying against policy.
 ///
 /// Returns `Err(IngestError)` if the path contains directory traversal, invalid root prefixes, or NUL bytes.
 /// Returns `Ok(PathStatus::Ignored)` if the entry is the root directory itself, empty, hidden, noise, or sensitive.
-/// Returns `Ok(PathStatus::NonUtf8Candidate)` if the entry path contains non-UTF-8 bytes and is not hidden.
-/// Returns `Ok(PathStatus::Valid)` on success.
-pub(crate) fn normalize_tar_entry_path(
-    raw_bytes: &[u8],
-    out: &mut String,
-) -> Result<PathStatus, IngestError> {
-    out.clear();
+/// Returns `Ok(PathStatus::NonUtf8Candidate(prefix))` if the entry path contains non-UTF-8 bytes and is not hidden.
+/// Returns `Ok(PathStatus::Valid(path))` on success.
+pub(crate) fn normalize_tar_entry_path(raw_bytes: &[u8]) -> Result<PathStatus, IngestError> {
     if raw_bytes.contains(&0) {
         return Err(IngestError::invalid_metadata(
             "Tar entry path contains NUL byte",
@@ -50,8 +46,9 @@ pub(crate) fn normalize_tar_entry_path(
         .split(|&b| b == b'/')
         .filter(|seg| !seg.is_empty() && *seg != b".");
 
-    let status = classify_path_segments(filtered_segments, out);
-    if status == PathStatus::Valid && out.matches('/').count() > crate::core::policy::MAX_PATH_DEPTH
+    let status = classify_path_segments(filtered_segments);
+    if let PathStatus::Valid(ref path) = status
+        && path.matches('/').count() > crate::core::policy::MAX_PATH_DEPTH
     {
         return Err(IngestError::invalid_metadata(
             "Tar entry path exceeds maximum directory depth",
@@ -92,109 +89,97 @@ mod tests {
 
     #[test]
     fn normalizes_archive_entry_path_correctly() {
-        let mut out = String::new();
-
         assert_eq!(
-            normalize_tar_entry_path(b"but212-codefeed-c1863c8/src/main.rs", &mut out).unwrap(),
-            PathStatus::Valid
+            normalize_tar_entry_path(b"but212-codefeed-c1863c8/src/main.rs").unwrap(),
+            PathStatus::Valid("src/main.rs".into())
         );
-        assert_eq!(out, "src/main.rs");
 
         assert_eq!(
-            normalize_tar_entry_path(b"repo-root//src/main.rs", &mut out).unwrap(),
-            PathStatus::Valid
+            normalize_tar_entry_path(b"repo-root//src/main.rs").unwrap(),
+            PathStatus::Valid("src/main.rs".into())
         );
-        assert_eq!(out, "src/main.rs");
 
         assert_eq!(
-            normalize_tar_entry_path(b"repo-root///deep//nested/./file.txt", &mut out).unwrap(),
-            PathStatus::Valid
+            normalize_tar_entry_path(b"repo-root///deep//nested/./file.txt").unwrap(),
+            PathStatus::Valid("deep/nested/file.txt".into())
         );
-        assert_eq!(out, "deep/nested/file.txt");
 
         assert_eq!(
-            normalize_tar_entry_path(b"repo-root/././a.rs", &mut out).unwrap(),
-            PathStatus::Valid
+            normalize_tar_entry_path(b"repo-root/././a.rs").unwrap(),
+            PathStatus::Valid("a.rs".into())
         );
-        assert_eq!(out, "a.rs");
 
         assert_eq!(
-            normalize_tar_entry_path(b"but212-codefeed-c1863c8/", &mut out).unwrap(),
+            normalize_tar_entry_path(b"but212-codefeed-c1863c8/").unwrap(),
             PathStatus::Ignored
         );
         assert_eq!(
-            normalize_tar_entry_path(b"but212-codefeed-c1863c8///", &mut out).unwrap(),
+            normalize_tar_entry_path(b"but212-codefeed-c1863c8///").unwrap(),
             PathStatus::Ignored
         );
         assert_eq!(
-            normalize_tar_entry_path(b"but212-codefeed-c1863c8", &mut out).unwrap(),
+            normalize_tar_entry_path(b"but212-codefeed-c1863c8").unwrap(),
             PathStatus::Ignored
         );
-        assert_eq!(
-            normalize_tar_entry_path(b"", &mut out).unwrap(),
-            PathStatus::Ignored
-        );
+        assert_eq!(normalize_tar_entry_path(b"").unwrap(), PathStatus::Ignored);
 
         // Policy exclusion: noise lockfile and sensitive credentials
         assert_eq!(
-            normalize_tar_entry_path(b"repo-root/Cargo.lock", &mut out).unwrap(),
+            normalize_tar_entry_path(b"repo-root/Cargo.lock").unwrap(),
             PathStatus::Ignored
         );
         assert_eq!(
-            normalize_tar_entry_path(b"repo-root/id_rsa", &mut out).unwrap(),
+            normalize_tar_entry_path(b"repo-root/id_rsa").unwrap(),
             PathStatus::Ignored
         );
         assert_eq!(
-            normalize_tar_entry_path(b"repo-root/secret.pem", &mut out).unwrap(),
+            normalize_tar_entry_path(b"repo-root/secret.pem").unwrap(),
             PathStatus::Ignored
         );
 
         // Path traversal rejection
-        assert!(normalize_tar_entry_path(b"../etc/passwd", &mut out).is_err());
-        assert!(normalize_tar_entry_path(b"./etc/passwd", &mut out).is_err());
-        assert!(normalize_tar_entry_path(b"repo-root/../etc/passwd", &mut out).is_err());
-        assert!(normalize_tar_entry_path(b"repo-root/src/../../root", &mut out).is_err());
-        assert!(normalize_tar_entry_path(b"repo-root/.hidden/../etc/passwd", &mut out).is_err());
+        assert!(normalize_tar_entry_path(b"../etc/passwd").is_err());
+        assert!(normalize_tar_entry_path(b"./etc/passwd").is_err());
+        assert!(normalize_tar_entry_path(b"repo-root/../etc/passwd").is_err());
+        assert!(normalize_tar_entry_path(b"repo-root/src/../../root").is_err());
+        assert!(normalize_tar_entry_path(b"repo-root/.hidden/../etc/passwd").is_err());
 
         // Embedded NUL rejection
-        assert!(normalize_tar_entry_path(b"repo-root/certs/privkey.key\0", &mut out).is_err());
-        assert!(normalize_tar_entry_path(b"repo-root\0/src/main.rs", &mut out).is_err());
+        assert!(normalize_tar_entry_path(b"repo-root/certs/privkey.key\0").is_err());
+        assert!(normalize_tar_entry_path(b"repo-root\0/src/main.rs").is_err());
 
         // Depth limit rejection (256 directory levels permitted, 257 rejected)
         let normal_depth_path = format!("repo-root/{}/file.txt", vec!["d"; 256].join("/"));
         assert_eq!(
-            normalize_tar_entry_path(normal_depth_path.as_bytes(), &mut out).unwrap(),
-            PathStatus::Valid
+            normalize_tar_entry_path(normal_depth_path.as_bytes()).unwrap(),
+            PathStatus::Valid(format!("{}/file.txt", vec!["d"; 256].join("/")))
         );
 
         let excessive_depth_path = format!("repo-root/{}/file.txt", vec!["d"; 257].join("/"));
-        assert!(normalize_tar_entry_path(excessive_depth_path.as_bytes(), &mut out).is_err());
+        assert!(normalize_tar_entry_path(excessive_depth_path.as_bytes()).is_err());
 
         // Deeply nested hidden path is ignored without triggering depth error
         let deep_hidden_path = format!("repo-root/.hidden/{}/file.txt", vec!["d"; 300].join("/"));
         assert_eq!(
-            normalize_tar_entry_path(deep_hidden_path.as_bytes(), &mut out).unwrap(),
+            normalize_tar_entry_path(deep_hidden_path.as_bytes()).unwrap(),
             PathStatus::Ignored
         );
 
         // Non-UTF8 handling
         assert_eq!(
-            normalize_tar_entry_path(b"repo-root/invalid/\xff\xfe", &mut out).unwrap(),
-            PathStatus::NonUtf8Candidate
+            normalize_tar_entry_path(b"repo-root/invalid/\xff\xfe").unwrap(),
+            PathStatus::NonUtf8Candidate("invalid/".into())
         );
-        assert_eq!(out, "invalid/");
 
         assert_eq!(
-            normalize_tar_entry_path(b"repo-root/\xff\xfe", &mut out).unwrap(),
-            PathStatus::NonUtf8Candidate
+            normalize_tar_entry_path(b"repo-root/\xff\xfe").unwrap(),
+            PathStatus::NonUtf8Candidate(String::new())
         );
-        assert_eq!(out, "");
 
         assert_eq!(
-            normalize_tar_entry_path(b"repo-root/.hidden/\xff\xfe", &mut out).unwrap(),
+            normalize_tar_entry_path(b"repo-root/.hidden/\xff\xfe").unwrap(),
             PathStatus::Ignored
         );
-        assert_eq!(out, "");
     }
 
     #[test]

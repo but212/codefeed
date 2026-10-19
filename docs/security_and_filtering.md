@@ -36,9 +36,9 @@ Entry Discovered (Local Walk or Tar Stream)
    │
    └── Candidate
          ├── Non-UTF-8 path: Preserves valid top-level directory prefix ("dir/") or "" ("<unknown>/");
-         │                    reserves candidate slot and records skipped.
+         │                    admitted as Admission::Skipped directly.
          └── Regular candidate file:
-               └── [Result: Candidate slot consumed; body validated for UTF-8 encoding (no NUL bytes) and MAX_FILE_SIZE. Non-text or oversized files increment skipped.]
+               └── [Result: Evaluated via Selector::admit (consuming candidate budget); linear completion via PendingEntry::accept (validating UTF-8 text and MAX_FILE_SIZE) or PendingEntry::skip. Non-text or oversized files increment skipped.]
 ```
 
 ### 2.1 Conventional Noise Exclusions
@@ -91,7 +91,7 @@ Any path containing a component starting with a leading dot (`.`) is considered 
 | `MAX_FILE_COUNT` | `CandidateBudget` slot check before reading content | `IngestError::CandidateLimitExceeded` with directory diagnostics |
 | `MAX_PATH_DEPTH` | Archive entry path nesting depth check in `normalize_tar_entry_path` | `IngestError::InvalidMetadata` |
 | `MAX_FILE_SIZE` | Pre-I/O `size_hint` evaluation and stream boundary read (`take(MAX_FILE_SIZE + 1)`) | Skipped; tallied in `skipped_files` report |
-| `MAX_OUTPUT_SIZE` | Early arena total check (`Selector::add_file`) and `BoundedEstimatingWriter` byte counter | `IngestError::OutputTooLarge` with Top-5 largest files |
+| `MAX_OUTPUT_SIZE` | Early arena total check (`Selector::add_file`) and `BoundedBuffer` byte counter | `IngestError::OutputTooLarge` with Top-5 largest files |
 | `ARCHIVE_MAX_SECS` | Whole-archive stream transfer timeout | `IngestError::Http` timeout |
 
 ### Candidate vs. Skipped Accounting Rules

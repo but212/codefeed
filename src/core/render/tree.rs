@@ -1,41 +1,40 @@
+use super::budget::{BoundedBuffer, OutputLimitExceeded};
 use crate::core::storage::{FileSpan, SortedFiles};
-use std::io::Write;
 
 const TREE_BRANCH: &str = "├── ";
 const TREE_LAST: &str = "└── ";
 const TREE_VERT: &str = "│   ";
 const TREE_SPACE: &str = "    ";
 
-/// Renders an ASCII tree representation of the provided pre-sorted [`SortedFiles`] to the writer.
-pub(crate) fn render_tree<W: Write + ?Sized, F>(
-    writer: &mut W,
+/// Renders an ASCII tree representation of the provided pre-sorted [`SortedFiles`].
+pub(crate) fn render_tree<F>(
+    buf: BoundedBuffer,
     files: &SortedFiles,
-    mut format_name: F,
-) -> std::io::Result<()>
+    format_name: F,
+) -> Result<BoundedBuffer, OutputLimitExceeded>
 where
-    F: FnMut(&mut W, &str) -> std::io::Result<()>,
+    F: Fn(BoundedBuffer, &str) -> Result<BoundedBuffer, OutputLimitExceeded> + Copy,
 {
-    let mut prefix = String::new();
     render_level(
-        writer,
+        buf,
         files.spans(),
         files.path_arena(),
         0,
-        &mut prefix,
-        &mut format_name,
+        String::new(),
+        format_name,
     )
 }
 
-fn render_level<W: Write + ?Sized, F>(
-    writer: &mut W,
+fn render_level<F>(
+    mut buf: BoundedBuffer,
     spans: &[FileSpan],
     path_arena: &str,
     offset: usize,
-    prefix: &mut String,
-    format_name: &mut F,
-) -> std::io::Result<()>
+    prefix: String,
+    format_name: F,
+) -> Result<BoundedBuffer, OutputLimitExceeded>
 where
-    F: FnMut(&mut W, &str) -> std::io::Result<()>,
+    F: Fn(BoundedBuffer, &str) -> Result<BoundedBuffer, OutputLimitExceeded> + Copy,
 {
     let mut i = 0;
     while let Some((name, is_dir)) = spans
@@ -57,29 +56,28 @@ where
         let end = i;
         let is_last = end == spans.len();
 
-        writer.write_all(prefix.as_bytes())?;
-        writer.write_all(if is_last { TREE_LAST } else { TREE_BRANCH }.as_bytes())?;
-        format_name(writer, name)?;
+        buf = buf.push_str(&prefix)?;
+        buf = buf.push_str(if is_last { TREE_LAST } else { TREE_BRANCH })?;
+        buf = format_name(buf, name)?;
 
         if is_dir {
-            writer.write_all(b"/\n")?;
-            let prev_len = prefix.len();
-            prefix.push_str(if is_last { TREE_SPACE } else { TREE_VERT });
-            render_level(
-                writer,
+            buf = buf.push_bytes(b"/\n")?;
+            let mut next_prefix = prefix.clone();
+            next_prefix.push_str(if is_last { TREE_SPACE } else { TREE_VERT });
+            buf = render_level(
+                buf,
                 &spans[start..end],
                 path_arena,
                 offset + name.len() + 1,
-                prefix,
+                next_prefix,
                 format_name,
             )?;
-            prefix.truncate(prev_len);
         } else {
-            writer.write_all(b"\n")?;
+            buf = buf.push_bytes(b"\n")?;
         }
     }
 
-    Ok(())
+    Ok(buf)
 }
 
 #[inline]
@@ -97,19 +95,19 @@ pub(super) fn component_at_offset(path: &str, offset: usize) -> Option<(&str, bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::storage::{FileStorage, SortedFiles};
+    use crate::core::storage::FileStorage;
 
     #[test]
     fn renders_ascii_tree_correctly() -> Result<(), Box<dyn std::error::Error>> {
-        let mut storage = FileStorage::new();
-        storage.push("Cargo.toml", "");
-        storage.push("src/core/a.rs", "");
-        storage.push("src/lib.rs", "");
+        let storage = FileStorage::new()
+            .push("Cargo.toml", "")
+            .push("src/core/a.rs", "")
+            .push("src/lib.rs", "");
         let files = SortedFiles::new(storage);
 
-        let mut buf = Vec::new();
-        render_tree(&mut buf, &files, |w, s| w.write_all(s.as_bytes()))?;
-        let tree_str = std::str::from_utf8(&buf)?;
+        let buf = render_tree(BoundedBuffer::default(), &files, |b, s| b.push_str(s))?;
+        let digest = buf.finish();
+        let tree_str = std::str::from_utf8(&digest.bytes)?;
         let expected = "\
 ├── Cargo.toml
 └── src/
@@ -122,16 +120,15 @@ mod tests {
     }
 
     #[test]
-    fn formats_tree_nodes_custom_formatter() -> std::io::Result<()> {
-        let mut storage = FileStorage::new();
-        storage.push("dir_name/file_name.txt", "");
+    fn formats_tree_nodes_custom_formatter() -> Result<(), Box<dyn std::error::Error>> {
+        let storage = FileStorage::new().push("dir_name/file_name.txt", "");
         let files = SortedFiles::new(storage);
 
-        let mut out = Vec::new();
-        render_tree(&mut out, &files, |w, name| {
-            w.write_all(name.to_uppercase().as_bytes())
+        let buf = render_tree(BoundedBuffer::default(), &files, |b, name| {
+            b.push_str(&name.to_uppercase())
         })?;
-        let s = String::from_utf8_lossy(&out);
+        let digest = buf.finish();
+        let s = String::from_utf8_lossy(&digest.bytes);
         assert!(s.contains("DIR_NAME/"));
         assert!(s.contains("FILE_NAME.TXT"));
         Ok(())
@@ -139,15 +136,15 @@ mod tests {
 
     #[test]
     fn renders_nested_siblings_in_alphabetical_order() -> Result<(), Box<dyn std::error::Error>> {
-        let mut storage = FileStorage::new();
-        storage.push("a/x.txt", "");
-        storage.push("a/y.txt", "");
-        storage.push("b/z.txt", "");
+        let storage = FileStorage::new()
+            .push("a/x.txt", "")
+            .push("a/y.txt", "")
+            .push("b/z.txt", "");
         let files = SortedFiles::new(storage);
 
-        let mut buf = Vec::new();
-        render_tree(&mut buf, &files, |w, s| w.write_all(s.as_bytes()))?;
-        let tree_str = std::str::from_utf8(&buf)?;
+        let buf = render_tree(BoundedBuffer::default(), &files, |b, s| b.push_str(s))?;
+        let digest = buf.finish();
+        let tree_str = std::str::from_utf8(&digest.bytes)?;
         let expected = "\
 ├── a/
 │   ├── x.txt
@@ -178,16 +175,16 @@ mod tests {
 
     #[test]
     fn renders_deep_multi_level_tree_correctly() -> Result<(), Box<dyn std::error::Error>> {
-        let mut storage = FileStorage::new();
-        storage.push("a/b/c/d/e.txt", "");
-        storage.push("a/b/c/f.txt", "");
-        storage.push("a/b/g.txt", "");
-        storage.push("root.txt", "");
+        let storage = FileStorage::new()
+            .push("a/b/c/d/e.txt", "")
+            .push("a/b/c/f.txt", "")
+            .push("a/b/g.txt", "")
+            .push("root.txt", "");
         let files = SortedFiles::new(storage);
 
-        let mut buf = Vec::new();
-        render_tree(&mut buf, &files, |w, s| w.write_all(s.as_bytes()))?;
-        let tree_str = std::str::from_utf8(&buf)?;
+        let buf = render_tree(BoundedBuffer::default(), &files, |b, s| b.push_str(s))?;
+        let digest = buf.finish();
+        let tree_str = std::str::from_utf8(&digest.bytes)?;
         let expected = "\
 ├── a/
 │   └── b/

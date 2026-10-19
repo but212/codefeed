@@ -1,6 +1,6 @@
 //! Single-pass escaping utilities for text and XML output formats.
 
-use std::io::Write;
+use super::budget::{BoundedBuffer, OutputLimitExceeded};
 
 #[inline(always)]
 pub(crate) fn escape_header(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
@@ -42,9 +42,12 @@ pub(crate) fn escape_xml_single_line(bytes: &[u8], i: usize) -> Option<(usize, &
     }
 }
 
-pub(crate) fn write_escaped<W, F>(writer: &mut W, value: &str, special_at: F) -> std::io::Result<()>
+pub(crate) fn write_escaped<F>(
+    mut buf: BoundedBuffer,
+    value: &str,
+    special_at: F,
+) -> Result<BoundedBuffer, OutputLimitExceeded>
 where
-    W: Write + ?Sized,
     F: Fn(&[u8], usize) -> Option<(usize, &'static str)>,
 {
     let bytes = value.as_bytes();
@@ -52,15 +55,15 @@ where
     let mut i = 0;
     while i < bytes.len() {
         if let Some((consumed, esc)) = special_at(bytes, i) {
-            writer.write_all(&bytes[last..i])?;
-            writer.write_all(esc.as_bytes())?;
+            buf = buf.push_bytes(&bytes[last..i])?;
+            buf = buf.push_bytes(esc.as_bytes())?;
             i += consumed;
             last = i;
         } else {
             i += 1;
         }
     }
-    writer.write_all(&bytes[last..])
+    buf.push_bytes(&bytes[last..])
 }
 
 #[cfg(test)]
@@ -69,28 +72,27 @@ mod tests {
 
     #[test]
     fn write_header_escaped_preserves_clean_input() {
-        let mut buf = Vec::new();
-        write_escaped(&mut buf, "clean_path", escape_header).unwrap();
-        assert_eq!(std::str::from_utf8(&buf).unwrap(), "clean_path");
+        let buf = write_escaped(BoundedBuffer::default(), "clean_path", escape_header).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&buf.finish().bytes).unwrap(),
+            "clean_path"
+        );
 
-        buf.clear();
-        write_escaped(&mut buf, "", escape_header).unwrap();
-        assert_eq!(buf.len(), 0);
+        let buf = write_escaped(BoundedBuffer::default(), "", escape_header).unwrap();
+        assert_eq!(buf.finish().bytes.len(), 0);
     }
 
     #[test]
     fn write_header_escaped_replaces_all_target_characters() {
         let input = "a\\b\rc\nd\\\\e\r\n\x1b]0;title\x07\x7f\t";
         let expected = "a\\\\b\\rc\\nd\\\\\\\\e\\r\\n\u{FFFD}]0;title\u{FFFD}\u{FFFD}\t";
-        let mut buf = Vec::new();
-        write_escaped(&mut buf, input, escape_header).unwrap();
-        assert_eq!(std::str::from_utf8(&buf).unwrap(), expected);
+        let buf = write_escaped(BoundedBuffer::default(), input, escape_header).unwrap();
+        assert_eq!(std::str::from_utf8(&buf.finish().bytes).unwrap(), expected);
     }
 
     fn xml_escape(value: &str) -> String {
-        let mut buf = Vec::new();
-        write_escaped(&mut buf, value, escape_xml_body).unwrap();
-        String::from_utf8(buf).unwrap()
+        let buf = write_escaped(BoundedBuffer::default(), value, escape_xml_body).unwrap();
+        String::from_utf8(buf.finish().bytes).unwrap()
     }
 
     #[test]
@@ -126,10 +128,9 @@ mod tests {
                 "escape mismatch for {text:?}"
             );
 
-            let mut streamed = Vec::new();
-            write_escaped(&mut streamed, text, escape_xml_body).unwrap();
+            let streamed = write_escaped(BoundedBuffer::default(), text, escape_xml_body).unwrap();
             assert_eq!(
-                String::from_utf8(streamed).unwrap(),
+                String::from_utf8(streamed.finish().bytes).unwrap(),
                 escaped.as_str(),
                 "streamed content mismatch for {text:?}"
             );
@@ -144,18 +145,19 @@ mod tests {
             escaped.as_str(),
             "prefix \u{FFFD} &amp; &lt;\u{FEFF}&gt; middle \u{FF01} suffix \u{FFFD} and \u{FFFD}"
         );
-        let mut streamed = Vec::new();
-        write_escaped(&mut streamed, input, escape_xml_body).unwrap();
-        assert_eq!(String::from_utf8(streamed).unwrap(), escaped.as_str());
+        let streamed = write_escaped(BoundedBuffer::default(), input, escape_xml_body).unwrap();
+        assert_eq!(
+            String::from_utf8(streamed.finish().bytes).unwrap(),
+            escaped.as_str()
+        );
     }
 
     #[test]
     fn test_write_xml_attr_escaped_preserves_whitespace_char_refs() {
         let input = "tab\tnewline\r\nquote\"amp&apos'<tag>";
-        let mut out = Vec::new();
-        write_escaped(&mut out, input, escape_xml_single_line).unwrap();
+        let out = write_escaped(BoundedBuffer::default(), input, escape_xml_single_line).unwrap();
         assert_eq!(
-            String::from_utf8(out).unwrap(),
+            String::from_utf8(out.finish().bytes).unwrap(),
             "tab&#9;newline&#13;&#10;quote&quot;amp&amp;apos&apos;&lt;tag&gt;"
         );
     }

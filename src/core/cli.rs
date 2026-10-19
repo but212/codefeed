@@ -68,7 +68,11 @@ where
     for arg in args_iter {
         match state {
             ParseState::ExpectValue(flag) => {
-                apply_flag_value(flag, arg, &mut output, &mut reference, &mut format)?;
+                match parse_flag_value(flag, arg)? {
+                    FlagValue::Output(val) => output = Some(val),
+                    FlagValue::Reference(val) => reference = Some(val),
+                    FlagValue::Format(val) => format = val,
+                }
                 state = ParseState::Normal;
             }
             ParseState::PositionalOnly => {
@@ -93,13 +97,11 @@ where
                     }
                     if let Some((flag, inline_val)) = match_flag(s) {
                         if let Some(inline) = inline_val {
-                            apply_flag_value(
-                                flag,
-                                OsString::from(inline),
-                                &mut output,
-                                &mut reference,
-                                &mut format,
-                            )?;
+                            match parse_flag_value(flag, OsString::from(inline))? {
+                                FlagValue::Output(val) => output = Some(val),
+                                FlagValue::Reference(val) => reference = Some(val),
+                                FlagValue::Format(val) => format = val,
+                            }
                         } else {
                             state = ParseState::ExpectValue(flag);
                         }
@@ -145,13 +147,13 @@ where
     )))
 }
 
-fn apply_flag_value(
-    flag: &str,
-    val: OsString,
-    output: &mut Option<OsString>,
-    reference: &mut Option<String>,
-    format: &mut DigestFormat,
-) -> Result<(), IngestError> {
+enum FlagValue {
+    Output(OsString),
+    Reference(String),
+    Format(DigestFormat),
+}
+
+fn parse_flag_value(flag: &str, val: OsString) -> Result<FlagValue, IngestError> {
     let allow_dash = flag == "-o" || flag == "--output";
     if let Some(s) = val.to_str()
         && s.starts_with('-')
@@ -162,19 +164,19 @@ fn apply_flag_value(
         )));
     }
     match flag {
-        "-o" | "--output" => *output = Some(val),
+        "-o" | "--output" => Ok(FlagValue::Output(val)),
         "-r" | "--ref" => {
             let val_str = val
                 .into_string()
                 .map_err(|_| IngestError::usage("git reference must be valid utf-8"))?;
-            *reference = Some(val_str);
+            Ok(FlagValue::Reference(val_str))
         }
         "-f" | "--format" => {
-            *format = parse_format(&val.to_string_lossy())?;
+            let format = parse_format(&val.to_string_lossy())?;
+            Ok(FlagValue::Format(format))
         }
         _ => unreachable!(),
     }
-    Ok(())
 }
 
 fn parse_format(val: &str) -> Result<DigestFormat, IngestError> {
