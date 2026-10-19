@@ -11,11 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Two-Phase Selection Admission Typestate**:
-  - Refactored core candidate selection in `src/core/selector.rs` into a linear two-phase admission typestate (`Admission::Ignored`, `Admission::Skipped`, `Admission::Pending(PendingEntry)`).
+- **Linear Selection Admission Typestate**:
+  - Refactored core candidate selection in `src/core/selector.rs` into a linear two-phase admission typestate (`Admission::Settled(Selector)`, `Admission::Pending(PendingEntry)`).
+  - Consolidated policy-ignored and skipped decisions into `Admission::Settled(Selector)`.
   - Eliminated closure-based higher-order reader functions (`record_entry`, `record_with`) and internal tokens (`CandidateSlot`, `Observation`, `ContentResult`), making selection flow strictly linear.
   - Required linear consumption of `PendingEntry` via `pending.accept(&[u8])` or `pending.skip()`, preventing dropped or unhandled candidates at compile time.
   - Adapted shell collectors in `src/shell/local.rs` and `src/shell/github.rs` to read content directly into reusable scratch buffers before completing pending entries.
+- **Token Estimation**:
+  - Refined `estimate_tokens_from_bytes` in `src/core/render/budget.rs` to compute `(ascii_bytes / 4 + non_ascii_chars).max(1)`, accurately estimating tokens for Korean/CJK multibyte text.
+- **HTTP Retry & Rate Limit Handling**:
+  - Added support for `Retry-After` and `x-ratelimit-reset` header parsing in `src/shell/github.rs`.
+  - Extended retry state transitions in `src/core/github.rs` (`AttemptState::step`) to treat HTTP 403 as retryable when rate limits apply (`Retry-After` present or `x-ratelimit-remaining: 0`).
+  - Aborted retries immediately if `Retry-After` duration exceeds `RETRY_MAX_DELAY_MS` and included remaining retry wait time in error diagnostics.
+- **Storage Arena & Diagnostic Helpers**:
+  - Removed `impl Deref for SortedFiles` in `src/core/storage.rs`, exposing required storage methods explicitly to maintain sorting encapsulation.
+  - Simplified `largest_files` diagnostic ranking to stable sorting (`sort_by_key` with `Reverse`) and `truncate(5)`.
+  - Converted `FileStorage::push` length assertions to explicit `expect` checks referencing policy constant assertions.
 
 - **Referential Transparency in Pure Core**:
   - Eliminated all `&mut` reference parameters across `src/core/` (outside `Display::fmt`), establishing referential transparency without mutable reference parameters, interior mutability, or external state mutation.

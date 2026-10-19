@@ -98,7 +98,17 @@ impl GithubClient {
             };
 
             let outcome = match &attempt {
-                Attempt::Status(resp) => RequestOutcome::HttpStatus(resp.status().as_u16()),
+                Attempt::Status(resp) => {
+                    let status = resp.status().as_u16();
+                    let headers = resp.headers();
+                    let retry_after = parse_retry_after(headers);
+                    let is_rate_limit = is_rate_limit_403(headers);
+                    RequestOutcome::HttpStatus {
+                        status,
+                        retry_after,
+                        is_rate_limit,
+                    }
+                }
                 Attempt::Transport(error) if is_retryable_transport_error(error) => {
                     RequestOutcome::TransportError(TransportKind::Retryable)
                 }
@@ -127,13 +137,14 @@ impl GithubClient {
                 Transition::Fail => match attempt {
                     Attempt::Status(response) => {
                         let status = response.status();
+                        let retry_after = parse_retry_after(response.headers());
                         let mut body_bytes = Vec::new();
                         let _ = response
                             .into_body()
                             .into_reader()
                             .take(4096)
                             .read_to_end(&mut body_bytes);
-                        return Err(api_error(status, &body_bytes));
+                        return Err(api_error(status, &body_bytes, retry_after));
                     }
                     Attempt::Transport(error) => {
                         return Err(IngestError::http(sanitize_error_detail(&error.to_string())));
@@ -167,15 +178,53 @@ fn sanitize_error_detail(input: &str) -> String {
         .collect()
 }
 
-fn api_error(status: StatusCode, body_bytes: &[u8]) -> IngestError {
+fn parse_retry_after(headers: &ureq::http::HeaderMap) -> Option<Duration> {
+    if let Some(val) = headers.get("retry-after").and_then(|v| v.to_str().ok())
+        && let Ok(secs) = val.trim().parse::<u64>()
+    {
+        return Some(Duration::from_secs(secs));
+    }
+    if let Some(reset) = headers
+        .get("x-ratelimit-reset")
+        .and_then(|v| v.to_str().ok())
+        && let Ok(epoch_secs) = reset.trim().parse::<u64>()
+        && let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+    {
+        let now_secs = now.as_secs();
+        if epoch_secs > now_secs {
+            return Some(Duration::from_secs(epoch_secs - now_secs));
+        }
+    }
+    None
+}
+
+fn is_rate_limit_403(headers: &ureq::http::HeaderMap) -> bool {
+    if headers.get("retry-after").is_some() {
+        return true;
+    }
+    if let Some(rem) = headers
+        .get("x-ratelimit-remaining")
+        .and_then(|v| v.to_str().ok())
+        && rem.trim() == "0"
+    {
+        return true;
+    }
+    false
+}
+
+fn api_error(status: StatusCode, body_bytes: &[u8], retry_after: Option<Duration>) -> IngestError {
     let raw_detail = String::from_utf8_lossy(body_bytes);
     let detail = sanitize_error_detail(&raw_detail);
+    let retry_info = retry_after
+        .map(|d| format!(" (retry available in {}s)", d.as_secs()))
+        .unwrap_or_default();
+
     if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::FORBIDDEN {
         IngestError::api(format!(
-            "HTTP {status}: {detail} (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
+            "HTTP {status}: {detail}{retry_info} (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
         ))
     } else {
-        IngestError::api(format!("HTTP {status}: {detail}"))
+        IngestError::api(format!("HTTP {status}: {detail}{retry_info}"))
     }
 }
 
@@ -254,7 +303,7 @@ fn process_tar_entry<R: Read>(
 
     // 4. Pre-I/O candidate admission before reading entry body
     match selector.admit(status, size_hint)? {
-        Admission::Ignored(s) | Admission::Skipped(s) => Ok((s, None)),
+        Admission::Settled(s) => Ok((s, None)),
         Admission::Pending(pending) => {
             read_tar_entry_into(entry, MAX_FILE_SIZE, content_scratch)?;
             let selector = pending.accept(content_scratch)?;
@@ -388,20 +437,26 @@ mod tests {
 
     #[test]
     fn api_error_suggests_token_on_rate_limit_and_forbidden() {
-        let err_429 = api_error(StatusCode::TOO_MANY_REQUESTS, b"rate limit");
+        let err_429 = api_error(StatusCode::TOO_MANY_REQUESTS, b"rate limit", None);
         assert!(err_429.to_string().contains("GITHUB_TOKEN"));
 
-        let err_403 = api_error(StatusCode::FORBIDDEN, b"forbidden");
-        assert!(err_403.to_string().contains("GITHUB_TOKEN"));
+        let err_403 = api_error(
+            StatusCode::FORBIDDEN,
+            b"forbidden",
+            Some(Duration::from_secs(30)),
+        );
+        let err_403_msg = err_403.to_string();
+        assert!(err_403_msg.contains("GITHUB_TOKEN"));
+        assert!(err_403_msg.contains("(retry available in 30s)"));
 
-        let err_404 = api_error(StatusCode::NOT_FOUND, b"not found");
+        let err_404 = api_error(StatusCode::NOT_FOUND, b"not found", None);
         assert!(!err_404.to_string().contains("GITHUB_TOKEN"));
     }
 
     #[test]
     fn sanitizes_control_characters_in_api_error_detail() {
         let raw = b"error\twith\nnewlines\r\nand\x1b[31mANSI\x07bell\x7fdel\x80c1";
-        let err = api_error(StatusCode::BAD_REQUEST, raw);
+        let err = api_error(StatusCode::BAD_REQUEST, raw, None);
         let err_msg = err.to_string();
 
         assert!(

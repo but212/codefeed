@@ -16,6 +16,8 @@ const _: () = assert!(MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::M
 pub(crate) const ARCHIVE_MAX_SECS: u64 = 300;
 /// Maximum total HTTP request attempts (1 initial + up to 2 retries).
 pub(crate) const MAX_ATTEMPTS: usize = 3;
+/// Fast byte-level token heuristic constant for English text and source code.
+pub(crate) const ASCII_BYTES_PER_TOKEN: u64 = 4;
 /// Base initial delay in milliseconds for exponential backoff.
 pub(crate) const RETRY_INITIAL_DELAY_MS: u64 = 250;
 /// Maximum delay cap in milliseconds for exponential backoff.

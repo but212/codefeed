@@ -1,14 +1,25 @@
 //! In-memory bounded buffer and token estimation heuristic.
 
-use crate::core::policy::MAX_OUTPUT_SIZE;
+use crate::core::policy::{ASCII_BYTES_PER_TOKEN, MAX_OUTPUT_SIZE};
 
-/// Fast byte-level heuristic calibrated for English text and source code.
-pub(crate) fn estimate_tokens(bytes: u64) -> usize {
-    if bytes == 0 {
-        0
-    } else {
-        (bytes / 4).max(1) as usize
+/// Token estimation heuristic calculating ASCII bytes and non-ASCII character counts.
+pub(crate) fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
+    if bytes.is_empty() {
+        return 0;
     }
+    let mut ascii_bytes = 0usize;
+    let mut non_ascii_chars = 0usize;
+
+    for &b in bytes {
+        if b < 0x80 {
+            ascii_bytes += 1;
+        } else if b >= 0xC0 {
+            non_ascii_chars += 1;
+        }
+    }
+
+    let ascii_tokens = ascii_bytes / ASCII_BYTES_PER_TOKEN as usize;
+    (ascii_tokens + non_ascii_chars).max(1)
 }
 
 /// Error returned when rendered content exceeds [`MAX_OUTPUT_SIZE`].
@@ -72,7 +83,7 @@ impl BoundedBuffer {
     }
 
     pub(crate) fn finish(self) -> RenderedDigest {
-        let tokens = estimate_tokens(self.bytes.len() as u64);
+        let tokens = estimate_tokens_from_bytes(&self.bytes);
         RenderedDigest {
             bytes: self.bytes,
             estimated_tokens: tokens,
@@ -103,13 +114,20 @@ mod tests {
 
     #[test]
     fn estimate_tokens_boundaries() {
-        let cases = [(0, 0), (1, 1), (3, 1), (4, 1), (5, 1), (8, 2)];
-        for (bytes, expected) in cases {
-            assert_eq!(
-                estimate_tokens(bytes),
-                expected,
-                "token estimation mismatch for {bytes} bytes"
-            );
-        }
+        assert_eq!(estimate_tokens_from_bytes(b""), 0);
+        assert_eq!(estimate_tokens_from_bytes(b"a"), 1);
+        assert_eq!(estimate_tokens_from_bytes(b"abc"), 1);
+        assert_eq!(estimate_tokens_from_bytes(b"abcd"), 1);
+        assert_eq!(estimate_tokens_from_bytes(b"abcde"), 1);
+        assert_eq!(estimate_tokens_from_bytes(b"abcdefgh"), 2);
+
+        // Korean text "안녕하세요" (5 characters, 15 UTF-8 bytes) -> 5 tokens
+        assert_eq!(estimate_tokens_from_bytes("안녕하세요".as_bytes()), 5);
+
+        // Mixed ASCII + Korean
+        // "Hello 안녕하세요" -> 6 ASCII bytes ('H','e','l','l','o',' ') => 6/4 = 1 token
+        // 5 Korean characters => 5 tokens
+        // Total = 6 tokens
+        assert_eq!(estimate_tokens_from_bytes("Hello 안녕하세요".as_bytes()), 6);
     }
 }

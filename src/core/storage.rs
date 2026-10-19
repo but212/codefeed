@@ -47,13 +47,25 @@ impl SortedFiles {
     pub(crate) fn new(storage: FileStorage) -> Self {
         Self(storage.sort_by_path())
     }
-}
 
-impl std::ops::Deref for SortedFiles {
-    type Target = FileStorage;
+    pub(crate) const fn len(&self) -> usize {
+        self.0.len()
+    }
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
+    pub(crate) fn spans(&self) -> &[FileSpan] {
+        self.0.spans()
+    }
+
+    pub(crate) fn path_arena(&self) -> &str {
+        self.0.path_arena()
+    }
+
+    pub(crate) const fn total_bytes(&self) -> u64 {
+        self.0.total_bytes()
+    }
+
+    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = FileRecord<'_>> {
+        self.0.iter()
     }
 }
 
@@ -91,7 +103,7 @@ impl FileStorage {
         (self.path_arena.len() + self.content_arena.len()) as u64
     }
 
-    /// Sorts spans hierarchically by path components in-place within the path arena.
+    /// Sorts `spans` (16-byte records) hierarchically by path components in-place, without modifying string arenas.
     pub(crate) fn sort_by_path(mut self) -> Self {
         let path_arena = &self.path_arena;
         self.spans
@@ -100,19 +112,20 @@ impl FileStorage {
     }
 
     /// Appends path and content to the arenas and records a [`FileSpan`].
+    ///
+    /// Arena offset fit (`u32::MAX`) is statically guaranteed by `policy.rs` constant assertion
+    /// `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX` and post-push size checks in `Selector::add_file`.
     pub(crate) fn push(mut self, path: &str, content: &str) -> Self {
-        debug_assert!(!path.is_empty(), "file path must not be empty");
-        debug_assert!(u32::try_from(self.path_arena.len()).is_ok());
-        debug_assert!(u32::try_from(path.len()).is_ok());
-        debug_assert!(u32::try_from(self.content_arena.len()).is_ok());
-        debug_assert!(u32::try_from(content.len()).is_ok());
+        assert!(!path.is_empty(), "file path must not be empty");
 
-        let path_offset = self.path_arena.len() as u32;
-        let path_len = path.len() as u32;
+        let path_offset =
+            u32::try_from(self.path_arena.len()).expect("path_arena length fits in u32");
+        let path_len = u32::try_from(path.len()).expect("path length fits in u32");
         self.path_arena.push_str(path);
 
-        let content_offset = self.content_arena.len() as u32;
-        let content_len = content.len() as u32;
+        let content_offset =
+            u32::try_from(self.content_arena.len()).expect("content_arena length fits in u32");
+        let content_len = u32::try_from(content.len()).expect("content length fits in u32");
         self.content_arena.push_str(content);
 
         let span = FileSpan {
@@ -154,30 +167,19 @@ fn cmp_path(a: &str, b: &str) -> Ordering {
 }
 
 /// Diagnostic ranking for digest size: selects up to five largest files.
+///
+/// Called only on output limit exceeded error paths to format error diagnostics.
+/// Uses stable sorting to preserve input order for tied file sizes.
 pub(crate) fn largest_files<'a>(
     files: impl IntoIterator<Item = FileRecord<'a>>,
 ) -> Vec<(String, usize)> {
-    let mut top: Vec<(&'a str, usize)> = Vec::with_capacity(6);
-
-    for file in files {
-        let size = file.content.len();
-        if top.len() == 5 && size <= top.last().unwrap().1 {
-            continue;
-        }
-
-        let index = top
-            .iter()
-            .position(|probe| probe.1 < size)
-            .unwrap_or(top.len());
-        if index < 5 {
-            top.insert(index, (file.path, size));
-            top.truncate(5);
-        }
-    }
-
-    top.into_iter()
-        .map(|(path, size)| (path.to_string(), size))
-        .collect()
+    let mut sized: Vec<(&str, usize)> = files
+        .into_iter()
+        .map(|f| (f.path, f.content.len()))
+        .collect();
+    sized.sort_by_key(|&(_, size)| std::cmp::Reverse(size));
+    sized.truncate(5);
+    sized.into_iter().map(|(p, s)| (p.to_string(), s)).collect()
 }
 
 #[cfg(test)]
