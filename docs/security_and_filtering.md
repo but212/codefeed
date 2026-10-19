@@ -36,7 +36,7 @@ Entry Discovered (Local Walk or Tar Stream)
    │
    └── Candidate
          ├── Non-UTF-8 path: Preserves valid top-level directory prefix ("dir/") or "" ("<unknown>/");
-         │                    admitted as Admission::Skipped directly.
+         │                    admitted as Admission::Settled directly.
          └── Regular candidate file:
                └── [Result: Evaluated via Selector::admit (consuming candidate budget); linear completion via PendingEntry::accept (validating UTF-8 text and MAX_FILE_SIZE) or PendingEntry::skip. Non-text or oversized files increment skipped.]
 ```
