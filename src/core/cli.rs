@@ -22,21 +22,35 @@ pub(crate) enum CliAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flag {
+    Output,
+    Reference,
+    Format,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParseState {
     Normal,
-    ExpectValue(&'static str),
+    ExpectValue(Flag, &'static str),
     PositionalOnly,
 }
 
-fn match_flag(s: &str) -> Option<(&'static str, Option<&str>)> {
-    for flag in ["-o", "--output", "-r", "--ref", "-f", "--format"] {
-        if s == flag {
-            return Some((flag, None));
+fn match_flag(s: &str) -> Option<(Flag, &'static str, Option<&str>)> {
+    for (flag, flag_str) in [
+        (Flag::Output, "-o"),
+        (Flag::Output, "--output"),
+        (Flag::Reference, "-r"),
+        (Flag::Reference, "--ref"),
+        (Flag::Format, "-f"),
+        (Flag::Format, "--format"),
+    ] {
+        if s == flag_str {
+            return Some((flag, flag_str, None));
         }
-        if let Some(rest) = s.strip_prefix(flag)
+        if let Some(rest) = s.strip_prefix(flag_str)
             && let Some(inline) = rest.strip_prefix('=')
         {
-            return Some((flag, Some(inline)));
+            return Some((flag, flag_str, Some(inline)));
         }
     }
     None
@@ -67,8 +81,8 @@ where
 
     for arg in args_iter {
         match state {
-            ParseState::ExpectValue(flag) => {
-                match parse_flag_value(flag, arg)? {
+            ParseState::ExpectValue(flag, flag_str) => {
+                match parse_flag_value(flag, flag_str, arg)? {
                     FlagValue::Output(val) => output = Some(val),
                     FlagValue::Reference(val) => reference = Some(val),
                     FlagValue::Format(val) => format = val,
@@ -95,15 +109,15 @@ where
                     if s == "-h" || s == "--help" {
                         return Ok(CliAction::Help);
                     }
-                    if let Some((flag, inline_val)) = match_flag(s) {
+                    if let Some((flag, flag_str, inline_val)) = match_flag(s) {
                         if let Some(inline) = inline_val {
-                            match parse_flag_value(flag, OsString::from(inline))? {
+                            match parse_flag_value(flag, flag_str, OsString::from(inline))? {
                                 FlagValue::Output(val) => output = Some(val),
                                 FlagValue::Reference(val) => reference = Some(val),
                                 FlagValue::Format(val) => format = val,
                             }
                         } else {
-                            state = ParseState::ExpectValue(flag);
+                            state = ParseState::ExpectValue(flag, flag_str);
                         }
                         continue;
                     }
@@ -123,9 +137,9 @@ where
         }
     }
 
-    if let ParseState::ExpectValue(flag) = state {
+    if let ParseState::ExpectValue(_, flag_str) = state {
         return Err(IngestError::usage(format!(
-            "a value is required for '{flag}' but none was supplied"
+            "a value is required for '{flag_str}' but none was supplied"
         )));
     }
 
@@ -153,29 +167,28 @@ enum FlagValue {
     Format(DigestFormat),
 }
 
-fn parse_flag_value(flag: &str, val: OsString) -> Result<FlagValue, IngestError> {
-    let allow_dash = flag == "-o" || flag == "--output";
+fn parse_flag_value(flag: Flag, flag_str: &str, val: OsString) -> Result<FlagValue, IngestError> {
+    let allow_dash = matches!(flag, Flag::Output);
     if let Some(s) = val.to_str()
         && s.starts_with('-')
         && !(allow_dash && s == "-")
     {
         return Err(IngestError::usage(format!(
-            "a value is required for '{flag}' but none was supplied"
+            "a value is required for '{flag_str}' but none was supplied"
         )));
     }
     match flag {
-        "-o" | "--output" => Ok(FlagValue::Output(val)),
-        "-r" | "--ref" => {
+        Flag::Output => Ok(FlagValue::Output(val)),
+        Flag::Reference => {
             let val_str = val
                 .into_string()
                 .map_err(|_| IngestError::usage("git reference must be valid utf-8"))?;
             Ok(FlagValue::Reference(val_str))
         }
-        "-f" | "--format" => {
+        Flag::Format => {
             let format = parse_format(&val.to_string_lossy())?;
             Ok(FlagValue::Format(format))
         }
-        _ => unreachable!(),
     }
 }
 

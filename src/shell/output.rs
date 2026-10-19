@@ -11,7 +11,6 @@ use crate::core::render::render;
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[inline]
 fn ignore_broken_pipe(result: io::Result<()>) -> io::Result<()> {
     match result {
         Ok(()) => Ok(()),

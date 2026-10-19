@@ -8,6 +8,10 @@ pub(crate) const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
 pub(crate) const MAX_FILE_COUNT: usize = 10_000;
 /// Maximum directory nesting depth permitted for archive entry paths (256 levels).
 pub(crate) const MAX_PATH_DEPTH: usize = 256;
+/// Maximum allowable path length in bytes (4,096 bytes). Paths exceeding this limit are skipped.
+pub(crate) const MAX_PATH_BYTES: u64 = 4096;
+
+const _: () = assert!(MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX as u64);
 /// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
 pub(crate) const ARCHIVE_MAX_SECS: u64 = 300;
 /// Maximum total HTTP request attempts (1 initial + up to 2 retries).
@@ -46,12 +50,10 @@ pub(crate) enum PathStatus {
 }
 
 /// Returns `true` if `file_name` matches a known noise file.
-#[inline]
 fn is_noise_file(file_name: &str) -> bool {
     NOISE.contains(&file_name)
 }
 
-#[inline]
 fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
     value
         .get(..prefix.len())
@@ -59,7 +61,6 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
 }
 
 /// Returns `true` if `file_name` or its `extension` indicates a sensitive credentials file.
-#[inline]
 fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> bool {
     if starts_with_ignore_ascii_case(file_name, "id_rsa")
         || starts_with_ignore_ascii_case(file_name, "id_ed25519")
@@ -76,13 +77,11 @@ fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> bool {
 }
 
 /// Returns `true` if raw path segment bytes start with a dot (`.`), marking a hidden file or directory.
-#[inline]
 pub(crate) fn is_hidden_segment(segment: &[u8]) -> bool {
     segment.first() == Some(&b'.')
 }
 
 /// Returns `true` if `file_name` matches a known noise file or a sensitive credentials pattern.
-#[inline]
 pub(crate) fn is_ignored_filename(file_name: &str) -> bool {
     let extension = file_name.rsplit_once('.').map(|(_, e)| e);
     is_noise_file(file_name) || is_sensitive_file(file_name, extension)

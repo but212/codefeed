@@ -4,7 +4,9 @@ use std::collections::HashMap;
 
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
-use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE, PathStatus};
+use crate::core::policy::{
+    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE, MAX_PATH_BYTES, PathStatus,
+};
 use crate::core::storage::{FileStorage, SortedFiles};
 
 /// Outcome of evaluating an entry candidate against admission policy.
@@ -46,7 +48,6 @@ impl PendingEntry {
 }
 
 /// UTF-8 text predicate: NUL-free bytes within size limit, returning string slice.
-#[inline]
 fn classify_content(bytes: &[u8]) -> Option<&str> {
     if bytes.len() as u64 > MAX_FILE_SIZE || bytes.contains(&0) {
         return None;
@@ -145,8 +146,8 @@ impl Selector {
             }
             PathStatus::Valid(path) => {
                 self.candidates = self.candidates.add(&path)?;
-                if let Some(hint) = size_hint
-                    && hint > MAX_FILE_SIZE
+                if path.len() as u64 > MAX_PATH_BYTES
+                    || size_hint.is_some_and(|hint| hint > MAX_FILE_SIZE)
                 {
                     self.skipped = self.skipped.saturating_add(1);
                     Ok(Admission::Skipped(self))
@@ -355,17 +356,19 @@ mod tests {
     }
 
     #[test]
-    fn selector_decide_and_finish_accepts_overlong_path_component() {
+    fn admit_skips_when_path_length_exceeds_max_path_bytes() {
         let selector = Selector::new();
-        let long_len = 70_000;
-        let path = format!("{}/file.rs", "a".repeat(long_len));
-        let selector = feed_file(selector, &path, b"fn main() {}").unwrap();
-        let res = selector.finish("test".to_string(), None);
-        assert_eq!(res.files.len(), 1);
-        assert_eq!(
-            res.files.iter().next().unwrap().path.len(),
-            long_len + "/file.rs".len()
-        );
+        let overlong_path = format!("{}/file.rs", "a".repeat(MAX_PATH_BYTES as usize));
+        let admission = selector
+            .admit(PathStatus::Valid(overlong_path), None)
+            .unwrap();
+        let selector = match admission {
+            Admission::Skipped(s) => s,
+            _ => panic!("expected skipped admission for overlong path"),
+        };
+        let collection = selector.finish("test".into(), None);
+        assert_eq!(collection.skipped, 1);
+        assert_eq!(collection.files.len(), 0);
     }
 
     #[test]

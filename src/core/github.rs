@@ -113,13 +113,11 @@ fn append_encoded_segment(mut url: String, segment: &str) -> String {
 }
 
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429 or 5xx).
-#[inline]
 pub(crate) const fn is_retryable_status(status_code: u16) -> bool {
     matches!(status_code, 429 | 500..=599)
 }
 
 /// Calculates bounded exponential backoff duration for the given attempt.
-#[inline]
 pub(crate) const fn retry_delay(attempt: usize) -> Duration {
     let shift = if attempt < 5 { attempt as u32 } else { 5 };
     let exponential = RETRY_INITIAL_DELAY_MS.saturating_mul(1_u64 << shift);

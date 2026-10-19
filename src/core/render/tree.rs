@@ -80,7 +80,6 @@ where
     Ok(buf)
 }
 
-#[inline]
 pub(super) fn component_at_offset(path: &str, offset: usize) -> Option<(&str, bool)> {
     let remainder = path.get(offset..)?;
     if remainder.is_empty() {
