@@ -51,6 +51,7 @@ fn is_noise_file(file_name: &str) -> bool {
     NOISE.contains(&file_name)
 }
 
+#[inline]
 fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
     value
         .get(..prefix.len())

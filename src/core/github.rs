@@ -157,6 +157,7 @@ pub(crate) enum Transition {
 
 /// Finite state machine managing HTTP attempt state and retry transitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(transparent)]
 pub(crate) struct AttemptState {
     attempt: usize,
 }

@@ -33,6 +33,7 @@ pub(crate) struct RenderedDigest {
 
 /// In-memory buffer strictly bounded by [`MAX_OUTPUT_SIZE`] with value-passing operations.
 #[derive(Debug, Default, PartialEq, Eq)]
+#[repr(transparent)]
 pub(crate) struct BoundedBuffer {
     bytes: Vec<u8>,
 }

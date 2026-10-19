@@ -45,7 +45,7 @@ impl IngestError {
 
     /// Constructs a [`CandidateLimitExceeded`](Self::CandidateLimitExceeded) error with diagnostic directory counts.
     #[inline]
-    pub(crate) fn candidate_limit_exceeded(
+    pub(crate) const fn candidate_limit_exceeded(
         limit: usize,
         largest_directories: Vec<(String, usize)>,
     ) -> Self {
@@ -87,7 +87,7 @@ impl IngestError {
 
     /// Constructs an [`OutputTooLarge`](Self::OutputTooLarge) error with diagnostic largest file entries.
     #[inline]
-    pub(crate) fn output_too_large(largest_files: Vec<(String, usize)>) -> Self {
+    pub(crate) const fn output_too_large(largest_files: Vec<(String, usize)>) -> Self {
         Self::OutputTooLarge(largest_files)
     }
 }

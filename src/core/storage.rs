@@ -92,7 +92,7 @@ impl FileStorage {
     }
 
     #[inline]
-    pub(crate) fn total_bytes(&self) -> u64 {
+    pub(crate) const fn total_bytes(&self) -> u64 {
         (self.path_arena.len() + self.content_arena.len()) as u64
     }
 
