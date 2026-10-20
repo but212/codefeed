@@ -5,7 +5,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
@@ -52,7 +52,7 @@ pub(super) fn collect(
             .strip_prefix(&canonical_root)
             .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
 
-        let status = classify_local_path(relative);
+        let status = classify_local_path(relative)?;
         let size_hint = match status {
             PathStatus::Valid(_) => entry.metadata().ok().map(|m| m.len()),
             PathStatus::Ignored | PathStatus::NonUtf8Candidate(_) => None,
@@ -60,7 +60,6 @@ pub(super) fn collect(
         match selector.admit(status, size_hint)? {
             Admission::Settled(s) => selector = s,
             Admission::Pending(pending) => {
-                scratch.zeroize();
                 scratch.clear();
                 match read_local_file_into(entry_path, MAX_FILE_SIZE, &mut scratch)? {
                     Some(bytes) => selector = pending.accept(bytes)?,
@@ -120,11 +119,12 @@ fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
     Ok(canonical)
 }
 
-fn classify_local_path(relative: &Path) -> PathStatus {
+fn classify_local_path(relative: &Path) -> Result<PathStatus, IngestError> {
     let segments = relative
         .components()
         .map(|c| c.as_os_str().as_encoded_bytes());
     classify_path_segments(segments)
+        .map_err(|_| IngestError::invalid_metadata("local path exceeds maximum directory depth"))
 }
 
 fn format_ignore_error(err: &ignore::Error) -> io::Error {
@@ -169,7 +169,7 @@ mod tests {
     use super::super::testing::temp_dir;
     use super::*;
     use crate::core::model::{DigestFormat, OutputTarget, RunConfig, Source};
-    use crate::core::storage::FileRecord;
+    use crate::core::storage::{FileRecord, cmp_path};
     use crate::ingest;
 
     #[test]
@@ -467,7 +467,7 @@ mod tests {
     #[test]
     fn walk_preserves_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("parallel_order")?;
-        for dir in ["b_dir", "a_dir", "c_dir"] {
+        for dir in ["b_dir", "a_dir", "c_dir", "src-test", "src"] {
             fs::create_dir_all(root.join(dir))?;
             for file_index in 0..10 {
                 fs::write(
@@ -478,17 +478,36 @@ mod tests {
         }
         let result = collect(&root, None)?;
         let files = result.files;
-        assert_eq!(files.len(), 30);
+        assert_eq!(files.len(), 50);
         let records: Vec<FileRecord<'_>> = files.iter().collect();
         for window in records.windows(2) {
             assert!(
-                window[0].path < window[1].path,
+                cmp_path(window[0].path, window[1].path).is_lt(),
                 "ordering violated: {} >= {}",
                 window[0].path,
                 window[1].path
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn rejects_excessive_path_depth() {
+        let mut excessive = PathBuf::new();
+        for _ in 0..257 {
+            excessive.push("d");
+        }
+        excessive.push("file.txt");
+        let result = classify_local_path(&excessive);
+        assert!(result.is_err());
+
+        let mut normal = PathBuf::new();
+        for _ in 0..256 {
+            normal.push("d");
+        }
+        normal.push("file.txt");
+        let result = classify_local_path(&normal);
+        assert!(result.is_ok());
     }
 
     #[test]

@@ -68,13 +68,15 @@ impl DigestFormat {
 ///
 /// Returns [`IngestError::OutputTooLarge`] if output exceeds the maximum size limit.
 pub(crate) fn render(
-    collection: &CollectionResult,
+    collection: CollectionResult,
     format: DigestFormat,
 ) -> Result<RenderedDigest, IngestError> {
     let capacity = (collection.files.total_bytes() as usize).saturating_add(4096);
     let buf = BoundedBuffer::with_capacity(capacity);
-    match format.render(buf, collection) {
-        Ok(buf) => Ok(buf.finish()),
+    let included = collection.files.len();
+    let skipped = collection.skipped;
+    match format.render(buf, &collection) {
+        Ok(buf) => Ok(buf.finish_with_counts(included, skipped)),
         Err(OutputLimitExceeded) => Err(collection.output_too_large_error()),
     }
 }
@@ -130,7 +132,7 @@ mod tests {
             };
 
             for format in [DigestFormat::Text, DigestFormat::Xml] {
-                let digest = render(&collection, format)?;
+                let digest = collection.clone().render(format)?;
                 assert!(
                     digest.bytes.len() >= raw_bytes,
                     "Format {format:?} output length ({}) must be >= raw arena bytes ({raw_bytes}) for {label}",
@@ -158,7 +160,7 @@ mod tests {
             files: SortedFiles::new(storage),
             skipped: 0,
         };
-        match render(&collection, DigestFormat::Text) {
+        match collection.render(DigestFormat::Text) {
             Err(IngestError::OutputTooLarge(largest_files)) => {
                 assert_eq!(largest_files.len(), 1);
                 assert_eq!(largest_files[0].0, "large.txt");
@@ -183,14 +185,14 @@ mod tests {
             skipped: 0,
         };
 
-        let text_digest = render(&collection, DigestFormat::Text)?;
+        let text_digest = collection.clone().render(DigestFormat::Text)?;
         let text_rendered = std::str::from_utf8(&text_digest.bytes)?;
         assert!(
             text_rendered.contains(raw_ansi),
             "Text format must preserve raw ANSI/control characters for LLM fidelity"
         );
 
-        let xml_digest = render(&collection, DigestFormat::Xml)?;
+        let xml_digest = collection.render(DigestFormat::Xml)?;
         let xml_str = std::str::from_utf8(&xml_digest.bytes)?;
         assert!(
             !xml_str.contains("\x1b"),

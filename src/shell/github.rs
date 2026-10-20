@@ -9,7 +9,7 @@ use ureq::Agent;
 use ureq::config::RedirectAuthHeaders;
 use ureq::http::StatusCode;
 use ureq::tls::{RootCerts, TlsConfig};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::error::IngestError;
@@ -261,7 +261,6 @@ fn collect_archive<R: Read>(
 
     for entry_res in entries {
         let mut entry = entry_res.map_err(IngestError::Io)?;
-        content_scratch.zeroize();
         content_scratch.clear();
         let (next_selector, sha) = process_tar_entry(&mut entry, selector, &mut content_scratch)?;
         selector = next_selector;

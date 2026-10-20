@@ -217,6 +217,16 @@ impl CollectionResult {
     pub(crate) fn output_too_large_error(&self) -> IngestError {
         IngestError::output_too_large(crate::core::storage::largest_files(self.files.iter()))
     }
+
+    /// Renders the collected files into [`RenderedDigest`] using the specified format.
+    ///
+    /// Consumes `self` as part of the linear ingestion pipeline.
+    pub(crate) fn render(
+        self,
+        format: DigestFormat,
+    ) -> Result<crate::core::render::RenderedDigest, IngestError> {
+        crate::core::render::render(self, format)
+    }
 }
 
 #[cfg(test)]

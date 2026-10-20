@@ -157,22 +157,28 @@ enum PathClassifierState {
     NonUtf8Prefix,
 }
 
+/// Error indicating that a path's directory nesting depth exceeds [`MAX_PATH_DEPTH`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DepthExceededError;
+
 /// Classifies a sequence of raw path segment bytes into [`PathStatus`].
 ///
 /// Builds a normalized UTF-8 path string for valid candidates or prefix strings for non-UTF-8 candidates.
-pub(crate) fn classify_path_segments<'a, I>(segments: I) -> PathStatus
+pub(crate) fn classify_path_segments<'a, I>(segments: I) -> Result<PathStatus, DepthExceededError>
 where
     I: IntoIterator<Item = &'a [u8]>,
 {
     let mut scratch = String::new();
     let mut state = PathClassifierState::ValidUtf8;
     let mut last_segment: Option<&'a [u8]> = None;
+    let mut segment_count = 0usize;
 
     for segment in segments {
         if is_hidden_segment(segment) {
-            return PathStatus::Ignored;
+            return Ok(PathStatus::Ignored);
         }
 
+        segment_count = segment_count.saturating_add(1);
         last_segment = Some(segment);
 
         match state {
@@ -195,25 +201,29 @@ where
     }
 
     let Some(last) = last_segment else {
-        return PathStatus::Ignored;
+        return Ok(PathStatus::Ignored);
     };
 
     if last.is_empty() {
-        return PathStatus::Ignored;
+        return Ok(PathStatus::Ignored);
     }
     if matches!(std::str::from_utf8(last), Ok(filename) if is_ignored_filename(filename)) {
-        return PathStatus::Ignored;
+        return Ok(PathStatus::Ignored);
+    }
+
+    if segment_count.saturating_sub(1) > MAX_PATH_DEPTH {
+        return Err(DepthExceededError);
     }
 
     match state {
         PathClassifierState::ValidUtf8 => {
             if scratch.is_empty() {
-                PathStatus::Ignored
+                Ok(PathStatus::Ignored)
             } else {
-                PathStatus::Valid(NormalizedPath(scratch))
+                Ok(PathStatus::Valid(NormalizedPath(scratch)))
             }
         }
-        PathClassifierState::NonUtf8Prefix => PathStatus::NonUtf8Candidate(scratch),
+        PathClassifierState::NonUtf8Prefix => Ok(PathStatus::NonUtf8Candidate(scratch)),
     }
 }
 
@@ -238,22 +248,46 @@ mod tests {
         let segments: &[&[u8]] = &[b"\xff\xfe", b"id_rsa"];
         assert_eq!(
             classify_path_segments(segments.iter().copied()),
-            PathStatus::Ignored
+            Ok(PathStatus::Ignored)
         );
 
         // non-UTF-8 directory segment with valid candidate filename (main.rs) -> NonUtf8Candidate
         let segments: &[&[u8]] = &[b"\xff\xfe", b"main.rs"];
         assert_eq!(
             classify_path_segments(segments.iter().copied()),
-            PathStatus::NonUtf8Candidate(String::new())
+            Ok(PathStatus::NonUtf8Candidate(String::new()))
         );
 
         // non-UTF-8 directory segment + valid dir + valid candidate filename -> NonUtf8Candidate with prefix
         let segments: &[&[u8]] = &[b"src", b"\xff\xfe", b"main.rs"];
         assert_eq!(
             classify_path_segments(segments.iter().copied()),
-            PathStatus::NonUtf8Candidate("src/".to_string())
+            Ok(PathStatus::NonUtf8Candidate("src/".to_string()))
         );
+    }
+
+    #[test]
+    fn test_classify_path_segments_depth_limit() {
+        let normal: Vec<&[u8]> = std::iter::repeat_n(b"d".as_slice(), 256)
+            .chain(std::iter::once(b"file.txt".as_slice()))
+            .collect();
+        assert!(classify_path_segments(normal).is_ok());
+
+        let excessive: Vec<&[u8]> = std::iter::repeat_n(b"d".as_slice(), 257)
+            .chain(std::iter::once(b"file.txt".as_slice()))
+            .collect();
+        assert_eq!(classify_path_segments(excessive), Err(DepthExceededError));
+
+        let deep_hidden: Vec<&[u8]> = std::iter::once(b".hidden".as_slice())
+            .chain(std::iter::repeat_n(b"d".as_slice(), 300))
+            .chain(std::iter::once(b"file.txt".as_slice()))
+            .collect();
+        assert_eq!(classify_path_segments(deep_hidden), Ok(PathStatus::Ignored));
+
+        let deep_noise: Vec<&[u8]> = std::iter::repeat_n(b"d".as_slice(), 257)
+            .chain(std::iter::once(b"Cargo.lock".as_slice()))
+            .collect();
+        assert_eq!(classify_path_segments(deep_noise), Ok(PathStatus::Ignored));
     }
 
     #[test]
@@ -294,7 +328,7 @@ mod tests {
     #[test]
     fn test_normalized_path_invariants_and_classification() {
         let segments: &[&[u8]] = &[b"src", b"core", b"model.rs"];
-        let status = classify_path_segments(segments.iter().copied());
+        let status = classify_path_segments(segments.iter().copied()).unwrap();
         let PathStatus::Valid(path) = status else {
             panic!("expected PathStatus::Valid");
         };

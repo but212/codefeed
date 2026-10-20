@@ -1,5 +1,6 @@
 //! In-memory bounded buffer and token estimation heuristic.
 
+use crate::core::model::{IngestReport, OutputTarget};
 use crate::core::policy::{ASCII_BYTES_PER_TOKEN, MAX_OUTPUT_SIZE};
 
 /// Token estimation heuristic calculating ASCII bytes and non-ASCII character counts.
@@ -38,11 +39,25 @@ impl std::fmt::Display for OutputLimitExceeded {
 
 impl std::error::Error for OutputLimitExceeded {}
 
-/// Rendered digest containing accumulated bytes and token estimation.
+/// Rendered digest containing accumulated bytes, token estimation, and collection metrics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RenderedDigest {
     pub(crate) bytes: Vec<u8>,
     pub(crate) estimated_tokens: usize,
+    pub(crate) included_files: usize,
+    pub(crate) skipped_files: usize,
+}
+
+impl RenderedDigest {
+    /// Consumes the rendered digest to generate an [`IngestReport`] for the given output target.
+    pub(crate) fn into_report(self, output: OutputTarget) -> IngestReport {
+        IngestReport {
+            output,
+            included_files: self.included_files,
+            skipped_files: self.skipped_files,
+            estimated_tokens: self.estimated_tokens,
+        }
+    }
 }
 
 /// In-memory buffer strictly bounded by [`MAX_OUTPUT_SIZE`] with value-passing operations.
@@ -86,12 +101,23 @@ impl BoundedBuffer {
         self.push_bytes(&buf[i..])
     }
 
-    pub(crate) fn finish(self) -> RenderedDigest {
+    pub(crate) fn finish_with_counts(
+        self,
+        included_files: usize,
+        skipped_files: usize,
+    ) -> RenderedDigest {
         let tokens = estimate_tokens_from_bytes(&self.bytes);
         RenderedDigest {
             bytes: self.bytes,
             estimated_tokens: tokens,
+            included_files,
+            skipped_files,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finish(self) -> RenderedDigest {
+        self.finish_with_counts(0, 0)
     }
 }
 
@@ -133,5 +159,22 @@ mod tests {
         // 5 Korean characters => 5 tokens
         // Total = 6 tokens
         assert_eq!(estimate_tokens_from_bytes("Hello 안녕하세요".as_bytes()), 6);
+    }
+
+    #[test]
+    fn rendered_digest_into_report_preserves_metrics() {
+        use crate::core::model::OutputTarget;
+
+        let digest = RenderedDigest {
+            bytes: b"test output".to_vec(),
+            estimated_tokens: 42,
+            included_files: 10,
+            skipped_files: 3,
+        };
+        let report = digest.into_report(OutputTarget::Stdout);
+        assert_eq!(report.output, OutputTarget::Stdout);
+        assert_eq!(report.included_files, 10);
+        assert_eq!(report.skipped_files, 3);
+        assert_eq!(report.estimated_tokens, 42);
     }
 }

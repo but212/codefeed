@@ -1,6 +1,6 @@
 use crate::core::error::IngestError;
 use crate::core::policy::{PathStatus, classify_path_segments};
-use memchr::{memchr, memchr_iter, memmem};
+use memchr::{memchr, memmem};
 
 /// Normalizes a raw tar entry path, stripping the root directory prefix,
 /// collapsing multiple slashes, removing `.` segments, and classifying against policy.
@@ -49,15 +49,9 @@ pub(crate) fn normalize_tar_entry_path(raw_bytes: &[u8]) -> Result<PathStatus, I
         .split(|&b| b == b'/')
         .filter(|seg| !seg.is_empty() && *seg != b".");
 
-    let status = classify_path_segments(filtered_segments);
-    if let PathStatus::Valid(ref path) = status
-        && memchr_iter(b'/', path.as_bytes()).count() > crate::core::policy::MAX_PATH_DEPTH
-    {
-        return Err(IngestError::invalid_metadata(
-            "Tar entry path exceeds maximum directory depth",
-        ));
-    }
-    Ok(status)
+    classify_path_segments(filtered_segments).map_err(|_| {
+        IngestError::invalid_metadata("Tar entry path exceeds maximum directory depth")
+    })
 }
 
 /// Parses a 40-character commit SHA from PAX global header comment bytes.

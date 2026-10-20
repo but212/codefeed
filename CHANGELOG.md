@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Linear pipeline typestates**: Refactored the core collection-to-report pipeline into a strictly consuming typestate chain (`Selector` -> `CollectionResult` -> `RenderedDigest` -> `IngestReport`). `CollectionResult::render` consumes the collection by value and packages rendered bytes together with collection metrics.
+- **Shell output delivery decoupling**: Decoupled `output::emit` into a pure I/O transport function `output::deliver(target, bytes)`, completely removing core render format and collection dependencies from the shell output module.
+- **Path depth limit symmetry**: Local ingestion rejects paths exceeding `MAX_PATH_DEPTH` (256 directory levels) with `IngestError::invalid_metadata`, maintaining full symmetry with tarball archive handling while preserving hidden and noise file exclusion precedence.
+- **Diagnostic tie-breaking determinism**: `largest_files` tie-breaks equal file sizes using `cmp_path` (component-wise lexicographical order), matching the core document and tree ordering invariant.
+
+### Performance
+
+- **Memory zeroization bandwidth**: Replaced per-entry `.zeroize()` calls inside archive and local ingestion loops with `Zeroizing` RAII `Drop` cleanup, avoiding redundant volatile overwrites on every entry during streaming.
+
+### Documentation
+
+- **Sorting contract precision**: Clarified in `context.md`, `storage.rs`, and test suites that path ordering invariant is component-wise lexicographical order (`cmp_path`).
+
 ### Fixed
 
 - **`GitRef` revision trimming**: `GitRef::new` trims surrounding ASCII whitespace before storing the value, preventing percent-encoded spaces (`%20`) in tarball archive URLs.
