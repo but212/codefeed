@@ -309,10 +309,15 @@ hello\n\
                 content: "content_a\n",
             },
         ];
-        let storage = files
-            .into_iter()
-            .filter(|f| f.path != "excluded.txt")
-            .fold(FileStorage::new(), |s, f| s.push(f.path, f.content));
+        let storage = files.into_iter().filter(|f| f.path != "excluded.txt").fold(
+            FileStorage::new(),
+            |s, f| {
+                s.push(
+                    &crate::core::policy::NormalizedPath::from(f.path),
+                    f.content,
+                )
+            },
+        );
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,

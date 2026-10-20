@@ -7,7 +7,7 @@ use memchr::memchr;
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
 use crate::core::policy::{
-    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE, MAX_PATH_BYTES, PathStatus,
+    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE, MAX_PATH_BYTES, NormalizedPath, PathStatus,
 };
 use crate::core::storage::{FileStorage, SortedFiles};
 
@@ -25,7 +25,7 @@ pub(crate) enum Admission {
 #[must_use = "pending entry must be completed via accept or skip"]
 pub(crate) struct PendingEntry {
     selector: Selector,
-    path: String,
+    path: NormalizedPath,
 }
 
 impl PendingEntry {
@@ -154,7 +154,7 @@ impl Selector {
         }
     }
 
-    fn add_file(mut self, path: &str, content: &str) -> Result<Self, IngestError> {
+    fn add_file(mut self, path: &NormalizedPath, content: &str) -> Result<Self, IngestError> {
         self.storage = self.storage.push(path, content);
         // Early fail output bounding check:
         // Accumulated raw arena bytes (path_arena + content_arena) serve as a strict lower
@@ -198,14 +198,14 @@ mod tests {
     use crate::core::policy::MAX_FILE_SIZE;
 
     fn feed_file(selector: Selector, path: &str, bytes: &[u8]) -> Result<Selector, IngestError> {
-        match selector.admit(PathStatus::Valid(path.to_string()), None)? {
+        match selector.admit(PathStatus::Valid(path.into()), None)? {
             Admission::Pending(pending) => pending.accept(bytes),
             Admission::Settled(s) => Ok(s),
         }
     }
 
     fn feed_skipped(selector: Selector, path: &str) -> Result<Selector, IngestError> {
-        match selector.admit(PathStatus::Valid(path.to_string()), None)? {
+        match selector.admit(PathStatus::Valid(path.into()), None)? {
             Admission::Pending(pending) => Ok(pending.skip()),
             Admission::Settled(s) => Ok(s),
         }
@@ -360,7 +360,7 @@ mod tests {
         let selector = Selector::new();
         let overlong_path = format!("{}/file.rs", "a".repeat(MAX_PATH_BYTES as usize));
         let admission = selector
-            .admit(PathStatus::Valid(overlong_path), None)
+            .admit(PathStatus::Valid(overlong_path.into()), None)
             .unwrap();
         let selector = match admission {
             Admission::Settled(s) => s,
@@ -391,7 +391,10 @@ mod tests {
         let mut selector = Selector::new();
         for i in 0..MAX_FILE_COUNT {
             let path = format!("file_{i}.txt");
-            match selector.admit(PathStatus::Valid(path), None).unwrap() {
+            match selector
+                .admit(PathStatus::Valid(path.into()), None)
+                .unwrap()
+            {
                 Admission::Pending(pending) => {
                     selector = pending.accept(b"content").unwrap();
                 }
@@ -401,7 +404,7 @@ mod tests {
 
         // 10,001st candidate must fail during admit before reading bytes
         let overflow_err = selector
-            .admit(PathStatus::Valid("overflow.txt".to_string()), None)
+            .admit(PathStatus::Valid("overflow.txt".into()), None)
             .unwrap_err();
         match overflow_err {
             IngestError::CandidateLimitExceeded(..) => {}
@@ -413,7 +416,7 @@ mod tests {
     fn pending_entry_skip_increments_skipped_count() {
         let selector = Selector::new();
         let pending = match selector
-            .admit(PathStatus::Valid("skip.txt".to_string()), None)
+            .admit(PathStatus::Valid("skip.txt".into()), None)
             .unwrap()
         {
             Admission::Pending(p) => p,
@@ -457,10 +460,7 @@ mod tests {
     fn admit_skips_when_size_hint_exceeds_limit() {
         let selector = Selector::new();
         let admission = selector
-            .admit(
-                PathStatus::Valid("big.bin".to_string()),
-                Some(MAX_FILE_SIZE + 1),
-            )
+            .admit(PathStatus::Valid("big.bin".into()), Some(MAX_FILE_SIZE + 1))
             .unwrap();
         let selector = match admission {
             Admission::Settled(s) => s,

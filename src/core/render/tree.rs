@@ -103,9 +103,12 @@ mod tests {
     #[test]
     fn renders_ascii_tree_correctly() -> Result<(), Box<dyn std::error::Error>> {
         let storage = FileStorage::new()
-            .push("Cargo.toml", "")
-            .push("src/core/a.rs", "")
-            .push("src/lib.rs", "");
+            .push(&crate::core::policy::NormalizedPath::from("Cargo.toml"), "")
+            .push(
+                &crate::core::policy::NormalizedPath::from("src/core/a.rs"),
+                "",
+            )
+            .push(&crate::core::policy::NormalizedPath::from("src/lib.rs"), "");
         let files = SortedFiles::new(storage);
 
         let buf = render_tree(BoundedBuffer::default(), &files, |b, s| b.push_str(s))?;
@@ -124,7 +127,10 @@ mod tests {
 
     #[test]
     fn formats_tree_nodes_custom_formatter() -> Result<(), Box<dyn std::error::Error>> {
-        let storage = FileStorage::new().push("dir_name/file_name.txt", "");
+        let storage = FileStorage::new().push(
+            &crate::core::policy::NormalizedPath::from("dir_name/file_name.txt"),
+            "",
+        );
         let files = SortedFiles::new(storage);
 
         let buf = render_tree(BoundedBuffer::default(), &files, |b, name| {
@@ -140,9 +146,9 @@ mod tests {
     #[test]
     fn renders_nested_siblings_in_alphabetical_order() -> Result<(), Box<dyn std::error::Error>> {
         let storage = FileStorage::new()
-            .push("a/x.txt", "")
-            .push("a/y.txt", "")
-            .push("b/z.txt", "");
+            .push(&crate::core::policy::NormalizedPath::from("a/x.txt"), "")
+            .push(&crate::core::policy::NormalizedPath::from("a/y.txt"), "")
+            .push(&crate::core::policy::NormalizedPath::from("b/z.txt"), "");
         let files = SortedFiles::new(storage);
 
         let buf = render_tree(BoundedBuffer::default(), &files, |b, s| b.push_str(s))?;
@@ -179,10 +185,16 @@ mod tests {
     #[test]
     fn renders_deep_multi_level_tree_correctly() -> Result<(), Box<dyn std::error::Error>> {
         let storage = FileStorage::new()
-            .push("a/b/c/d/e.txt", "")
-            .push("a/b/c/f.txt", "")
-            .push("a/b/g.txt", "")
-            .push("root.txt", "");
+            .push(
+                &crate::core::policy::NormalizedPath::from("a/b/c/d/e.txt"),
+                "",
+            )
+            .push(
+                &crate::core::policy::NormalizedPath::from("a/b/c/f.txt"),
+                "",
+            )
+            .push(&crate::core::policy::NormalizedPath::from("a/b/g.txt"), "")
+            .push(&crate::core::policy::NormalizedPath::from("root.txt"), "");
         let files = SortedFiles::new(storage);
 
         let buf = render_tree(BoundedBuffer::default(), &files, |b, s| b.push_str(s))?;

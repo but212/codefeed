@@ -168,7 +168,7 @@ mod tests {
         let normal_depth_path = format!("repo-root/{}/file.txt", vec!["d"; 256].join("/"));
         assert_eq!(
             normalize_tar_entry_path(normal_depth_path.as_bytes()).unwrap(),
-            PathStatus::Valid(format!("{}/file.txt", vec!["d"; 256].join("/")))
+            PathStatus::Valid(format!("{}/file.txt", vec!["d"; 256].join("/")).into())
         );
 
         let excessive_depth_path = format!("repo-root/{}/file.txt", vec!["d"; 257].join("/"));

@@ -114,9 +114,12 @@ mod tests {
         ];
 
         for (label, records) in test_cases {
-            let storage = records
-                .into_iter()
-                .fold(FileStorage::new(), |s, r| s.push(r.path, r.content));
+            let storage = records.into_iter().fold(FileStorage::new(), |s, r| {
+                s.push(
+                    &crate::core::policy::NormalizedPath::from(r.path),
+                    r.content,
+                )
+            });
             let raw_bytes = storage.total_bytes() as usize;
 
             let collection = CollectionResult {
@@ -145,7 +148,10 @@ mod tests {
             path: "large.txt",
             content: &content,
         };
-        let storage = FileStorage::new().push(candidate.path, candidate.content);
+        let storage = FileStorage::new().push(
+            &crate::core::policy::NormalizedPath::from(candidate.path),
+            candidate.content,
+        );
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,
