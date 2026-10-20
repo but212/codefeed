@@ -25,6 +25,7 @@ where
         String::new(),
         format_name,
     )
+    .map(|(buf, _)| buf)
 }
 
 fn render_level<F>(
@@ -32,9 +33,9 @@ fn render_level<F>(
     spans: &[FileSpan],
     path_arena: &str,
     offset: usize,
-    prefix: String,
+    mut prefix: String,
     format_name: F,
-) -> Result<BoundedBuffer, OutputLimitExceeded>
+) -> Result<(BoundedBuffer, String), OutputLimitExceeded>
 where
     F: Fn(BoundedBuffer, &str) -> Result<BoundedBuffer, OutputLimitExceeded> + Copy,
 {
@@ -64,22 +65,23 @@ where
 
         if is_dir {
             buf = buf.push_bytes(b"/\n")?;
-            let mut next_prefix = prefix.clone();
-            next_prefix.push_str(if is_last { TREE_SPACE } else { TREE_VERT });
-            buf = render_level(
+            let prefix_len = prefix.len();
+            prefix.push_str(if is_last { TREE_SPACE } else { TREE_VERT });
+            (buf, prefix) = render_level(
                 buf,
                 &spans[start..end],
                 path_arena,
                 offset + name.len() + 1,
-                next_prefix,
+                prefix,
                 format_name,
             )?;
+            prefix.truncate(prefix_len);
         } else {
             buf = buf.push_bytes(b"\n")?;
         }
     }
 
-    Ok(buf)
+    Ok((buf, prefix))
 }
 
 pub(super) fn component_at_offset(path: &str, offset: usize) -> Option<(&str, bool)> {
