@@ -9,7 +9,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
-use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path_segments};
+use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path_segments, is_hidden_segment};
 use crate::core::selector::{Admission, Selector};
 
 /// Collects files from a local directory root, excluding the resolved output file if located inside it.
@@ -21,7 +21,10 @@ pub(super) fn collect(
     let label = local_label(&canonical_root);
 
     let walker = WalkBuilder::new(&canonical_root)
-        .hidden(true)
+        .hidden(false)
+        .filter_entry(|entry| {
+            entry.depth() == 0 || !is_hidden_segment(entry.file_name().as_encoded_bytes())
+        })
         .ignore(false)
         .git_ignore(true)
         .git_global(false)
@@ -485,6 +488,22 @@ mod tests {
                 window[1].path
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn hidden_directories_and_files_are_pruned_by_policy() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = temp_dir("hidden_pruning")?;
+        fs::create_dir_all(root.join(".hidden_dir"))?;
+        fs::write(root.join(".hidden_dir").join("nested.txt"), "nested")?;
+        fs::write(root.join(".dotfile"), "secret")?;
+        fs::write(root.join("visible.txt"), "visible")?;
+
+        let result = collect(&root, None)?;
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files.iter().next().unwrap().path, "visible.txt");
+        assert_eq!(result.skipped, 0);
         Ok(())
     }
 }

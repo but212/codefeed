@@ -22,7 +22,7 @@ impl GitRef {
         if trimmed == "." || trimmed == ".." {
             return Err(IngestError::invalid_source("--ref cannot be '.' or '..'"));
         }
-        Ok(Self(string))
+        Ok(Self(trimmed.to_owned()))
     }
 
     /// Borrows the reference as a string slice.
@@ -229,6 +229,10 @@ mod tests {
         assert_eq!(valid.as_str(), "v1.0.0");
         assert_eq!(&*valid, "v1.0.0");
         assert_eq!(valid.to_string(), "v1.0.0");
+
+        let untrimmed = GitRef::new("  main\t\n").unwrap();
+        assert_eq!(untrimmed.as_str(), "main");
+        assert_eq!(untrimmed.to_string(), "main");
 
         assert!(GitRef::new("").is_err());
         assert!(GitRef::new("   ").is_err());

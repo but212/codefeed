@@ -88,13 +88,9 @@ impl CandidateBudget {
 }
 
 fn extract_dir_slice(path: &str) -> &str {
-    if path.is_empty() {
-        "<unknown>/"
-    } else {
-        match memchr(b'/', path.as_bytes()) {
-            Some(index) => &path[..=index],
-            None => "<root>/",
-        }
+    match memchr(b'/', path.as_bytes()) {
+        Some(index) => &path[..=index],
+        None => "<root>/",
     }
 }
 
@@ -257,7 +253,7 @@ mod tests {
     fn extracts_dir_slice_from_paths() {
         assert_eq!(extract_dir_slice("src/core/decide.rs"), "src/");
         assert_eq!(extract_dir_slice("root_file.txt"), "<root>/");
-        assert_eq!(extract_dir_slice(""), "<unknown>/");
+        assert_eq!(extract_dir_slice(""), "<root>/");
         assert_eq!(extract_dir_slice("vendor/"), "vendor/");
     }
 

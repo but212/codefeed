@@ -35,7 +35,7 @@ Entry Discovered (Local Walk or Tar Stream)
    │     └── [Result: Dropped immediately. Not counted in candidate budget or skipped tally.]
    │
    └── Candidate
-         ├── Non-UTF-8 path: Preserves valid top-level directory prefix ("dir/") or "" ("<unknown>/");
+         ├── Non-UTF-8 path: Preserves valid top-level directory prefix ("dir/") or "" ("<root>/");
          │                    admitted as Admission::Settled directly.
          └── Regular candidate file:
                └── [Result: Evaluated via Selector::admit (consuming candidate budget); linear completion via PendingEntry::accept (validating UTF-8 text and MAX_FILE_SIZE) or PendingEntry::skip. Non-text or oversized files increment skipped.]
@@ -60,11 +60,14 @@ Conventional package manager lockfiles contain redundant metadata that bloats pr
 > [!WARNING]
 > Pattern-based filtering matches file path conventions only. It is not an active entropy- or content-based secret scanner. Users must not rely on `codefeed` to redact hardcoded credentials within tracked source code files.
 
-- **Filename Prefixes (Case-Insensitive):**
-  - `.env*` (e.g., `.env`, `.env.local`, `.env.production`)
+- **Filename Prefixes in `is_sensitive_file` (Case-Insensitive):**
   - `id_rsa*` (e.g., `id_rsa`, `id_rsa.pub`)
   - `id_ed25519*` (e.g., `id_ed25519`, `id_ed25519.pub`)
   - `credentials*` (e.g., `credentials.json`, `credentials.ini`)
+
+> [!NOTE]
+> `.env*` files (e.g., `.env`, `.env.local`, `.env.production`) are excluded by the hidden component policy (§2.3) via leading dot matching (`is_hidden_segment`), rather than `is_sensitive_file`.
+
 - **Extensions in `SENSITIVE_EXTENSIONS` (Case-Insensitive):**
   - `*.pem`
   - `*.key`

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`GitRef` revision trimming**: `GitRef::new` trims surrounding ASCII whitespace before storing the value, preventing percent-encoded spaces (`%20`) in tarball archive URLs.
+- **Hidden entry filtering consistency**: Unified local filesystem hidden directory pruning with `is_hidden_segment` via `WalkBuilder::filter_entry` (preserving root at `depth == 0`), aligning with policy rules.
+- **Root non-UTF-8 candidate diagnostic label**: Mapped non-UTF-8 entries at root level (`""` prefix) to `<root>/` instead of `<unknown>/` in candidate budget overflow diagnostics.
+
+### Documentation
+
+- **Dependency qualification**: Documented in `AGENTS.md` that crates already transitively included by required dependencies qualify as candidates for direct adoption.
+- **Sensitive vs hidden exclusions**: Clarified across documentation that `.env*` files are excluded by leading dot matching (`is_hidden_segment`) rather than `is_sensitive_file`.
+
 ### Security
 
 - **Shell Memory Zeroization**: Applied `zeroize` strictly within `src/shell/` to securely erase GitHub tokens during env lookup, wipe HTTP error response bodies, and clear reusable file read scratch buffers across local and tarball ingestion.
