@@ -29,4 +29,4 @@ name = "codefeed"
 bench = false
 
 [profile.release]
-debug = "line-tables-only"
+# debug = "line-tables-only"
