@@ -20,10 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Memory zeroization bandwidth**: Replaced per-entry `.zeroize()` calls inside archive and local ingestion loops with `Zeroizing` RAII `Drop` cleanup, avoiding redundant volatile overwrites on every entry during streaming.
 
-### Documentation
-
-- **Sorting contract precision**: Clarified in `context.md`, `storage.rs`, and test suites that path ordering invariant is component-wise lexicographical order (`cmp_path`).
-
 ### Fixed
 
 - **`GitRef` revision trimming**: `GitRef::new` trims surrounding ASCII whitespace before storing the value, preventing percent-encoded spaces (`%20`) in tarball archive URLs.
@@ -34,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Dependency qualification**: Documented in `AGENTS.md` that crates already transitively included by required dependencies qualify as candidates for direct adoption.
 - **Sensitive vs hidden exclusions**: Clarified across documentation that `.env*` files are excluded by leading dot matching (`is_hidden_segment`) rather than `is_sensitive_file`.
+- **Sorting contract precision**: Clarified in `context.md`, `storage.rs`, and test suites that path ordering invariant is component-wise lexicographical order (`cmp_path`).
 
 ### Security
 
