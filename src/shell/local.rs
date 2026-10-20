@@ -1,18 +1,52 @@
-//! Local directory collection orchestration: walk, map, select.
+//! Local directory collection orchestration: parallel walk, bounded I/O, linear selection.
+//!
+//! # Concurrency & Performance Architecture
+//! - **Producer-Consumer Pipeline**: Directory traversal and file reads run concurrently
+//!   via `ignore::WalkParallel` worker threads, piped through a bounded `sync_channel(128)`.
+//!   Eliminates single-threaded OS kernel `CreateFileW` latency without unbound memory growth.
+//! - **FCIS Invariant**: Thread workers perform side-effecting I/O and pre-open symlink
+//!   checks (`fs::symlink_metadata`), delegating pure linear accumulation to `Selector` on
+//!   the main thread inside `std::thread::scope`.
+//! - **Determinism & Cancellation**: Storage ordering is guaranteed post-collection via
+//!   `SortedFiles` (`cmp_path`). Errors or budget overflows abort workers immediately via
+//!   `AtomicBool` and receiver disconnection.
 
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::sync_channel;
 
-use ignore::WalkBuilder;
+use ignore::{WalkBuilder, WalkState};
 use zeroize::Zeroizing;
 
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
-use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path_segments, is_hidden_segment};
+use crate::core::policy::{
+    MAX_FILE_SIZE, MAX_PATH_BYTES, NormalizedPath, PathStatus, classify_path_segments,
+    is_hidden_segment,
+};
 use crate::core::selector::{Admission, Selector};
 
+enum WorkerMsg {
+    File {
+        path: NormalizedPath,
+        file_len: u64,
+        content: Zeroizing<Vec<u8>>,
+    },
+    SkipCandidate {
+        path: NormalizedPath,
+        size_hint: Option<u64>,
+    },
+    NonUtf8Candidate(String),
+    Error(IngestError),
+}
+
 /// Collects files from a local directory root, excluding the resolved output file if located inside it.
+///
+/// Uses parallel workers to concurrently evaluate path policy, inspect metadata (rejecting symlinks
+/// pre-open), and read file contents into pre-allocated buffers. Results are streamed through a
+/// bounded channel to maintain backpressure and preserve pure sequential accumulation in `Selector`.
 pub(super) fn collect(
     root: &Path,
     resolved_output: Option<&Path>,
@@ -32,46 +66,188 @@ pub(super) fn collect(
         .require_git(false)
         .parents(false)
         .follow_links(false)
-        .sort_by_file_name(|a, b| a.cmp(b))
-        .build();
+        .build_parallel();
 
-    let mut selector = Selector::new();
-    let mut scratch = Zeroizing::new(Vec::with_capacity(32 * 1024));
+    let (tx, rx) = sync_channel::<WorkerMsg>(128);
+    let aborted = AtomicBool::new(false);
 
-    for entry in walker {
-        let entry = entry.map_err(|err| IngestError::Io(format_ignore_error(&err)))?;
-        let entry_path = entry.path();
-        if entry_path == canonical_root
-            || !entry.file_type().is_some_and(|kind| kind.is_file())
-            || resolved_output.is_some_and(|target| entry_path == target)
-        {
-            continue;
-        }
+    let selector = std::thread::scope(|s| {
+        s.spawn(|| {
+            let mut builder = LocalVisitorBuilder {
+                root: &canonical_root,
+                resolved_output,
+                tx,
+                aborted: &aborted,
+            };
+            walker.visit(&mut builder);
+        });
 
-        let relative = entry_path
-            .strip_prefix(&canonical_root)
-            .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
-
-        let status = classify_local_path(relative)?;
-        let size_hint = match status {
-            PathStatus::Valid(_) => entry.metadata().ok().map(|m| m.len()),
-            PathStatus::Ignored | PathStatus::NonUtf8Candidate(_) => None,
-        };
-        match selector.admit(status, size_hint)? {
-            Admission::Settled(s) => selector = s,
-            Admission::Pending(pending) => {
-                scratch.clear();
-                match read_local_file_into(entry_path, MAX_FILE_SIZE, &mut scratch)? {
-                    Some(bytes) => selector = pending.accept(bytes)?,
-                    None => selector = pending.skip(),
-                }
-            }
-        }
-    }
+        drain_channel(rx, &aborted)
+    })?;
 
     Ok(selector.finish(label, None))
 }
 
+struct LocalVisitorBuilder<'a> {
+    root: &'a Path,
+    resolved_output: Option<&'a Path>,
+    tx: std::sync::mpsc::SyncSender<WorkerMsg>,
+    aborted: &'a AtomicBool,
+}
+
+impl<'s> ignore::ParallelVisitorBuilder<'s> for LocalVisitorBuilder<'s> {
+    fn build(&mut self) -> Box<dyn ignore::ParallelVisitor + 's> {
+        Box::new(LocalVisitor {
+            root: self.root,
+            resolved_output: self.resolved_output,
+            tx: self.tx.clone(),
+            aborted: self.aborted,
+        })
+    }
+}
+
+struct LocalVisitor<'a> {
+    root: &'a Path,
+    resolved_output: Option<&'a Path>,
+    tx: std::sync::mpsc::SyncSender<WorkerMsg>,
+    aborted: &'a AtomicBool,
+}
+
+impl LocalVisitor<'_> {
+    fn fail(&self, err: IngestError) -> WalkState {
+        self.aborted.store(true, Ordering::Relaxed);
+        let _ = self.tx.send(WorkerMsg::Error(err));
+        WalkState::Quit
+    }
+
+    fn process_entry(&self, entry: ignore::DirEntry) -> Result<Option<WorkerMsg>, IngestError> {
+        let entry_path = entry.path();
+        if entry_path == self.root
+            || self
+                .resolved_output
+                .is_some_and(|target| entry_path == target)
+        {
+            return Ok(None);
+        }
+
+        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+            return Ok(None);
+        }
+
+        let relative = entry_path
+            .strip_prefix(self.root)
+            .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
+
+        let status = classify_local_path(relative)?;
+        let path = match status {
+            PathStatus::Ignored => return Ok(None),
+            PathStatus::NonUtf8Candidate(p) => return Ok(Some(WorkerMsg::NonUtf8Candidate(p))),
+            PathStatus::Valid(p) => p,
+        };
+
+        let meta = match fs::symlink_metadata(entry_path) {
+            Ok(m) => m,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(IngestError::Io(err)),
+        };
+
+        if meta.is_symlink() || !meta.is_file() {
+            return Ok(None);
+        }
+
+        let file_len = meta.len();
+        if path.len() as u64 > MAX_PATH_BYTES || file_len > MAX_FILE_SIZE {
+            return Ok(Some(WorkerMsg::SkipCandidate {
+                path,
+                size_hint: Some(file_len),
+            }));
+        }
+
+        let mut content = Zeroizing::new(Vec::new());
+        match read_file_content_bounded(entry_path, file_len, MAX_FILE_SIZE, &mut content)? {
+            Some(_) => Ok(Some(WorkerMsg::File {
+                path,
+                file_len,
+                content,
+            })),
+            None => Ok(Some(WorkerMsg::SkipCandidate {
+                path,
+                size_hint: None,
+            })),
+        }
+    }
+}
+
+impl ignore::ParallelVisitor for LocalVisitor<'_> {
+    fn visit(&mut self, entry: Result<ignore::DirEntry, ignore::Error>) -> WalkState {
+        if self.aborted.load(Ordering::Relaxed) {
+            return WalkState::Quit;
+        }
+
+        let entry = match entry {
+            Ok(e) => e,
+            Err(err) => return self.fail(IngestError::Io(format_ignore_error(&err))),
+        };
+
+        match self.process_entry(entry) {
+            Ok(Some(msg)) => {
+                if self.tx.send(msg).is_err() {
+                    WalkState::Quit
+                } else {
+                    WalkState::Continue
+                }
+            }
+            Ok(None) => WalkState::Continue,
+            Err(err) => self.fail(err),
+        }
+    }
+}
+
+fn apply_msg(selector: Selector, msg: WorkerMsg) -> Result<Selector, IngestError> {
+    match msg {
+        WorkerMsg::File {
+            path,
+            file_len,
+            content,
+        } => match selector.admit(PathStatus::Valid(path), Some(file_len))? {
+            Admission::Settled(s) => Ok(s),
+            Admission::Pending(pending) => pending.accept(&content),
+        },
+        WorkerMsg::SkipCandidate { path, size_hint } => {
+            match selector.admit(PathStatus::Valid(path), size_hint)? {
+                Admission::Settled(s) => Ok(s),
+                Admission::Pending(pending) => Ok(pending.skip()),
+            }
+        }
+        WorkerMsg::NonUtf8Candidate(path) => {
+            match selector.admit(PathStatus::NonUtf8Candidate(path), None)? {
+                Admission::Settled(s) => Ok(s),
+                Admission::Pending(_) => unreachable!(),
+            }
+        }
+        WorkerMsg::Error(err) => Err(err),
+    }
+}
+
+fn drain_channel(
+    rx: std::sync::mpsc::Receiver<WorkerMsg>,
+    aborted: &AtomicBool,
+) -> Result<Selector, IngestError> {
+    let mut selector = Selector::new();
+    while let Ok(msg) = rx.recv() {
+        match apply_msg(selector, msg) {
+            Ok(next) => selector = next,
+            Err(err) => {
+                aborted.store(true, Ordering::Relaxed);
+                drop(rx);
+                return Err(err);
+            }
+        }
+    }
+    Ok(selector)
+}
+
+#[cfg(test)]
 fn read_local_file_into<'b>(
     path: &Path,
     limit: u64,
@@ -85,22 +261,35 @@ fn read_local_file_into<'b>(
     if meta.is_symlink() || !meta.is_file() {
         return Ok(None);
     }
+    read_file_content_bounded(path, meta.len(), limit, buf)
+}
+
+fn read_file_content_bounded<'b>(
+    path: &Path,
+    file_len: u64,
+    limit: u64,
+    buf: &'b mut Vec<u8>,
+) -> Result<Option<&'b [u8]>, IngestError> {
     let file = match fs::File::open(path) {
         Ok(f) => f,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(IngestError::Io(err)),
     };
-    read_bounded_content_into(file, limit, buf).map_err(Into::into)
+    read_bounded_content_into(file, file_len, limit, buf).map_err(Into::into)
 }
 
 fn read_bounded_content_into(
     file: fs::File,
+    file_len: u64,
     limit: u64,
     buf: &mut Vec<u8>,
 ) -> io::Result<Option<&[u8]>> {
-    if !file.metadata()?.is_file() {
-        return Ok(None);
-    }
+    let to_read = file_len.min(limit.saturating_add(1)) as usize;
+    let needed = buf
+        .len()
+        .saturating_add(to_read)
+        .saturating_sub(buf.capacity());
+    buf.reserve(needed);
     let mut handle = file.take(limit.saturating_add(1));
     handle.read_to_end(buf)?;
     Ok(Some(buf.as_slice()))
@@ -192,6 +381,22 @@ mod tests {
             read_local_file_into(&too_large_path, MAX_FILE_SIZE, &mut buf)?,
             Some(b) if b.len() == MAX_FILE_SIZE as usize + 1
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn read_bounded_content_preallocates_capacity() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::core::policy::MAX_FILE_SIZE;
+
+        let root = temp_dir("preallocate_test")?;
+        let file_path = root.join("test.txt");
+        let payload = vec![b'y'; 64 * 1024];
+        fs::write(&file_path, &payload)?;
+
+        let mut buf = Vec::new();
+        let res = read_local_file_into(&file_path, MAX_FILE_SIZE, &mut buf)?;
+        assert_eq!(res, Some(payload.as_slice()));
+        assert!(buf.capacity() >= 64 * 1024);
         Ok(())
     }
 

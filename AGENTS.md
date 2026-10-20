@@ -25,7 +25,7 @@ Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_
 
 ### OS & Network Safety
 
-- **Local reads (`src/shell/local.rs`):** Validate regular, non-symlink metadata (`fs::symlink_metadata`) before opening bounded files (`fs::File::open`). Never follow symlinks.
+- **Local collection (`src/shell/local.rs`):** Parallel producer-consumer pipeline via `ignore::WalkParallel` and bounded `sync_channel(128)` inside `std::thread::scope`. Workers inspect `fs::symlink_metadata` and read bounded content concurrently; main thread feeds linear `Selector`. Never follow symlinks; preserve deterministic order via `SortedFiles` (`cmp_path`); cancel immediately via `AtomicBool` on error.
 - **File writes (`src/shell/output.rs`):** Write through `AtomicFile` with inner `TempFile` RAII guard (closing OS handle before unlink on `Drop`), preserving existing target permissions and syncing parent directory on Unix commit.
 - **HTTP (`src/shell/github.rs`):** Keep `RedirectAuthHeaders::Never` and gate `Authorization` with `is_github_api_origin(url)`.
 

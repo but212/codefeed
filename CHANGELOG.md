@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+- **Parallel Directory Traversal and Reading**: Parallelized local directory walking, metadata inspection, and bounded content reading in `codefeed::shell::local::collect` using `ignore::WalkParallel` with worker channels and thread scoping, preserving zero-copy arena storage, non-symlink security checks, and deterministic lexicographical ordering.
+- **Metadata and I/O Deduplication**: Deduplicated local file metadata queries in `codefeed::shell::local::collect`, replacing the triple `entry.metadata()`, `symlink_metadata()`, and `file.metadata()` sequence with a single `fs::symlink_metadata()` check per valid candidate, eliminating redundant post-open stat calls and pre-reserving read buffer capacity up to bounded file limits.
+
 ## [0.3.2]
 
 ### Security

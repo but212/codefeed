@@ -101,6 +101,7 @@ Codebase is strictly partitioned into pure logic and effectful shell:
 
 - **Side Effects:** All I/O, network calls, filesystem operations, and process interactions live here.
 - **Delegation:** Collect external inputs, evaluate admission via typestate (`Admission` / `PendingEntry`), and delegate computation/storage directly to `src/core/`.
+- **Parallel Pipeline:** Local directory collection coordinates workers (`ignore::WalkParallel`) and the main thread via bounded `std::sync::mpsc::sync_channel(128)` inside `std::thread::scope`, hiding filesystem/kernel latency (`CreateFileW`) while preserving pure single-threaded state transitions in `src/core/`.
 
 ### Type-Driven Invariants ("Parse, Don't Validate")
 
@@ -129,7 +130,8 @@ Minimize memory footprints, eliminate allocations in loops, and keep dependencie
 
 Enforce defense-in-depth across filesystem and network interactions:
 
-- **Symlink Protection:** Always verify candidate filesystem entries are regular, non-symlink files using `fs::symlink_metadata`. Never traverse symlinks.
+- **Symlink Protection & Worker Safety:** Always verify candidate filesystem entries are regular, non-symlink files using `fs::symlink_metadata` before opening files (`fs::File::open`). Never traverse symlinks. Worker threads validate metadata independently.
+- **Bounded Concurrency Backpressure:** Channel communications between worker threads and collection consumers must use bounded channels (`sync_channel`) to prevent unbounded memory growth during filesystem traversal.
 - **Atomic File Writes:** Perform all disk writes through `AtomicFile` with inner `TempFile` RAII guards, closing OS file handles before unlinking on `Drop` (cross-platform Windows safety), preserving existing Unix file permissions, and syncing the parent directory on commit.
 - **Scoped HTTP Headers:** Enforce `RedirectAuthHeaders::Never`. Gate `Authorization` headers strictly to `is_github_api_origin(url)`.
 

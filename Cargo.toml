@@ -27,3 +27,6 @@ bench = false
 [[bin]]
 name = "codefeed"
 bench = false
+
+[profile.release]
+debug = "line-tables-only"

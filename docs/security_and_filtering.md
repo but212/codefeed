@@ -134,6 +134,10 @@ Local directory traversal in `src/shell/local.rs` adheres to the following invar
 4. **Directory Traversal Fail-Fast:**
    - Unreadable individual files are recorded as unavailable and tallied in `skipped_files`.
    - Unreadable directories during local traversal fail fast with explicit path context and preserve the underlying `std::io::ErrorKind` (e.g., `PermissionDenied`) to prevent silent emission of incomplete digests while retaining actionable error categories.
+5. **Parallel Traversal Isolation & Memory Backpressure:**
+   - Multi-threaded traversal (`WalkParallel`) processes entries concurrently across worker threads, each independently verifying `fs::symlink_metadata` before calling `fs::File::open`.
+   - Pipeline communication is bounded via `std::sync::mpsc::sync_channel(128)`, preventing memory exhaustion (DoS) from unbounded candidate queues during large filesystem scans.
+   - Early error or budget overflow terminates all workers promptly via `AtomicBool` cancellation and channel hang-up, preventing resource leakage or dangling threads.
 
 ---
 
