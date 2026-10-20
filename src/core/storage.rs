@@ -52,11 +52,11 @@ impl SortedFiles {
         self.0.len()
     }
 
-    pub(crate) fn spans(&self) -> &[FileSpan] {
+    pub(crate) const fn spans(&self) -> &[FileSpan] {
         self.0.spans()
     }
 
-    pub(crate) fn path_arena(&self) -> &str {
+    pub(crate) const fn path_arena(&self) -> &str {
         self.0.path_arena()
     }
 
@@ -91,12 +91,12 @@ impl FileStorage {
         self.spans.len()
     }
 
-    pub(crate) fn spans(&self) -> &[FileSpan] {
-        &self.spans
+    pub(crate) const fn spans(&self) -> &[FileSpan] {
+        self.spans.as_slice()
     }
 
-    pub(crate) fn path_arena(&self) -> &str {
-        &self.path_arena
+    pub(crate) const fn path_arena(&self) -> &str {
+        self.path_arena.as_str()
     }
 
     pub(crate) const fn total_bytes(&self) -> u64 {

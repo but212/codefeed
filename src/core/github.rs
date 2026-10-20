@@ -15,17 +15,31 @@ pub(crate) fn is_github_api_origin(url: &str) -> bool {
 }
 
 /// Validates whether the given string conforms to valid GitHub owner or repository name rules.
-pub(crate) fn valid_github_name(value: &str) -> bool {
-    !value.is_empty()
-        && value != "."
-        && value != ".."
-        && value.bytes().all(|byte| {
-            (byte.wrapping_sub(b'0') < 10)
-                | ((byte | 32).wrapping_sub(b'a') < 26)
-                | (byte == b'-')
-                | (byte == b'.')
-                | (byte == b'_')
-        })
+pub(crate) const fn valid_github_name(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    if bytes.len() == 1 && bytes[0] == b'.' {
+        return false;
+    }
+    if bytes.len() == 2 && bytes[0] == b'.' && bytes[1] == b'.' {
+        return false;
+    }
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        let valid = (byte.wrapping_sub(b'0') < 10)
+            | ((byte | 32).wrapping_sub(b'a') < 26)
+            | (byte == b'-')
+            | (byte == b'.')
+            | (byte == b'_');
+        if !valid {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }
 
 /// Parses a GitHub repository URL into an `(owner, repo)` string pair.
