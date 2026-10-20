@@ -358,13 +358,16 @@ mod tests {
 
         // 3. Noise files: ignored without incrementing skipped
         fs::write(root.join("Cargo.lock"), "[lockfile]")?;
+        fs::write(root.join("poetry.lock"), "[poetry]")?;
         fs::write(root.join("sub").join("package-lock.json"), "{}")?;
 
         // 4. Sensitive files: ignored without incrementing skipped
         fs::write(root.join(".env"), "SECRET=true")?;
         fs::write(root.join(".env.production"), "KEY=123")?;
         fs::write(root.join("certs").join("privkey.key"), "PRIVATE")?;
+        fs::write(root.join("certs").join("cert.pfx"), "CERT")?;
         fs::write(root.join("id_rsa"), "SSH")?;
+        fs::write(root.join("id_ecdsa"), "SSH_ECDSA")?;
 
         // 5. Git metadata: ignored
         fs::write(root.join(".git/config"), "secret")?;
@@ -386,10 +389,13 @@ mod tests {
         assert!(digest.contains("FILE: README.md"));
         assert!(!digest.contains("binary.bin"));
         assert!(!digest.contains("Cargo.lock"));
+        assert!(!digest.contains("poetry.lock"));
         assert!(!digest.contains("package-lock.json"));
         assert!(!digest.contains(".env"));
         assert!(!digest.contains("privkey.key"));
+        assert!(!digest.contains("cert.pfx"));
         assert!(!digest.contains("id_rsa"));
+        assert!(!digest.contains("id_ecdsa"));
         assert!(!digest.contains(".git/config"));
         assert!(!digest.contains("ignored.txt"));
         Ok(())

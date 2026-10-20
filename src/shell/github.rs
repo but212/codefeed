@@ -650,6 +650,8 @@ mod tests {
             ),
             ("repo-root/src/main.rs", b"fn main() {}", EntryType::Regular),
             ("repo-root/Cargo.lock", b"lockfile", EntryType::Regular),
+            ("repo-root/poetry.lock", b"lockfile", EntryType::Regular),
+            ("repo-root/id_ecdsa", b"PRIVATE KEY", EntryType::Regular),
             (
                 "repo-root/image.png",
                 b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",

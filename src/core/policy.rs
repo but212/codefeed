@@ -42,14 +42,23 @@ const NOISE: &[&str] = &[
     "package-lock.json",
     "yarn.lock",
     "pnpm-lock.yaml",
+    "bun.lock",
+    "bun.lockb",
     "go.sum",
+    "poetry.lock",
+    "Pipfile.lock",
+    "composer.lock",
+    "Gemfile.lock",
 ];
 
 /// Known sensitive file extensions (case-insensitive) excluded prior to reading or download.
 ///
 /// Note: `credentials` is matched as an extension here (`*.credentials`, e.g., `aws.credentials`),
-/// and is also matched as a filename prefix in [`is_sensitive_file`] (`credentials*`, e.g., `credentials.json`).
-const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "credentials"];
+/// and is also matched as a filename prefix in [`SENSITIVE_PREFIXES`] (`credentials*`, e.g., `credentials.json`).
+const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "pfx", "credentials"];
+
+/// Known sensitive filename prefixes (case-insensitive) excluded prior to reading or download.
+const SENSITIVE_PREFIXES: &[&str] = &["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "credentials"];
 
 /// Non-empty, normalized slash-separated relative UTF-8 path.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -113,28 +122,24 @@ pub(crate) enum PathStatus {
     NonUtf8Candidate(String),
 }
 
-/// Returns `true` if `file_name` matches a known noise file.
-fn is_noise_file(file_name: &str) -> bool {
-    NOISE.contains(&file_name)
-}
-
 fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
     value
         .get(..prefix.len())
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
-/// Returns `true` if `file_name` or its `extension` indicates a sensitive credentials file.
-fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> bool {
-    if starts_with_ignore_ascii_case(file_name, "id_rsa")
-        || starts_with_ignore_ascii_case(file_name, "id_ed25519")
-        || starts_with_ignore_ascii_case(file_name, "credentials")
+/// Returns `true` if `file_name` indicates a sensitive credentials file.
+fn is_sensitive_file(file_name: &str) -> bool {
+    if SENSITIVE_PREFIXES
+        .iter()
+        .any(|&prefix| starts_with_ignore_ascii_case(file_name, prefix))
     {
         return true;
     }
-    let Some(extension) = extension else {
+    let Some(dot_idx) = memrchr(b'.', file_name.as_bytes()) else {
         return false;
     };
+    let extension = &file_name[dot_idx + 1..];
     SENSITIVE_EXTENSIONS
         .iter()
         .any(|&s| s.eq_ignore_ascii_case(extension))
@@ -147,8 +152,7 @@ pub(crate) const fn is_hidden_segment(segment: &[u8]) -> bool {
 
 /// Returns `true` if `file_name` matches a known noise file or a sensitive credentials pattern.
 pub(crate) fn is_ignored_filename(file_name: &str) -> bool {
-    let extension = memrchr(b'.', file_name.as_bytes()).map(|i| &file_name[i + 1..]);
-    is_noise_file(file_name) || is_sensitive_file(file_name, extension)
+    NOISE.contains(&file_name) || is_sensitive_file(file_name)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,16 +302,28 @@ mod tests {
             "yarn.lock",
             "pnpm-lock.yaml",
             "go.sum",
+            "poetry.lock",
+            "Pipfile.lock",
+            "composer.lock",
+            "Gemfile.lock",
+            "bun.lock",
+            "bun.lockb",
             "server.key",
             "cert.pem",
             "client.p12",
             "cert.pkcs12",
+            "identity.pfx",
             "credentials.json",
             "aws.credentials",
             "credentials",
             "id_rsa",
             "id_rsa.pub",
             "id_ed25519",
+            "id_ed25519.pub",
+            "id_ecdsa",
+            "id_ecdsa.pub",
+            "id_dsa",
+            "id_dsa.pub",
         ];
         for filename in ignored {
             assert!(

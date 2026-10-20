@@ -35,7 +35,7 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 
 ### Filtering & Accounting
 
-- Pre-candidate exclusions: `.git`, hidden entries (including `.env*`; empty path segments from redundant delimiters are filtered to prevent false positives), symlinks, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and sensitive files matched case-insensitively by prefix (`id_rsa*`, `id_ed25519*`, `credentials*`) and extension (`*.key`/`*.pem`, `*.p12`/`*.pkcs12`, `*.credentials`; defined in `src/core/policy.rs`). Matches path conventions, not file content. Excluded paths consume neither candidate slots nor `skipped` counts.
+- Pre-candidate exclusions: `.git`, hidden entries (including `.env*`; empty path segments from redundant delimiters are filtered to prevent false positives), symlinks, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`, `go.sum`, `poetry.lock`, `Pipfile.lock`, `composer.lock`, `Gemfile.lock`), and sensitive files matched case-insensitively by prefix (`id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*`, `credentials*`) and extension (`*.key`/`*.pem`, `*.p12`/`*.pkcs12`, `*.pfx`, `*.credentials`; defined in `src/core/policy.rs`). Matches path conventions, not file content. Excluded paths consume neither candidate slots nor `skipped` counts.
 - Candidate accounting: `Selector::admit` consumes candidate slots before reading file bodies or evaluating content. Non-UTF-8 paths consume candidate budget with their valid top-level directory prefix (`"dir/"` or `""`) and are marked as skipped (`Admission::Settled`).
 - `skipped` count: Tracks candidates rejected for content, size, or encoding (binary with NUL bytes, oversized files, or non-UTF-8 paths/content). Ignored paths are never counted in `skipped`.
 - Output bounding & Size cap enforcement: `MAX_OUTPUT_SIZE` is enforced via a two-stage check: `Selector::add_file` early-fails during collection using raw stored arena bytes (`path_arena + content_arena`); `BoundedBuffer` enforces `MAX_OUTPUT_SIZE` during in-memory rendering across headers, tree, framing, and body bytes. Because escaping and framing only expand or preserve byte lengths (`rendered_bytes >= raw_bytes`), early-fail checks never reject valid outputs. Overflow content is never emitted; file and stdout targets emit nothing on overflow.
@@ -72,7 +72,7 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 
 ## Limits and Tunables (`src/core/policy.rs`)
 
-Operational constants, limits, thresholds, noise lists, and sensitive patterns are defined exclusively in `src/core/policy.rs` as the single source of truth (`MAX_FILE_SIZE`, `MAX_OUTPUT_SIZE`, `MAX_FILE_COUNT`, `ARCHIVE_MAX_SECS`, `MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS`, `GITHUB_TIMEOUT_SECS`, `NOISE`, `SENSITIVE_EXTENSIONS`).
+Operational constants, limits, thresholds, noise lists, and sensitive patterns are defined exclusively in `src/core/policy.rs` as the single source of truth (`MAX_FILE_SIZE`, `MAX_OUTPUT_SIZE`, `MAX_FILE_COUNT`, `ARCHIVE_MAX_SECS`, `MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS`, `GITHUB_TIMEOUT_SECS`, `NOISE`, `SENSITIVE_EXTENSIONS`, `SENSITIVE_PREFIXES`).
 
 ## Functional core / imperative shell boundary
 

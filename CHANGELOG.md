@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Policy pattern matching consolidation**: Replaced repetitive prefix comparisons in `src/core/policy.rs` with `SENSITIVE_PREFIXES`, lazy-evaluating extension extraction directly inside `is_sensitive_file`.
+- **Expanded lockfile exclusions**: Added `bun.lock`, `bun.lockb`, `poetry.lock`, `Pipfile.lock`, `composer.lock`, and `Gemfile.lock` to conventional noise lockfiles (`NOISE`) in `src/core/policy.rs`.
+- **Expanded sensitive file patterns**: Added `id_ecdsa*` and `id_dsa*` SSH key prefixes and `*.pfx` (PKCS#12) extension to sensitive file exclusion rules in `src/core/policy.rs`.
 - **Linear pipeline typestates**: Refactored the core collection-to-report pipeline into a strictly consuming typestate chain (`Selector` -> `CollectionResult` -> `RenderedDigest` -> `IngestReport`). `CollectionResult::render` consumes the collection by value and packages rendered bytes together with collection metrics.
 - **Shell output delivery decoupling**: Decoupled `output::emit` into a pure I/O transport function `output::deliver(target, bytes)`, completely removing core render format and collection dependencies from the shell output module.
 - **Path depth limit symmetry**: Local ingestion rejects paths exceeding `MAX_PATH_DEPTH` (256 directory levels) with `IngestError::invalid_metadata`, maintaining full symmetry with tarball archive handling while preserving hidden and noise file exclusion precedence.
