@@ -11,8 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **WebPKI Root Certificate Verification**: Switched `ureq` TLS roots from platform verifier to compiled Mozilla roots (`rustls-webpki-roots`), removing Windows CryptoAPI (`CertGetCertificateChain`) traversal overhead and trimming OS-specific C-bindings from dependencies.
+- **Archive Stream Decompression Buffering**: Buffered incoming archive stream ahead of `GzDecoder` in `codefeed::shell::archive::collect` with a tuned 64 KiB buffer (`ARCHIVE_BUFFER_BYTES`), smoothing chunked decompression I/O.
 - **Parallel Directory Traversal and Reading**: Parallelized local directory walking, metadata inspection, and bounded content reading in `codefeed::shell::local::collect` using `ignore::WalkParallel` with worker channels and thread scoping, preserving zero-copy arena storage, non-symlink security checks, and deterministic lexicographical ordering.
 - **Metadata and I/O Deduplication**: Deduplicated local file metadata queries in `codefeed::shell::local::collect`, replacing the triple `entry.metadata()`, `symlink_metadata()`, and `file.metadata()` sequence with a single `fs::symlink_metadata()` check per valid candidate, eliminating redundant post-open stat calls and pre-reserving read buffer capacity up to bounded file limits.
+
+### Internal
+
+- **Archive Stream Decoupling**: Extracted tarball stream decompression, PAX commit SHA parsing, and entry admission into a dedicated `codefeed::shell::archive` module, separating HTTP transport concerns in `codefeed::shell::github` from streaming tar entry processing.
 
 ## [0.3.2]
 

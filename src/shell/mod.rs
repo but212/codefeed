@@ -8,6 +8,7 @@ use crate::{
     core::cli::{CliAction, help_text, parse},
 };
 
+mod archive;
 mod github;
 mod local;
 mod output;

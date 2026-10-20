@@ -12,6 +12,8 @@ pub(crate) const MAX_FILE_COUNT: usize = 10_000;
 pub(crate) const MAX_PATH_DEPTH: usize = 256;
 /// Maximum allowable path length in bytes (4,096 bytes). Paths exceeding this limit are skipped.
 pub(crate) const MAX_PATH_BYTES: u64 = 4096;
+/// Capacity in bytes for buffering incoming archive decompression streams (64 KiB).
+pub(crate) const ARCHIVE_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
 pub(crate) const ARCHIVE_MAX_SECS: u64 = 300;
@@ -34,6 +36,7 @@ const _: () = {
     assert!(MAX_PATH_DEPTH > 0);
     assert!(ASCII_BYTES_PER_TOKEN > 0);
     assert!(GITHUB_TIMEOUT_SECS <= ARCHIVE_MAX_SECS);
+    assert!(ARCHIVE_BUFFER_BYTES > 0);
 };
 
 /// Conventional lockfiles excluded before candidate budget accounting.
@@ -351,6 +354,11 @@ mod tests {
         assert_eq!(path.as_str(), "src/core/model.rs");
         assert_eq!(&*path, "src/core/model.rs");
         assert_eq!(path.to_string(), "src/core/model.rs");
+    }
+
+    #[test]
+    fn test_archive_buffer_bytes_invariant() {
+        assert_eq!(ARCHIVE_BUFFER_BYTES, 64 * 1024);
     }
 
     #[test]

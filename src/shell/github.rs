@@ -1,24 +1,20 @@
 //! GitHub collection orchestration: single-request streaming tarball ingestion and HTTP transport.
 
-use std::io::{BufReader, Read};
+use std::io::Read;
 use std::time::Duration;
 
-use flate2::read::GzDecoder;
-use tar::{Archive, EntryType};
 use ureq::Agent;
 use ureq::config::RedirectAuthHeaders;
 use ureq::http::StatusCode;
 use ureq::tls::{RootCerts, TlsConfig};
 use zeroize::Zeroizing;
 
-use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::error::IngestError;
 use crate::core::github::{
     AttemptState, RequestOutcome, Transition, TransportKind, is_github_api_origin, tarball_url,
 };
 use crate::core::model::CollectionResult;
-use crate::core::policy::{ARCHIVE_MAX_SECS, GITHUB_TIMEOUT_SECS, MAX_ATTEMPTS, MAX_FILE_SIZE};
-use crate::core::selector::{Admission, Selector};
+use crate::core::policy::{ARCHIVE_MAX_SECS, GITHUB_TIMEOUT_SECS, MAX_ATTEMPTS};
 
 const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 
@@ -35,7 +31,8 @@ pub(super) fn collect(
 ) -> Result<CollectionResult, IngestError> {
     let client = GithubClient::new();
     let reader = client.tarball_stream(owner, repo, reference)?;
-    collect_archive(reader, owner, repo, reference)
+    let label = format!("https://github.com/{owner}/{repo}");
+    super::archive::collect(reader, &label, reference)
 }
 
 struct GithubClient {
@@ -45,9 +42,7 @@ struct GithubClient {
 
 impl GithubClient {
     fn new() -> Self {
-        let tls = TlsConfig::builder()
-            .root_certs(RootCerts::PlatformVerifier)
-            .build();
+        let tls = TlsConfig::builder().root_certs(RootCerts::WebPki).build();
         let config = Agent::config_builder()
             .user_agent(GITHUB_USER_AGENT)
             .redirect_auth_headers(RedirectAuthHeaders::Never)
@@ -90,10 +85,7 @@ impl GithubClient {
 
             let attempt = match request.call() {
                 Ok(resp) if resp.status().is_success() => {
-                    return Ok(Box::new(BufReader::with_capacity(
-                        64 * 1024,
-                        resp.into_body().into_reader(),
-                    )));
+                    return Ok(Box::new(resp.into_body().into_reader()));
                 }
                 Ok(resp) => Attempt::Status(resp),
                 Err(error) => Attempt::Transport(error),
@@ -245,98 +237,14 @@ fn resolve_token_from_env() -> Option<Zeroizing<String>> {
     resolve_token_with(|k| std::env::var(k))
 }
 
-/// Collects files from an uncompressed or compressed tarball reader directly into a CollectionResult.
-fn collect_archive<R: Read>(
-    reader: R,
-    owner: &str,
-    repo: &str,
-    reference: Option<&str>,
-) -> Result<CollectionResult, IngestError> {
-    let mut archive = Archive::new(GzDecoder::new(reader));
-    let entries = archive.entries().map_err(IngestError::Io)?;
-    let label = format!("https://github.com/{owner}/{repo}");
-    let mut parsed_revision = None;
-    let mut selector = Selector::new();
-    let mut content_scratch = Zeroizing::new(Vec::with_capacity(32 * 1024));
-
-    for entry_res in entries {
-        let mut entry = entry_res.map_err(IngestError::Io)?;
-        content_scratch.clear();
-        let (next_selector, sha) = process_tar_entry(&mut entry, selector, &mut content_scratch)?;
-        selector = next_selector;
-        if let Some(sha) = sha
-            && parsed_revision.is_none()
-        {
-            parsed_revision = Some(sha);
-        }
-    }
-
-    let revision = parsed_revision.or_else(|| reference.map(str::to_string));
-    Ok(selector.finish(label, revision))
-}
-
-fn process_tar_entry<R: Read>(
-    entry: &mut tar::Entry<R>,
-    selector: Selector,
-    content_scratch: &mut Vec<u8>,
-) -> Result<(Selector, Option<String>), IngestError> {
-    let entry_type = entry.header().entry_type();
-
-    // 1. PAX Global Header: Extract git commit SHA from comment
-    if entry_type == EntryType::XGlobalHeader {
-        entry
-            .take(1024)
-            .read_to_end(content_scratch)
-            .map_err(IngestError::Io)?;
-        return Ok((selector, parse_pax_comment(content_scratch)));
-    }
-
-    // 2. Skip directories, symlinks, and special entries before path decoding
-    if !matches!(entry_type, EntryType::Regular | EntryType::Continuous) {
-        return Ok((selector, None));
-    }
-
-    // 3. Path decoding, root stripping, normalization & policy classification
-    let path_bytes = entry.path_bytes();
-    let status = normalize_tar_entry_path(&path_bytes)?;
-
-    let size_hint = entry.header().size().ok();
-
-    // 4. Pre-I/O candidate admission before reading entry body
-    match selector.admit(status, size_hint)? {
-        Admission::Settled(s) => Ok((s, None)),
-        Admission::Pending(pending) => {
-            read_tar_entry_into(entry, MAX_FILE_SIZE, content_scratch)?;
-            let selector = pending.accept(content_scratch)?;
-            Ok((selector, None))
-        }
-    }
-}
-
-fn read_tar_entry_into<R: Read>(
-    entry: &mut tar::Entry<R>,
-    limit: u64,
-    buf: &mut Vec<u8>,
-) -> Result<(), IngestError> {
-    entry
-        .take(limit.saturating_add(1))
-        .read_to_end(buf)
-        .map_err(IngestError::Io)?;
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::Compression;
-    use flate2::write::GzEncoder;
     use std::collections::HashMap;
     use std::env::VarError;
     use std::io::Write;
     use std::net::TcpListener;
     use std::thread;
-    use tar::Builder;
 
     struct MockServer {
         port: u16,
@@ -618,179 +526,5 @@ mod tests {
             !req2.to_ascii_lowercase().contains("authorization"),
             "redirected request must not contain authorization header: {req2}"
         );
-    }
-
-    fn create_mock_tarball(entries: &[(&str, &[u8], EntryType)]) -> Vec<u8> {
-        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
-        {
-            let mut tar = Builder::new(&mut gz);
-            for &(name, content, ref entry_type) in entries {
-                let mut header = tar::Header::new_gnu();
-                header.set_entry_type(*entry_type);
-                header.set_size(content.len() as u64);
-                header.set_mode(0o644);
-                header.set_cksum();
-                tar.append_data(&mut header, name, content).unwrap();
-            }
-            tar.finish().unwrap();
-        }
-        gz.finish().unwrap()
-    }
-
-    #[test]
-    fn collects_files_and_extracts_pax_sha() {
-        let pax_comment = b"52 comment=c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n";
-        let mock_data = create_mock_tarball(&[
-            ("pax_global_header", pax_comment, EntryType::XGlobalHeader),
-            ("repo-root/", b"", EntryType::Directory),
-            (
-                "repo-root/Cargo.toml",
-                b"[package]\nname = \"test\"",
-                EntryType::Regular,
-            ),
-            ("repo-root/src/main.rs", b"fn main() {}", EntryType::Regular),
-            ("repo-root/Cargo.lock", b"lockfile", EntryType::Regular),
-            ("repo-root/poetry.lock", b"lockfile", EntryType::Regular),
-            ("repo-root/id_ecdsa", b"PRIVATE KEY", EntryType::Regular),
-            (
-                "repo-root/image.png",
-                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
-                EntryType::Regular,
-            ),
-        ]);
-
-        let result = collect_archive(mock_data.as_slice(), "but212", "codefeed", None)
-            .expect("collection should succeed");
-
-        assert_eq!(
-            result.revision.as_deref(),
-            Some("c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950")
-        );
-        assert_eq!(result.label, "https://github.com/but212/codefeed");
-
-        let paths: Vec<&str> = result.files.iter().map(|f| f.path).collect();
-        assert_eq!(paths, vec!["Cargo.toml", "src/main.rs"]);
-
-        // Cargo.lock is ignored (neither candidate nor skipped)
-        // image.png is binary (contains NUL byte -> skipped = 1)
-        assert_eq!(result.skipped, 1);
-    }
-
-    #[test]
-    fn skips_too_large_files() {
-        use crate::core::policy::MAX_FILE_SIZE;
-
-        let mock_data = create_mock_tarball(&[
-            ("repo-root/small.txt", b"small", EntryType::Regular),
-            (
-                "repo-root/large.txt",
-                &vec![b'x'; (MAX_FILE_SIZE + 10) as usize],
-                EntryType::Regular,
-            ),
-        ]);
-
-        let result = collect_archive(mock_data.as_slice(), "owner", "repo", Some("main"))
-            .expect("collection should succeed");
-
-        assert_eq!(result.files.len(), 1);
-        assert_eq!(result.files.iter().next().unwrap().path, "small.txt");
-        assert_eq!(result.skipped, 1);
-    }
-
-    #[test]
-    fn regular_file_named_pax_global_header_is_not_dropped() {
-        let mock_data = create_mock_tarball(&[(
-            "repo-root/pax_global_header",
-            b"hello content",
-            EntryType::Regular,
-        )]);
-
-        let result = collect_archive(mock_data.as_slice(), "owner", "repo", None)
-            .expect("collection should succeed");
-
-        assert_eq!(result.files.len(), 1);
-        let first = result.files.iter().next().unwrap();
-        assert_eq!(first.path, "pax_global_header");
-        assert_eq!(first.content, "hello content");
-        assert_eq!(result.revision, None);
-    }
-
-    #[test]
-    fn non_utf8_symlink_or_dir_is_ignored() {
-        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
-        {
-            let mut tar = Builder::new(&mut gz);
-            let mut header = tar::Header::new_gnu();
-            header.set_entry_type(EntryType::Symlink);
-            header.set_size(0);
-            header.set_mode(0o777);
-            let name1 = b"repo-root/\xff_symlink";
-            header.as_mut_bytes()[..name1.len()].copy_from_slice(name1);
-            header.set_cksum();
-            tar.append(&header, &b""[..]).unwrap();
-
-            let mut header2 = tar::Header::new_gnu();
-            header2.set_entry_type(EntryType::Directory);
-            header2.set_size(0);
-            header2.set_mode(0o755);
-            let name2 = b"repo-root/\xff_dir/";
-            header2.as_mut_bytes()[..name2.len()].copy_from_slice(name2);
-            header2.set_cksum();
-            tar.append(&header2, &b""[..]).unwrap();
-
-            tar.finish().unwrap();
-        }
-        let mock_data = gz.finish().unwrap();
-
-        let result = collect_archive(mock_data.as_slice(), "owner", "repo", None)
-            .expect("collection should succeed");
-
-        assert_eq!(result.files.len(), 0);
-        assert_eq!(result.skipped, 0);
-    }
-
-    #[test]
-    fn non_utf8_hidden_regular_file_is_ignored() {
-        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
-        {
-            let mut tar = Builder::new(&mut gz);
-            let mut header = tar::Header::new_gnu();
-            header.set_entry_type(EntryType::Regular);
-            header.set_size(5);
-            header.set_mode(0o644);
-            let name = b"repo-root/.git/\xff";
-            header.as_mut_bytes()[..name.len()].copy_from_slice(name);
-            header.set_cksum();
-            tar.append(&header, &b"dummy"[..]).unwrap();
-            tar.finish().unwrap();
-        }
-        let mock_data = gz.finish().unwrap();
-
-        let result = collect_archive(mock_data.as_slice(), "owner", "repo", None)
-            .expect("collection should succeed");
-
-        assert_eq!(result.files.len(), 0);
-        assert_eq!(
-            result.skipped, 0,
-            "hidden entries must never be accounted as candidates or skipped"
-        );
-    }
-
-    #[test]
-    fn accepts_pax_header_after_archive_entries() {
-        let pax_comment = b"52 comment=c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n";
-        let mock_data = create_mock_tarball(&[
-            ("repo-root/file.txt", b"content", EntryType::Regular),
-            ("pax_global_header", pax_comment, EntryType::XGlobalHeader),
-        ]);
-
-        let result = collect_archive(mock_data.as_slice(), "owner", "repo", None)
-            .expect("collection should succeed");
-
-        assert_eq!(
-            result.revision.as_deref(),
-            Some("c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950")
-        );
-        assert_eq!(result.files.len(), 1);
     }
 }
