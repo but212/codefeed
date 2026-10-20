@@ -24,9 +24,11 @@ This software contains components licensed under the following open-source licen
    - ureq (https://github.com/algesten/ureq)
    - tar (https://github.com/alexcrichton/tar-rs)
    - flate2 (https://github.com/rust-lang/flate2-rs)
+   - zeroize (https://github.com/RustCrypto/utils/tree/master/zeroize)
 
 2. Unlicense OR MIT:
    - ignore (https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore)
+   - memchr (https://github.com/BurntSushi/memchr)
 
 3. Transitive runtime dependencies compiled into binary distributions (non-exhaustive list of key libraries):
    - rustix (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT)
