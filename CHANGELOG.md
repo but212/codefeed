@@ -9,39 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **Policy pattern matching consolidation**: Replaced repetitive prefix comparisons in `src/core/policy.rs` with `SENSITIVE_PREFIXES`, lazy-evaluating extension extraction directly inside `is_sensitive_file`.
-- **Expanded lockfile exclusions**: Added `bun.lock`, `bun.lockb`, `poetry.lock`, `Pipfile.lock`, `composer.lock`, and `Gemfile.lock` to conventional noise lockfiles (`NOISE`) in `src/core/policy.rs`.
-- **Expanded sensitive file patterns**: Added `id_ecdsa*` and `id_dsa*` SSH key prefixes and `*.pfx` (PKCS#12) extension to sensitive file exclusion rules in `src/core/policy.rs`.
-- **Linear pipeline typestates**: Refactored the core collection-to-report pipeline into a strictly consuming typestate chain (`Selector` -> `CollectionResult` -> `RenderedDigest` -> `IngestReport`). `CollectionResult::render` consumes the collection by value and packages rendered bytes together with collection metrics.
-- **Shell output delivery decoupling**: Decoupled `output::emit` into a pure I/O transport function `output::deliver(target, bytes)`, completely removing core render format and collection dependencies from the shell output module.
-- **Path depth limit symmetry**: Local ingestion rejects paths exceeding `MAX_PATH_DEPTH` (256 directory levels) with `IngestError::invalid_metadata`, maintaining full symmetry with tarball archive handling while preserving hidden and noise file exclusion precedence.
-- **Diagnostic tie-breaking determinism**: `largest_files` tie-breaks equal file sizes using `cmp_path` (component-wise lexicographical order), matching the core document and tree ordering invariant.
-
-### Performance
-
-- **Memory zeroization bandwidth**: Replaced per-entry `.zeroize()` calls inside archive and local ingestion loops with `Zeroizing` RAII `Drop` cleanup, avoiding redundant volatile overwrites on every entry during streaming.
-
-### Fixed
-
-- **`GitRef` revision trimming**: `GitRef::new` trims surrounding ASCII whitespace before storing the value, preventing percent-encoded spaces (`%20`) in tarball archive URLs.
-- **Hidden entry filtering consistency**: Unified local filesystem hidden directory pruning with `is_hidden_segment` via `WalkBuilder::filter_entry` (preserving root at `depth == 0`), aligning with policy rules.
-- **Root non-UTF-8 candidate diagnostic label**: Mapped non-UTF-8 entries at root level (`""` prefix) to `<root>/` instead of `<unknown>/` in candidate budget overflow diagnostics.
-
-### Documentation
-
-- **Dependency qualification**: Documented in `AGENTS.md` that crates already transitively included by required dependencies qualify as candidates for direct adoption.
-- **Sensitive vs hidden exclusions**: Clarified across documentation that `.env*` files are excluded by leading dot matching (`is_hidden_segment`) rather than `is_sensitive_file`.
-- **Sorting contract precision**: Clarified in `context.md`, `storage.rs`, and test suites that path ordering invariant is component-wise lexicographical order (`cmp_path`).
+## [0.3.2]
 
 ### Security
 
-- **Shell Memory Zeroization**: Applied `zeroize` strictly within `src/shell/` to securely erase GitHub tokens during env lookup, wipe HTTP error response bodies, and clear reusable file read scratch buffers across local and tarball ingestion.
+- **Memory zeroization**: Applied `zeroize` in `src/shell/` to GitHub tokens during env lookup, HTTP error bodies, and reusable read buffers in local and tarball ingestion.
+- **Sensitive patterns**: Added `id_ecdsa*`, `id_dsa*`, and `*.pfx` (PKCS#12) to sensitive exclusions in `src/core/policy.rs`.
+
+### Changed
+
+- **Lockfile exclusions**: Added `bun.lock`, `bun.lockb`, `poetry.lock`, `Pipfile.lock`, `composer.lock`, and `Gemfile.lock` to conventional noise lockfiles (`NOISE`) in `src/core/policy.rs`.
+- **Path depth limit**: Local ingestion rejects paths exceeding `MAX_PATH_DEPTH` (256 levels) with `IngestError::invalid_metadata`, matching archive handling while preserving hidden/noise precedence.
+- **Diagnostic ordering**: `largest_files` tie-breaks equal file sizes with `cmp_path` (component-wise lexicographical order), matching tree ordering.
+
+### Fixed
+
+- **`GitRef` whitespace**: `GitRef::new` trims ASCII whitespace before storage, preventing `%20` in tarball URLs.
+- **Hidden directory filtering**: Pruned local directories via `WalkBuilder::filter_entry` using `is_hidden_segment` (preserving root at `depth == 0`).
+- **Root non-UTF-8 diagnostics**: Mapped root non-UTF-8 entries (`""` prefix) to `<root>/` instead of `<unknown>/` on candidate budget overflow.
 
 ### Internal
 
-- **Tree render**: `render_level` threads a single owned `prefix` buffer through recursion (`push_str` / `truncate`) instead of cloning it per directory.
+- **Pipeline typestates**: Refactored core collection into a consuming chain (`Selector` -> `CollectionResult` -> `RenderedDigest` -> `IngestReport`), where `CollectionResult::render` consumes the collection by value with metrics.
+- **Output transport**: Replaced `output::emit` with pure I/O `output::deliver(target, bytes)`, removing render format and collection dependencies from `src/shell/output.rs`.
+- **Policy matching**: Consolidated prefix checks in `src/core/policy.rs` into `SENSITIVE_PREFIXES` and lazy-evaluated extension extraction in `is_sensitive_file`.
+- **Tree render**: `render_level` threads a single owned `prefix` buffer (`push_str`/`truncate`) instead of cloning per directory.
+- **Performance**: Replaced per-entry `.zeroize()` in ingestion loops with `Zeroizing` RAII `Drop` cleanup, avoiding redundant volatile overwrites during streaming.
+- **Documentation**: Documented transitive dependency rules in `AGENTS.md`, `.env*` exclusion rationale, and component-wise `cmp_path` ordering invariant in `context.md` and `storage.rs`.
 
 ## [0.3.1]
 
@@ -261,6 +255,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial CLI converting local directories (`.gitignore`-aware, skipping hidden files and symlinks) and GitHub repositories (`--ref <BRANCH|TAG|COMMIT>`, no local `git`) into plain-text or XML digests (`--format <text|xml>`) written atomically to files or stdout (`--output -`), with streaming token estimation, sensitive/lockfile filtering (`.env*`, `*.key`, `*.pem`, `id_rsa*`), and candidate/output size budgets.
 
+[0.3.2]: https://github.com/but212/codefeed/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/but212/codefeed/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/but212/codefeed/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/but212/codefeed/compare/v0.2.3...v0.2.4
