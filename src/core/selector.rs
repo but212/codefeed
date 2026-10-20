@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use memchr::memchr;
+
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
 use crate::core::policy::{
@@ -47,7 +49,7 @@ impl PendingEntry {
 
 /// UTF-8 text predicate: NUL-free bytes within size limit, returning string slice.
 fn classify_content(bytes: &[u8]) -> Option<&str> {
-    if bytes.len() as u64 > MAX_FILE_SIZE || bytes.contains(&0) {
+    if bytes.len() as u64 > MAX_FILE_SIZE || memchr(0, bytes).is_some() {
         return None;
     }
     std::str::from_utf8(bytes).ok()
@@ -89,7 +91,7 @@ fn extract_dir_slice(path: &str) -> &str {
     if path.is_empty() {
         "<unknown>/"
     } else {
-        match path.find('/') {
+        match memchr(b'/', path.as_bytes()) {
             Some(index) => &path[..=index],
             None => "<root>/",
         }

@@ -1,5 +1,6 @@
 use crate::core::error::IngestError;
 use crate::core::policy::{PathStatus, classify_path_segments};
+use memchr::{memchr, memchr_iter, memmem};
 
 /// Normalizes a raw tar entry path, stripping the root directory prefix,
 /// collapsing multiple slashes, removing `.` segments, and classifying against policy.
@@ -9,7 +10,7 @@ use crate::core::policy::{PathStatus, classify_path_segments};
 /// Returns `Ok(PathStatus::NonUtf8Candidate(prefix))` if the entry path contains non-UTF-8 bytes and is not hidden.
 /// Returns `Ok(PathStatus::Valid(path))` on success.
 pub(crate) fn normalize_tar_entry_path(raw_bytes: &[u8]) -> Result<PathStatus, IngestError> {
-    if raw_bytes.contains(&0) {
+    if memchr(0, raw_bytes).is_some() {
         return Err(IngestError::invalid_metadata(
             "Tar entry path contains NUL byte",
         ));
@@ -24,13 +25,15 @@ pub(crate) fn normalize_tar_entry_path(raw_bytes: &[u8]) -> Result<PathStatus, I
         .map_or(start, |i| i + 1);
     let trimmed = &raw_bytes[start..end];
 
-    if trimmed.split(|&b| b == b'/').any(|seg| seg == b"..") {
+    if memmem::find(trimmed, b"..").is_some()
+        && trimmed.split(|&b| b == b'/').any(|seg| seg == b"..")
+    {
         return Err(IngestError::invalid_metadata(
             "Tar entry contains directory traversal (..)",
         ));
     }
 
-    let Some(slash_index) = trimmed.iter().position(|&b| b == b'/') else {
+    let Some(slash_index) = memchr(b'/', trimmed) else {
         return Ok(PathStatus::Ignored);
     };
 
@@ -48,7 +51,7 @@ pub(crate) fn normalize_tar_entry_path(raw_bytes: &[u8]) -> Result<PathStatus, I
 
     let status = classify_path_segments(filtered_segments);
     if let PathStatus::Valid(ref path) = status
-        && path.matches('/').count() > crate::core::policy::MAX_PATH_DEPTH
+        && memchr_iter(b'/', path.as_bytes()).count() > crate::core::policy::MAX_PATH_DEPTH
     {
         return Err(IngestError::invalid_metadata(
             "Tar entry path exceeds maximum directory depth",
@@ -62,10 +65,11 @@ pub(crate) fn normalize_tar_entry_path(raw_bytes: &[u8]) -> Result<PathStatus, I
 /// `git archive` embeds `comment = <commit_sha>` or `comment=<commit_sha>`
 /// in the PAX extended header.
 pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
+    memmem::find(bytes, b"comment=")?;
     let text = std::str::from_utf8(bytes).ok()?;
     text.lines().find_map(|line| {
         let trimmed = line.trim_ascii();
-        let payload = match trimmed.find(' ') {
+        let payload = match memchr(b' ', trimmed.as_bytes()) {
             Some(space_index) if trimmed[..space_index].chars().all(|c| c.is_ascii_digit()) => {
                 &trimmed[space_index + 1..]
             }

@@ -1,3 +1,5 @@
+use memchr::memchr;
+
 use super::budget::{BoundedBuffer, OutputLimitExceeded};
 use crate::core::storage::{FileSpan, SortedFiles};
 
@@ -85,7 +87,7 @@ pub(super) fn component_at_offset(path: &str, offset: usize) -> Option<(&str, bo
     if remainder.is_empty() {
         return None;
     }
-    match remainder.find('/') {
+    match memchr(b'/', remainder.as_bytes()) {
         Some(idx) => Some((&remainder[..idx], true)),
         None => Some((remainder, false)),
     }

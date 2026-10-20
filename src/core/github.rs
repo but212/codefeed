@@ -4,6 +4,8 @@ use crate::core::error::IngestError;
 use crate::core::policy::{MAX_ATTEMPTS, RETRY_INITIAL_DELAY_MS, RETRY_MAX_DELAY_MS};
 use std::time::Duration;
 
+use memchr::{memchr, memchr2};
+
 pub(crate) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 
 /// Exact-origin match: returns `true` if `url == GITHUB_API_BASE_URL` or starts with `GITHUB_API_BASE_URL + "/"`.
@@ -31,7 +33,7 @@ pub(crate) fn parse_github_url(value: &str) -> Result<(String, String), IngestEr
     let remainder = value.strip_prefix("https://").ok_or_else(|| {
         IngestError::unsupported_source("only https://github.com/{owner}/{repo} is supported")
     })?;
-    let (authority, path) = match remainder.find('/') {
+    let (authority, path) = match memchr(b'/', remainder.as_bytes()) {
         Some(index) => (&remainder[..index], &remainder[index..]),
         None => (remainder, ""),
     };
@@ -53,7 +55,7 @@ pub(crate) fn parse_github_url(value: &str) -> Result<(String, String), IngestEr
             "only https://github.com/{owner}/{repo} is supported",
         ));
     }
-    if path.contains('?') || path.contains('#') {
+    if memchr2(b'?', b'#', path.as_bytes()).is_some() {
         return Err(IngestError::invalid_source(
             "repository URLs cannot contain a query or fragment",
         ));
