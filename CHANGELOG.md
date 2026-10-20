@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Security
+
+- **Shell Memory Zeroization**: Applied `zeroize` strictly within `src/shell/` to securely erase GitHub tokens during env lookup, wipe HTTP error response bodies, and clear reusable file read scratch buffers across local and tarball ingestion.
+
+### Internal
+
+- **Tree render**: `render_level` threads a single owned `prefix` buffer through recursion (`push_str` / `truncate`) instead of cloning it per directory.
+
 ## [0.3.1]
 
 ### Changed

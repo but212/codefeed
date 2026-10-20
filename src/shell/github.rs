@@ -9,6 +9,7 @@ use ureq::Agent;
 use ureq::config::RedirectAuthHeaders;
 use ureq::http::StatusCode;
 use ureq::tls::{RootCerts, TlsConfig};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::error::IngestError;
@@ -39,7 +40,7 @@ pub(super) fn collect(
 
 struct GithubClient {
     agent: Agent,
-    auth_header: Option<String>,
+    auth_header: Option<Zeroizing<String>>,
 }
 
 impl GithubClient {
@@ -56,7 +57,8 @@ impl GithubClient {
             .tls_config(tls)
             .build();
 
-        let auth_header = resolve_token_from_env().map(|token| format!("Bearer {token}"));
+        let auth_header = resolve_token_from_env()
+            .map(|token| Zeroizing::new(format!("Bearer {}", token.as_str())));
 
         Self {
             agent: Agent::new_with_config(config),
@@ -81,7 +83,7 @@ impl GithubClient {
 
             if is_github_api_origin(url) {
                 if let Some(auth) = &self.auth_header {
-                    request = request.header("Authorization", auth);
+                    request = request.header("Authorization", auth.as_str());
                 }
                 request = request.header("X-Github-Api-Version", "2022-11-28");
             }
@@ -138,7 +140,7 @@ impl GithubClient {
                     Attempt::Status(response) => {
                         let status = response.status();
                         let retry_after = parse_retry_after(response.headers());
-                        let mut body_bytes = Vec::new();
+                        let mut body_bytes = Zeroizing::new(Vec::new());
                         let _ = response
                             .into_body()
                             .into_reader()
@@ -228,19 +230,18 @@ fn api_error(status: StatusCode, body_bytes: &[u8], retry_after: Option<Duration
     }
 }
 
-fn resolve_token_with<F>(mut lookup: F) -> Option<String>
+fn resolve_token_with<F>(mut lookup: F) -> Option<Zeroizing<String>>
 where
     F: FnMut(&str) -> Result<String, std::env::VarError>,
 {
     ["GITHUB_TOKEN", "GH_TOKEN"].into_iter().find_map(|key| {
-        lookup(key)
-            .ok()
-            .map(|t| t.trim_ascii().to_string())
-            .filter(|t| !t.is_empty())
+        let raw = Zeroizing::new(lookup(key).ok()?);
+        let trimmed = raw.trim_ascii();
+        (!trimmed.is_empty()).then(|| Zeroizing::new(trimmed.to_string()))
     })
 }
 
-fn resolve_token_from_env() -> Option<String> {
+fn resolve_token_from_env() -> Option<Zeroizing<String>> {
     resolve_token_with(|k| std::env::var(k))
 }
 
@@ -256,10 +257,11 @@ fn collect_archive<R: Read>(
     let label = format!("https://github.com/{owner}/{repo}");
     let mut parsed_revision = None;
     let mut selector = Selector::new();
-    let mut content_scratch = Vec::with_capacity(32 * 1024);
+    let mut content_scratch = Zeroizing::new(Vec::with_capacity(32 * 1024));
 
     for entry_res in entries {
         let mut entry = entry_res.map_err(IngestError::Io)?;
+        content_scratch.zeroize();
         content_scratch.clear();
         let (next_selector, sha) = process_tar_entry(&mut entry, selector, &mut content_scratch)?;
         selector = next_selector;
@@ -417,15 +419,21 @@ mod tests {
         };
 
         let env = HashMap::from([("GITHUB_TOKEN", "token_a"), ("GH_TOKEN", "token_b")]);
-        assert_eq!(resolve_token_with(mock_env(env)), Some("token_a".into()));
+        assert_eq!(
+            resolve_token_with(mock_env(env)),
+            Some(Zeroizing::new("token_a".into()))
+        );
 
         let env = HashMap::from([("GH_TOKEN", "token_b")]);
-        assert_eq!(resolve_token_with(mock_env(env)), Some("token_b".into()));
+        assert_eq!(
+            resolve_token_with(mock_env(env)),
+            Some(Zeroizing::new("token_b".into()))
+        );
 
         let env = HashMap::from([("GITHUB_TOKEN", "   "), ("GH_TOKEN", "valid_token")]);
         assert_eq!(
             resolve_token_with(mock_env(env)),
-            Some("valid_token".into())
+            Some(Zeroizing::new("valid_token".into()))
         );
 
         let env = HashMap::from([("GITHUB_TOKEN", "")]);

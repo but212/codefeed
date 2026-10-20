@@ -14,8 +14,10 @@ exclude = [".github/", "context.md"]
 [dependencies]
 ignore = "0.4" # Fast .gitignore parsing and deterministic directory traversal without invoking git
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] } # Minimal synchronous HTTP client for GitHub tarball streams
-flate2 = "1.0" # Gzip decompression for GitHub archive streams
+flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] } # Gzip decompression for GitHub archive streams
 tar = "0.4" # Tarball entry streaming without temporary disk extraction
+zeroize = "1" # Secure clearing of GitHub authorization tokens from process memory
+memchr = "2" # SIMD-accelerated byte searching for delimiters, NUL byte detection, and fast path scanning
 
 
 [lib]

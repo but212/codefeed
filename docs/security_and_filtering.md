@@ -129,9 +129,10 @@ Local directory traversal in `src/shell/local.rs` adheres to the following invar
 
 Remote ingestion via `src/shell/github.rs` operates under strict isolation:
 
-1. **Origin-Gated Authentication:**
+1. **Origin-Gated Authentication & Memory Zeroization:**
    - GitHub tokens (`GITHUB_TOKEN` or `GH_TOKEN`) are attached as `Authorization: Bearer <token>` **only** when the request destination exactly matches `https://api.github.com`.
    - Client redirect policy enforces `RedirectAuthHeaders::Never` so authentication tokens are never leaked to external CDNs or redirect mirrors.
+   - Authorization tokens, lookup buffers, and error response bodies are managed through `zeroize::Zeroizing` to securely erase secret material from heap memory upon drop.
 2. **Diskless Streaming Pipeline:**
    - Remote repositories are streamed directly from `/repos/{owner}/{repo}/tarball/{ref}` as a single HTTP response.
    - Archive entries are unpacked via `flate2` and `tar` directly into memory arena buffers (`FileStorage`) without writing tarballs or unpacked files to disk.

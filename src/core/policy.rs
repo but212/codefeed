@@ -1,5 +1,7 @@
 //! Single source of truth for ingestion policies, limits, and conventions.
 
+use memchr::memrchr;
+
 /// Maximum individual file size accepted (1 MiB in bytes). Larger files are skipped.
 pub(crate) const MAX_FILE_SIZE: u64 = 1024 * 1024;
 /// Maximum rendered digest size (20 MiB in bytes). Overflows return [`IngestError::OutputTooLarge`](crate::core::error::IngestError::OutputTooLarge).
@@ -85,7 +87,7 @@ pub(crate) fn is_hidden_segment(segment: &[u8]) -> bool {
 
 /// Returns `true` if `file_name` matches a known noise file or a sensitive credentials pattern.
 pub(crate) fn is_ignored_filename(file_name: &str) -> bool {
-    let extension = file_name.rsplit_once('.').map(|(_, e)| e);
+    let extension = memrchr(b'.', file_name.as_bytes()).map(|i| &file_name[i + 1..]);
     is_noise_file(file_name) || is_sensitive_file(file_name, extension)
 }
 

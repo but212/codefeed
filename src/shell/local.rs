@@ -5,6 +5,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
@@ -32,7 +33,7 @@ pub(super) fn collect(
         .build();
 
     let mut selector = Selector::new();
-    let mut scratch = Vec::with_capacity(32 * 1024);
+    let mut scratch = Zeroizing::new(Vec::with_capacity(32 * 1024));
 
     for entry in walker {
         let entry = entry.map_err(|err| IngestError::Io(format_ignore_error(&err)))?;
@@ -56,6 +57,7 @@ pub(super) fn collect(
         match selector.admit(status, size_hint)? {
             Admission::Settled(s) => selector = s,
             Admission::Pending(pending) => {
+                scratch.zeroize();
                 scratch.clear();
                 match read_local_file_into(entry_path, MAX_FILE_SIZE, &mut scratch)? {
                     Some(bytes) => selector = pending.accept(bytes)?,
