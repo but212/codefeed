@@ -13,7 +13,6 @@ pub(crate) const MAX_PATH_DEPTH: usize = 256;
 /// Maximum allowable path length in bytes (4,096 bytes). Paths exceeding this limit are skipped.
 pub(crate) const MAX_PATH_BYTES: u64 = 4096;
 
-const _: () = assert!(MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX as u64);
 /// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
 pub(crate) const ARCHIVE_MAX_SECS: u64 = 300;
 /// Maximum total HTTP request attempts (1 initial + up to 2 retries).
@@ -26,6 +25,16 @@ pub(crate) const RETRY_INITIAL_DELAY_MS: u64 = 250;
 pub(crate) const RETRY_MAX_DELAY_MS: u64 = 5_000;
 /// HTTP response headers timeout in seconds for GitHub API requests (30 seconds).
 pub(crate) const GITHUB_TIMEOUT_SECS: u64 = 30;
+
+const _: () = {
+    assert!(MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX as u64);
+    assert!(MAX_FILE_SIZE <= MAX_OUTPUT_SIZE);
+    assert!(MAX_PATH_BYTES <= MAX_FILE_SIZE);
+    assert!(MAX_FILE_COUNT > 0);
+    assert!(MAX_PATH_DEPTH > 0);
+    assert!(ASCII_BYTES_PER_TOKEN > 0);
+    assert!(GITHUB_TIMEOUT_SECS <= ARCHIVE_MAX_SECS);
+};
 
 /// Conventional lockfiles excluded before candidate budget accounting.
 const NOISE: &[&str] = &[

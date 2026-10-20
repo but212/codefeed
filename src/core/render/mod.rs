@@ -8,11 +8,33 @@ use crate::core::model::{CollectionResult, DigestFormat};
 
 mod budget;
 mod escape;
-mod text;
+mod formats;
 mod tree;
-mod xml;
 
 pub(crate) use budget::{BoundedBuffer, OutputLimitExceeded, RenderedDigest};
+pub(crate) use formats::{FormatRenderer, TextRenderer, XmlRenderer};
+
+pub(crate) fn render_with<R: FormatRenderer>(
+    mut buf: BoundedBuffer,
+    collection: &CollectionResult,
+    renderer: R,
+) -> Result<BoundedBuffer, OutputLimitExceeded> {
+    buf = renderer.write_header(
+        buf,
+        &collection.label,
+        collection.revision.as_deref(),
+        collection.files.len(),
+        collection.skipped,
+    )?;
+    buf = tree::render_tree(buf, &collection.files, |b, name| {
+        renderer.write_tree_name(b, name)
+    })?;
+    buf = renderer.close_tree_section(buf)?;
+    for file in collection.files.iter() {
+        buf = renderer.write_file_entry(buf, file.path, file.content)?;
+    }
+    renderer.write_footer(buf)
+}
 
 impl DigestFormat {
     pub(crate) fn render(
@@ -21,8 +43,8 @@ impl DigestFormat {
         collection: &CollectionResult,
     ) -> Result<BoundedBuffer, OutputLimitExceeded> {
         match self {
-            Self::Text => text::render_text(buf, collection),
-            Self::Xml => xml::render_xml(buf, collection),
+            Self::Text => render_with(buf, collection, TextRenderer),
+            Self::Xml => render_with(buf, collection, XmlRenderer),
         }
     }
 }

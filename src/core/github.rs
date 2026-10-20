@@ -14,6 +14,21 @@ pub(crate) fn is_github_api_origin(url: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
+const GITHUB_NAME_CHAR_TABLE: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut i = 0;
+    while i < 256 {
+        let b = i as u8;
+        table[i] = (b.wrapping_sub(b'0') < 10)
+            | ((b | 32).wrapping_sub(b'a') < 26)
+            | (b == b'-')
+            | (b == b'.')
+            | (b == b'_');
+        i += 1;
+    }
+    table
+};
+
 /// Validates whether the given string conforms to valid GitHub owner or repository name rules.
 pub(crate) const fn valid_github_name(value: &str) -> bool {
     let bytes = value.as_bytes();
@@ -28,13 +43,7 @@ pub(crate) const fn valid_github_name(value: &str) -> bool {
     }
     let mut i = 0;
     while i < bytes.len() {
-        let byte = bytes[i];
-        let valid = (byte.wrapping_sub(b'0') < 10)
-            | ((byte | 32).wrapping_sub(b'a') < 26)
-            | (byte == b'-')
-            | (byte == b'.')
-            | (byte == b'_');
-        if !valid {
+        if !GITHUB_NAME_CHAR_TABLE[bytes[i] as usize] {
             return false;
         }
         i += 1;
@@ -103,14 +112,25 @@ pub(crate) fn tarball_url(owner: &str, repo: &str, reference: Option<&str>) -> S
     url
 }
 
+const UNRESERVED_TABLE: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut i = 0;
+    while i < 256 {
+        let b = i as u8;
+        table[i] = ((b | 32).wrapping_sub(b'a') < 26)
+            | (b.wrapping_sub(b'0') < 10)
+            | (b == b'-')
+            | (b == b'.')
+            | (b == b'_')
+            | (b == b'~');
+        i += 1;
+    }
+    table
+};
+
 #[inline(always)]
 const fn is_unreserved(b: u8) -> bool {
-    ((b | 32).wrapping_sub(b'a') < 26)
-        | (b.wrapping_sub(b'0') < 10)
-        | (b == b'-')
-        | (b == b'.')
-        | (b == b'_')
-        | (b == b'~')
+    UNRESERVED_TABLE[b as usize]
 }
 
 fn append_encoded_segment(mut url: String, segment: &str) -> String {
@@ -146,6 +166,14 @@ pub(crate) const fn retry_delay(attempt: usize) -> Duration {
 
     Duration::from_millis(millis)
 }
+
+const _: () = {
+    assert!(MAX_ATTEMPTS >= 1);
+    assert!(RETRY_INITIAL_DELAY_MS > 0);
+    assert!(RETRY_INITIAL_DELAY_MS <= RETRY_MAX_DELAY_MS);
+    assert!(retry_delay(0).as_millis() == RETRY_INITIAL_DELAY_MS as u128);
+    assert!(retry_delay(usize::MAX).as_millis() == RETRY_MAX_DELAY_MS as u128);
+};
 
 /// Classification of transport-level errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
