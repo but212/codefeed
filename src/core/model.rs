@@ -27,8 +27,8 @@ impl GitRef {
 
     /// Borrows the reference as a string slice.
     #[inline]
-    pub fn as_str(&self) -> &str {
-        &self.0
+    pub const fn as_str(&self) -> &str {
+        self.0.as_str()
     }
 }
 

@@ -83,8 +83,20 @@ pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
     })
 }
 
-fn is_valid_commit_sha(sha: &str) -> bool {
-    (sha.len() == 40 || sha.len() == 64) && sha.chars().all(|c| c.is_ascii_hexdigit())
+const fn is_valid_commit_sha(sha: &str) -> bool {
+    let bytes = sha.as_bytes();
+    let len = bytes.len();
+    if len != 40 && len != 64 {
+        return false;
+    }
+    let mut i = 0;
+    while i < len {
+        if !bytes[i].is_ascii_hexdigit() {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -156,7 +168,7 @@ mod tests {
         let normal_depth_path = format!("repo-root/{}/file.txt", vec!["d"; 256].join("/"));
         assert_eq!(
             normalize_tar_entry_path(normal_depth_path.as_bytes()).unwrap(),
-            PathStatus::Valid(format!("{}/file.txt", vec!["d"; 256].join("/")))
+            PathStatus::Valid(format!("{}/file.txt", vec!["d"; 256].join("/")).into())
         );
 
         let excessive_depth_path = format!("repo-root/{}/file.txt", vec!["d"; 257].join("/"));

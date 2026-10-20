@@ -3,23 +3,27 @@
 use crate::core::policy::{ASCII_BYTES_PER_TOKEN, MAX_OUTPUT_SIZE};
 
 /// Token estimation heuristic calculating ASCII bytes and non-ASCII character counts.
-pub(crate) fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
+pub(crate) const fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
     if bytes.is_empty() {
         return 0;
     }
     let mut ascii_bytes = 0usize;
     let mut non_ascii_chars = 0usize;
+    let mut i = 0;
 
-    for &b in bytes {
+    while i < bytes.len() {
+        let b = bytes[i];
         if b < 0x80 {
             ascii_bytes += 1;
         } else if b >= 0xC0 {
             non_ascii_chars += 1;
         }
+        i += 1;
     }
 
     let ascii_tokens = ascii_bytes / ASCII_BYTES_PER_TOKEN as usize;
-    (ascii_tokens + non_ascii_chars).max(1)
+    let total = ascii_tokens + non_ascii_chars;
+    if total > 1 { total } else { 1 }
 }
 
 /// Error returned when rendered content exceeds [`MAX_OUTPUT_SIZE`].

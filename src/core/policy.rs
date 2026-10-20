@@ -13,7 +13,6 @@ pub(crate) const MAX_PATH_DEPTH: usize = 256;
 /// Maximum allowable path length in bytes (4,096 bytes). Paths exceeding this limit are skipped.
 pub(crate) const MAX_PATH_BYTES: u64 = 4096;
 
-const _: () = assert!(MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX as u64);
 /// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
 pub(crate) const ARCHIVE_MAX_SECS: u64 = 300;
 /// Maximum total HTTP request attempts (1 initial + up to 2 retries).
@@ -26,6 +25,16 @@ pub(crate) const RETRY_INITIAL_DELAY_MS: u64 = 250;
 pub(crate) const RETRY_MAX_DELAY_MS: u64 = 5_000;
 /// HTTP response headers timeout in seconds for GitHub API requests (30 seconds).
 pub(crate) const GITHUB_TIMEOUT_SECS: u64 = 30;
+
+const _: () = {
+    assert!(MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX as u64);
+    assert!(MAX_FILE_SIZE <= MAX_OUTPUT_SIZE);
+    assert!(MAX_PATH_BYTES <= MAX_FILE_SIZE);
+    assert!(MAX_FILE_COUNT > 0);
+    assert!(MAX_PATH_DEPTH > 0);
+    assert!(ASCII_BYTES_PER_TOKEN > 0);
+    assert!(GITHUB_TIMEOUT_SECS <= ARCHIVE_MAX_SECS);
+};
 
 /// Conventional lockfiles excluded before candidate budget accounting.
 const NOISE: &[&str] = &[
@@ -42,11 +51,62 @@ const NOISE: &[&str] = &[
 /// and is also matched as a filename prefix in [`is_sensitive_file`] (`credentials*`, e.g., `credentials.json`).
 const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "credentials"];
 
+/// Non-empty, normalized slash-separated relative UTF-8 path.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub(crate) struct NormalizedPath(String);
+
+impl NormalizedPath {
+    /// Borrows the normalized path as a string slice.
+    #[inline(always)]
+    pub(crate) const fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl std::ops::Deref for NormalizedPath {
+    type Target = str;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<str> for NormalizedPath {
+    #[inline(always)]
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for NormalizedPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[cfg(test)]
+impl From<&str> for NormalizedPath {
+    fn from(s: &str) -> Self {
+        assert!(!s.is_empty(), "NormalizedPath cannot be empty");
+        Self(s.to_string())
+    }
+}
+
+#[cfg(test)]
+impl From<String> for NormalizedPath {
+    fn from(s: String) -> Self {
+        assert!(!s.is_empty(), "NormalizedPath cannot be empty");
+        Self(s)
+    }
+}
+
 /// Path classification outcome from a single-pass policy evaluation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PathStatus {
     /// Normalized valid relative UTF-8 path.
-    Valid(String),
+    Valid(NormalizedPath),
     /// Ignored path (hidden component, conventional noise, sensitive pattern, or root).
     Ignored,
     /// Non-UTF-8 path that is not hidden and must be counted against candidate budget as skipped.
@@ -81,8 +141,8 @@ fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> bool {
 }
 
 /// Returns `true` if raw path segment bytes start with a dot (`.`), marking a hidden file or directory.
-pub(crate) fn is_hidden_segment(segment: &[u8]) -> bool {
-    segment.first() == Some(&b'.')
+pub(crate) const fn is_hidden_segment(segment: &[u8]) -> bool {
+    matches!(segment, [b'.', ..])
 }
 
 /// Returns `true` if `file_name` matches a known noise file or a sensitive credentials pattern.
@@ -150,7 +210,7 @@ where
             if scratch.is_empty() {
                 PathStatus::Ignored
             } else {
-                PathStatus::Valid(scratch)
+                PathStatus::Valid(NormalizedPath(scratch))
             }
         }
         PathClassifierState::NonUtf8Prefix => PathStatus::NonUtf8Candidate(scratch),
@@ -229,5 +289,23 @@ mod tests {
                 "expected {filename} not to be ignored"
             );
         }
+    }
+
+    #[test]
+    fn test_normalized_path_invariants_and_classification() {
+        let segments: &[&[u8]] = &[b"src", b"core", b"model.rs"];
+        let status = classify_path_segments(segments.iter().copied());
+        let PathStatus::Valid(path) = status else {
+            panic!("expected PathStatus::Valid");
+        };
+        assert_eq!(path.as_str(), "src/core/model.rs");
+        assert_eq!(&*path, "src/core/model.rs");
+        assert_eq!(path.to_string(), "src/core/model.rs");
+    }
+
+    #[test]
+    #[should_panic(expected = "NormalizedPath cannot be empty")]
+    fn test_normalized_path_rejects_empty_in_test_helper() {
+        let _ = NormalizedPath::from("");
     }
 }

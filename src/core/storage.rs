@@ -5,6 +5,8 @@
 
 use std::cmp::Ordering;
 
+use crate::core::policy::NormalizedPath;
+
 /// 16-byte POD indexing a file path and content slice in [`FileStorage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct FileSpan {
@@ -52,11 +54,11 @@ impl SortedFiles {
         self.0.len()
     }
 
-    pub(crate) fn spans(&self) -> &[FileSpan] {
+    pub(crate) const fn spans(&self) -> &[FileSpan] {
         self.0.spans()
     }
 
-    pub(crate) fn path_arena(&self) -> &str {
+    pub(crate) const fn path_arena(&self) -> &str {
         self.0.path_arena()
     }
 
@@ -91,12 +93,12 @@ impl FileStorage {
         self.spans.len()
     }
 
-    pub(crate) fn spans(&self) -> &[FileSpan] {
-        &self.spans
+    pub(crate) const fn spans(&self) -> &[FileSpan] {
+        self.spans.as_slice()
     }
 
-    pub(crate) fn path_arena(&self) -> &str {
-        &self.path_arena
+    pub(crate) const fn path_arena(&self) -> &str {
+        self.path_arena.as_str()
     }
 
     pub(crate) const fn total_bytes(&self) -> u64 {
@@ -115,9 +117,8 @@ impl FileStorage {
     ///
     /// Arena offset fit (`u32::MAX`) is statically guaranteed by `policy.rs` constant assertion
     /// `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX` and post-push size checks in `Selector::add_file`.
-    pub(crate) fn push(mut self, path: &str, content: &str) -> Self {
-        assert!(!path.is_empty(), "file path must not be empty");
-
+    pub(crate) fn push(mut self, path: &NormalizedPath, content: &str) -> Self {
+        let path = path.as_str();
         let path_offset =
             u32::try_from(self.path_arena.len()).expect("path_arena length fits in u32");
         let path_len = u32::try_from(path.len()).expect("path length fits in u32");
@@ -156,7 +157,7 @@ impl FileStorage {
 impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
     fn from_iter<T: IntoIterator<Item = FileRecord<'a>>>(iter: T) -> Self {
         iter.into_iter().fold(Self::new(), |storage, record| {
-            storage.push(record.path, record.content)
+            storage.push(&NormalizedPath::from(record.path), record.content)
         })
     }
 }
@@ -230,8 +231,11 @@ mod tests {
     #[test]
     fn file_storage_maintains_continuous_arena_and_zero_copy_views() {
         let storage = FileStorage::new()
-            .push("path/to/first.rs", "pub fn first() {}")
-            .push("second.txt", "second content\n");
+            .push(
+                &NormalizedPath::from("path/to/first.rs"),
+                "pub fn first() {}",
+            )
+            .push(&NormalizedPath::from("second.txt"), "second content\n");
 
         assert_eq!(storage.len(), 2);
 
@@ -265,9 +269,9 @@ mod tests {
     #[test]
     fn file_storage_sorts_by_path_in_place() {
         let storage = FileStorage::new()
-            .push("z/file.rs", "content_z")
-            .push("a/file.rs", "content_a")
-            .push("m/file.rs", "content_m")
+            .push(&NormalizedPath::from("z/file.rs"), "content_z")
+            .push(&NormalizedPath::from("a/file.rs"), "content_a")
+            .push(&NormalizedPath::from("m/file.rs"), "content_m")
             .sort_by_path();
 
         let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
@@ -277,8 +281,8 @@ mod tests {
     #[test]
     fn file_storage_sorts_hierarchically() {
         let storage = FileStorage::new()
-            .push("src-test/b.rs", "content_b")
-            .push("src/a.rs", "content_a")
+            .push(&NormalizedPath::from("src-test/b.rs"), "content_b")
+            .push(&NormalizedPath::from("src/a.rs"), "content_a")
             .sort_by_path();
 
         let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();

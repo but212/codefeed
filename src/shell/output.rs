@@ -287,13 +287,13 @@ mod tests {
 
     #[test]
     fn stdout_overflow_writes_nothing_to_stream() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::core::policy::MAX_OUTPUT_SIZE;
+        use crate::core::policy::{MAX_OUTPUT_SIZE, NormalizedPath};
         use crate::core::storage::FileStorage;
 
         let large_content = "x".repeat(MAX_OUTPUT_SIZE as usize - 16);
         let storage = FileStorage::new()
-            .push("a.txt", "hello\n")
-            .push("b.txt", &large_content);
+            .push(&NormalizedPath::from("a.txt"), "hello\n")
+            .push(&NormalizedPath::from("b.txt"), &large_content);
 
         let collection = CollectionResult {
             label: "overflow-repo".into(),
