@@ -36,14 +36,10 @@ pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
         } => github::collect(owner, repo, reference.as_deref())?,
     };
 
-    let estimated_tokens = output::emit(resolved_output.as_deref(), &collection, config.format)?;
+    let rendered = collection.render(config.format)?;
+    output::deliver(resolved_output.as_deref(), &rendered.bytes)?;
 
-    Ok(IngestReport {
-        output: config.output.clone(),
-        included_files: collection.files.len(),
-        skipped_files: collection.skipped,
-        estimated_tokens,
-    })
+    Ok(rendered.into_report(config.output.clone()))
 }
 
 /// Executes the command-line interface entry point.

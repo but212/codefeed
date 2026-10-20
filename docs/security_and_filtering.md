@@ -51,7 +51,13 @@ Conventional package manager lockfiles contain redundant metadata that bloats pr
 | `package-lock.json` | Node.js / npm |
 | `yarn.lock` | Node.js / Yarn |
 | `pnpm-lock.yaml` | Node.js / pnpm |
+| `bun.lock` | Node.js / Bun (text) |
+| `bun.lockb` | Node.js / Bun (binary) |
 | `go.sum` | Go modules |
+| `poetry.lock` | Python / Poetry |
+| `Pipfile.lock` | Python / Pipenv |
+| `composer.lock` | PHP / Composer |
+| `Gemfile.lock` | Ruby / Bundler |
 
 ### 2.2 Sensitive File Exclusions
 
@@ -60,9 +66,11 @@ Conventional package manager lockfiles contain redundant metadata that bloats pr
 > [!WARNING]
 > Pattern-based filtering matches file path conventions only. It is not an active entropy- or content-based secret scanner. Users must not rely on `codefeed` to redact hardcoded credentials within tracked source code files.
 
-- **Filename Prefixes in `is_sensitive_file` (Case-Insensitive):**
+- **Filename Prefixes in `SENSITIVE_PREFIXES` (Case-Insensitive):**
   - `id_rsa*` (e.g., `id_rsa`, `id_rsa.pub`)
   - `id_ed25519*` (e.g., `id_ed25519`, `id_ed25519.pub`)
+  - `id_ecdsa*` (e.g., `id_ecdsa`, `id_ecdsa.pub`)
+  - `id_dsa*` (e.g., `id_dsa`, `id_dsa.pub`)
   - `credentials*` (e.g., `credentials.json`, `credentials.ini`)
 
 > [!NOTE]
@@ -73,6 +81,7 @@ Conventional package manager lockfiles contain redundant metadata that bloats pr
   - `*.key`
   - `*.p12`
   - `*.pkcs12`
+  - `*.pfx`
   - `*.credentials`
 
 ### 2.3 Hidden Files and Directories

@@ -11,10 +11,11 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 - `RunConfig` — Execution configuration unifying `source`, `output`, and `format`.
 - `Admission` & `PendingEntry` — Linear two-phase admission typestate in `Selector`. `Selector::admit(status, size_hint)` evaluates paths against policy and budget limits without allocating closures, yielding `Admission::Settled(Selector)` (ignored/skipped paths with updated counts) or `Admission::Pending(PendingEntry)`. Admitted candidates complete linearly via `pending.accept(&[u8])` (evaluates UTF-8 text and NUL-free content; stores in arena or increments `skipped` on oversize, binary, or non-UTF-8) or `pending.skip()` (unreadable/missing files). Shell collectors filter non-regular files (FIFOs, sockets, devices, symlinks) and noise/sensitive/hidden paths pre-candidate, map files unlinked after discovery to `skip()`, and abort unexpected I/O errors as `IngestError::Io`.
 - `FileSpan` — 16-byte POD indexing path and content byte spans via private offsets, accessed via borrowed slice methods (`path(&arena)`, `content(&arena)`).
-- `FileStorage` — Append-only arena buffer (`path_arena`, `content_arena`, `spans`). Provides zero-copy `FileRecord<'a>` borrowed views and in-place lexicographical sorting (`sort_by_path`) without string reallocations.
+- `FileStorage` — Append-only arena buffer (`path_arena`, `content_arena`, `spans`). Provides zero-copy `FileRecord<'a>` borrowed views and in-place component-wise lexicographical sorting (`sort_by_path`) without string reallocations.
 - `FileRecord<'a>` — Zero-copy borrowed digest entry view: `path: &'a str`, `content: &'a str`.
 - `SortedFiles` — Lexicographically sorted file storage arena wrapper guaranteeing path ordering invariants.
-- `CollectionResult` — Uniform format-neutral collection record: `label`, optional `revision`, `files: SortedFiles`, `skipped`.
+- `CollectionResult` — Uniform format-neutral collection record: `label`, optional `revision`, `files: SortedFiles`, `skipped`. Provides linear consuming transition via `collection.render(format) -> Result<RenderedDigest, IngestError>`.
+- `RenderedDigest` — Formatted in-memory digest containing `bytes`, `estimated_tokens`, `included_files`, and `skipped_files`. Directly yields `IngestReport` via `into_report(output)`.
 - `IngestReport` — Output summary report: `output`, `included_files`, `skipped_files`, `estimated_tokens` (`#[non_exhaustive]`).
 - `OutputTarget` — Digest destination: `File(PathBuf)` or `Stdout`.
 - `DigestFormat` — Output serialization format: `Text` or `Xml`.
@@ -27,18 +28,18 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 
 - **Enforce Invariants via Data & Types:** Encode invariants into types, linear typestates, and compile-time constants rather than scattered runtime conditionals:
   - **Boundary Validation via Value Objects:** Untrusted inputs are parsed once at construction boundaries into strict types (`GitRef`, `Source`). Internal consumers rely on validity by type contract.
-  - **Linear Typestates:** Two-phase candidate evaluation (`Admission::Pending(PendingEntry)` completed via `accept` or `skip`) enforces linear consumption at compile time without tracking flags.
-  - **Structural Invariant Wrappers:** Structural properties are captured as distinct types (`SortedFiles` guarantees lexicographical path order; `OutputTarget` eliminates sentinel paths like `"-"` at the type level).
+  - **Linear Typestates:** Two-phase candidate evaluation (`Admission::Pending(PendingEntry)` completed via `accept` or `skip`) and end-to-end consuming pipeline (`Selector` -> `CollectionResult` -> `RenderedDigest` -> `IngestReport`) enforce linear consumption at compile time without tracking flags.
+  - **Structural Invariant Wrappers:** Structural properties are captured as distinct types (`SortedFiles` guarantees component-wise lexicographical path order; `OutputTarget` eliminates sentinel paths like `"-"` at the type level).
   - **Compile-Time Assertions (CTFE):** Cross-constant operational constraints (`MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX`, retry backoff limits, timeout hierarchies) are asserted at build time via `const _: () = { assert!(...); };` blocks.
   - **Compile-Time Lookup Tables:** Character classification and URI escaping rules are computed into static `.rodata` tables (`[bool; 256]`) at compilation, eliminating runtime branches and bitwise overhead.
 
 ### Filtering & Accounting
 
-- Pre-candidate exclusions: `.git`, hidden entries (including `.env*`; empty path segments from redundant delimiters are filtered to prevent false positives), symlinks, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`), and sensitive files matched case-insensitively by prefix (`id_rsa*`, `id_ed25519*`, `credentials*`) and extension (`*.key`/`*.pem`, `*.p12`/`*.pkcs12`, `*.credentials`; defined in `src/core/policy.rs`). Matches path conventions, not file content. Excluded paths consume neither candidate slots nor `skipped` counts.
+- Pre-candidate exclusions: `.git`, hidden entries (including `.env*`; empty path segments from redundant delimiters are filtered to prevent false positives), symlinks, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`, `go.sum`, `poetry.lock`, `Pipfile.lock`, `composer.lock`, `Gemfile.lock`), and sensitive files matched case-insensitively by prefix (`id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*`, `credentials*`) and extension (`*.key`/`*.pem`, `*.p12`/`*.pkcs12`, `*.pfx`, `*.credentials`; defined in `src/core/policy.rs`). Matches path conventions, not file content. Excluded paths consume neither candidate slots nor `skipped` counts.
 - Candidate accounting: `Selector::admit` consumes candidate slots before reading file bodies or evaluating content. Non-UTF-8 paths consume candidate budget with their valid top-level directory prefix (`"dir/"` or `""`) and are marked as skipped (`Admission::Settled`).
 - `skipped` count: Tracks candidates rejected for content, size, or encoding (binary with NUL bytes, oversized files, or non-UTF-8 paths/content). Ignored paths are never counted in `skipped`.
 - Output bounding & Size cap enforcement: `MAX_OUTPUT_SIZE` is enforced via a two-stage check: `Selector::add_file` early-fails during collection using raw stored arena bytes (`path_arena + content_arena`); `BoundedBuffer` enforces `MAX_OUTPUT_SIZE` during in-memory rendering across headers, tree, framing, and body bytes. Because escaping and framing only expand or preserve byte lengths (`rendered_bytes >= raw_bytes`), early-fail checks never reject valid outputs. Overflow content is never emitted; file and stdout targets emit nothing on overflow.
-- Diagnostic ranking: `largest_files` is called exclusively on output limit overflow paths, using stable sorting (`sort_by_key` with `Reverse`) and `truncate(5)` to select top-5 largest files while preserving input order for ties.
+- Diagnostic ranking: `largest_files` is called exclusively on output limit overflow paths, sorting by descending size and tie-breaking by component-wise path order (`cmp_path`) to select top-5 largest files deterministically.
 
 ### Rendering & Formats
 
@@ -71,7 +72,7 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 
 ## Limits and Tunables (`src/core/policy.rs`)
 
-Operational constants, limits, thresholds, noise lists, and sensitive patterns are defined exclusively in `src/core/policy.rs` as the single source of truth (`MAX_FILE_SIZE`, `MAX_OUTPUT_SIZE`, `MAX_FILE_COUNT`, `ARCHIVE_MAX_SECS`, `MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS`, `GITHUB_TIMEOUT_SECS`, `NOISE`, `SENSITIVE_EXTENSIONS`).
+Operational constants, limits, thresholds, noise lists, and sensitive patterns are defined exclusively in `src/core/policy.rs` as the single source of truth (`MAX_FILE_SIZE`, `MAX_OUTPUT_SIZE`, `MAX_FILE_COUNT`, `ARCHIVE_MAX_SECS`, `MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS`, `GITHUB_TIMEOUT_SECS`, `NOISE`, `SENSITIVE_EXTENSIONS`, `SENSITIVE_PREFIXES`).
 
 ## Functional core / imperative shell boundary
 

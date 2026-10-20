@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::core::error::IngestError;
-use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
-use crate::core::render::render;
+use crate::core::model::OutputTarget;
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -85,36 +84,22 @@ pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<Option<Path
     }
 }
 
-/// Delivers the rendered digest to its target. A file target is written
-/// atomically; the stdout target buffers into memory up to [`MAX_OUTPUT_SIZE`]
-/// and writes to the stream only on success, preventing partial output on overflow.
-pub(super) fn emit(
-    resolved_target: Option<&Path>,
-    collection: &CollectionResult,
-    format: DigestFormat,
-) -> Result<usize, IngestError> {
+/// Delivers the rendered bytes to the specified target.
+///
+/// A file target is written atomically via temporary file and rename;
+/// stdout target streams the buffer directly.
+pub(super) fn deliver(resolved_target: Option<&Path>, bytes: &[u8]) -> Result<(), IngestError> {
     match resolved_target {
-        Some(path) => {
-            let rendered = render(collection, format)?;
-            write_atomic(path, &rendered.bytes)?;
-            Ok(rendered.estimated_tokens)
-        }
+        Some(path) => write_atomic(path, bytes),
         None => {
             let stdout = io::stdout();
-            render_stdout_to(&mut stdout.lock(), collection, format)
+            render_stdout_to(&mut stdout.lock(), bytes)
         }
     }
 }
 
-fn render_stdout_to<W: Write>(
-    out: &mut W,
-    collection: &CollectionResult,
-    format: DigestFormat,
-) -> Result<usize, IngestError> {
-    let rendered = render(collection, format)?;
-    ignore_broken_pipe(out.write_all(&rendered.bytes).and_then(|()| out.flush()))
-        .map_err(IngestError::Io)?;
-    Ok(rendered.estimated_tokens)
+fn render_stdout_to<W: Write>(out: &mut W, bytes: &[u8]) -> Result<(), IngestError> {
+    ignore_broken_pipe(out.write_all(bytes).and_then(|()| out.flush())).map_err(IngestError::Io)
 }
 
 /// RAII guard managing a temporary file that cleans up on drop unless committed.
@@ -287,6 +272,7 @@ mod tests {
 
     #[test]
     fn stdout_overflow_writes_nothing_to_stream() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::core::model::{CollectionResult, DigestFormat};
         use crate::core::policy::{MAX_OUTPUT_SIZE, NormalizedPath};
         use crate::core::storage::FileStorage;
 
@@ -303,8 +289,11 @@ mod tests {
         };
 
         let mut sink = Vec::new();
-        let res = render_stdout_to(&mut sink, &collection, DigestFormat::Text);
-        assert!(matches!(res, Err(IngestError::OutputTooLarge(_))));
+        let rendered_res = collection.render(DigestFormat::Text);
+        assert!(matches!(rendered_res, Err(IngestError::OutputTooLarge(_))));
+        if let Ok(rendered) = rendered_res {
+            let _ = render_stdout_to(&mut sink, &rendered.bytes);
+        }
         assert!(sink.is_empty(), "stdout sink must remain empty on overflow");
         Ok(())
     }

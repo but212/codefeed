@@ -42,14 +42,23 @@ const NOISE: &[&str] = &[
     "package-lock.json",
     "yarn.lock",
     "pnpm-lock.yaml",
+    "bun.lock",
+    "bun.lockb",
     "go.sum",
+    "poetry.lock",
+    "Pipfile.lock",
+    "composer.lock",
+    "Gemfile.lock",
 ];
 
 /// Known sensitive file extensions (case-insensitive) excluded prior to reading or download.
 ///
 /// Note: `credentials` is matched as an extension here (`*.credentials`, e.g., `aws.credentials`),
-/// and is also matched as a filename prefix in [`is_sensitive_file`] (`credentials*`, e.g., `credentials.json`).
-const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "credentials"];
+/// and is also matched as a filename prefix in [`SENSITIVE_PREFIXES`] (`credentials*`, e.g., `credentials.json`).
+const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "pfx", "credentials"];
+
+/// Known sensitive filename prefixes (case-insensitive) excluded prior to reading or download.
+const SENSITIVE_PREFIXES: &[&str] = &["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "credentials"];
 
 /// Non-empty, normalized slash-separated relative UTF-8 path.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -113,28 +122,24 @@ pub(crate) enum PathStatus {
     NonUtf8Candidate(String),
 }
 
-/// Returns `true` if `file_name` matches a known noise file.
-fn is_noise_file(file_name: &str) -> bool {
-    NOISE.contains(&file_name)
-}
-
 fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
     value
         .get(..prefix.len())
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
-/// Returns `true` if `file_name` or its `extension` indicates a sensitive credentials file.
-fn is_sensitive_file(file_name: &str, extension: Option<&str>) -> bool {
-    if starts_with_ignore_ascii_case(file_name, "id_rsa")
-        || starts_with_ignore_ascii_case(file_name, "id_ed25519")
-        || starts_with_ignore_ascii_case(file_name, "credentials")
+/// Returns `true` if `file_name` indicates a sensitive credentials file.
+fn is_sensitive_file(file_name: &str) -> bool {
+    if SENSITIVE_PREFIXES
+        .iter()
+        .any(|&prefix| starts_with_ignore_ascii_case(file_name, prefix))
     {
         return true;
     }
-    let Some(extension) = extension else {
+    let Some(dot_idx) = memrchr(b'.', file_name.as_bytes()) else {
         return false;
     };
+    let extension = &file_name[dot_idx + 1..];
     SENSITIVE_EXTENSIONS
         .iter()
         .any(|&s| s.eq_ignore_ascii_case(extension))
@@ -147,8 +152,7 @@ pub(crate) const fn is_hidden_segment(segment: &[u8]) -> bool {
 
 /// Returns `true` if `file_name` matches a known noise file or a sensitive credentials pattern.
 pub(crate) fn is_ignored_filename(file_name: &str) -> bool {
-    let extension = memrchr(b'.', file_name.as_bytes()).map(|i| &file_name[i + 1..]);
-    is_noise_file(file_name) || is_sensitive_file(file_name, extension)
+    NOISE.contains(&file_name) || is_sensitive_file(file_name)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,22 +161,28 @@ enum PathClassifierState {
     NonUtf8Prefix,
 }
 
+/// Error indicating that a path's directory nesting depth exceeds [`MAX_PATH_DEPTH`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DepthExceededError;
+
 /// Classifies a sequence of raw path segment bytes into [`PathStatus`].
 ///
 /// Builds a normalized UTF-8 path string for valid candidates or prefix strings for non-UTF-8 candidates.
-pub(crate) fn classify_path_segments<'a, I>(segments: I) -> PathStatus
+pub(crate) fn classify_path_segments<'a, I>(segments: I) -> Result<PathStatus, DepthExceededError>
 where
     I: IntoIterator<Item = &'a [u8]>,
 {
     let mut scratch = String::new();
     let mut state = PathClassifierState::ValidUtf8;
     let mut last_segment: Option<&'a [u8]> = None;
+    let mut segment_count = 0usize;
 
     for segment in segments {
         if is_hidden_segment(segment) {
-            return PathStatus::Ignored;
+            return Ok(PathStatus::Ignored);
         }
 
+        segment_count = segment_count.saturating_add(1);
         last_segment = Some(segment);
 
         match state {
@@ -195,25 +205,29 @@ where
     }
 
     let Some(last) = last_segment else {
-        return PathStatus::Ignored;
+        return Ok(PathStatus::Ignored);
     };
 
     if last.is_empty() {
-        return PathStatus::Ignored;
+        return Ok(PathStatus::Ignored);
     }
     if matches!(std::str::from_utf8(last), Ok(filename) if is_ignored_filename(filename)) {
-        return PathStatus::Ignored;
+        return Ok(PathStatus::Ignored);
+    }
+
+    if segment_count.saturating_sub(1) > MAX_PATH_DEPTH {
+        return Err(DepthExceededError);
     }
 
     match state {
         PathClassifierState::ValidUtf8 => {
             if scratch.is_empty() {
-                PathStatus::Ignored
+                Ok(PathStatus::Ignored)
             } else {
-                PathStatus::Valid(NormalizedPath(scratch))
+                Ok(PathStatus::Valid(NormalizedPath(scratch)))
             }
         }
-        PathClassifierState::NonUtf8Prefix => PathStatus::NonUtf8Candidate(scratch),
+        PathClassifierState::NonUtf8Prefix => Ok(PathStatus::NonUtf8Candidate(scratch)),
     }
 }
 
@@ -238,22 +252,46 @@ mod tests {
         let segments: &[&[u8]] = &[b"\xff\xfe", b"id_rsa"];
         assert_eq!(
             classify_path_segments(segments.iter().copied()),
-            PathStatus::Ignored
+            Ok(PathStatus::Ignored)
         );
 
         // non-UTF-8 directory segment with valid candidate filename (main.rs) -> NonUtf8Candidate
         let segments: &[&[u8]] = &[b"\xff\xfe", b"main.rs"];
         assert_eq!(
             classify_path_segments(segments.iter().copied()),
-            PathStatus::NonUtf8Candidate(String::new())
+            Ok(PathStatus::NonUtf8Candidate(String::new()))
         );
 
         // non-UTF-8 directory segment + valid dir + valid candidate filename -> NonUtf8Candidate with prefix
         let segments: &[&[u8]] = &[b"src", b"\xff\xfe", b"main.rs"];
         assert_eq!(
             classify_path_segments(segments.iter().copied()),
-            PathStatus::NonUtf8Candidate("src/".to_string())
+            Ok(PathStatus::NonUtf8Candidate("src/".to_string()))
         );
+    }
+
+    #[test]
+    fn test_classify_path_segments_depth_limit() {
+        let normal: Vec<&[u8]> = std::iter::repeat_n(b"d".as_slice(), 256)
+            .chain(std::iter::once(b"file.txt".as_slice()))
+            .collect();
+        assert!(classify_path_segments(normal).is_ok());
+
+        let excessive: Vec<&[u8]> = std::iter::repeat_n(b"d".as_slice(), 257)
+            .chain(std::iter::once(b"file.txt".as_slice()))
+            .collect();
+        assert_eq!(classify_path_segments(excessive), Err(DepthExceededError));
+
+        let deep_hidden: Vec<&[u8]> = std::iter::once(b".hidden".as_slice())
+            .chain(std::iter::repeat_n(b"d".as_slice(), 300))
+            .chain(std::iter::once(b"file.txt".as_slice()))
+            .collect();
+        assert_eq!(classify_path_segments(deep_hidden), Ok(PathStatus::Ignored));
+
+        let deep_noise: Vec<&[u8]> = std::iter::repeat_n(b"d".as_slice(), 257)
+            .chain(std::iter::once(b"Cargo.lock".as_slice()))
+            .collect();
+        assert_eq!(classify_path_segments(deep_noise), Ok(PathStatus::Ignored));
     }
 
     #[test]
@@ -264,16 +302,28 @@ mod tests {
             "yarn.lock",
             "pnpm-lock.yaml",
             "go.sum",
+            "poetry.lock",
+            "Pipfile.lock",
+            "composer.lock",
+            "Gemfile.lock",
+            "bun.lock",
+            "bun.lockb",
             "server.key",
             "cert.pem",
             "client.p12",
             "cert.pkcs12",
+            "identity.pfx",
             "credentials.json",
             "aws.credentials",
             "credentials",
             "id_rsa",
             "id_rsa.pub",
             "id_ed25519",
+            "id_ed25519.pub",
+            "id_ecdsa",
+            "id_ecdsa.pub",
+            "id_dsa",
+            "id_dsa.pub",
         ];
         for filename in ignored {
             assert!(
@@ -294,7 +344,7 @@ mod tests {
     #[test]
     fn test_normalized_path_invariants_and_classification() {
         let segments: &[&[u8]] = &[b"src", b"core", b"model.rs"];
-        let status = classify_path_segments(segments.iter().copied());
+        let status = classify_path_segments(segments.iter().copied()).unwrap();
         let PathStatus::Valid(path) = status else {
             panic!("expected PathStatus::Valid");
         };

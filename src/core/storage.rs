@@ -41,7 +41,7 @@ pub(crate) struct FileRecord<'a> {
     pub(crate) content: &'a str,
 }
 
-/// Wrapper guaranteeing that [`FileStorage`] is sorted lexicographically by path.
+/// Wrapper guaranteeing that [`FileStorage`] is sorted component-wise lexicographically by path.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SortedFiles(FileStorage);
 
@@ -163,14 +163,14 @@ impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
 }
 
 /// Compares two normalized slash-separated relative paths hierarchically by path components.
-fn cmp_path(a: &str, b: &str) -> Ordering {
+pub(crate) fn cmp_path(a: &str, b: &str) -> Ordering {
     a.split('/').cmp(b.split('/'))
 }
 
 /// Diagnostic ranking for digest size: selects up to five largest files.
 ///
 /// Called only on output limit exceeded error paths to format error diagnostics.
-/// Uses stable sorting to preserve input order for tied file sizes.
+/// Sorts by descending file size, tie-breaking by hierarchical path order (cmp_path).
 pub(crate) fn largest_files<'a>(
     files: impl IntoIterator<Item = FileRecord<'a>>,
 ) -> Vec<(String, usize)> {
@@ -178,7 +178,7 @@ pub(crate) fn largest_files<'a>(
         .into_iter()
         .map(|f| (f.path, f.content.len()))
         .collect();
-    sized.sort_by_key(|&(_, size)| std::cmp::Reverse(size));
+    sized.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| cmp_path(a.0, b.0)));
     sized.truncate(5);
     sized.into_iter().map(|(p, s)| (p.to_string(), s)).collect()
 }
@@ -226,6 +226,33 @@ mod tests {
         assert_eq!(result[2], ("f5_b.txt".into(), 5));
         assert_eq!(result[3], ("f4.txt".into(), 4));
         assert_eq!(result[4], ("f3.txt".into(), 3));
+    }
+
+    #[test]
+    fn largest_files_breaks_ties_by_cmp_path() {
+        let files = [
+            FileRecord {
+                path: "src-test/b.rs",
+                content: "same",
+            },
+            FileRecord {
+                path: "src/a.rs",
+                content: "same",
+            },
+            FileRecord {
+                path: "z.rs",
+                content: "same",
+            },
+            FileRecord {
+                path: "a.rs",
+                content: "same",
+            },
+        ];
+        let result = largest_files(files);
+        assert_eq!(result[0].0, "a.rs");
+        assert_eq!(result[1].0, "src/a.rs");
+        assert_eq!(result[2].0, "src-test/b.rs");
+        assert_eq!(result[3].0, "z.rs");
     }
 
     #[test]
