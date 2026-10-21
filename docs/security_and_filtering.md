@@ -38,7 +38,7 @@ Entry Discovered (Local Walk or Tar Stream)
          ├── Non-UTF-8 path: Preserves valid top-level directory prefix ("dir/") or "" ("<root>/");
          │                    settled directly without reading content.
          └── Regular candidate file:
-               └── [Result: Evaluated via Selector::observe (consuming candidate budget; body read only after admission); linear completion via internal PendingEntry::accept (validating UTF-8 text and MAX_FILE_SIZE) or PendingEntry::skip. Non-text or oversized files increment skipped.]
+               └── [Result: Evaluated via Selector::observe (consuming candidate budget; body read only after admission, then validated as UTF-8 text within MAX_FILE_SIZE). Unreadable, non-text or oversized files increment skipped.]
 ```
 
 ### 2.1 Conventional Noise Exclusions
@@ -148,7 +148,7 @@ Remote ingestion via `src/shell/github.rs` operates under strict isolation:
 1. **Origin-Gated Authentication & Memory Zeroization:**
    - GitHub tokens (`GITHUB_TOKEN` or `GH_TOKEN`) are attached as `Authorization: Bearer <token>` **only** when the request destination exactly matches `https://api.github.com`.
    - Client redirect policy enforces `RedirectAuthHeaders::Never` so authentication tokens are never leaked to external CDNs or redirect mirrors.
-   - Authorization tokens, lookup buffers, and error response bodies are managed through `zeroize::Zeroizing` to securely erase secret material from heap memory upon drop.
+   - The resolved token, its environment lookup buffer, and the raw error-body read buffer are held in `zeroize::Zeroizing` and erased on drop. Copies held by the HTTP client's request headers, the process environment, and rendered error messages are not zeroized.
 2. **Diskless Streaming Pipeline:**
    - Remote repositories are streamed directly from `/repos/{owner}/{repo}/tarball/{ref}` as a single HTTP response.
    - Archive entries are unpacked via `flate2` and `tar` directly into memory arena buffers (`FileStorage`) without writing tarballs or unpacked files to disk.

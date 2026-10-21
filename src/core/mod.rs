@@ -10,7 +10,7 @@
 //!
 //! - **Move-Only State Transitions:** State transitions occur strictly via
 //!   consuming ownership moves (`self` -> `Self` / linear typestates such as
-//!   the internal `PendingEntry` behind `Selector::observe`). `&mut self` is forbidden.
+//!   `Selector::observe`). `&mut self` is forbidden.
 //! - **No Interior Mutability or Unsafe:** `Cell`, `RefCell`, `Atomic*`, `Mutex`,
 //!   `RwLock`, `static mut`, and `unsafe` are strictly forbidden.
 //! - **Closed List of Mutation Exceptions:**

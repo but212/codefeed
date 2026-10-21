@@ -11,42 +11,6 @@ use crate::core::policy::{
 };
 use crate::core::storage::{FileStorage, SortedFiles};
 
-/// Outcome of evaluating an entry candidate against admission policy.
-#[derive(Debug)]
-enum Admission {
-    /// Policy evaluation or skipped decision settled; candidate count and skipped count are already updated.
-    Settled(Selector),
-    /// Path is valid and ready for content evaluation.
-    Pending(PendingEntry),
-}
-
-/// An admitted candidate entry requiring linear completion via [`accept`](Self::accept) or [`skip`](Self::skip).
-#[derive(Debug)]
-#[must_use = "pending entry must be completed via accept or skip"]
-struct PendingEntry {
-    selector: Selector,
-    path: NormalizedPath,
-}
-
-impl PendingEntry {
-    /// Evaluates content bytes and either accumulates valid UTF-8 text or marks file as skipped.
-    fn accept(mut self, bytes: &[u8]) -> Result<Selector, DomainError> {
-        match classify_content(bytes) {
-            Some(content) => self.selector.add_file(&self.path, content),
-            None => {
-                self.selector.skipped = self.selector.skipped.saturating_add(1);
-                Ok(self.selector)
-            }
-        }
-    }
-
-    /// Skips the pending entry when file cannot be read or is unavailable.
-    fn skip(mut self) -> Selector {
-        self.selector.skipped = self.selector.skipped.saturating_add(1);
-        self.selector
-    }
-}
-
 /// UTF-8 text predicate: NUL-free bytes within size limit, returning string slice.
 fn classify_content(bytes: &[u8]) -> Option<&str> {
     if bytes.len() as u64 > MAX_FILE_SIZE || memchr(0, bytes).is_some() {
@@ -128,58 +92,44 @@ impl Selector {
         }
     }
 
-    /// Observes one candidate entry and settles it. `read` runs only when the candidate is
-    /// admitted; its bytes (`None` for an unavailable file) decide accept or skip.
+    /// Observes one candidate entry and settles it.
+    ///
+    /// - [`PathStatus::Ignored`] is dropped without consuming candidate budget.
+    /// - [`PathStatus::NonUtf8Candidate`] and paths over the size limits consume candidate budget and are skipped.
+    /// - [`PathStatus::Valid`] within the size limits consumes candidate budget, then `read` runs; its bytes
+    ///   are stored when they are UTF-8 text, and skipped otherwise or when `None` (unavailable file).
     ///
     /// # Errors
     ///
-    /// Returns budget or output-limit errors from admission and accumulation as `E`, and any
-    /// error from `read` unchanged.
+    /// Returns budget or output-limit errors as `E`, and any error from `read` unchanged.
     pub(crate) fn observe<B: AsRef<[u8]>, E: From<DomainError>>(
-        self,
+        mut self,
         status: PathStatus,
         size_hint: Option<u64>,
         read: impl FnOnce() -> Result<Option<B>, E>,
     ) -> Result<Self, E> {
-        match self.admit(status, size_hint)? {
-            Admission::Settled(selector) => Ok(selector),
-            Admission::Pending(pending) => match read()? {
-                Some(bytes) => Ok(pending.accept(bytes.as_ref())?),
-                None => Ok(pending.skip()),
-            },
+        let path = match status {
+            PathStatus::Ignored => return Ok(self),
+            PathStatus::NonUtf8Candidate(prefix) => {
+                self.candidates = self.candidates.add(&prefix)?;
+                return Ok(self.skip());
+            }
+            PathStatus::Valid(path) => path,
+        };
+        self.candidates = self.candidates.add(&path)?;
+        if exceeds_size_limits(path.len(), size_hint) {
+            return Ok(self.skip());
+        }
+        let bytes = read()?;
+        match bytes.as_ref().and_then(|b| classify_content(b.as_ref())) {
+            Some(content) => Ok(self.add_file(&path, content)?),
+            None => Ok(self.skip()),
         }
     }
 
-    /// Evaluates entry admission against policy and budget limits.
-    ///
-    /// - [`PathStatus::Ignored`] is ignored without consuming candidate budget.
-    /// - [`PathStatus::NonUtf8Candidate`] or paths exceeding `size_hint` consume candidate budget and increment skipped count.
-    /// - [`PathStatus::Valid`] within size limit consumes candidate budget and yields a [`PendingEntry`].
-    fn admit(
-        mut self,
-        status: PathStatus,
-        size_hint: Option<u64>,
-    ) -> Result<Admission, DomainError> {
-        match status {
-            PathStatus::Ignored => Ok(Admission::Settled(self)),
-            PathStatus::NonUtf8Candidate(path) => {
-                self.candidates = self.candidates.add(&path)?;
-                self.skipped = self.skipped.saturating_add(1);
-                Ok(Admission::Settled(self))
-            }
-            PathStatus::Valid(path) => {
-                self.candidates = self.candidates.add(&path)?;
-                if exceeds_size_limits(path.len(), size_hint) {
-                    self.skipped = self.skipped.saturating_add(1);
-                    Ok(Admission::Settled(self))
-                } else {
-                    Ok(Admission::Pending(PendingEntry {
-                        selector: self,
-                        path,
-                    }))
-                }
-            }
-        }
+    fn skip(mut self) -> Self {
+        self.skipped = self.skipped.saturating_add(1);
+        self
     }
 
     fn add_file(mut self, path: &NormalizedPath, content: &str) -> Result<Self, DomainError> {
