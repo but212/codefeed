@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **GitHub rate-limit reset**: `x-ratelimit-reset` produces a retry delay only when `x-ratelimit-remaining` is `0`. Previously a 404 reported "retry available" and a 5xx response carrying reset headers was not retried (`src/shell/github.rs`).
+
+### Changed
+
+- **Dash-prefixed inline CLI values**: `--flag=value` accepts a value starting with `-`, such as `--output=-notes.txt`. Separate-argument values still reject a leading `-` except `-o -` for stdout, and `-o -x` still fails (`src/core/cli.rs`).
+
 ### Performance
 
 - **WebPKI Root Certificate Verification**: Switched `ureq` TLS roots from platform verifier to compiled Mozilla roots (`rustls-webpki-roots`), removing Windows CryptoAPI (`CertGetCertificateChain`) traversal overhead and trimming OS-specific C-bindings from dependencies.
@@ -19,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Internal
 
 - **Archive Stream Decoupling**: Extracted tarball stream decompression, PAX commit SHA parsing, and entry admission into a dedicated `codefeed::shell::archive` module, separating HTTP transport concerns in `codefeed::shell::github` from streaming tar entry processing.
+- **Content Buffers**: Local and archive file-content buffers are plain `Vec<u8>`. `Zeroizing` remains only for the GitHub token and error bodies.
+- **Local Read Helper**: `read_file_content_bounded` returns `Result<bool>` instead of an unused borrowed slice. The test-only `read_local_file_into` duplicate was removed, and its tests exercise `collect`.
+- **Dead Code**: Removed a redundant directory check in `src/shell/output.rs` and an unused `AsRef<str>` impl for `NormalizedPath` in `src/core/policy.rs`.
+
+### Documentation
+
+- **Retry Policy**: `README.md`, `context.md`, and `docs/security_and_filtering.md` now state that rate-limited 403 responses are retried.
+- **Ingestion Order**: Docs now state that local workers read file bodies before the main thread calls `Selector::admit`; GitHub archive entries are admitted before reading.
+- **Overflow Diagnostics**: Docs now state that overflow diagnostics cover only candidates admitted before abort, so local counts can vary between runs.
+- **Inline CLI Values**: `README.md` documents that `--flag=value` accepts values starting with `-`.
 
 ## [0.3.2]
 
