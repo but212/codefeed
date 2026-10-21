@@ -6,6 +6,10 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use flate2::Compression;
+use flate2::write::GzEncoder;
+use tar::{Builder, EntryType};
+
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
@@ -50,6 +54,31 @@ impl Drop for TempDirGuard {
 
 pub(super) fn temp_dir(label: &str) -> Result<TempDirGuard, Box<dyn Error>> {
     TempDirGuard::new(label)
+}
+
+/// Builds a gzipped tarball by letting `fill` append entries, for cases that need raw entry headers.
+pub(super) fn gzip_archive(fill: impl FnOnce(&mut Builder<&mut GzEncoder<Vec<u8>>>)) -> Vec<u8> {
+    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+    {
+        let mut tar = Builder::new(&mut gz);
+        fill(&mut tar);
+        tar.finish().unwrap();
+    }
+    gz.finish().unwrap()
+}
+
+/// Builds a gzipped tarball from `(path, content, entry type)` triples.
+pub(super) fn gzip_tarball(entries: &[(&str, &[u8], EntryType)]) -> Vec<u8> {
+    gzip_archive(|tar| {
+        for &(name, content, entry_type) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(entry_type);
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, name, content).unwrap();
+        }
+    })
 }
 
 #[cfg(test)]

@@ -44,7 +44,7 @@ fn run(args: &[&str]) -> std::process::Output {
 #[test]
 fn public_api_types_are_accessible() {
     use codefeed::{
-        DigestFormat, GitRef, IngestError, IngestReport, OutputTarget, RunConfig, Source,
+        DigestFormat, DomainError, GitRef, IngestReport, OutputTarget, RunConfig, Source,
     };
     let config = RunConfig::new(
         Source::Local(std::path::PathBuf::from(".")),
@@ -53,9 +53,9 @@ fn public_api_types_are_accessible() {
     );
     assert_eq!(config.format, DigestFormat::Text);
     let _report_type: Option<IngestReport> = None;
-    let _err = IngestError::usage("test");
+    let _err = DomainError::usage("test");
     let git_ref = GitRef::new("main").expect("valid git ref");
-    assert_eq!(git_ref.as_str(), "main");
+    assert_eq!(&*git_ref, "main");
     let source = Source::github("owner", "repo", Some(git_ref)).expect("valid github source");
     match source {
         Source::Github {

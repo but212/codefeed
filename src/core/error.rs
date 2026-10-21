@@ -1,5 +1,4 @@
 use std::fmt::{Display, Formatter, Result};
-use std::io;
 
 use crate::core::policy::MAX_OUTPUT_SIZE;
 
@@ -12,10 +11,10 @@ pub struct CandidateLimitExceededError {
     pub largest_directories: Vec<(String, usize)>,
 }
 
-/// Domain error encountered during ingestion or CLI execution.
+/// Pure domain rule failure. Core returns this type only; effect failures belong to the shell.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum IngestError {
+pub enum DomainError {
     /// CLI usage error or missing argument.
     Usage(String),
     /// Candidate file budget exceeded.
@@ -24,10 +23,6 @@ pub enum IngestError {
     InvalidSource(String),
     /// Source scheme or host is unsupported (e.g. non-GitHub remote or SSH).
     UnsupportedSource(String),
-    /// Local filesystem I/O failure.
-    Io(io::Error),
-    /// Network transport or connection failure contacting GitHub.
-    Http(String),
     /// GitHub HTTP error response or rate limit exceeded.
     Api(String),
     /// Repository metadata or API response payload is malformed.
@@ -36,7 +31,7 @@ pub enum IngestError {
     OutputTooLarge(Vec<(String, usize)>),
 }
 
-impl IngestError {
+impl DomainError {
     /// Constructs a [`Usage`](Self::Usage) error from a descriptive message.
     #[cold]
     pub fn usage(message: impl Into<String>) -> Self {
@@ -67,12 +62,6 @@ impl IngestError {
         Self::UnsupportedSource(message.into())
     }
 
-    /// Constructs an [`Http`](Self::Http) transport error from a descriptive message.
-    #[cold]
-    pub(crate) fn http(message: impl Into<String>) -> Self {
-        Self::Http(message.into())
-    }
-
     /// Constructs an [`Api`](Self::Api) error from a descriptive message.
     #[cold]
     pub(crate) fn api(message: impl Into<String>) -> Self {
@@ -92,7 +81,7 @@ impl IngestError {
     }
 }
 
-impl Display for IngestError {
+impl Display for DomainError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
             Self::Usage(message) => write!(f, "{message}"),
@@ -109,8 +98,6 @@ impl Display for IngestError {
             }
             Self::InvalidSource(message) => write!(f, "invalid source: {message}"),
             Self::UnsupportedSource(message) => write!(f, "unsupported source: {message}"),
-            Self::Io(error) => write!(f, "filesystem error: {error}"),
-            Self::Http(message) => write!(f, "GitHub request failed: {message}"),
             Self::Api(message) => write!(f, "GitHub API error: {message}"),
             Self::InvalidMetadata(message) => write!(f, "invalid repository metadata: {message}"),
             Self::OutputTooLarge(largest_files) => {
@@ -143,13 +130,7 @@ fn format_size(bytes: usize) -> String {
     }
 }
 
-impl std::error::Error for IngestError {}
-
-impl From<io::Error> for IngestError {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error)
-    }
-}
+impl std::error::Error for DomainError {}
 
 #[cfg(test)]
 mod tests {
@@ -159,7 +140,7 @@ mod tests {
     fn output_too_large_message_derives_from_limit() {
         let mib = MAX_OUTPUT_SIZE / (1024 * 1024);
         assert_eq!(
-            IngestError::output_too_large(Vec::new()).to_string(),
+            DomainError::output_too_large(Vec::new()).to_string(),
             format!("digest exceeds the {mib} MiB output limit")
         );
     }

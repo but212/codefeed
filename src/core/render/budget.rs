@@ -87,18 +87,8 @@ impl BoundedBuffer {
         self.push_bytes(s.as_bytes())
     }
 
-    pub(crate) fn push_usize(self, mut val: usize) -> Result<Self, OutputLimitExceeded> {
-        if val == 0 {
-            return self.push_bytes(b"0");
-        }
-        let mut buf = [0u8; 32];
-        let mut i = buf.len();
-        while val > 0 {
-            i -= 1;
-            buf[i] = b'0' + (val % 10) as u8;
-            val /= 10;
-        }
-        self.push_bytes(&buf[i..])
+    pub(crate) fn push_usize(self, val: usize) -> Result<Self, OutputLimitExceeded> {
+        self.push_str(&val.to_string())
     }
 
     pub(crate) fn finish_with_counts(
@@ -134,11 +124,11 @@ mod tests {
 
     #[test]
     fn bounded_buffer_push_usize_formats_correctly() {
-        let cases = [(0, "0"), (1, "1"), (42, "42"), (10_000, "10000")];
-        for (val, expected) in cases {
+        let cases = [0, 1, 42, 10_000, usize::MAX];
+        for val in cases {
             let buf = BoundedBuffer::default().push_usize(val).unwrap();
             let digest = buf.finish();
-            assert_eq!(std::str::from_utf8(&digest.bytes).unwrap(), expected);
+            assert_eq!(std::str::from_utf8(&digest.bytes).unwrap(), val.to_string());
         }
     }
 

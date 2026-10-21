@@ -100,7 +100,7 @@ Codebase is strictly partitioned into pure logic and effectful shell:
 ### `src/shell/` (Imperative Shell)
 
 - **Side Effects:** All I/O, network calls, filesystem operations, and process interactions live here.
-- **Delegation:** Collect external inputs, evaluate admission via typestate (`Admission` / `PendingEntry`), and delegate computation/storage directly to `src/core/`.
+- **Delegation:** Collect external inputs, settle each candidate via `Selector::observe`, and delegate computation/storage directly to `src/core/`.
 - **Parallel Pipeline:** Local directory collection coordinates workers (`ignore::WalkParallel`) and the main thread via bounded `std::sync::mpsc::sync_channel(128)` inside `std::thread::scope`, hiding filesystem/kernel latency (`CreateFileW`) while preserving pure single-threaded state transitions in `src/core/`.
 
 ### Type-Driven Invariants ("Parse, Don't Validate")
@@ -109,7 +109,7 @@ Enforce invariants structurally through data types and compile-time evaluation r
 
 - **Make Invalid States Unrepresentable:** Model domain states with algebraic data types, linear typestates, and newtypes. Avoid boolean flags, sentinel values (distinguish stdout from file paths via `OutputTarget::Stdout` vs `OutputTarget::File`, never sentinel `"-"` strings), or unvalidated primitive strings.
 - **Validate at Ingestion Boundaries:** Parse untrusted external inputs (CLI flags, URL paths, archive headers) into strict domain value objects (`GitRef`, `Source`) once at the boundary. Downstream core logic assumes validity by type contract without defensive re-validation.
-- **Linear Typestate Transitions:** Enforce multi-phase workflows through consuming ownership transitions (`Admission` $\rightarrow$ `PendingEntry` $\rightarrow$ `Selector`). Uncompleted workflows must fail to compile (`#[must_use]`).
+- **Linear Typestate Transitions:** Enforce multi-phase workflows exposed across call boundaries through consuming ownership transitions (`Selector` $\rightarrow$ `CollectionResult` $\rightarrow$ `RenderedDigest`). Uncompleted workflows must fail to compile (`#[must_use]`). A phase sequence owned by one function stays a plain `match` inside it (`Selector::observe`).
 - **Invariant-Preserving Type Wrappers:** Encapsulate ordering or layout guarantees into dedicated wrappers (`SortedFiles(FileStorage)` guarantees lexicographical order, preventing unsorted access).
 - **Compile-Time Assertions & Static LUTs:** Enforce constant relationships and operational limits via `const _: () = { assert!(...); };` blocks and CTFE-generated lookup tables (`[bool; 256]`). Catch policy violations at build time with zero runtime cost.
 

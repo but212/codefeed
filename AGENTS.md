@@ -14,7 +14,7 @@ Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_
 ### FCIS Boundary
 
 - `src/core/`: Pure logic and referential transparency only. Functions are immutable. State transitions use consuming ownership moves (`self` -> `Self` / linear typestates); `&mut self` is forbidden. No `std::fs`, `std::net`, `std::env`, `SystemTime`, `eprintln!`, `crate::shell` imports, interior mutability (`Cell`/`Atomic`/`Mutex`), `static mut`, or `unsafe`. Pass parameters as deterministic values (e.g., `retry_delay(attempt)`). Closed exception list: `std::fmt::Display::fmt`, function-local stack variables (`let mut`), and owned value parameters (`mut self` / `mut val`). Any `&mut` reference parameter (including `&mut self`) is forbidden outside `std::fmt::Display::fmt`.
-- `src/shell/`: Side effects only. Obtain `Admission` / `PendingEntry` and delegate storage/decisions to `src/core/`.
+- `src/shell/`: Side effects only. Feed each candidate to `Selector::observe` and delegate storage/decisions to `src/core/`.
 
 ### Memory & Dependencies
 

@@ -19,32 +19,40 @@ use std::sync::mpsc::sync_channel;
 
 use ignore::{WalkBuilder, WalkState};
 
-use crate::core::error::IngestError;
-use crate::core::model::CollectionResult;
-use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path_segments, is_hidden_segment};
-use crate::core::selector::{Admission, Selector, exceeds_size_limits};
+use super::IngestError;
+use crate::core::error::DomainError;
+use crate::core::model::{CollectionResult, OutputTarget, repository_name};
+use crate::core::policy::{
+    MAX_FILE_SIZE, NormalizedPath, PathStatus, classify_path_segments, is_hidden_segment,
+};
+use crate::core::selector::{Selector, exceeds_size_limits};
 
 enum WorkerMsg {
-    /// `content` is `None` when the worker skipped the read, or the file was unlinked after discovery.
-    Candidate {
-        status: PathStatus,
-        size_hint: Option<u64>,
+    /// Non-UTF-8 path prefix. Counted as skipped without reading content.
+    NonUtf8(String),
+    /// Regular file unlinked after discovery. Counted as skipped without reading content.
+    Unavailable(NormalizedPath),
+    /// `content` is `None` when the worker skipped the read (size limit or unavailable at open).
+    Regular {
+        path: NormalizedPath,
+        size: u64,
         content: Option<Vec<u8>>,
     },
     Error(IngestError),
 }
 
-/// Collects files from a local directory root, excluding the resolved output file if located inside it.
+/// Collects files from a local directory root, excluding the output file if located inside it.
 ///
 /// Uses parallel workers to concurrently evaluate path policy, inspect metadata (rejecting symlinks
 /// pre-open), and read file contents into pre-allocated buffers. Results are streamed through a
 /// bounded channel to maintain backpressure and preserve pure sequential accumulation in `Selector`.
-pub(super) fn collect(
-    root: &Path,
-    resolved_output: Option<&Path>,
-) -> Result<CollectionResult, IngestError> {
+pub(super) fn collect(root: &Path, output: &OutputTarget) -> Result<CollectionResult, IngestError> {
     let canonical_root = validate_root(root)?;
     let label = local_label(&canonical_root);
+    let resolved_output = match output {
+        OutputTarget::File(path) => Some(path.as_path()),
+        OutputTarget::Stdout => None,
+    };
 
     let walker = WalkBuilder::new(&canonical_root)
         .hidden(false)
@@ -118,23 +126,20 @@ impl LocalVisitor<'_> {
 
         let relative = entry_path
             .strip_prefix(self.root)
-            .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
+            .map_err(|err| DomainError::invalid_metadata(err.to_string()))?;
 
         let path = match classify_local_path(relative)? {
             PathStatus::Ignored => return Ok(None),
-            status @ PathStatus::NonUtf8Candidate(_) => {
-                return Ok(Some(WorkerMsg::Candidate {
-                    status,
-                    size_hint: None,
-                    content: None,
-                }));
-            }
+            PathStatus::NonUtf8Candidate(prefix) => return Ok(Some(WorkerMsg::NonUtf8(prefix))),
             PathStatus::Valid(path) => path,
         };
 
         let meta = match fs::symlink_metadata(entry_path) {
             Ok(m) => m,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+            // Unlinked after discovery: settle through `skip()` like the open-step NotFound path.
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                return Ok(Some(WorkerMsg::Unavailable(path)));
+            }
             Err(err) => return Err(IngestError::Io(err)),
         };
 
@@ -143,16 +148,14 @@ impl LocalVisitor<'_> {
         }
 
         let file_len = meta.len();
-        let mut content = None;
-        if !exceeds_size_limits(path.len(), Some(file_len)) {
-            let mut bytes = Vec::new();
-            if read_file_content_bounded(entry_path, file_len, MAX_FILE_SIZE, &mut bytes)? {
-                content = Some(bytes);
-            }
-        }
-        Ok(Some(WorkerMsg::Candidate {
-            status: PathStatus::Valid(path),
-            size_hint: Some(file_len),
+        let content = if exceeds_size_limits(path.len(), Some(file_len)) {
+            None
+        } else {
+            read_bounded(entry_path, file_len)?
+        };
+        Ok(Some(WorkerMsg::Regular {
+            path,
+            size: file_len,
             content,
         }))
     }
@@ -184,20 +187,17 @@ impl ignore::ParallelVisitor for LocalVisitor<'_> {
 }
 
 fn apply_msg(selector: Selector, msg: WorkerMsg) -> Result<Selector, IngestError> {
-    match msg {
-        WorkerMsg::Candidate {
-            status,
-            size_hint,
+    let (status, size_hint, content) = match msg {
+        WorkerMsg::NonUtf8(prefix) => (PathStatus::NonUtf8Candidate(prefix), None, None),
+        WorkerMsg::Unavailable(path) => (PathStatus::Valid(path), None, None),
+        WorkerMsg::Regular {
+            path,
+            size,
             content,
-        } => match selector.admit(status, size_hint)? {
-            Admission::Settled(s) => Ok(s),
-            Admission::Pending(pending) => match content {
-                Some(bytes) => pending.accept(&bytes),
-                None => Ok(pending.skip()),
-            },
-        },
-        WorkerMsg::Error(err) => Err(err),
-    }
+        } => (PathStatus::Valid(path), Some(size), content),
+        WorkerMsg::Error(err) => return Err(err),
+    };
+    selector.observe(status, size_hint, || Ok(content))
 }
 
 fn drain_channel(
@@ -218,59 +218,47 @@ fn drain_channel(
     Ok(selector)
 }
 
-/// Reads up to `limit + 1` bytes of `path` into `buf`; the extra byte lets the caller detect overflow.
-/// Returns `Ok(false)` when the file was unlinked after discovery.
-fn read_file_content_bounded(
-    path: &Path,
-    file_len: u64,
-    limit: u64,
-    buf: &mut Vec<u8>,
-) -> Result<bool, IngestError> {
+/// Open errors that make one file unavailable without invalidating the walk.
+fn is_unavailable_file(err: &io::Error) -> bool {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    matches!(
+        err.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+    ) || (cfg!(windows) && err.raw_os_error() == Some(ERROR_SHARING_VIOLATION))
+}
+
+/// Reads at most `MAX_FILE_SIZE + 1` bytes; the extra byte lets the selector detect overflow.
+/// Returns `Ok(None)` when the file is unavailable at open (`is_unavailable_file`).
+fn read_bounded(path: &Path, file_len: u64) -> Result<Option<Vec<u8>>, IngestError> {
     let file = match fs::File::open(path) {
         Ok(f) => f,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) if is_unavailable_file(&err) => return Ok(None),
         Err(err) => return Err(IngestError::Io(err)),
     };
-    read_bounded_content_into(file, file_len, limit, buf)?;
-    Ok(true)
+    let mut buf = Vec::with_capacity(file_len.min(MAX_FILE_SIZE + 1) as usize);
+    file.take(MAX_FILE_SIZE + 1).read_to_end(&mut buf)?;
+    Ok(Some(buf))
 }
 
-fn read_bounded_content_into(
-    file: fs::File,
-    file_len: u64,
-    limit: u64,
-    buf: &mut Vec<u8>,
-) -> io::Result<()> {
-    let to_read = file_len.min(limit.saturating_add(1)) as usize;
-    let needed = buf
-        .len()
-        .saturating_add(to_read)
-        .saturating_sub(buf.capacity());
-    buf.reserve(needed);
-    let mut handle = file.take(limit.saturating_add(1));
-    handle.read_to_end(buf)?;
-    Ok(())
-}
-
-fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
+fn validate_root(root: &Path) -> Result<PathBuf, DomainError> {
     let root_display = root.display();
     let canonical = fs::canonicalize(root)
-        .map_err(|error| IngestError::invalid_source(format!("{root_display} ({error})")))?;
+        .map_err(|error| DomainError::invalid_source(format!("{root_display} ({error})")))?;
     if !canonical.is_dir() {
         let display = canonical.display();
-        return Err(IngestError::invalid_source(format!(
+        return Err(DomainError::invalid_source(format!(
             "{display} is not a directory"
         )));
     }
     Ok(canonical)
 }
 
-fn classify_local_path(relative: &Path) -> Result<PathStatus, IngestError> {
+fn classify_local_path(relative: &Path) -> Result<PathStatus, DomainError> {
     let segments = relative
         .components()
         .map(|c| c.as_os_str().as_encoded_bytes());
     classify_path_segments(segments)
-        .map_err(|_| IngestError::invalid_metadata("local path exceeds maximum directory depth"))
+        .map_err(|_| DomainError::invalid_metadata("local path exceeds maximum directory depth"))
 }
 
 fn format_ignore_error(err: &ignore::Error) -> io::Error {
@@ -303,11 +291,7 @@ fn format_ignore_error(err: &ignore::Error) -> io::Error {
 }
 
 fn local_label(root: &Path) -> String {
-    root.file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .unwrap_or("root")
-        .to_string()
+    repository_name(root.file_name().and_then(|name| name.to_str())).to_string()
 }
 
 #[cfg(test)]
@@ -319,79 +303,95 @@ mod tests {
     use crate::ingest;
 
     #[test]
-    fn read_local_file_enforces_size_boundaries() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::core::policy::MAX_FILE_SIZE;
+    fn read_bounded_caps_and_reports_unavailable() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("read_bounded")?;
+        let exact = root.join("exact.txt");
+        let over = root.join("over.txt");
+        let kib = root.join("kib.txt");
+        let missing = root.join("missing.txt");
+        let kib_payload = vec![b'y'; 64 * 1024];
+        fs::write(&exact, vec![b'x'; MAX_FILE_SIZE as usize])?;
+        fs::write(&over, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
+        fs::write(&kib, &kib_payload)?;
 
-        let root = temp_dir("size_boundaries")?;
-        let exact_path = root.join("exact.txt");
-        let too_large_path = root.join("large.txt");
-        fs::write(&exact_path, vec![b'x'; MAX_FILE_SIZE as usize])?;
-        fs::write(&too_large_path, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
-
-        let mut buf = Vec::new();
-        assert!(read_file_content_bounded(
-            &exact_path,
-            MAX_FILE_SIZE,
-            MAX_FILE_SIZE,
-            &mut buf
-        )?);
-        assert_eq!(buf.len(), MAX_FILE_SIZE as usize);
-
-        buf.clear();
-        assert!(read_file_content_bounded(
-            &too_large_path,
-            MAX_FILE_SIZE + 1,
-            MAX_FILE_SIZE,
-            &mut buf
-        )?);
+        let cases = [
+            (
+                &exact,
+                MAX_FILE_SIZE,
+                Some(MAX_FILE_SIZE as usize),
+                "exact limit",
+            ),
+            (
+                &over,
+                MAX_FILE_SIZE + 1,
+                Some(MAX_FILE_SIZE as usize + 1),
+                "one byte over",
+            ),
+            (
+                &kib,
+                kib_payload.len() as u64,
+                Some(kib_payload.len()),
+                "64 KiB",
+            ),
+            (&missing, 0, None, "unlinked before open"),
+        ];
+        for (path, file_len, expected_len, label) in cases {
+            let read = read_bounded(path, file_len)?;
+            assert_eq!(read.as_ref().map(Vec::len), expected_len, "{label}");
+        }
         assert_eq!(
-            buf.len(),
-            MAX_FILE_SIZE as usize + 1,
-            "one sentinel byte past the limit"
+            read_bounded(&kib, kib_payload.len() as u64)?,
+            Some(kib_payload)
         );
+        Ok(())
+    }
 
-        let res = collect(&root, None)?;
+    #[test]
+    fn read_local_file_enforces_size_boundaries() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("size_boundaries")?;
+        fs::write(root.join("exact.txt"), vec![b'x'; MAX_FILE_SIZE as usize])?;
+        fs::write(
+            root.join("large.txt"),
+            vec![b'x'; MAX_FILE_SIZE as usize + 1],
+        )?;
+
+        let res = collect(&root, &OutputTarget::Stdout)?;
         assert_eq!(res.files.len(), 1, "exact-size file is included");
         assert_eq!(res.skipped, 1, "one byte over the limit is skipped");
         Ok(())
     }
 
     #[test]
-    fn read_bounded_content_preallocates_capacity() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::core::policy::MAX_FILE_SIZE;
+    fn unlinked_before_metadata_is_counted_as_skipped() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("unlinked_after_discovery")?;
+        let file = root.join("a.txt");
+        fs::write(&file, "content")?;
+        let entry = WalkBuilder::new(&root)
+            .build()
+            .find_map(|entry| entry.ok().filter(|e| e.path() == file.as_path()))
+            .ok_or("walk did not yield a.txt")?;
+        fs::remove_file(&file)?;
 
-        let root = temp_dir("preallocate_test")?;
-        let file_path = root.join("test.txt");
-        let payload = vec![b'y'; 64 * 1024];
-        fs::write(&file_path, &payload)?;
+        let (tx, _rx) = sync_channel(1);
+        let aborted = AtomicBool::new(false);
+        let visitor = LocalVisitor {
+            root: &root,
+            resolved_output: None,
+            tx,
+            aborted: &aborted,
+        };
+        let msg = visitor
+            .process_entry(entry)?
+            .ok_or("unlinked file must reach the selector as a candidate")?;
+        assert!(
+            matches!(&msg, WorkerMsg::Unavailable(_)),
+            "unlinked file must be a typed Unavailable message"
+        );
+        let selector = apply_msg(Selector::new(), msg)?;
 
-        let mut buf = Vec::new();
-        assert!(read_file_content_bounded(
-            &file_path,
-            payload.len() as u64,
-            MAX_FILE_SIZE,
-            &mut buf
-        )?);
-        assert_eq!(buf, payload);
-        assert!(buf.capacity() >= 64 * 1024);
-        Ok(())
-    }
-
-    #[test]
-    fn handles_unlinked_file_as_missing() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::core::policy::MAX_FILE_SIZE;
-
-        let root = temp_dir("missing_file")?;
-        let path = root.join("nonexistent.txt");
-
-        let mut buf = Vec::new();
-        assert!(!read_file_content_bounded(
-            &path,
-            0,
-            MAX_FILE_SIZE,
-            &mut buf
-        )?);
-        assert!(buf.is_empty());
+        let result = selector.finish("test".to_string(), None);
+        assert_eq!(result.files.len(), 0);
+        assert_eq!(result.skipped, 1);
         Ok(())
     }
 
@@ -406,7 +406,7 @@ mod tests {
         fs::write(&target, "content")?;
         symlink(&target, &link)?;
 
-        let res = collect(&root, None)?;
+        let res = collect(&root, &OutputTarget::Stdout)?;
         assert_eq!(res.files.len(), 1, "only the regular target is collected");
         assert_eq!(res.skipped, 0);
         Ok(())
@@ -423,7 +423,7 @@ mod tests {
         fs::write(&target, "content")?;
 
         if symlink_file(&target, &link).is_ok() {
-            let res = collect(&root, None)?;
+            let res = collect(&root, &OutputTarget::Stdout)?;
             assert_eq!(res.files.len(), 1, "only the regular target is collected");
             assert_eq!(res.skipped, 0);
             let _ = fs::remove_file(&link);
@@ -491,7 +491,7 @@ mod tests {
             return Ok(());
         }
 
-        let res = collect(&root, None);
+        let res = collect(&root, &OutputTarget::Stdout);
 
         // Restore permissions so TempDirGuard can clean up
         let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o0755));
@@ -511,6 +511,47 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn unreadable_file_is_counted_as_skipped() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("unreadable_file")?;
+        let locked = root.join("a.txt");
+        fs::write(&locked, "secret")?;
+        fs::write(root.join("b.txt"), "visible")?;
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o0000))?;
+
+        if fs::File::open(&locked).is_ok() {
+            return Ok(());
+        }
+
+        let res = collect(&root, &OutputTarget::Stdout)?;
+        assert_eq!(res.files.len(), 1);
+        assert_eq!(res.skipped, 1);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_file_is_counted_as_skipped() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let root = temp_dir("locked_file")?;
+        let locked = root.join("a.txt");
+        fs::write(&locked, "secret")?;
+        fs::write(root.join("b.txt"), "visible")?;
+        let _guard = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&locked)?;
+
+        let res = collect(&root, &OutputTarget::Stdout)?;
+        assert_eq!(res.files.len(), 1);
+        assert_eq!(res.skipped, 1);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn accounting_rules_non_regular_files_and_unlinked_files()
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::symlink;
@@ -523,7 +564,7 @@ mod tests {
         symlink(&target, &link)?;
 
         // Symlink is filtered out before candidate reservation and should not increase skipped
-        let res = collect(&root, None)?;
+        let res = collect(&root, &OutputTarget::Stdout)?;
         assert_eq!(res.files.len(), 1);
         assert_eq!(res.skipped, 0);
 
@@ -670,7 +711,7 @@ mod tests {
                 )?;
             }
         }
-        let result = collect(&root, None)?;
+        let result = collect(&root, &OutputTarget::Stdout)?;
         let files = result.files;
         assert_eq!(files.len(), 50);
         let records: Vec<FileRecord<'_>> = files.iter().collect();
@@ -713,7 +754,7 @@ mod tests {
         fs::write(root.join(".dotfile"), "secret")?;
         fs::write(root.join("visible.txt"), "visible")?;
 
-        let result = collect(&root, None)?;
+        let result = collect(&root, &OutputTarget::Stdout)?;
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files.iter().next().unwrap().path, "visible.txt");
         assert_eq!(result.skipped, 0);

@@ -1,6 +1,6 @@
 //! Pure GitHub domain rules, URL formatting, origin security policy, and retry decisions.
 
-use crate::core::error::IngestError;
+use crate::core::error::DomainError;
 use crate::core::policy::{MAX_ATTEMPTS, RETRY_INITIAL_DELAY_MS, RETRY_MAX_DELAY_MS};
 use std::time::Duration;
 
@@ -52,52 +52,57 @@ pub(crate) const fn valid_github_name(value: &str) -> bool {
 }
 
 /// Parses a GitHub repository URL into an `(owner, repo)` string pair.
-pub(crate) fn parse_github_url(value: &str) -> Result<(String, String), IngestError> {
+pub(crate) fn parse_github_url(value: &str) -> Result<(String, String), DomainError> {
     let remainder = value.strip_prefix("https://").ok_or_else(|| {
-        IngestError::unsupported_source("only https://github.com/{owner}/{repo} is supported")
+        DomainError::unsupported_source("only https://github.com/{owner}/{repo} is supported")
     })?;
     let (authority, path) = match memchr(b'/', remainder.as_bytes()) {
         Some(index) => (&remainder[..index], &remainder[index..]),
         None => (remainder, ""),
     };
     if authority.is_empty() {
-        return Err(IngestError::invalid_source(value));
+        return Err(DomainError::invalid_source(value));
     }
     let host_port = authority.rsplit('@').next().unwrap_or(authority);
     let host = match host_port.split_once(':') {
         Some((host, port)) => {
             if !port.is_empty() && port.parse::<u16>().is_err() {
-                return Err(IngestError::invalid_source(value));
+                return Err(DomainError::invalid_source(value));
             }
             host
         }
         None => host_port,
     };
     if !host.eq_ignore_ascii_case("github.com") {
-        return Err(IngestError::unsupported_source(
+        return Err(DomainError::unsupported_source(
             "only https://github.com/{owner}/{repo} is supported",
         ));
     }
     if memchr2(b'?', b'#', path.as_bytes()).is_some() {
-        return Err(IngestError::invalid_source(
+        return Err(DomainError::invalid_source(
             "repository URLs cannot contain a query or fragment",
         ));
     }
 
     let mut parts = path.split('/').filter(|part| !part.is_empty());
     let (Some(owner), Some(repo_segment), None) = (parts.next(), parts.next(), parts.next()) else {
-        return Err(IngestError::invalid_source(
+        return Err(DomainError::invalid_source(
             "expected https://github.com/{owner}/{repo}",
         ));
     };
 
     let repo = repo_segment.strip_suffix(".git").unwrap_or(repo_segment);
     if !valid_github_name(owner) || !valid_github_name(repo) {
-        return Err(IngestError::invalid_source(
+        return Err(DomainError::invalid_source(
             "owner and repository names contain invalid characters",
         ));
     }
     Ok((owner.to_string(), repo.to_string()))
+}
+
+/// Canonical public web URL for a repository, used as the digest label for remote sources.
+pub(crate) fn repository_url(owner: &str, repo: &str) -> String {
+    format!("https://github.com/{owner}/{repo}")
 }
 
 /// Constructs the tarball download URL for the given repository and optional Git reference.
@@ -271,50 +276,170 @@ impl AttemptState {
                 if !is_retryable_http_status(*status, *is_rate_limit) {
                     return (self, Transition::Fail);
                 }
-                let delay = match retry_after {
-                    Some(d) => {
-                        if d.as_millis() > RETRY_MAX_DELAY_MS as u128 {
-                            return (self, Transition::Fail);
-                        }
-                        *d
+                match retry_after {
+                    Some(d) if d.as_millis() > RETRY_MAX_DELAY_MS as u128 => {
+                        (self, Transition::Fail)
                     }
-                    None => retry_delay(self.attempt),
-                };
-                let next_attempt = self.attempt + 1;
-                (
-                    Self {
-                        attempt: next_attempt,
-                    },
-                    Transition::Retry {
-                        attempt: next_attempt,
-                        delay,
-                    },
-                )
-            }
-            RequestOutcome::TransportError(kind) => {
-                if matches!(kind, TransportKind::Retryable) {
-                    let next_attempt = self.attempt + 1;
-                    let delay = retry_delay(self.attempt);
-                    (
-                        Self {
-                            attempt: next_attempt,
-                        },
-                        Transition::Retry {
-                            attempt: next_attempt,
-                            delay,
-                        },
-                    )
-                } else {
-                    (self, Transition::Fail)
+                    Some(d) => self.retry(*d),
+                    None => self.retry(retry_delay(self.attempt)),
                 }
             }
+            RequestOutcome::TransportError(TransportKind::Retryable) => {
+                self.retry(retry_delay(self.attempt))
+            }
+            RequestOutcome::TransportError(TransportKind::Permanent) => (self, Transition::Fail),
         }
     }
+
+    /// Consumes one attempt and schedules the next after `delay`.
+    const fn retry(self, delay: Duration) -> (Self, Transition) {
+        let attempt = self.attempt + 1;
+        (Self { attempt }, Transition::Retry { attempt, delay })
+    }
+}
+
+/// Sanitizes control characters in error detail string.
+/// Converts `\t`, `\r`, `\n` to space `' '` for single-line output formatting.
+/// Converts all other Unicode control characters (`c.is_control()`) to `\u{FFFD}`.
+/// Note: Unlike digest header escaping which escapes `\n` and `\r` as `\n` / `\r` literals,
+/// error message formatting converts line breaks to spaces for compact single-line stderr diagnostics.
+pub(crate) fn sanitize_error_detail(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| match c {
+            '\t' | '\r' | '\n' => ' ',
+            c if c.is_control() => '\u{FFFD}',
+            c => c,
+        })
+        .collect()
+}
+
+/// Error for a non-success response. `status_text` is the status as `Display` renders it
+/// (`429 Too Many Requests`), so the message keeps the reason phrase.
+pub(crate) fn api_error(
+    status: u16,
+    status_text: &str,
+    body: &[u8],
+    retry_after: Option<Duration>,
+) -> DomainError {
+    let raw_detail = String::from_utf8_lossy(body);
+    let detail = sanitize_error_detail(&raw_detail);
+    let retry_info = retry_after
+        .map(|d| format!(" (retry available in {}s)", d.as_secs()))
+        .unwrap_or_default();
+
+    if matches!(status, 429 | 403) {
+        DomainError::api(format!(
+            "HTTP {status_text}: {detail}{retry_info} (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
+        ))
+    } else {
+        DomainError::api(format!("HTTP {status_text}: {detail}{retry_info}"))
+    }
+}
+
+/// Warning printed before retrying a non-success response.
+pub(crate) fn status_retry_warning(
+    status_text: &str,
+    attempt: usize,
+    url: &str,
+    delay: Duration,
+) -> String {
+    format!(
+        "warning: GitHub HTTP status {status_text} on attempt {attempt}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}"
+    )
+}
+
+/// Warning printed before retrying a transport failure. `error_text` is the transport error's `Display`.
+pub(crate) fn transport_retry_warning(
+    error_text: &str,
+    attempt: usize,
+    url: &str,
+    delay: Duration,
+) -> String {
+    format!(
+        "warning: GitHub transport error: {} on attempt {attempt}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}",
+        sanitize_error_detail(error_text)
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_error_message_keeps_status_detail_and_token_hint() {
+        const TOKEN_HINT: &str =
+            "(set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)";
+        // (status, status text, body, retry-after, expected message)
+        type Row<'a> = (u16, &'a str, &'a [u8], Option<Duration>, String);
+        let cases: [Row<'_>; 5] = [
+            (
+                429,
+                "429 Too Many Requests",
+                &b"rate limit"[..],
+                None,
+                format!("HTTP 429 Too Many Requests: rate limit {TOKEN_HINT}"),
+            ),
+            (
+                403,
+                "403 Forbidden",
+                &b"forbidden"[..],
+                Some(Duration::from_secs(30)),
+                format!("HTTP 403 Forbidden: forbidden (retry available in 30s) {TOKEN_HINT}"),
+            ),
+            (
+                404,
+                "404 Not Found",
+                &b"not found"[..],
+                None,
+                "HTTP 404 Not Found: not found".into(),
+            ),
+            (
+                404,
+                "404 Not Found",
+                &b"not found"[..],
+                Some(Duration::from_secs(5)),
+                "HTTP 404 Not Found: not found (retry available in 5s)".into(),
+            ),
+            (
+                400,
+                "400 Bad Request",
+                &b"error\twith\nnewlines\r\nand\x1b[31mANSI\x07bell\x7fdel\x80c1"[..],
+                None,
+                "HTTP 400 Bad Request: error with newlines  and\u{FFFD}[31mANSI\u{FFFD}bell\u{FFFD}del\u{FFFD}c1".into(),
+            ),
+        ];
+        for (status, status_text, body, retry_after, expected) in cases {
+            let err = api_error(status, status_text, body, retry_after);
+            assert_eq!(
+                err.to_string(),
+                DomainError::api(expected).to_string(),
+                "status {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn retry_messages_match_attempt_delay_and_transport_text() {
+        let url = "https://api.github.com/repos/o/r/tarball";
+        assert_eq!(
+            status_retry_warning(
+                "503 Service Unavailable",
+                1,
+                url,
+                Duration::from_millis(250)
+            ),
+            format!(
+                "warning: GitHub HTTP status 503 Service Unavailable on attempt 1/{MAX_ATTEMPTS} for {url}; retrying in 250ms"
+            )
+        );
+        assert_eq!(
+            transport_retry_warning("connection\treset\nby peer", 2, url, Duration::from_secs(1)),
+            format!(
+                "warning: GitHub transport error: connection reset by peer on attempt 2/{MAX_ATTEMPTS} for {url}; retrying in 1s"
+            )
+        );
+    }
 
     #[test]
     fn origin_classification_identifies_github_api_correctly() {
@@ -337,6 +462,14 @@ mod tests {
                 "unexpected auth scope for: {url}"
             );
         }
+    }
+
+    #[test]
+    fn builds_repository_url() {
+        assert_eq!(
+            repository_url("but212", "codefeed"),
+            "https://github.com/but212/codefeed"
+        );
     }
 
     #[test]
@@ -459,122 +592,95 @@ mod tests {
 
     #[test]
     fn decides_retry_correctly() {
-        // Attempt 0 (1st try), 500 status -> Retry initial delay
-        assert_eq!(
-            AttemptState { attempt: 0 }
-                .step(&RequestOutcome::HttpStatus {
+        let retry = |attempt, delay| Transition::Retry { attempt, delay };
+        let cases = [
+            // (attempt, outcome, expected)
+            (
+                0,
+                RequestOutcome::HttpStatus {
                     status: 500,
                     retry_after: None,
                     is_rate_limit: false,
-                })
-                .1,
-            Transition::Retry {
-                attempt: 1,
-                delay: retry_delay(0)
-            }
-        );
-        // Attempt 0, 429 status with Retry-After 2s (< 5s) -> Retry 2s delay
-        assert_eq!(
-            AttemptState { attempt: 0 }
-                .step(&RequestOutcome::HttpStatus {
+                },
+                retry(1, retry_delay(0)),
+            ),
+            (
+                0,
+                RequestOutcome::HttpStatus {
                     status: 429,
                     retry_after: Some(Duration::from_secs(2)),
                     is_rate_limit: true,
-                })
-                .1,
-            Transition::Retry {
-                attempt: 1,
-                delay: Duration::from_secs(2)
-            }
-        );
-        // Attempt 0, 429 status with Retry-After 10s (> 5s) -> Fail
-        assert_eq!(
-            AttemptState { attempt: 0 }
-                .step(&RequestOutcome::HttpStatus {
+                },
+                retry(1, Duration::from_secs(2)),
+            ),
+            (
+                0,
+                RequestOutcome::HttpStatus {
                     status: 429,
                     retry_after: Some(Duration::from_secs(10)),
                     is_rate_limit: true,
-                })
-                .1,
-            Transition::Fail
-        );
-        // Attempt 0, 403 status with rate limit -> Retry
-        assert_eq!(
-            AttemptState { attempt: 0 }
-                .step(&RequestOutcome::HttpStatus {
+                },
+                Transition::Fail,
+            ),
+            (
+                0,
+                RequestOutcome::HttpStatus {
                     status: 403,
                     retry_after: None,
                     is_rate_limit: true,
-                })
-                .1,
-            Transition::Retry {
-                attempt: 1,
-                delay: retry_delay(0)
-            }
-        );
-        // Attempt 0, 403 status without rate limit -> Fail
-        assert_eq!(
-            AttemptState { attempt: 0 }
-                .step(&RequestOutcome::HttpStatus {
+                },
+                retry(1, retry_delay(0)),
+            ),
+            (
+                0,
+                RequestOutcome::HttpStatus {
                     status: 403,
                     retry_after: None,
                     is_rate_limit: false,
-                })
-                .1,
-            Transition::Fail
-        );
-        // Attempt 1 (2nd try), 429 status -> Retry delay 1
-        assert_eq!(
-            AttemptState { attempt: 1 }
-                .step(&RequestOutcome::HttpStatus {
+                },
+                Transition::Fail,
+            ),
+            (
+                1,
+                RequestOutcome::HttpStatus {
                     status: 429,
                     retry_after: None,
                     is_rate_limit: true,
-                })
-                .1,
-            Transition::Retry {
-                attempt: 2,
-                delay: retry_delay(1)
-            }
-        );
-        // Attempt 2 (3rd try) -> Exceeds MAX_ATTEMPTS (3), Fail
-        assert_eq!(
-            AttemptState { attempt: 2 }
-                .step(&RequestOutcome::HttpStatus {
+                },
+                retry(2, retry_delay(1)),
+            ),
+            (
+                2,
+                RequestOutcome::HttpStatus {
                     status: 500,
                     retry_after: None,
                     is_rate_limit: false,
-                })
-                .1,
-            Transition::Fail
-        );
-        // Non-retryable status (404) -> Fail
-        assert_eq!(
-            AttemptState { attempt: 0 }
-                .step(&RequestOutcome::HttpStatus {
+                },
+                Transition::Fail,
+            ),
+            (
+                0,
+                RequestOutcome::HttpStatus {
                     status: 404,
                     retry_after: None,
                     is_rate_limit: false,
-                })
-                .1,
-            Transition::Fail
-        );
-        // Retryable transport error -> Retry
-        assert_eq!(
-            AttemptState { attempt: 0 }
-                .step(&RequestOutcome::TransportError(TransportKind::Retryable))
-                .1,
-            Transition::Retry {
-                attempt: 1,
-                delay: retry_delay(0)
-            }
-        );
-        // Non-retryable transport error -> Fail
-        assert_eq!(
-            AttemptState { attempt: 0 }
-                .step(&RequestOutcome::TransportError(TransportKind::Permanent))
-                .1,
-            Transition::Fail
-        );
+                },
+                Transition::Fail,
+            ),
+            (
+                0,
+                RequestOutcome::TransportError(TransportKind::Retryable),
+                retry(1, retry_delay(0)),
+            ),
+            (
+                0,
+                RequestOutcome::TransportError(TransportKind::Permanent),
+                Transition::Fail,
+            ),
+        ];
+        for (attempt, outcome, expected) in cases {
+            let (_, got) = AttemptState { attempt }.step(&outcome);
+            assert_eq!(got, expected, "attempt={attempt} outcome={outcome:?}");
+        }
     }
 }

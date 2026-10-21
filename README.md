@@ -104,7 +104,7 @@ Credentials are sent as `Authorization: Bearer <token>` strictly to exact-origin
 - **Limits**:
   - Candidate files: Bounded candidate budget; aborts on overflow with largest-directory diagnostics sorted by count, drawn from candidates observed before the abort (counts can vary between local runs).
   - Per-file size: Individual file cap (`MAX_FILE_SIZE`); exceeding files increment `skipped`.
-  - Digest size: Enforced total digest cap (`MAX_OUTPUT_SIZE`); aborts with largest-file diagnostics on overflow.
+  - Digest size: Enforced total digest cap (`MAX_OUTPUT_SIZE`); aborts with largest-file diagnostics on overflow, drawn from files stored before the abort (can vary between local runs).
   - Archive transfer: Bounded whole-archive transfer timeout (`ARCHIVE_MAX_SECS`).
 - **Network Resilience**: Retries transient transport errors (`Io`, `Timeout`, `ConnectionFailed`), HTTP 429/5xx, and rate-limited 403 responses with exponential backoff up to 3 total attempts. Fails immediately on non-transient transport errors and other 4xx client errors.
 - **Central Policy**: Operational constants, budgets, and patterns reside in `src/core/policy.rs` as the single source of truth.

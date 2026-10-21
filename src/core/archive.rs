@@ -1,17 +1,17 @@
-use crate::core::error::IngestError;
+use crate::core::error::DomainError;
 use crate::core::policy::{PathStatus, classify_path_segments};
 use memchr::{memchr, memmem};
 
 /// Normalizes a raw tar entry path, stripping the root directory prefix,
 /// collapsing multiple slashes, removing `.` segments, and classifying against policy.
 ///
-/// Returns `Err(IngestError)` if the path contains directory traversal, invalid root prefixes, or NUL bytes.
+/// Returns `Err(DomainError)` if the path contains directory traversal, invalid root prefixes, or NUL bytes.
 /// Returns `Ok(PathStatus::Ignored)` if the entry is the root directory itself, empty, hidden, noise, or sensitive.
 /// Returns `Ok(PathStatus::NonUtf8Candidate(prefix))` if the entry path contains non-UTF-8 bytes and is not hidden.
 /// Returns `Ok(PathStatus::Valid(path))` on success.
-pub(crate) fn normalize_tar_entry_path(raw_bytes: &[u8]) -> Result<PathStatus, IngestError> {
+pub(crate) fn normalize_tar_entry_path(raw_bytes: &[u8]) -> Result<PathStatus, DomainError> {
     if memchr(0, raw_bytes).is_some() {
-        return Err(IngestError::invalid_metadata(
+        return Err(DomainError::invalid_metadata(
             "Tar entry path contains NUL byte",
         ));
     }
@@ -28,7 +28,7 @@ pub(crate) fn normalize_tar_entry_path(raw_bytes: &[u8]) -> Result<PathStatus, I
     if memmem::find(trimmed, b"..").is_some()
         && trimmed.split(|&b| b == b'/').any(|seg| seg == b"..")
     {
-        return Err(IngestError::invalid_metadata(
+        return Err(DomainError::invalid_metadata(
             "Tar entry contains directory traversal (..)",
         ));
     }
@@ -38,26 +38,19 @@ pub(crate) fn normalize_tar_entry_path(raw_bytes: &[u8]) -> Result<PathStatus, I
     };
 
     if trimmed[..slash_index] == *b"." {
-        return Err(IngestError::invalid_metadata(
+        return Err(DomainError::invalid_metadata(
             "Tar entry root segment is '.'; expected a single repository root directory",
         ));
     }
 
     let rel = &trimmed[slash_index + 1..];
 
-    let filtered_segments = rel
-        .split(|&b| b == b'/')
-        .filter(|seg| !seg.is_empty() && *seg != b".");
-
-    classify_path_segments(filtered_segments).map_err(|_| {
-        IngestError::invalid_metadata("Tar entry path exceeds maximum directory depth")
+    classify_path_segments(rel.split(|&b| b == b'/')).map_err(|_| {
+        DomainError::invalid_metadata("Tar entry path exceeds maximum directory depth")
     })
 }
 
-/// Parses a 40-character commit SHA from PAX global header comment bytes.
-///
-/// `git archive` embeds `comment = <commit_sha>` or `comment=<commit_sha>`
-/// in the PAX extended header.
+/// Parses a 40- or 64-hex-character commit SHA from a `comment=<sha>` PAX record.
 pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
     memmem::find(bytes, b"comment=")?;
     let text = std::str::from_utf8(bytes).ok()?;
@@ -99,66 +92,61 @@ mod tests {
 
     #[test]
     fn normalizes_archive_entry_path_correctly() {
-        assert_eq!(
-            normalize_tar_entry_path(b"but212-codefeed-c1863c8/src/main.rs").unwrap(),
-            PathStatus::Valid("src/main.rs".into())
-        );
+        // (raw entry path, expected status). Covers root stripping, slash and `.` collapsing,
+        // policy exclusion (noise lockfile, sensitive credential), and non-UTF-8 prefixes.
+        let ok_cases: [(&[u8], PathStatus); 14] = [
+            (
+                b"but212-codefeed-c1863c8/src/main.rs",
+                PathStatus::Valid("src/main.rs".into()),
+            ),
+            (
+                b"repo-root//src/main.rs",
+                PathStatus::Valid("src/main.rs".into()),
+            ),
+            (
+                b"repo-root///deep//nested/./file.txt",
+                PathStatus::Valid("deep/nested/file.txt".into()),
+            ),
+            (b"repo-root/././a.rs", PathStatus::Valid("a.rs".into())),
+            (b"but212-codefeed-c1863c8/", PathStatus::Ignored),
+            (b"but212-codefeed-c1863c8///", PathStatus::Ignored),
+            (b"but212-codefeed-c1863c8", PathStatus::Ignored),
+            (b"", PathStatus::Ignored),
+            (b"repo-root/Cargo.lock", PathStatus::Ignored),
+            (b"repo-root/id_rsa", PathStatus::Ignored),
+            (b"repo-root/secret.pem", PathStatus::Ignored),
+            (b"repo-root/.hidden/\xff\xfe", PathStatus::Ignored),
+            (
+                b"repo-root/invalid/\xff\xfe",
+                PathStatus::NonUtf8Candidate("invalid/".into()),
+            ),
+            (
+                b"repo-root/\xff\xfe",
+                PathStatus::NonUtf8Candidate(String::new()),
+            ),
+        ];
+        for (raw, expected) in ok_cases {
+            assert_eq!(normalize_tar_entry_path(raw).unwrap(), expected, "{raw:?}");
+        }
 
-        assert_eq!(
-            normalize_tar_entry_path(b"repo-root//src/main.rs").unwrap(),
-            PathStatus::Valid("src/main.rs".into())
-        );
+        // Rejected: path traversal (`..`, `.` root) and embedded NUL
+        let err_cases: [&[u8]; 7] = [
+            b"../etc/passwd",
+            b"./etc/passwd",
+            b"repo-root/../etc/passwd",
+            b"repo-root/src/../../root",
+            b"repo-root/.hidden/../etc/passwd",
+            b"repo-root/certs/privkey.key\0",
+            b"repo-root\0/src/main.rs",
+        ];
+        for raw in err_cases {
+            assert!(normalize_tar_entry_path(raw).is_err(), "{raw:?}");
+        }
+    }
 
-        assert_eq!(
-            normalize_tar_entry_path(b"repo-root///deep//nested/./file.txt").unwrap(),
-            PathStatus::Valid("deep/nested/file.txt".into())
-        );
-
-        assert_eq!(
-            normalize_tar_entry_path(b"repo-root/././a.rs").unwrap(),
-            PathStatus::Valid("a.rs".into())
-        );
-
-        assert_eq!(
-            normalize_tar_entry_path(b"but212-codefeed-c1863c8/").unwrap(),
-            PathStatus::Ignored
-        );
-        assert_eq!(
-            normalize_tar_entry_path(b"but212-codefeed-c1863c8///").unwrap(),
-            PathStatus::Ignored
-        );
-        assert_eq!(
-            normalize_tar_entry_path(b"but212-codefeed-c1863c8").unwrap(),
-            PathStatus::Ignored
-        );
-        assert_eq!(normalize_tar_entry_path(b"").unwrap(), PathStatus::Ignored);
-
-        // Policy exclusion: noise lockfile and sensitive credentials
-        assert_eq!(
-            normalize_tar_entry_path(b"repo-root/Cargo.lock").unwrap(),
-            PathStatus::Ignored
-        );
-        assert_eq!(
-            normalize_tar_entry_path(b"repo-root/id_rsa").unwrap(),
-            PathStatus::Ignored
-        );
-        assert_eq!(
-            normalize_tar_entry_path(b"repo-root/secret.pem").unwrap(),
-            PathStatus::Ignored
-        );
-
-        // Path traversal rejection
-        assert!(normalize_tar_entry_path(b"../etc/passwd").is_err());
-        assert!(normalize_tar_entry_path(b"./etc/passwd").is_err());
-        assert!(normalize_tar_entry_path(b"repo-root/../etc/passwd").is_err());
-        assert!(normalize_tar_entry_path(b"repo-root/src/../../root").is_err());
-        assert!(normalize_tar_entry_path(b"repo-root/.hidden/../etc/passwd").is_err());
-
-        // Embedded NUL rejection
-        assert!(normalize_tar_entry_path(b"repo-root/certs/privkey.key\0").is_err());
-        assert!(normalize_tar_entry_path(b"repo-root\0/src/main.rs").is_err());
-
-        // Depth limit rejection (256 directory levels permitted, 257 rejected)
+    #[test]
+    fn normalizes_archive_entry_depth_limit() {
+        // 256 directory levels permitted, 257 rejected
         let normal_depth_path = format!("repo-root/{}/file.txt", vec!["d"; 256].join("/"));
         assert_eq!(
             normalize_tar_entry_path(normal_depth_path.as_bytes()).unwrap(),
@@ -172,22 +160,6 @@ mod tests {
         let deep_hidden_path = format!("repo-root/.hidden/{}/file.txt", vec!["d"; 300].join("/"));
         assert_eq!(
             normalize_tar_entry_path(deep_hidden_path.as_bytes()).unwrap(),
-            PathStatus::Ignored
-        );
-
-        // Non-UTF8 handling
-        assert_eq!(
-            normalize_tar_entry_path(b"repo-root/invalid/\xff\xfe").unwrap(),
-            PathStatus::NonUtf8Candidate("invalid/".into())
-        );
-
-        assert_eq!(
-            normalize_tar_entry_path(b"repo-root/\xff\xfe").unwrap(),
-            PathStatus::NonUtf8Candidate(String::new())
-        );
-
-        assert_eq!(
-            normalize_tar_entry_path(b"repo-root/.hidden/\xff\xfe").unwrap(),
             PathStatus::Ignored
         );
     }

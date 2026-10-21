@@ -36,9 +36,9 @@ Entry Discovered (Local Walk or Tar Stream)
    │
    └── Candidate
          ├── Non-UTF-8 path: Preserves valid top-level directory prefix ("dir/") or "" ("<root>/");
-         │                    admitted as Admission::Settled directly.
+         │                    settled directly without reading content.
          └── Regular candidate file:
-               └── [Result: Evaluated via Selector::admit (consuming candidate budget); linear completion via PendingEntry::accept (validating UTF-8 text and MAX_FILE_SIZE) or PendingEntry::skip. Non-text or oversized files increment skipped.]
+               └── [Result: Evaluated via Selector::observe (consuming candidate budget; body read only after admission, then validated as UTF-8 text within MAX_FILE_SIZE). Unreadable, non-text or oversized files increment skipped.]
 ```
 
 ### 2.1 Conventional Noise Exclusions
@@ -100,10 +100,10 @@ Any path containing a component starting with a leading dot (`.`) is considered 
 
 | Parameter (`policy.rs`) | Enforcement Mechanism | Failure Mode |
 | :--- | :--- | :--- |
-| `MAX_FILE_COUNT` | `Selector::admit` slot check (GitHub: before body read; local: after bounded body read by workers) | `IngestError::CandidateLimitExceeded` with directory diagnostics |
-| `MAX_PATH_DEPTH` | Archive entry path nesting depth check in `normalize_tar_entry_path` | `IngestError::InvalidMetadata` |
+| `MAX_FILE_COUNT` | `Selector::observe` slot check (GitHub: before body read; local: after bounded body read by workers) | `DomainError::CandidateLimitExceeded` with directory diagnostics |
+| `MAX_PATH_DEPTH` | Path nesting depth check in `classify_path_segments` (archive and local paths) | `DomainError::InvalidMetadata` |
 | `MAX_FILE_SIZE` | Pre-I/O `size_hint` evaluation and stream boundary read (`take(MAX_FILE_SIZE + 1)`) | Skipped; tallied in `skipped_files` report |
-| `MAX_OUTPUT_SIZE` | Early arena total check (`Selector::add_file`) and `BoundedBuffer` byte counter | `IngestError::OutputTooLarge` with Top-5 largest files |
+| `MAX_OUTPUT_SIZE` | Early arena total check (`Selector::add_file`) and `BoundedBuffer` byte counter | `DomainError::OutputTooLarge` with Top-5 largest files |
 | `ARCHIVE_MAX_SECS` | Whole-archive stream transfer timeout | `IngestError::Http` timeout |
 
 ### Candidate vs. Skipped Accounting Rules
@@ -132,7 +132,7 @@ Local directory traversal in `src/shell/local.rs` adheres to the following invar
    - Syncs the parent directory on Unix upon rename commit to ensure metadata durability across crashes.
    - Temporary file writer handle is closed before unlinking on `Drop` (`TempFile`), ensuring reliable cleanup on Windows and Unix during error or panic unwinding.
 4. **Directory Traversal Fail-Fast:**
-   - Unreadable individual files are recorded as unavailable and tallied in `skipped_files`.
+   - Individual files that fail to open with `NotFound`, `PermissionDenied`, or a Windows sharing violation are recorded as unavailable and tallied in `skipped_files`. Other open or read errors fail fast with `IngestError::Io`.
    - Unreadable directories during local traversal fail fast with explicit path context and preserve the underlying `std::io::ErrorKind` (e.g., `PermissionDenied`) to prevent silent emission of incomplete digests while retaining actionable error categories.
 5. **Parallel Traversal Isolation & Memory Backpressure:**
    - Multi-threaded traversal (`WalkParallel`) processes entries concurrently across worker threads, each independently verifying `fs::symlink_metadata` before calling `fs::File::open`.
@@ -148,7 +148,7 @@ Remote ingestion via `src/shell/github.rs` operates under strict isolation:
 1. **Origin-Gated Authentication & Memory Zeroization:**
    - GitHub tokens (`GITHUB_TOKEN` or `GH_TOKEN`) are attached as `Authorization: Bearer <token>` **only** when the request destination exactly matches `https://api.github.com`.
    - Client redirect policy enforces `RedirectAuthHeaders::Never` so authentication tokens are never leaked to external CDNs or redirect mirrors.
-   - Authorization tokens, lookup buffers, and error response bodies are managed through `zeroize::Zeroizing` to securely erase secret material from heap memory upon drop.
+   - The resolved token, its environment lookup buffer, and the raw error-body read buffer are held in `zeroize::Zeroizing` and erased on drop. Copies held by the HTTP client's request headers, the process environment, and rendered error messages are not zeroized.
 2. **Diskless Streaming Pipeline:**
    - Remote repositories are streamed directly from `/repos/{owner}/{repo}/tarball/{ref}` as a single HTTP response.
    - Archive entries are unpacked via `flate2` and `tar` directly into memory arena buffers (`FileStorage`) without writing tarballs or unpacked files to disk.

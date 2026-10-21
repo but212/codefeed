@@ -4,16 +4,19 @@
 //! core in `crate::core`.
 
 use crate::{
-    IngestError, IngestReport, OutputTarget, RunConfig, Source,
-    core::cli::{CliAction, help_text, parse},
+    IngestReport, OutputTarget, RunConfig, Source,
+    core::cli::{CliAction, completion_message, help_text, parse},
 };
 
 mod archive;
+mod error;
 mod github;
 mod local;
 mod output;
 #[cfg(test)]
 mod testing;
+
+pub use error::IngestError;
 
 /// Executes the end-to-end repository ingestion pipeline.
 ///
@@ -29,7 +32,7 @@ pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
     let resolved_output = output::resolve_output_target(&config.output)?;
 
     let collection = match &config.source {
-        Source::Local(path) => local::collect(path, resolved_output.as_deref())?,
+        Source::Local(path) => local::collect(path, &resolved_output)?,
         Source::Github {
             owner,
             repo,
@@ -38,7 +41,7 @@ pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
     };
 
     let rendered = collection.render(config.format)?;
-    output::deliver(resolved_output.as_deref(), &rendered.bytes)?;
+    output::deliver(&resolved_output, &rendered.bytes)?;
 
     Ok(rendered.into_report(config.output.clone()))
 }
@@ -67,7 +70,7 @@ where
         }
         CliAction::Run(config) => match ingest(&config) {
             Ok(report) => {
-                let message = format_completion_message(&report);
+                let message = completion_message(&report);
                 match &report.output {
                     OutputTarget::File(_) => {
                         output::write_stdout_line(&message);
@@ -86,52 +89,9 @@ where
     }
 }
 
-fn format_completion_message(report: &IngestReport) -> String {
-    let included = report.included_files;
-    let skipped = report.skipped_files;
-    let tokens = report.estimated_tokens;
-    match &report.output {
-        OutputTarget::File(path) => {
-            let path_display = path.display();
-            format!("Wrote {path_display} ({included} files, {skipped} skipped, ~{tokens} tokens)")
-        }
-        OutputTarget::Stdout => {
-            format!("Wrote to stdout ({included} files, {skipped} skipped, ~{tokens} tokens)")
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    #[test]
-    fn format_completion_message_for_file_target() {
-        let report = IngestReport {
-            output: OutputTarget::File(PathBuf::from("digest.txt")),
-            included_files: 10,
-            skipped_files: 2,
-            estimated_tokens: 1500,
-        };
-        let message = format_completion_message(&report);
-        assert_eq!(
-            message,
-            "Wrote digest.txt (10 files, 2 skipped, ~1500 tokens)"
-        );
-    }
-
-    #[test]
-    fn format_completion_message_for_stdout_target() {
-        let report = IngestReport {
-            output: OutputTarget::Stdout,
-            included_files: 5,
-            skipped_files: 0,
-            estimated_tokens: 300,
-        };
-        let message = format_completion_message(&report);
-        assert_eq!(message, "Wrote to stdout (5 files, 0 skipped, ~300 tokens)");
-    }
 
     #[test]
     fn run_cli_returns_expected_exit_codes() {

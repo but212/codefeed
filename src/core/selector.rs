@@ -4,48 +4,12 @@ use std::collections::HashMap;
 
 use memchr::memchr;
 
-use crate::core::error::IngestError;
+use crate::core::error::DomainError;
 use crate::core::model::CollectionResult;
 use crate::core::policy::{
     MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE, MAX_PATH_BYTES, NormalizedPath, PathStatus,
 };
 use crate::core::storage::{FileStorage, SortedFiles};
-
-/// Outcome of evaluating an entry candidate against admission policy.
-#[derive(Debug)]
-pub(crate) enum Admission {
-    /// Policy evaluation or skipped decision settled; candidate count and skipped count are already updated.
-    Settled(Selector),
-    /// Path is valid and ready for content evaluation.
-    Pending(PendingEntry),
-}
-
-/// An admitted candidate entry requiring linear completion via [`accept`](Self::accept) or [`skip`](Self::skip).
-#[derive(Debug)]
-#[must_use = "pending entry must be completed via accept or skip"]
-pub(crate) struct PendingEntry {
-    selector: Selector,
-    path: NormalizedPath,
-}
-
-impl PendingEntry {
-    /// Evaluates content bytes and either accumulates valid UTF-8 text or marks file as skipped.
-    pub(crate) fn accept(mut self, bytes: &[u8]) -> Result<Selector, IngestError> {
-        match classify_content(bytes) {
-            Some(content) => self.selector.add_file(&self.path, content),
-            None => {
-                self.selector.skipped = self.selector.skipped.saturating_add(1);
-                Ok(self.selector)
-            }
-        }
-    }
-
-    /// Skips the pending entry when file cannot be read or is unavailable.
-    pub(crate) fn skip(mut self) -> Selector {
-        self.selector.skipped = self.selector.skipped.saturating_add(1);
-        self.selector
-    }
-}
 
 /// UTF-8 text predicate: NUL-free bytes within size limit, returning string slice.
 fn classify_content(bytes: &[u8]) -> Option<&str> {
@@ -55,7 +19,7 @@ fn classify_content(bytes: &[u8]) -> Option<&str> {
     std::str::from_utf8(bytes).ok()
 }
 
-/// Path-length and declared-size gate. Shared by [`Selector::admit`] and the shell worker that decides whether to read content.
+/// Path-length and declared-size gate. Shared by [`Selector::observe`] and the shell worker that decides whether to read content.
 pub(crate) fn exceeds_size_limits(path_len: usize, size_hint: Option<u64>) -> bool {
     path_len as u64 > MAX_PATH_BYTES || size_hint.is_some_and(|hint| hint > MAX_FILE_SIZE)
 }
@@ -69,7 +33,7 @@ struct CandidateBudget {
 
 impl CandidateBudget {
     /// Adds a single observed candidate path to the budget accounting.
-    pub(crate) fn add(mut self, path: &str) -> Result<Self, IngestError> {
+    pub(crate) fn add(mut self, path: &str) -> Result<Self, DomainError> {
         self.count = self.count.saturating_add(1);
         let dir = extract_dir_slice(path);
         if let Some(count) = self.dir_counts.get_mut(dir) {
@@ -84,8 +48,8 @@ impl CandidateBudget {
         Ok(self)
     }
 
-    fn overflow_error(&self) -> IngestError {
-        IngestError::candidate_limit_exceeded(
+    fn overflow_error(&self) -> DomainError {
+        DomainError::candidate_limit_exceeded(
             MAX_FILE_COUNT,
             top_overflow_directories(&self.dir_counts),
         )
@@ -118,42 +82,57 @@ pub(crate) struct Selector {
 impl Selector {
     /// Creates a `Selector` with initial arena preallocations.
     pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    /// Evaluates entry admission against policy and budget limits.
-    ///
-    /// - [`PathStatus::Ignored`] is ignored without consuming candidate budget.
-    /// - [`PathStatus::NonUtf8Candidate`] or paths exceeding `size_hint` consume candidate budget and increment skipped count.
-    /// - [`PathStatus::Valid`] within size limit consumes candidate budget and yields a [`PendingEntry`].
-    pub(crate) fn admit(
-        mut self,
-        status: PathStatus,
-        size_hint: Option<u64>,
-    ) -> Result<Admission, IngestError> {
-        match status {
-            PathStatus::Ignored => Ok(Admission::Settled(self)),
-            PathStatus::NonUtf8Candidate(path) => {
-                self.candidates = self.candidates.add(&path)?;
-                self.skipped = self.skipped.saturating_add(1);
-                Ok(Admission::Settled(self))
-            }
-            PathStatus::Valid(path) => {
-                self.candidates = self.candidates.add(&path)?;
-                if exceeds_size_limits(path.len(), size_hint) {
-                    self.skipped = self.skipped.saturating_add(1);
-                    Ok(Admission::Settled(self))
-                } else {
-                    Ok(Admission::Pending(PendingEntry {
-                        selector: self,
-                        path,
-                    }))
-                }
-            }
+        Self {
+            storage: FileStorage::new(),
+            candidates: CandidateBudget {
+                count: 0,
+                dir_counts: HashMap::with_capacity(32),
+            },
+            skipped: 0,
         }
     }
 
-    fn add_file(mut self, path: &NormalizedPath, content: &str) -> Result<Self, IngestError> {
+    /// Observes one candidate entry and settles it.
+    ///
+    /// - [`PathStatus::Ignored`] is dropped without consuming candidate budget.
+    /// - [`PathStatus::NonUtf8Candidate`] and paths over the size limits consume candidate budget and are skipped.
+    /// - [`PathStatus::Valid`] within the size limits consumes candidate budget, then `read` runs; its bytes
+    ///   are stored when they are UTF-8 text, and skipped otherwise or when `None` (unavailable file).
+    ///
+    /// # Errors
+    ///
+    /// Returns budget or output-limit errors as `E`, and any error from `read` unchanged.
+    pub(crate) fn observe<B: AsRef<[u8]>, E: From<DomainError>>(
+        mut self,
+        status: PathStatus,
+        size_hint: Option<u64>,
+        read: impl FnOnce() -> Result<Option<B>, E>,
+    ) -> Result<Self, E> {
+        let path = match status {
+            PathStatus::Ignored => return Ok(self),
+            PathStatus::NonUtf8Candidate(prefix) => {
+                self.candidates = self.candidates.add(&prefix)?;
+                return Ok(self.skip());
+            }
+            PathStatus::Valid(path) => path,
+        };
+        self.candidates = self.candidates.add(&path)?;
+        if exceeds_size_limits(path.len(), size_hint) {
+            return Ok(self.skip());
+        }
+        let bytes = read()?;
+        match bytes.as_ref().and_then(|b| classify_content(b.as_ref())) {
+            Some(content) => Ok(self.add_file(&path, content)?),
+            None => Ok(self.skip()),
+        }
+    }
+
+    fn skip(mut self) -> Self {
+        self.skipped = self.skipped.saturating_add(1);
+        self
+    }
+
+    fn add_file(mut self, path: &NormalizedPath, content: &str) -> Result<Self, DomainError> {
         self.storage = self.storage.push(path, content);
         // Early fail output bounding check:
         // Accumulated raw arena bytes (path_arena + content_arena) serve as a strict lower
@@ -176,37 +155,10 @@ impl Selector {
     }
 }
 
-impl Default for Selector {
-    fn default() -> Self {
-        Self {
-            storage: FileStorage::new(),
-            candidates: CandidateBudget {
-                count: 0,
-                dir_counts: HashMap::with_capacity(32),
-            },
-            skipped: 0,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::policy::MAX_FILE_SIZE;
-
-    fn feed_file(selector: Selector, path: &str, bytes: &[u8]) -> Result<Selector, IngestError> {
-        match selector.admit(PathStatus::Valid(path.into()), None)? {
-            Admission::Pending(pending) => pending.accept(bytes),
-            Admission::Settled(s) => Ok(s),
-        }
-    }
-
-    fn feed_skipped(selector: Selector, path: &str) -> Result<Selector, IngestError> {
-        match selector.admit(PathStatus::Valid(path.into()), None)? {
-            Admission::Pending(pending) => Ok(pending.skip()),
-            Admission::Settled(s) => Ok(s),
-        }
-    }
 
     #[test]
     fn candidate_budget_enforces_limit() {
@@ -279,62 +231,22 @@ mod tests {
     }
 
     #[test]
-    fn feed_classifies_text_binary_and_size_boundaries() -> Result<(), Box<dyn std::error::Error>> {
-        let selector = Selector::new();
-        let exact_bytes = vec![b'x'; MAX_FILE_SIZE as usize];
-        let selector = feed_file(selector, "a.txt", b"hello")?;
-        let selector = feed_file(selector, "bin.bin", &[0, 1, 2])?;
-        let selector = feed_file(selector, "bad_utf8", &[0xff])?;
-        let selector = feed_skipped(selector, "big.txt")?;
-        let selector = feed_skipped(selector, "missing.txt")?;
-        let selector = feed_file(selector, "exact.txt", &exact_bytes)?;
-
-        let collection = selector.finish("test".into(), None);
-        assert_eq!(collection.files.len(), 2);
-        assert_eq!(collection.files.iter().next().unwrap().path, "a.txt");
-        assert_eq!(collection.files.iter().nth(1).unwrap().path, "exact.txt");
-        assert_eq!(collection.skipped, 4);
-        Ok(())
-    }
-
-    #[test]
-    fn skipped_candidate_is_counted() -> Result<(), Box<dyn std::error::Error>> {
-        let selector = Selector::new();
-        let selector = feed_skipped(selector, "missing.png")?;
-        let selector = feed_file(selector, "kept.txt", b"kept")?;
-        let collection = selector.finish("test".into(), None);
-        assert_eq!(collection.files.len(), 1);
-        assert_eq!(collection.skipped, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn feed_counts_candidate_before_content() -> Result<(), Box<dyn std::error::Error>> {
-        let mut selector = Selector::new();
-        for _ in 0..MAX_FILE_COUNT {
-            selector = feed_file(selector, "bin.txt", &[0])?;
-        }
-        assert!(matches!(
-            feed_file(selector, "extra.txt", b"ok"),
-            Err(IngestError::CandidateLimitExceeded(..))
-        ));
-        Ok(())
-    }
-
-    #[test]
     fn output_overflow_includes_largest_files_diagnostic() -> Result<(), Box<dyn std::error::Error>>
     {
-        let selector = Selector::new();
         let chunk = vec![b'x'; MAX_FILE_SIZE as usize];
-        let mut selector = selector;
+        let mut selector = Selector::new();
         for i in 0..19 {
-            selector = feed_file(selector, &format!("file_{i:02}.txt"), &chunk)?;
+            selector = selector.observe(
+                PathStatus::Valid(format!("file_{i:02}.txt").into()),
+                None,
+                || Ok::<_, DomainError>(Some(chunk.as_slice())),
+            )?;
         }
-        let pending = match selector.admit(PathStatus::Valid("overflow.txt".into()), None)? {
-            Admission::Pending(p) => p,
-            _ => panic!("expected pending"),
-        };
-        let err = pending.accept(&chunk).unwrap_err();
+        let err = selector
+            .observe(PathStatus::Valid("overflow.txt".into()), None, || {
+                Ok::<_, DomainError>(Some(chunk.as_slice()))
+            })
+            .unwrap_err();
         let message = err.to_string();
         assert!(message.contains("digest exceeds the 20 MiB output limit"));
         assert!(message.contains("largest files:"));
@@ -343,127 +255,105 @@ mod tests {
     }
 
     #[test]
-    fn selector_accumulates_decisions() {
-        let selector = Selector::new();
-        let selector = feed_file(selector, "a.txt", b"hello").unwrap();
-        let selector = feed_skipped(selector, "b.bin").unwrap();
-        let res = selector.finish("test".to_string(), None);
-        assert_eq!(res.files.len(), 1);
-        assert_eq!(res.skipped, 1);
-    }
-
-    #[test]
-    fn admit_skips_when_path_length_exceeds_max_path_bytes() {
-        let selector = Selector::new();
-        let overlong_path = format!("{}/file.rs", "a".repeat(MAX_PATH_BYTES as usize));
-        let admission = selector
-            .admit(PathStatus::Valid(overlong_path.into()), None)
-            .unwrap();
-        let selector = match admission {
-            Admission::Settled(s) => s,
-            _ => panic!("expected settled admission for overlong path"),
-        };
-        let collection = selector.finish("test".into(), None);
-        assert_eq!(collection.skipped, 1);
-        assert_eq!(collection.files.len(), 0);
-    }
-
-    #[test]
-    fn non_utf8_candidate_is_recorded_and_counted_as_skipped() {
-        let selector = Selector::new();
-        let admission = selector
-            .admit(PathStatus::NonUtf8Candidate("".into()), None)
-            .unwrap();
-        let selector = match admission {
-            Admission::Settled(s) => s,
-            _ => panic!("expected settled"),
-        };
-        let res = selector.finish("test".to_string(), None);
-        assert_eq!(res.files.len(), 0);
-        assert_eq!(res.skipped, 1);
-    }
-
-    #[test]
-    fn admit_enforces_budget_before_accept() {
+    fn observe_enforces_candidate_budget_before_read() -> Result<(), Box<dyn std::error::Error>> {
         let mut selector = Selector::new();
         for i in 0..MAX_FILE_COUNT {
-            let path = format!("file_{i}.txt");
-            match selector
-                .admit(PathStatus::Valid(path.into()), None)
-                .unwrap()
-            {
-                Admission::Pending(pending) => {
-                    selector = pending.accept(b"content").unwrap();
-                }
-                _ => panic!("expected pending"),
+            let path = PathStatus::Valid(format!("file_{i}.txt").into());
+            selector =
+                selector.observe(path, None, || Ok::<_, DomainError>(Some(&b"content"[..])))?;
+        }
+
+        // The 10,001st candidate fails at admission, so its read closure must never run.
+        let err = selector
+            .observe(
+                PathStatus::Valid("overflow.txt".into()),
+                None,
+                || -> Result<Option<Vec<u8>>, DomainError> {
+                    panic!("read must not run past the candidate budget")
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, DomainError::CandidateLimitExceeded(..)));
+        Ok(())
+    }
+
+    #[test]
+    fn observe_counts_candidates_by_content_outcome() -> Result<(), Box<dyn std::error::Error>> {
+        // (path, content, included, skipped); `None` content means the file was unavailable.
+        let cases: [(&str, Option<Vec<u8>>, usize, usize); 6] = [
+            ("a.txt", Some(b"hello".to_vec()), 1, 0),
+            ("bin.bin", Some(vec![0, 1]), 0, 1),
+            ("bad_utf8", Some(vec![0xff]), 0, 1),
+            ("exact.txt", Some(vec![b'x'; MAX_FILE_SIZE as usize]), 1, 0),
+            (
+                "over.txt",
+                Some(vec![b'x'; MAX_FILE_SIZE as usize + 1]),
+                0,
+                1,
+            ),
+            ("gone.txt", None, 0, 1),
+        ];
+        for (path, content, included, skipped) in cases {
+            let selector = Selector::new().observe(PathStatus::Valid(path.into()), None, || {
+                Ok::<_, DomainError>(content)
+            })?;
+            let collection = selector.finish("test".into(), None);
+            assert_eq!(collection.files.len(), included, "{path}");
+            assert_eq!(collection.skipped, skipped, "{path}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn observe_does_not_read_settled_candidates() -> Result<(), Box<dyn std::error::Error>> {
+        let overlong = format!("{}/file.rs", "a".repeat(MAX_PATH_BYTES as usize));
+        // (status, size_hint, candidates counted, skipped)
+        let cases: [(PathStatus, Option<u64>, usize, usize); 5] = [
+            (PathStatus::Ignored, None, 0, 0),
+            (PathStatus::NonUtf8Candidate("".into()), None, 1, 1),
+            (PathStatus::NonUtf8Candidate("dir/sub/".into()), None, 1, 1),
+            (
+                PathStatus::Valid("big.bin".into()),
+                Some(MAX_FILE_SIZE + 1),
+                1,
+                1,
+            ),
+            (PathStatus::Valid(overlong.into()), None, 1, 1),
+        ];
+        for (status, size_hint, candidates, skipped) in cases {
+            let selector = Selector::new().observe(
+                status,
+                size_hint,
+                || -> Result<Option<Vec<u8>>, DomainError> {
+                    panic!("read must not run for settled candidates")
+                },
+            )?;
+            assert_eq!(selector.candidates.count, candidates);
+            let collection = selector.finish("test".into(), None);
+            assert_eq!(collection.files.len(), 0);
+            assert_eq!(collection.skipped, skipped);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn observe_propagates_read_errors() {
+        #[derive(Debug, PartialEq)]
+        enum TestError {
+            Read,
+            Domain,
+        }
+        impl From<DomainError> for TestError {
+            fn from(_: DomainError) -> Self {
+                Self::Domain
             }
         }
 
-        // 10,001st candidate must fail during admit before reading bytes
-        let overflow_err = selector
-            .admit(PathStatus::Valid("overflow.txt".into()), None)
+        let err = Selector::new()
+            .observe(PathStatus::Valid("a.txt".into()), None, || {
+                Err::<Option<Vec<u8>>, _>(TestError::Read)
+            })
             .unwrap_err();
-        match overflow_err {
-            IngestError::CandidateLimitExceeded(..) => {}
-            other => panic!("expected CandidateLimitExceeded, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn pending_entry_skip_increments_skipped_count() {
-        let selector = Selector::new();
-        let pending = match selector
-            .admit(PathStatus::Valid("skip.txt".into()), None)
-            .unwrap()
-        {
-            Admission::Pending(p) => p,
-            _ => panic!("expected pending"),
-        };
-        let selector = pending.skip();
-        let res = selector.finish("test".to_string(), None);
-        assert_eq!(res.files.len(), 0);
-        assert_eq!(res.skipped, 1);
-    }
-
-    #[test]
-    fn ignored_status_leaves_state_unchanged() {
-        let selector = Selector::new();
-        let admission = selector.admit(PathStatus::Ignored, None).unwrap();
-        let selector = match admission {
-            Admission::Settled(s) => s,
-            _ => panic!("expected settled"),
-        };
-        assert_eq!(selector.candidates.count, 0);
-        let res = selector.finish("test".to_string(), None);
-        assert_eq!(res.files.len(), 0);
-        assert_eq!(res.skipped, 0);
-    }
-
-    #[test]
-    fn non_utf8_prefix_skipped_correctly() {
-        let selector = Selector::new();
-        let admission = selector
-            .admit(PathStatus::NonUtf8Candidate("dir/sub/".to_string()), None)
-            .unwrap();
-        let selector = match admission {
-            Admission::Settled(s) => s,
-            _ => panic!("expected settled"),
-        };
-        let collection = selector.finish("test".into(), None);
-        assert_eq!(collection.skipped, 1);
-    }
-
-    #[test]
-    fn admit_skips_when_size_hint_exceeds_limit() {
-        let selector = Selector::new();
-        let admission = selector
-            .admit(PathStatus::Valid("big.bin".into()), Some(MAX_FILE_SIZE + 1))
-            .unwrap();
-        let selector = match admission {
-            Admission::Settled(s) => s,
-            _ => panic!("expected settled admission"),
-        };
-        let collection = selector.finish("test".into(), None);
-        assert_eq!(collection.skipped, 1);
+        assert_eq!(err, TestError::Read);
     }
 }
