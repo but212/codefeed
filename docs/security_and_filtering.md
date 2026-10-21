@@ -33,7 +33,7 @@
 ```
 Entry (local walk or tar stream)
  │
- ├── Local only: not a regular file (symlink, FIFO, socket, device)
+ ├── Not a regular file: local symlink, FIFO, socket, or device; archive entry of any other tar type
  │     └── Dropped. Not counted.
  │
  ├── Path classification (policy::classify_path_segments)
@@ -42,7 +42,7 @@ Entry (local walk or tar stream)
  │     ├── Depth above MAX_PATH_DEPTH
  │     │     └── Run fails (InvalidMetadata).
  │     ├── Non-UTF-8 segment
- │     │     └── Candidate with directory prefix ("dir/" or "" for root).
+ │     │     └── Candidate with prefix: valid segments before the first invalid one ("a/b/"), or "" if the first is invalid.
  │     └── Valid path
  │           └── Candidate.
  │

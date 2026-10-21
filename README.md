@@ -42,7 +42,7 @@ Requires Rust 1.88 or newer.
 codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]
 ```
 
-Options can appear before or after `<SOURCE>`. Each short flag (`-o`, `-f`, `-r`, `-h`) also accepts the `=` form (`--format=xml`, `-o=output.txt`).
+Options can appear before or after `<SOURCE>`. Each short flag (`-o`, `-f`, `-r`) also accepts the `=` form (`--format=xml`, `-o=output.txt`).
 
 ### Options
 
@@ -92,7 +92,7 @@ codefeed -- -my-directory
 Excluded entries are dropped silently and are not counted in the summary:
 
 - Hidden entries: any path segment that starts with `.`, such as `.git`, `.github`, and `.env*`. The source root itself may be hidden.
-- Symlinks and other non-regular files (local sources).
+- Symlinks and other non-regular files (local sources and GitHub archive entries).
 - Conventional lockfiles, such as `Cargo.lock`, `package-lock.json`, and `yarn.lock`.
 - Credential files, matched by name and case-insensitively. Examples: `id_rsa*`, `credentials*`, `*.pem`, `*.key`, `*.pfx`.
 - Files matched by `.gitignore` (local sources).

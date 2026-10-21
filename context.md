@@ -58,7 +58,7 @@ codefeed turns a local directory or a public GitHub repository into one text dig
 - Classification order and rules are in [security §2](docs/security_and_filtering.md#2-evaluation-order). Local and archive entries share one function, `classify_path_segments`.
 - An `Ignored` entry consumes no candidate slot and is never counted as skipped.
 - A depth failure is the only path rule that fails the whole run. Hidden and noise entries are classified first, so they never fail the run.
-- A non-UTF-8 entry carries a prefix: its valid top-level directory (`dir/`), or `""` when the root segment is invalid. The prefix is what gets counted, so the budget can attribute the entry to a directory.
+- A non-UTF-8 entry carries a prefix: the valid segments before its first invalid segment, each followed by `/` (`a/b/`), or `""` when the first segment is invalid. The budget charges the entry to the first segment of the prefix (`a/`), or to `<root>/` for an empty prefix.
 
 ### 3.3 Accounting
 
