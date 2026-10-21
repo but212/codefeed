@@ -88,6 +88,12 @@ pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<ResolvedOut
                     ),
                 ))
             })?;
+            if !canonical_parent.is_dir() {
+                return Err(IngestError::Io(io::Error::new(
+                    io::ErrorKind::NotADirectory,
+                    format!("output directory '{}' is not a directory", parent.display()),
+                )));
+            }
             let mut resolved = canonical_parent.join(file_name);
             if resolved.is_dir() {
                 return Err(IngestError::Io(io::Error::new(
@@ -437,6 +443,26 @@ mod tests {
                 assert_eq!(err.kind(), io::ErrorKind::IsADirectory);
             }
             other => panic!("expected IngestError::Io(IsADirectory), got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_output_target_rejects_file_parent() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("output_file_parent")?;
+        let file_parent = root.join("file.txt");
+        fs::write(&file_parent, "not a directory")?;
+
+        let result = resolve_output_target(&OutputTarget::File(file_parent.join("out.txt")));
+        match result {
+            Err(IngestError::Io(err)) => {
+                assert_eq!(err.kind(), io::ErrorKind::NotADirectory);
+                assert!(
+                    err.to_string().contains("file.txt"),
+                    "unexpected message: {err}"
+                );
+            }
+            other => panic!("expected IngestError::Io(NotADirectory), got {other:?}"),
         }
         Ok(())
     }
