@@ -5,11 +5,13 @@ use std::time::Duration;
 use crate::core::policy::{MAX_ATTEMPTS, RETRY_INITIAL_DELAY_MS, RETRY_MAX_DELAY_MS};
 
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429, 5xx, or rate-limited 403).
+#[must_use]
 pub(crate) const fn is_retryable_http_status(status_code: u16, is_rate_limit: bool) -> bool {
     matches!(status_code, 429 | 500..=599) || (status_code == 403 && is_rate_limit)
 }
 
 /// Calculates bounded exponential backoff duration for the given attempt.
+#[must_use]
 pub(crate) const fn retry_delay(attempt: usize) -> Duration {
     let bounded_attempt = if attempt < 16 { attempt } else { 16 };
     let shift = bounded_attempt as u32;
@@ -56,6 +58,7 @@ impl RateLimitHeaders {
     }
 
     /// Delay before retrying. `Retry-After` wins; otherwise the reset epoch counts only once quota is exhausted.
+    #[must_use]
     pub(crate) fn retry_after(self, now_secs: u64) -> Option<Duration> {
         if let Some(secs) = self.retry_after_secs {
             return Some(Duration::from_secs(secs));
@@ -69,6 +72,7 @@ impl RateLimitHeaders {
     }
 
     /// Rate-limited when `Retry-After` is present or quota is exhausted.
+    #[must_use]
     pub(crate) const fn is_rate_limited(self) -> bool {
         self.retry_after_present || self.quota_exhausted
     }
@@ -114,6 +118,7 @@ impl AttemptState {
     }
 
     /// Advances state given an attempt outcome, returning next transition action.
+    #[must_use]
     pub(crate) const fn step(self, outcome: &RequestOutcome) -> (Self, Transition) {
         if self.attempt + 1 >= MAX_ATTEMPTS {
             return (self, Transition::Fail);

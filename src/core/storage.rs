@@ -46,6 +46,7 @@ pub(crate) struct FileRecord<'a> {
 
 /// Wrapper guaranteeing that [`FileStorage`] is sorted component-wise lexicographically by path.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[must_use]
 pub(crate) struct SortedFiles(FileStorage);
 
 impl SortedFiles {

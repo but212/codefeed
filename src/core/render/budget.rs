@@ -4,6 +4,7 @@ use crate::core::model::{IngestReport, OutputTarget};
 use crate::core::policy::{ASCII_BYTES_PER_TOKEN, MAX_OUTPUT_SIZE};
 
 /// Token estimation heuristic calculating ASCII bytes and non-ASCII character counts.
+#[must_use]
 pub(crate) const fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
     if bytes.is_empty() {
         return 0;
@@ -41,6 +42,7 @@ impl std::error::Error for OutputLimitExceeded {}
 
 /// Rendered digest containing accumulated bytes, token estimation, and collection metrics.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
 pub(crate) struct RenderedDigest {
     pub(crate) bytes: Vec<u8>,
     pub(crate) estimated_tokens: usize,
@@ -63,6 +65,7 @@ impl RenderedDigest {
 /// In-memory buffer strictly bounded by [`MAX_OUTPUT_SIZE`] with value-passing operations.
 #[derive(Debug, Default, PartialEq, Eq)]
 #[repr(transparent)]
+#[must_use]
 pub(crate) struct BoundedBuffer {
     bytes: Vec<u8>,
 }

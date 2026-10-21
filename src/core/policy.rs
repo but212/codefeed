@@ -136,11 +136,13 @@ fn is_sensitive_file(file_name: &str) -> bool {
 }
 
 /// Returns `true` if raw path segment bytes start with a dot (`.`), marking a hidden file or directory.
+#[must_use]
 pub(crate) const fn is_hidden_segment(segment: &[u8]) -> bool {
     matches!(segment, [b'.', ..])
 }
 
 /// Returns `true` if `file_name` matches a known noise file or a sensitive credentials pattern.
+#[must_use]
 pub(crate) fn is_ignored_filename(file_name: &str) -> bool {
     NOISE.contains(&file_name) || is_sensitive_file(file_name)
 }

@@ -7,6 +7,7 @@ use crate::core::error::DomainError;
 pub(crate) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 
 /// Exact-origin match: returns `true` if `url == GITHUB_API_BASE_URL` or starts with `GITHUB_API_BASE_URL + "/"`.
+#[must_use]
 pub(crate) fn is_github_api_origin(url: &str) -> bool {
     url.strip_prefix(GITHUB_API_BASE_URL)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
@@ -28,6 +29,7 @@ const GITHUB_NAME_CHAR_TABLE: [bool; 256] = {
 };
 
 /// Validates whether the given string conforms to valid GitHub owner or repository name rules.
+#[must_use]
 pub(crate) const fn valid_github_name(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.is_empty() {
@@ -94,11 +96,13 @@ pub(crate) fn parse_github_url(value: &str) -> Result<(String, String), DomainEr
 }
 
 /// Canonical public web URL for a repository, used as the digest label for remote sources.
+#[must_use]
 pub(crate) fn repository_url(owner: &str, repo: &str) -> String {
     format!("https://github.com/{owner}/{repo}")
 }
 
 /// Constructs the tarball download URL for the given repository and optional Git reference.
+#[must_use]
 pub(crate) fn tarball_url(owner: &str, repo: &str, reference: Option<&str>) -> String {
     let mut url = String::from(GITHUB_API_BASE_URL);
     for segment in ["repos", owner, repo, "tarball"] {

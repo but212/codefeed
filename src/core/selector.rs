@@ -71,6 +71,7 @@ fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String,
 /// Pure per-item selection and budget accounting. Owns no I/O; the shell feeds
 /// observations and reads the outcome through [`Selector::finish`].
 #[derive(Debug)]
+#[must_use]
 pub(crate) struct Selector {
     storage: FileStorage,
     candidates: CandidateBudget,

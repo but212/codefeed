@@ -6,20 +6,35 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE-APACHE)
 [![MSRV](https://img.shields.io/badge/rustc-1.88%2B-orange.svg)](Cargo.toml)
 
-Fast CLI that converts a local directory or GitHub repository into an LLM-friendly text digest.
+`codefeed` is a fast CLI that converts a local directory or a public GitHub repository into one text digest that is easy for an LLM to read.
 
-## Scope
+## Sources
 
-`codefeed` supports two source types:
+- **Local directory**: `./path/to/project`
+- **GitHub repository**: `https://github.com/{owner}/{repo}`. A trailing `.git` is accepted. Query strings and fragments are rejected.
 
-- Local directory paths (`./path/to/project`).
-- HTTPS GitHub repository URLs (`https://github.com/{owner}/{repo}`).
-
-`codefeed` does not invoke the `git` binary, create temporary disk clones, or parse non-GitHub remote URLs (`git@`, `ssh://`, GitLab, Bitbucket). For other remotes, clone locally first:
+Not supported: `git@` and `ssh://` URLs, `http://` URLs, and non-GitHub hosts such as GitLab or Bitbucket. For those, clone first:
 
 ```bash
 git clone --depth 1 <URL> ./repo && codefeed ./repo
 ```
+
+`codefeed` never runs the `git` binary and never creates a clone.
+
+## Install
+
+```bash
+cargo install --path .
+```
+
+Or build a release binary:
+
+```bash
+cargo build --release
+./target/release/codefeed ./my-repo
+```
+
+Requires Rust 1.88 or newer.
 
 ## Usage
 
@@ -27,89 +42,115 @@ git clone --depth 1 <URL> ./repo && codefeed ./repo
 codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]
 ```
 
-Options may appear before or after `<SOURCE>`, support short flags (`-o`, `-f`, `-r`, `-h`), and accept `=` syntax (`--format=xml`, `-o=output.txt`).
+Options can appear before or after `<SOURCE>`. Each short flag (`-o`, `-f`, `-r`, `-h`) also accepts the `=` form (`--format=xml`, `-o=output.txt`).
+
+### Options
+
+- `-o`, `--output <PATH|->`: Where the digest goes. Defaults to `digest.txt` in the current directory. `-` writes to stdout.
+- `-r`, `--ref <BRANCH|TAG|COMMIT>`: GitHub sources only. Without it, the repository's default branch is used. Empty, whitespace-only, `.`, and `..` are rejected.
+- `-f`, `--format <text|xml>`: Output format. Defaults to `text`.
+- `-h`, `--help`: Print usage and exit with status 0.
+- `--`: Treat everything after it as positional arguments, not options. Use it for a directory whose name starts with `-`.
+
+A value written inline (`--flag=value`) may start with `-`, as in `--output=-notes.txt`. A value written as the next argument may not start with `-`. The one exception is `-o -` for stdout.
 
 ### Examples
 
 ```bash
-# Local directory to default digest.txt
+# Local directory to digest.txt
 codefeed ./my-repo
 
-# Local directory to custom file with short flags
+# Custom file, short flags
 codefeed ./my-repo -o ./digest.txt -f xml
 
-# Options placed before the source with key-value syntax
+# Options before the source, stream to another tool
 codefeed --format=xml --output=- ./my-repo | your-tool
 
-# Stream pure digest to stdout (diagnostics go to stderr)
-codefeed ./my-repo --output - | your-tool
-
-# GitHub repository (default branch)
+# GitHub repository at its default branch
 codefeed https://github.com/rust-lang/cargo
 
-# GitHub repository at specific revision
-codefeed https://github.com/rust-lang/cargo --ref master --output ./cargo-digest.txt
+# GitHub repository at a specific ref
+codefeed https://github.com/rust-lang/cargo --ref master -o ./cargo-digest.txt
 
-# Use POSIX delimiter for directories starting with a dash
+# Directory whose name starts with a dash
 codefeed -- -my-directory
 ```
 
-### Options
+## Output
 
-- `-o`, `--output <PATH|->` — Output destination. Defaults to `digest.txt`. Pass `-` for stdout. Supports `--output=<PATH>`.
-- `-r`, `--ref <BRANCH|TAG|COMMIT>` — GitHub branch, tag, or commit SHA. Invalid for local sources. Supports `--ref=<REF>`.
-- `-f`, `--format <text|xml>` — Serialization format. Defaults to `text`. `xml` emits LLM-optimized XML tags with entity escaping. Supports `--format=<FORMAT>`.
-- `-h`, `--help` — Print usage and exit with code 0.
-- `--` — Option delimiter. Treats all subsequent arguments as positional sources.
+- **File output** (`-o <PATH>`): The digest is written atomically. It goes to a temporary file, which is synced and then renamed over the target. If the run fails, the previous file is left unchanged. On Unix, the existing file's permissions are kept. The summary line `Wrote <PATH> (<N> files, <N> skipped, ~<N> tokens)` is printed to stdout.
+- **Stream output** (`-o -`): The digest goes to stdout and the summary goes to stderr. Nothing is written if the run fails.
+- **Header**: Local digests start with `Repository: <directory name>`. GitHub digests start with `Repository: https://github.com/{owner}/{repo}`.
+- **Text format** (`text`): File contents are copied exactly as valid UTF-8. Files that contain a NUL byte or are not valid UTF-8 are skipped. Header labels and file paths are escaped, and ANSI sequences in file contents are kept.
+- **XML format** (`xml`): The digest contains `<repository>`, `<directory_structure>`, and `<files>` with one `<file path="...">` per file. Entities are escaped. Characters that XML 1.0 does not allow become U+FFFD.
+- **Token count**: An estimate, not a tokenizer result. It counts ASCII text by bytes and counts each non-ASCII character as one token. Use it as a rough guide.
+- **Exit status**: `0` on success or help. `1` on a usage error or an ingest error. Errors are printed to stderr.
+- **Broken pipe**: If the reader of stdout closes early, `codefeed` exits with status `0`.
 
-A value written inline (`--flag=value`) may start with `-`, for example `--output=-notes.txt`. A value passed as the next argument may not, except `-o -` for stdout.
+## What Is Included
 
-### Installation
+Excluded entries are dropped silently and are not counted in the summary:
 
-```bash
-cargo install --path .
-```
+- Hidden entries: any path segment that starts with `.`, such as `.git`, `.github`, and `.env*`. The source root itself may be hidden.
+- Symlinks and other non-regular files (local sources).
+- Conventional lockfiles, such as `Cargo.lock`, `package-lock.json`, and `yarn.lock`.
+- Credential files, matched by name and case-insensitively. Examples: `id_rsa*`, `credentials*`, `*.pem`, `*.key`, `*.pfx`.
+- Files matched by `.gitignore` (local sources).
 
-Or build the release binary directly:
+Skipped entries are counted in the summary:
 
-```bash
-cargo build --release
-./target/release/codefeed ./my-repo
-```
+- Files over the per-file size limit.
+- Files that contain a NUL byte or are not valid UTF-8.
+- Paths that are not valid UTF-8, or longer than the path-length limit.
+- Files that cannot be opened, such as permission-denied or locked files.
 
-## Output and Exit Contracts
+Ignore rules for local sources:
 
-- **File output (`--output <PATH>`)**: Writes to a temporary file (preserving existing file permissions on Unix), syncs to disk, atomically renames, and syncs the parent directory on Unix. Prints `Wrote <PATH> (<N> files, <N> skipped, ~<N> tokens)` to stdout. Preserves existing files on failure. The token summary (`~<N> tokens`) is estimated via a fast byte heuristic (~4 bytes per token for ASCII source code); CJK and other multibyte texts may be underestimated.
-- **Stream output (`--output -`)**: Writes raw digest to stdout and completion summary to stderr.
-- **Format fidelity**: Plain text (`--format text`) preserves valid UTF-8 file content verbatim (rejecting NUL bytes); ANSI sequences remain intact. XML (`--format xml`) sanitizes disallowed XML 1.0 control characters to `\u{FFFD}`.
-- **Pipe termination**: Downstream pipe closure (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0.
-- **Errors**: Invalid CLI arguments and ingest errors print to stderr and exit non-zero.
+- `.gitignore` files inside the source tree are applied, even without a Git repository.
+- `.ignore` files are not read.
+- The global gitignore, `.git/info/exclude`, and `.gitignore` files above the source root are not read.
+
+The complete lists are in [`docs/security_and_filtering.md`](docs/security_and_filtering.md) §3.
+
+> **Note:** Filtering matches file names and extensions only. It does not scan contents. Do not rely on `codefeed` to remove secrets that are written into tracked source files.
+
+## Limits
+
+Each limit either skips an entry or ends the run. The values and the enforcement rules are in [`docs/security_and_filtering.md`](docs/security_and_filtering.md) §8.
+
+| Limit | When it is reached |
+| :--- | :--- |
+| `MAX_FILE_SIZE` | The file is skipped and counted as skipped. |
+| `MAX_PATH_BYTES` | The file is skipped and counted as skipped. |
+| `MAX_PATH_DEPTH` | The run fails. Hidden and noise entries are dropped before this check, so they never fail the run. |
+| `MAX_FILE_COUNT` | The run fails. The error lists the largest directories. Local runs may list different directories from run to run. |
+| `MAX_OUTPUT_SIZE` | The run fails and no digest is written. The error lists the largest files. |
+| `ARCHIVE_MAX_SECS`, `GITHUB_TIMEOUT_SECS` | The GitHub request times out. Timeouts on response headers are retried. See [§6.5–6.6](docs/security_and_filtering.md#6-github-network-safety). |
+| `MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS` | Transient GitHub failures are retried with backoff. If GitHub asks you to wait longer than the cap, the run fails instead of waiting. See [§6.5](docs/security_and_filtering.md#6-github-network-safety). |
 
 ## Authentication
 
-Public GitHub repositories require no credentials. For private repositories or higher rate limits, set:
+Public repositories need no credentials. For private repositories or higher rate limits, set one of these environment variables:
 
-- `GITHUB_TOKEN` — Checked first.
-- `GH_TOKEN` — Fallback when `GITHUB_TOKEN` is unset or empty.
+- `GITHUB_TOKEN` is checked first.
+- `GH_TOKEN` is used when `GITHUB_TOKEN` is unset, empty, or whitespace-only.
 
-Credentials are sent as `Authorization: Bearer <token>` strictly to exact-origin `https://api.github.com`. Redirects to other hosts never receive authorization headers.
+The token is sent as `Authorization: Bearer <token>` only to `https://api.github.com`. Redirects never receive it.
 
-## Filtering and Budgets
+## Network Trust
 
-- **Hierarchy**: Renders directory structure as an ASCII tree (`├── `, `└── `, `│   `).
-- **Exclusions**: Excludes `.git`, hidden entries (including `.env*`), symlinks, non-UTF-8 paths/content, lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`, `go.sum`, `poetry.lock`, `Pipfile.lock`, `composer.lock`, `Gemfile.lock`), and case-insensitive sensitive patterns (`*.pem`, `*.key`, `*.p12`, `*.pkcs12`, `*.pfx`, `*.credentials`, `id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*`, `credentials*`; defined in `src/core/policy.rs`). Sensitive filtering matches path conventions, not file content. Excluded files consume neither candidate slots nor skipped counts.
-- **Gitignore**: Applies `.gitignore` rules in local sources without Git state. Ignores `.ignore` files.
-- **Traversal**: Traverses local filesystems via parallel workers (`ignore::WalkBuilder::build_parallel`, `follow_links(false)`) with bounded channel backpressure, non-symlink metadata validation, canonical output path exclusion, and deterministic lexicographical sorting.
-- **Remote Ingestion**: Streams GitHub repository archives (`/repos/{owner}/{repo}/tarball/{ref}`) in a single HTTP request via `flate2` and `tar` directly into the selection pipeline with zero intermediate disk files. Extracts commit SHA from `pax_global_header`.
-- **Limits**:
-  - Candidate files: Bounded candidate budget; aborts on overflow with largest-directory diagnostics sorted by count, drawn from candidates observed before the abort (counts can vary between local runs).
-  - Per-file size: Individual file cap (`MAX_FILE_SIZE`); exceeding files increment `skipped`.
-  - Digest size: Enforced total digest cap (`MAX_OUTPUT_SIZE`); aborts with largest-file diagnostics on overflow, drawn from files stored before the abort (can vary between local runs).
-  - Archive transfer: Bounded whole-archive transfer timeout (`ARCHIVE_MAX_SECS`).
-- **Network Resilience**: Retries transient transport errors (`Io`, `Timeout`, `ConnectionFailed`), HTTP 429/5xx, and rate-limited 403 responses with exponential backoff up to 3 total attempts. Fails immediately on non-transient transport errors and other 4xx client errors.
-- **Central Policy**: Operational constants, budgets, and patterns reside in `src/core/policy.rs` as the single source of truth.
+`codefeed` checks GitHub certificates against the Mozilla root certificates built into the binary. It does not use the operating system's certificate store. A certificate that is trusted only through the OS store, such as a corporate proxy CA, is rejected.
 
 ## Documentation
 
-- [Coding Conventions](docs/coding_convention.md) — Rust API Guidelines (`C-CONV`, `C-CASE`), FCIS boundary, memory arena layout, safety rules, and verification matrix.
-- [Security and Filtering](docs/security_and_filtering.md) — Threat model, path classification rules, candidate accounting, filesystem safety, and credential isolation.
+| Document | For | Contents |
+| :--- | :--- | :--- |
+| [`context.md`](context.md) | Maintainers | Domain terms, invariants, module boundary |
+| [`docs/security_and_filtering.md`](docs/security_and_filtering.md) | Security reviewers and filter changes | Threat model, exclusion rules, limit values, filesystem and network safety |
+| [`docs/coding_convention.md`](docs/coding_convention.md) | Contributors | Rust rules, functional-core boundary, errors, docs, tests |
+| [`AGENTS.md`](AGENTS.md) | Coding agents | Required reading, verification commands, change rules |
+| [`CHANGELOG.md`](CHANGELOG.md) | Users and library consumers | Release history and breaking changes |
+
+## License
+
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your option.

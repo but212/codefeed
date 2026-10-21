@@ -52,6 +52,8 @@ Library consumers: update code that matches on or calls these items.
 - **Zeroization scope**: `docs/security_and_filtering.md` lists which buffers `Zeroizing` erases and which copies it does not (HTTP client headers, process environment, error messages).
 - **Overflow diagnostics**: Cover only candidates admitted before abort, so local counts can vary between runs.
 - **Inline CLI values**: `README.md` documents that `--flag=value` accepts a leading `-`.
+- **Doc structure**: Each document has one audience: `README.md` (users), `context.md` (maintainers and domain), `docs/security_and_filtering.md` (filter and safety spec), `docs/coding_convention.md` (Rust rules), and `AGENTS.md` (agent workflow). Limit values are stated only in `docs/security_and_filtering.md` §8, and other documents link there. `src/core/policy.rs` remains the authority, and code never copies the values.
+- **Doc corrections**: Documented `MAX_PATH_BYTES` path skipping, `.ignore` and global-ignore behavior (not read), the `transport_error` location, and the `# Errors` scope (public API).
 
 ### Internal
 
@@ -69,9 +71,10 @@ Contributor-facing. No consumer action required.
 - **Pure label rules**: `repository_url` (`src/core/github/url.rs`) and `repository_name` (`src/core/model.rs`) hold digest label rules. The shell extracts the path or name and calls them.
 - **Retry headers**: Rate-limit headers are parsed once into `RateLimitHeaders` (`src/core/github/retry.rs`). Retry delay and rate-limited flag are pure functions of parsed values and an explicit `now_secs`.
 - **Retry transition**: `AttemptState::retry` builds the next state and `Transition::Retry`. `AttemptState::step` only picks the delay (`src/core/github/retry.rs`).
-- **GitHub error text**: `api_error`, `sanitize_error_detail`, `status_retry_warning`, `transport_retry_warning`, `transport_error` moved from `src/shell/github.rs` to `src/core/github/mod.rs`.
+- **GitHub error text**: `api_error`, `sanitize_error_detail`, `status_retry_warning`, `transport_retry_warning` moved from `src/shell/github.rs` to `src/core/github/mod.rs`. `transport_error` stays in the shell (`src/shell/error.rs`).
 - **GitHub module split**: `core/github.rs` is now `core/github/{url,retry,mod}.rs`. `mod.rs` re-exports the items the shell and model use, so call paths are unchanged.
 - **Dead code**: Unused `AsRef<str>` for `NormalizedPath` removed (`src/core/policy.rs`).
+- **Must-use**: Pipeline phase types (`Selector`, `CollectionResult`, `RenderedDigest`, `BoundedBuffer`, `SortedFiles`) and pure value-returning functions (classification, retry delay, origin gate) carry `#[must_use]`.
 
 #### CLI
 
@@ -80,7 +83,7 @@ Contributor-facing. No consumer action required.
 
 #### Shell
 
-- **Typed output target**: `resolve_output_target` returns `OutputTarget` (`File(canonical path)` or `Stdout`). `deliver` takes the same type. `None` no longer means stdout.
+- **Typed output target**: `OutputTarget` (`File(path)` or `Stdout`) replaces `None` as the stdout signal. `resolve_output_target` returns `ResolvedOutput`, which `deliver` takes (`src/shell/output.rs`).
 - **Output parent**: `parent_dir` replaces three copies of the parent-or-`.` expression. Removed a redundant directory check (`src/shell/output.rs`).
 - **Local worker message**: `WorkerMsg` has four variants: `NonUtf8(prefix)`, `Unavailable(path)`, `Regular { path, size, content }`, `Error`.
   - An unlinked file is `Unavailable` instead of a zero-size `Regular`. The skip count is unchanged.

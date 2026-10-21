@@ -194,6 +194,7 @@ pub struct IngestReport {
 
 /// Raw files and metadata collected by the shell before digest rendering.
 #[derive(Debug, Clone)]
+#[must_use]
 pub(crate) struct CollectionResult {
     pub(crate) label: String,
     pub(crate) revision: Option<String>,
