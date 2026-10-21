@@ -87,13 +87,12 @@ impl Attempt {
                     .into_reader()
                     .take(4096)
                     .read_to_end(&mut body_bytes);
-                api_error(
+                IngestError::Api(api_error(
                     status.as_u16(),
                     &status.to_string(),
                     &body_bytes,
                     retry_after,
-                )
-                .into()
+                ))
             }
             Self::Transport(error) => transport_error(&error.to_string()),
         }
@@ -434,6 +433,7 @@ mod tests {
         let Err(err) = client.stream_url(&url) else {
             panic!("expected error");
         };
+        assert!(matches!(err, IngestError::Api(_)), "{err}");
         assert!(err.to_string().contains("404"));
 
         let (_, connections) = server.join();

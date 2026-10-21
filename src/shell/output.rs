@@ -2,6 +2,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -44,11 +45,28 @@ fn parent_dir(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
+/// Output target resolved against the filesystem. Only [`resolve_output_target`] constructs it,
+/// so collection and delivery never receive an unresolved request.
+#[derive(Debug)]
+pub(super) struct ResolvedOutput(OutputTarget);
+
+impl ResolvedOutput {
+    pub(super) const STDOUT: Self = Self(OutputTarget::Stdout);
+
+    /// Canonical file path to exclude from the local walk, if any.
+    pub(super) fn file(&self) -> Option<&Path> {
+        match &self.0 {
+            OutputTarget::File(path) => Some(path.as_path()),
+            OutputTarget::Stdout => None,
+        }
+    }
+}
+
 /// Resolves an [`OutputTarget`] into its delivery destination: stdout passes through, and a
 /// file target becomes the canonical path the digest is written to.
-pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<OutputTarget, IngestError> {
+pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<ResolvedOutput, IngestError> {
     match target {
-        OutputTarget::Stdout => Ok(OutputTarget::Stdout),
+        OutputTarget::Stdout => Ok(ResolvedOutput::STDOUT),
         OutputTarget::File(path) => {
             let file_name = path
                 .file_name()
@@ -77,7 +95,7 @@ pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<OutputTarge
             {
                 resolved = canonical;
             }
-            Ok(OutputTarget::File(resolved))
+            Ok(ResolvedOutput(OutputTarget::File(resolved)))
         }
     }
 }
@@ -86,8 +104,8 @@ pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<OutputTarge
 ///
 /// A file target is written atomically via temporary file and rename;
 /// stdout target streams the buffer directly.
-pub(super) fn deliver(resolved_target: &OutputTarget, bytes: &[u8]) -> Result<(), IngestError> {
-    match resolved_target {
+pub(super) fn deliver(resolved_target: &ResolvedOutput, bytes: &[u8]) -> Result<(), IngestError> {
+    match &resolved_target.0 {
         OutputTarget::File(path) => write_atomic(path, bytes),
         OutputTarget::Stdout => {
             let stdout = io::stdout();
@@ -100,16 +118,21 @@ fn render_stdout_to<W: Write>(out: &mut W, bytes: &[u8]) -> Result<(), IngestErr
     ignore_broken_pipe(out.write_all(bytes).and_then(|()| out.flush())).map_err(IngestError::Io)
 }
 
+/// Lifecycle of a [`TempFile`]. Only `Writing` holds an open handle, so writes are
+/// unrepresentable once the file is closed or committed.
+enum TempState {
+    Writing(fs::File),
+    Closed,
+    Committed,
+}
+
 /// RAII guard managing a temporary file that cleans up on drop unless committed.
 ///
-/// Encapsulates the file handle and path together so that drop explicitly closes
-/// the underlying file handle before attempting to unlink the file.
-/// This guarantees Windows-safe file deletion without relying on struct field order
-/// or pattern let-binding declaration order invariants.
+/// The handle is closed before the file is unlinked, which keeps deletion Windows-safe
+/// (unlinking an open file fails there).
 struct TempFile {
     path: PathBuf,
-    file: Option<fs::File>,
-    active: bool,
+    state: TempState,
 }
 
 impl TempFile {
@@ -122,8 +145,7 @@ impl TempFile {
                 Ok(file) => {
                     return Ok(Self {
                         path,
-                        file: Some(file),
-                        active: true,
+                        state: TempState::Writing(file),
                     });
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -137,40 +159,45 @@ impl TempFile {
         &self.path
     }
 
-    fn file_mut(&mut self) -> &mut fs::File {
-        self.file
-            .as_mut()
-            .expect("temporary file is active before commit")
+    fn file_mut(&mut self) -> io::Result<&mut fs::File> {
+        match &mut self.state {
+            TempState::Writing(file) => Ok(file),
+            TempState::Closed | TempState::Committed => Err(closed_error()),
+        }
     }
 
     #[cfg(unix)]
     fn set_permissions(&self, permissions: fs::Permissions) -> io::Result<()> {
-        self.file
-            .as_ref()
-            .expect("temporary file is active before commit")
-            .set_permissions(permissions)
+        match &self.state {
+            TempState::Writing(file) => file.set_permissions(permissions),
+            TempState::Closed | TempState::Committed => Err(closed_error()),
+        }
     }
 
     fn commit(mut self, target: &Path) -> Result<(), IngestError> {
-        let file = self
-            .file
-            .take()
-            .expect("temporary file is active during commit");
+        let TempState::Writing(file) = mem::replace(&mut self.state, TempState::Closed) else {
+            return Err(IngestError::Io(closed_error()));
+        };
+        // A failure below leaves `Closed` in place, so `Drop` still unlinks the temporary file.
         file.sync_all()?;
         drop(file);
 
         fs::rename(&self.path, target)?;
-        self.active = false;
+        self.state = TempState::Committed;
         Ok(())
     }
 }
 
+fn closed_error() -> io::Error {
+    io::Error::other("temporary file is closed")
+}
+
 impl Drop for TempFile {
     fn drop(&mut self) {
-        // Drop the file handle first to close the open OS handle before removing the file.
-        // On Windows, unlinking an open file fails with an access error.
-        drop(self.file.take());
-        if self.active {
+        let committed = matches!(self.state, TempState::Committed);
+        // Assigning drops the previous state, closing any open handle before the unlink below.
+        self.state = TempState::Closed;
+        if !committed {
             let _ = fs::remove_file(&self.path);
         }
     }
@@ -206,7 +233,7 @@ impl AtomicFile {
     }
 
     fn write_all(&mut self, bytes: &[u8]) -> Result<(), IngestError> {
-        self.temp_file.file_mut().write_all(bytes)?;
+        self.temp_file.file_mut()?.write_all(bytes)?;
         Ok(())
     }
 
@@ -245,9 +272,10 @@ mod tests {
 
     /// Resolves a file target and returns the canonical path it will be written to.
     fn resolve_file(path: PathBuf) -> Result<PathBuf, IngestError> {
-        match resolve_output_target(&OutputTarget::File(path))? {
-            OutputTarget::File(resolved) => Ok(resolved),
-            OutputTarget::Stdout => unreachable!("a file target resolves to a file"),
+        let resolved = resolve_output_target(&OutputTarget::File(path))?;
+        match resolved.file() {
+            Some(file) => Ok(file.to_path_buf()),
+            None => unreachable!("a file target resolves to a file"),
         }
     }
 
@@ -274,8 +302,8 @@ mod tests {
 
         let large_content = "x".repeat(MAX_OUTPUT_SIZE as usize - 16);
         let storage = FileStorage::new()
-            .push(&NormalizedPath::from("a.txt"), "hello\n")
-            .push(&NormalizedPath::from("b.txt"), &large_content);
+            .push(&NormalizedPath::from("a.txt"), "hello\n")?
+            .push(&NormalizedPath::from("b.txt"), &large_content)?;
 
         let collection = CollectionResult {
             label: "overflow-repo".into(),
@@ -408,17 +436,12 @@ mod tests {
 
     #[test]
     fn resolve_output_target_handles_stdout_and_file() -> Result<(), Box<dyn std::error::Error>> {
-        assert_eq!(
-            resolve_output_target(&OutputTarget::Stdout)?,
-            OutputTarget::Stdout
-        );
+        assert_eq!(resolve_output_target(&OutputTarget::Stdout)?.file(), None);
 
         let root = temp_dir("output_target_test")?;
         let output = root.join("digest.txt");
-        assert_eq!(
-            resolve_output_target(&OutputTarget::File(output.clone()))?,
-            OutputTarget::File(output)
-        );
+        let resolved = resolve_output_target(&OutputTarget::File(output.clone()))?;
+        assert_eq!(resolved.file(), Some(output.as_path()));
         Ok(())
     }
 

@@ -20,8 +20,9 @@ use std::sync::mpsc::sync_channel;
 use ignore::{WalkBuilder, WalkState};
 
 use super::IngestError;
+use super::output::ResolvedOutput;
 use crate::core::error::DomainError;
-use crate::core::model::{CollectionResult, OutputTarget, repository_name};
+use crate::core::model::{CollectionResult, repository_name};
 use crate::core::policy::{
     MAX_FILE_SIZE, NormalizedPath, PathStatus, classify_path_segments, is_hidden_segment,
 };
@@ -46,13 +47,13 @@ enum WorkerMsg {
 /// Uses parallel workers to concurrently evaluate path policy, inspect metadata (rejecting symlinks
 /// pre-open), and read file contents into pre-allocated buffers. Results are streamed through a
 /// bounded channel to maintain backpressure and preserve pure sequential accumulation in `Selector`.
-pub(super) fn collect(root: &Path, output: &OutputTarget) -> Result<CollectionResult, IngestError> {
+pub(super) fn collect(
+    root: &Path,
+    output: &ResolvedOutput,
+) -> Result<CollectionResult, IngestError> {
     let canonical_root = validate_root(root)?;
     let label = local_label(&canonical_root);
-    let resolved_output = match output {
-        OutputTarget::File(path) => Some(path.as_path()),
-        OutputTarget::Stdout => None,
-    };
+    let resolved_output = output.file();
 
     let walker = WalkBuilder::new(&canonical_root)
         .hidden(false)
@@ -355,7 +356,7 @@ mod tests {
             vec![b'x'; MAX_FILE_SIZE as usize + 1],
         )?;
 
-        let res = collect(&root, &OutputTarget::Stdout)?;
+        let res = collect(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(res.files.len(), 1, "exact-size file is included");
         assert_eq!(res.skipped, 1, "one byte over the limit is skipped");
         Ok(())
@@ -406,7 +407,7 @@ mod tests {
         fs::write(&target, "content")?;
         symlink(&target, &link)?;
 
-        let res = collect(&root, &OutputTarget::Stdout)?;
+        let res = collect(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(res.files.len(), 1, "only the regular target is collected");
         assert_eq!(res.skipped, 0);
         Ok(())
@@ -423,7 +424,7 @@ mod tests {
         fs::write(&target, "content")?;
 
         if symlink_file(&target, &link).is_ok() {
-            let res = collect(&root, &OutputTarget::Stdout)?;
+            let res = collect(&root, &ResolvedOutput::STDOUT)?;
             assert_eq!(res.files.len(), 1, "only the regular target is collected");
             assert_eq!(res.skipped, 0);
             let _ = fs::remove_file(&link);
@@ -491,7 +492,7 @@ mod tests {
             return Ok(());
         }
 
-        let res = collect(&root, &OutputTarget::Stdout);
+        let res = collect(&root, &ResolvedOutput::STDOUT);
 
         // Restore permissions so TempDirGuard can clean up
         let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o0755));
@@ -524,7 +525,7 @@ mod tests {
             return Ok(());
         }
 
-        let res = collect(&root, &OutputTarget::Stdout)?;
+        let res = collect(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(res.files.len(), 1);
         assert_eq!(res.skipped, 1);
         Ok(())
@@ -544,7 +545,7 @@ mod tests {
             .share_mode(0)
             .open(&locked)?;
 
-        let res = collect(&root, &OutputTarget::Stdout)?;
+        let res = collect(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(res.files.len(), 1);
         assert_eq!(res.skipped, 1);
         Ok(())
@@ -564,7 +565,7 @@ mod tests {
         symlink(&target, &link)?;
 
         // Symlink is filtered out before candidate reservation and should not increase skipped
-        let res = collect(&root, &OutputTarget::Stdout)?;
+        let res = collect(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(res.files.len(), 1);
         assert_eq!(res.skipped, 0);
 
@@ -711,7 +712,7 @@ mod tests {
                 )?;
             }
         }
-        let result = collect(&root, &OutputTarget::Stdout)?;
+        let result = collect(&root, &ResolvedOutput::STDOUT)?;
         let files = result.files;
         assert_eq!(files.len(), 50);
         let records: Vec<FileRecord<'_>> = files.iter().collect();
@@ -754,7 +755,7 @@ mod tests {
         fs::write(root.join(".dotfile"), "secret")?;
         fs::write(root.join("visible.txt"), "visible")?;
 
-        let result = collect(&root, &OutputTarget::Stdout)?;
+        let result = collect(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files.iter().next().unwrap().path, "visible.txt");
         assert_eq!(result.skipped, 0);

@@ -45,7 +45,7 @@ impl CollectionResult {
     /// # Output Size Invariant
     ///
     /// Final output size bounding relies on a two-stage guarantee:
-    /// 1. `Selector::add_file` performs early-fail bounding against `MAX_OUTPUT_SIZE` using raw arena byte totals.
+    /// 1. `FileStorage::push` performs early-fail bounding against `MAX_OUTPUT_SIZE` using raw arena byte totals.
     /// 2. `render` via [`BoundedBuffer`] enforces `MAX_OUTPUT_SIZE` during rendering passes.
     ///
     /// For early-fail checks to be sound (never rejecting a collection that would pass final rendering),
@@ -112,6 +112,7 @@ mod tests {
                     &crate::core::policy::NormalizedPath::from(r.path),
                     r.content,
                 )
+                .expect("test fixture fits the output limit")
             });
             let raw_bytes = storage.total_bytes() as usize;
 
@@ -135,16 +136,12 @@ mod tests {
     }
 
     #[test]
-    fn render_enforces_output_size_cap() {
-        let content = "x".repeat(MAX_OUTPUT_SIZE as usize);
-        let candidate = FileRecord {
-            path: "large.txt",
-            content: &content,
-        };
-        let storage = FileStorage::new().push(
-            &crate::core::policy::NormalizedPath::from(candidate.path),
-            candidate.content,
-        );
+    fn render_enforces_output_size_cap() -> Result<(), DomainError> {
+        // Raw bytes fill the storage cap exactly, so `push` accepts them and render framing exceeds it.
+        let path = "large.txt";
+        let content = "x".repeat(MAX_OUTPUT_SIZE as usize - path.len());
+        let storage =
+            FileStorage::new().push(&crate::core::policy::NormalizedPath::from(path), &content)?;
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,
@@ -158,6 +155,7 @@ mod tests {
             }
             other => panic!("expected OutputTooLarge, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]

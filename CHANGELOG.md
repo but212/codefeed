@@ -13,8 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Library consumers: update code that matches on or calls these items.
 
-- **Error types split**: `IngestError` is now `Domain(DomainError)`, `Io(io::Error)`, or `Http(String)`. `DomainError` (re-exported from the crate root) has `Usage`, `CandidateLimitExceeded`, `InvalidSource`, `UnsupportedSource`, `Api`, `InvalidMetadata`, `OutputTooLarge`.
-  - **Action:** match `IngestError::Domain(DomainError::...)` instead of the flat variants.
+- **Error types split**: `IngestError` is now `Domain(DomainError)`, `Io(io::Error)`, `Http(String)`, or `Api(String)`. `DomainError` (re-exported from the crate root) has `Usage`, `CandidateLimitExceeded`, `InvalidSource`, `UnsupportedSource`, `InvalidMetadata`, `OutputTooLarge`.
+  - **Action:** match `IngestError::Domain(DomainError::...)` instead of the flat variants. GitHub non-success responses are `Api`; transport failures are `Http`.
   - `GitRef::new`, `Source::github`, and `Source::with_reference` return `Result<_, DomainError>`. `IngestError::usage` moved to `DomainError::usage`.
   - `?` converts both types into `IngestError`. `Display` strings are unchanged (`src/core/error.rs`, `src/shell/error.rs`).
 - **`GitRef` string access removed**: `GitRef::as_str` and `impl Display for GitRef` are gone.
@@ -26,6 +26,7 @@ Library consumers: update code that matches on or calls these items.
   - **Action:** code matching `Io` for these errors must match `Http` (`src/shell/archive.rs`).
 - **TLS trust roots**: `ureq` uses compiled Mozilla roots (`rustls-webpki-roots`) instead of the platform verifier. Certificates trusted only through the OS store (e.g. corporate proxy CAs) are no longer accepted.
 - **Inline CLI values**: `--flag=value` accepts a leading `-` (e.g. `--output=-notes.txt`). Separate-argument values still reject a leading `-`, except `-o -` (stdout). `-o -x` still fails (`src/core/cli.rs`).
+- **Output size check**: `FileStorage::push` rejects over-limit content before storing it, and `Selector` no longer runs a post-push check. Output target resolution is typed as `ResolvedOutput` (only `resolve_output_target` constructs it), so collection and delivery cannot receive an unresolved request (`src/core/storage.rs`, `src/shell/output.rs`).
 
 ### Fixed
 
@@ -65,10 +66,11 @@ Contributor-facing. No consumer action required.
 - **Render dispatch**: `CollectionResult::render` matches `DigestFormat` and calls `render_with`. Removed `DigestFormat::render`, `render::render`, and the forwarding method. The overflow diagnostic is built once in `FileStorage::output_too_large_error`.
 - **Scratch output**: `BoundedBuffer::push_usize` uses `to_string()`.
 - **Path normalization**: `classify_path_segments` drops empty and `.` segments itself, so every `NormalizedPath` is clean regardless of caller. The archive no longer pre-filters; two unreachable branches removed (`src/core/policy.rs`, `src/core/archive.rs`).
-- **Pure label rules**: `repository_url` (`src/core/github.rs`) and `repository_name` (`src/core/model.rs`) hold digest label rules. The shell extracts the path or name and calls them.
-- **Retry headers**: Rate-limit headers are parsed once into `RateLimitHeaders` (`src/core/github.rs`). Retry delay and rate-limited flag are pure functions of parsed values and an explicit `now_secs`.
-- **Retry transition**: `AttemptState::retry` builds the next state and `Transition::Retry`. `AttemptState::step` only picks the delay (`src/core/github.rs`).
-- **GitHub error text**: `api_error`, `sanitize_error_detail`, `status_retry_warning`, `transport_retry_warning`, `transport_error` moved from `src/shell/github.rs` to `src/core/github.rs`.
+- **Pure label rules**: `repository_url` (`src/core/github/url.rs`) and `repository_name` (`src/core/model.rs`) hold digest label rules. The shell extracts the path or name and calls them.
+- **Retry headers**: Rate-limit headers are parsed once into `RateLimitHeaders` (`src/core/github/retry.rs`). Retry delay and rate-limited flag are pure functions of parsed values and an explicit `now_secs`.
+- **Retry transition**: `AttemptState::retry` builds the next state and `Transition::Retry`. `AttemptState::step` only picks the delay (`src/core/github/retry.rs`).
+- **GitHub error text**: `api_error`, `sanitize_error_detail`, `status_retry_warning`, `transport_retry_warning`, `transport_error` moved from `src/shell/github.rs` to `src/core/github/mod.rs`.
+- **GitHub module split**: `core/github.rs` is now `core/github/{url,retry,mod}.rs`. `mod.rs` re-exports the items the shell and model use, so call paths are unchanged.
 - **Dead code**: Unused `AsRef<str>` for `NormalizedPath` removed (`src/core/policy.rs`).
 
 #### CLI
@@ -89,6 +91,7 @@ Contributor-facing. No consumer action required.
 - **Buffers**: Local and archive content is `Vec<u8>`. `Zeroizing` only for the GitHub token and error bodies.
 - **Archive stream**: Tar decompression, PAX commit SHA parsing, and entry admission live in `codefeed::shell::archive`. HTTP stays in `codefeed::shell::github`. `process_tar_entry` returns `Selector` (no out-param or tuple). The PAX header is handled inside the entry loop, and the bounded-read helper is inlined.
 - **GitHub attempt**: `Attempt::from_result`, `warn`, and `into_error` hold classification, warnings, and error construction. `Attempt::Status` no longer duplicates `is_rate_limit`. `GithubClient::request` attaches origin-gated headers. The shell keeps HTTP, body reads, `eprintln!`, and sleeps (`src/shell/github.rs`).
+- **Temp file state**: `TempFile` holds a `TempState` (`Writing(File)`, `Closed`, `Committed`) instead of `Option<File>` plus `active: bool`. Invalid access returns `io::Error` instead of panicking (`src/shell/output.rs`).
 
 #### Tests
 
