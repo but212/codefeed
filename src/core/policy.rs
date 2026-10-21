@@ -4,7 +4,7 @@ use memchr::memrchr;
 
 /// Maximum individual file size accepted (1 MiB in bytes). Larger files are skipped.
 pub(crate) const MAX_FILE_SIZE: u64 = 1024 * 1024;
-/// Maximum rendered digest size (20 MiB in bytes). Overflows return [`IngestError::OutputTooLarge`](crate::core::error::IngestError::OutputTooLarge).
+/// Maximum rendered digest size (20 MiB in bytes). Overflows return [`DomainError::OutputTooLarge`](crate::core::error::DomainError::OutputTooLarge).
 pub(crate) const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
 /// Maximum candidate files evaluated before candidate budget overflows (10,000 files).
 pub(crate) const MAX_FILE_COUNT: usize = 10_000;

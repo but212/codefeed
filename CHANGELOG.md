@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: error types split into domain and shell**: `IngestError` is now the shell's error type with three variants: `Domain(DomainError)`, `Io(io::Error)`, and `Http(String)`. Pure rule failures are `DomainError` (`Usage`, `CandidateLimitExceeded`, `InvalidSource`, `UnsupportedSource`, `Api`, `InvalidMetadata`, `OutputTooLarge`), re-exported from the crate root. Code that matched the flat variants must match `IngestError::Domain(DomainError::...)`. `GitRef::new`, `Source::github`, and `Source::with_reference` now return `Result<_, DomainError>`, and `IngestError::usage` moved to `DomainError::usage`. `?` still converts both types into `IngestError`. Every `Display` string is unchanged (`src/core/error.rs`, `src/shell/error.rs`).
 - **Dash-prefixed inline CLI values**: `--flag=value` accepts a value starting with `-`, such as `--output=-notes.txt`. Separate-argument values still reject a leading `-` except `-o -` for stdout, and `-o -x` still fails (`src/core/cli.rs`).
+- **GitHub stream errors**: Timeouts, connection drops, and gzip/tar decode failures while streaming the archive return `IngestError::Http` ("GitHub request failed") instead of `IngestError::Io` ("filesystem error"), matching `docs/security_and_filtering.md` (`src/shell/archive.rs`).
 
 ### Performance
 
@@ -28,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- **Core Effect-Free Errors**: Core constructs only `DomainError`. The GitHub transport error constructor moved to the shell (`src/shell/error.rs`), and `Selector::observe` is generic over the caller's error type (`E: From<DomainError>`), so read errors pass through unchanged.
+- **Typed Output Target**: `resolve_output_target` returns `OutputTarget` (`File` with the canonical path, or `Stdout`) instead of `Option<PathBuf>`, and `deliver` takes the same type. `None` no longer means stdout at any call boundary.
+- **Unavailable Local Files**: A file unlinked after discovery is `WorkerMsg::Unavailable` instead of a zero-size `Regular` placeholder. The skip count is unchanged.
+- **Pure Label Rules**: `repository_url` (`src/core/github.rs`) and `repository_name` (`src/core/model.rs`) hold the digest label rules. The shell extracts the path or name and calls them.
+- **Shared Tar Fixtures**: Archive and GitHub tests build tarballs through `gzip_tarball` and `gzip_archive` in `src/shell/testing.rs`. `stream_url` returns `impl Read + Send` instead of a boxed reader.
 - **Archive Stream Decoupling**: Extracted tarball stream decompression, PAX commit SHA parsing, and entry admission into a dedicated `codefeed::shell::archive` module, separating HTTP transport concerns in `codefeed::shell::github` from streaming tar entry processing.
 - **Content Buffers**: Local and archive file-content buffers are plain `Vec<u8>`. `Zeroizing` remains only for the GitHub token and error bodies.
 - **Local Read Helper**: `read_bounded` returns `Result<Option<Vec<u8>>>` (`None` for an unavailable file) instead of filling an out-parameter buffer. The test-only `read_local_file_into` duplicate was removed, and its tests exercise `collect`. Behavior is unchanged (`src/shell/local.rs`).

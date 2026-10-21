@@ -1,7 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
-use crate::core::error::IngestError;
+use crate::core::error::DomainError;
 use crate::core::model::{DigestFormat, IngestReport, OutputTarget, RunConfig, Source};
 
 const HELP: &str =
@@ -62,13 +62,13 @@ struct Parsed {
 
 impl Parsed {
     /// Stores one flag value after validating it for that flag.
-    fn with_value(mut self, flag: Flag, val: OsString) -> Result<Self, IngestError> {
+    fn with_value(mut self, flag: Flag, val: OsString) -> Result<Self, DomainError> {
         match flag {
             Flag::Output => self.output = Some(val),
             Flag::Reference => {
                 let val_str = val
                     .into_string()
-                    .map_err(|_| IngestError::usage("git reference must be valid utf-8"))?;
+                    .map_err(|_| DomainError::usage("git reference must be valid utf-8"))?;
                 self.reference = Some(val_str);
             }
             Flag::Format => self.format = parse_format(&val.to_string_lossy())?,
@@ -77,9 +77,9 @@ impl Parsed {
     }
 
     /// Stores the source positional. A second one is rejected.
-    fn with_positional(mut self, arg: OsString) -> Result<Self, IngestError> {
+    fn with_positional(mut self, arg: OsString) -> Result<Self, DomainError> {
         if self.source.is_some() {
-            return Err(IngestError::usage(format!(
+            return Err(DomainError::usage(format!(
                 "unexpected argument '{}' found",
                 arg.to_string_lossy()
             )));
@@ -117,9 +117,9 @@ fn match_flag(s: &str) -> Option<(Flag, &'static str, Option<&str>)> {
 ///
 /// # Errors
 ///
-/// Returns [`IngestError::Usage`] if required arguments are missing, unknown options
+/// Returns [`DomainError::Usage`] if required arguments are missing, unknown options
 /// are passed, or flags receive invalid values.
-pub(crate) fn parse<I, T>(args: I) -> Result<CliAction, IngestError>
+pub(crate) fn parse<I, T>(args: I) -> Result<CliAction, DomainError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
@@ -160,7 +160,7 @@ where
                         continue;
                     }
                     if s.starts_with('-') && s != "-" {
-                        return Err(IngestError::usage(format!("unknown option: {s}")));
+                        return Err(DomainError::usage(format!("unknown option: {s}")));
                     }
                 }
 
@@ -180,7 +180,7 @@ where
         format,
     } = parsed;
     let source_os = source.ok_or_else(|| {
-        IngestError::usage("the following required arguments were not provided:\n  <SOURCE>")
+        DomainError::usage("the following required arguments were not provided:\n  <SOURCE>")
     })?;
 
     let output_target = match output {
@@ -200,7 +200,7 @@ where
 /// Rejects a separate-argument flag value that starts with `-`, so `-o -x` cannot
 /// swallow the next option. `-o -` is the stdout sentinel and stays allowed.
 /// Inline `--flag=value` forms never reach this check.
-fn reject_option_like(flag: Flag, flag_str: &str, val: &OsStr) -> Result<(), IngestError> {
+fn reject_option_like(flag: Flag, flag_str: &str, val: &OsStr) -> Result<(), DomainError> {
     let allow_dash = matches!(flag, Flag::Output);
     if let Some(s) = val.to_str()
         && s.starts_with('-')
@@ -212,17 +212,17 @@ fn reject_option_like(flag: Flag, flag_str: &str, val: &OsStr) -> Result<(), Ing
 }
 
 /// The one "a value is required" message, for a flag with no value or with an option-like value.
-fn missing_value(flag_str: &str) -> IngestError {
-    IngestError::usage(format!(
+fn missing_value(flag_str: &str) -> DomainError {
+    DomainError::usage(format!(
         "a value is required for '{flag_str}' but none was supplied"
     ))
 }
 
-fn parse_format(val: &str) -> Result<DigestFormat, IngestError> {
+fn parse_format(val: &str) -> Result<DigestFormat, DomainError> {
     match val {
         "text" => Ok(DigestFormat::Text),
         "xml" => Ok(DigestFormat::Xml),
-        _ => Err(IngestError::usage(format!(
+        _ => Err(DomainError::usage(format!(
             "invalid value '{val}' for '--format <text|xml>'"
         ))),
     }

@@ -5,7 +5,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::core::error::IngestError;
+use super::IngestError;
+use crate::core::error::DomainError;
 use crate::core::model::OutputTarget;
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -43,16 +44,15 @@ fn parent_dir(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
-/// Resolves an [`OutputTarget`] into an optional canonical file destination.
-///
-/// Returns `None` when writing directly to [`OutputTarget::Stdout`].
-pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<Option<PathBuf>, IngestError> {
+/// Resolves an [`OutputTarget`] into its delivery destination: stdout passes through, and a
+/// file target becomes the canonical path the digest is written to.
+pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<OutputTarget, IngestError> {
     match target {
-        OutputTarget::Stdout => Ok(None),
+        OutputTarget::Stdout => Ok(OutputTarget::Stdout),
         OutputTarget::File(path) => {
             let file_name = path
                 .file_name()
-                .ok_or_else(|| IngestError::usage("output path has no filename"))?;
+                .ok_or_else(|| DomainError::usage("output path has no filename"))?;
             let parent = parent_dir(path);
             let canonical_parent = fs::canonicalize(parent).map_err(|e| {
                 IngestError::Io(io::Error::new(
@@ -77,19 +77,19 @@ pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<Option<Path
             {
                 resolved = canonical;
             }
-            Ok(Some(resolved))
+            Ok(OutputTarget::File(resolved))
         }
     }
 }
 
-/// Delivers the rendered bytes to the specified target.
+/// Delivers the rendered bytes to a resolved target.
 ///
 /// A file target is written atomically via temporary file and rename;
 /// stdout target streams the buffer directly.
-pub(super) fn deliver(resolved_target: Option<&Path>, bytes: &[u8]) -> Result<(), IngestError> {
+pub(super) fn deliver(resolved_target: &OutputTarget, bytes: &[u8]) -> Result<(), IngestError> {
     match resolved_target {
-        Some(path) => write_atomic(path, bytes),
-        None => {
+        OutputTarget::File(path) => write_atomic(path, bytes),
+        OutputTarget::Stdout => {
             let stdout = io::stdout();
             render_stdout_to(&mut stdout.lock(), bytes)
         }
@@ -186,7 +186,7 @@ impl AtomicFile {
     fn create(target: &Path) -> Result<Self, IngestError> {
         let file_name = target
             .file_name()
-            .ok_or_else(|| IngestError::usage("output path has no filename"))?;
+            .ok_or_else(|| DomainError::usage("output path has no filename"))?;
         let file_name = file_name.to_string_lossy();
         let temp_file = TempFile::create(parent_dir(target), &file_name)?;
 
@@ -243,6 +243,14 @@ mod tests {
     use super::super::testing::temp_dir;
     use super::*;
 
+    /// Resolves a file target and returns the canonical path it will be written to.
+    fn resolve_file(path: PathBuf) -> Result<PathBuf, IngestError> {
+        match resolve_output_target(&OutputTarget::File(path))? {
+            OutputTarget::File(resolved) => Ok(resolved),
+            OutputTarget::Stdout => unreachable!("a file target resolves to a file"),
+        }
+    }
+
     #[test]
     fn write_stdout_line_ignores_broken_pipe() {
         struct BrokenPipeWriter;
@@ -278,7 +286,7 @@ mod tests {
 
         let mut sink = Vec::new();
         let rendered_res = collection.render(DigestFormat::Text);
-        assert!(matches!(rendered_res, Err(IngestError::OutputTooLarge(_))));
+        assert!(matches!(rendered_res, Err(DomainError::OutputTooLarge(_))));
         if let Ok(rendered) = rendered_res {
             let _ = render_stdout_to(&mut sink, &rendered.bytes);
         }
@@ -347,10 +355,10 @@ mod tests {
     fn missing_output_filename_returns_usage_error() {
         let result = write_atomic(Path::new("."), b"");
         match result {
-            Err(IngestError::Usage(msg)) => {
+            Err(IngestError::Domain(DomainError::Usage(msg))) => {
                 assert!(msg.contains("output path has no filename"));
             }
-            other => panic!("expected IngestError::Usage, got {other:?}"),
+            other => panic!("expected DomainError::Usage, got {other:?}"),
         }
     }
 
@@ -400,13 +408,17 @@ mod tests {
 
     #[test]
     fn resolve_output_target_handles_stdout_and_file() -> Result<(), Box<dyn std::error::Error>> {
-        let stdout_target = resolve_output_target(&OutputTarget::Stdout)?;
-        assert!(stdout_target.is_none());
+        assert_eq!(
+            resolve_output_target(&OutputTarget::Stdout)?,
+            OutputTarget::Stdout
+        );
 
         let root = temp_dir("output_target_test")?;
         let output = root.join("digest.txt");
-        let file_target = resolve_output_target(&OutputTarget::File(output))?;
-        assert!(file_target.is_some());
+        assert_eq!(
+            resolve_output_target(&OutputTarget::File(output.clone()))?,
+            OutputTarget::File(output)
+        );
         Ok(())
     }
 
@@ -418,7 +430,7 @@ mod tests {
         let file_a = root.join("вывод.txt");
         fs::write(&file_a, "test")?;
         let file_b = root.join("ВЫВОД.TXT");
-        let resolved = resolve_output_target(&OutputTarget::File(file_b))?.unwrap();
+        let resolved = resolve_file(file_b)?;
         let canonical_a = fs::canonicalize(&file_a)?;
         assert_eq!(resolved, canonical_a);
         Ok(())
@@ -433,17 +445,17 @@ mod tests {
         fs::write(&output, "output")?;
         let canonical_output = fs::canonicalize(&output)?;
 
-        let resolved = resolve_output_target(&OutputTarget::File(output))?.unwrap();
+        let resolved = resolve_file(output)?;
         assert_eq!(resolved, canonical_output);
 
         let alias_output = root.join("subdir").join("..").join("digest.txt");
-        let alias_resolved = resolve_output_target(&OutputTarget::File(alias_output))?.unwrap();
+        let alias_resolved = resolve_file(alias_output)?;
         assert_eq!(alias_resolved, canonical_output);
 
         #[cfg(any(windows, target_os = "macos"))]
         {
             let cased_output = root.join("DIGEST.TXT");
-            let cased_resolved = resolve_output_target(&OutputTarget::File(cased_output))?.unwrap();
+            let cased_resolved = resolve_file(cased_output)?;
             assert_eq!(cased_resolved, canonical_output);
         }
 
@@ -503,7 +515,7 @@ mod tests {
         let output_via_real = real_dir.join("digest.txt");
         fs::write(&output_via_real, "test")?;
 
-        let resolved = resolve_output_target(&OutputTarget::File(output_via_link))?.unwrap();
+        let resolved = resolve_file(output_via_link)?;
         let canonical_real = fs::canonicalize(&output_via_real)?;
         assert_eq!(resolved, canonical_real);
         Ok(())
@@ -524,7 +536,7 @@ mod tests {
         let created = std::os::windows::fs::symlink_file(&src_file, &out_link).is_ok();
 
         if created {
-            let resolved = resolve_output_target(&OutputTarget::File(out_link.clone()))?.unwrap();
+            let resolved = resolve_file(out_link.clone())?;
             let canonical_src = fs::canonicalize(&src_file)?;
             assert_ne!(
                 resolved, canonical_src,

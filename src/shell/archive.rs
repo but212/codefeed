@@ -5,8 +5,9 @@ use std::io::{BufReader, Read};
 use flate2::read::GzDecoder;
 use tar::{Archive, EntryType};
 
+use super::IngestError;
+use super::error::transport_error;
 use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
-use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
 use crate::core::policy::{ARCHIVE_BUFFER_BYTES, MAX_FILE_SIZE};
 use crate::core::selector::Selector;
@@ -25,19 +26,19 @@ pub(super) fn collect<R: Read>(
         ARCHIVE_BUFFER_BYTES,
         reader,
     )));
-    let entries = archive.entries().map_err(IngestError::Io)?;
+    let entries = archive.entries().map_err(stream_error)?;
     let mut parsed_revision = None;
     let mut selector = Selector::new();
     let mut content_scratch = Vec::with_capacity(32 * 1024);
 
     for entry_res in entries {
-        let mut entry = entry_res.map_err(IngestError::Io)?;
+        let mut entry = entry_res.map_err(stream_error)?;
         if entry.header().entry_type() == EntryType::XGlobalHeader {
             content_scratch.clear();
             entry
                 .take(1024)
                 .read_to_end(&mut content_scratch)
-                .map_err(IngestError::Io)?;
+                .map_err(stream_error)?;
             parsed_revision = parsed_revision.or_else(|| parse_pax_comment(&content_scratch));
             continue;
         }
@@ -73,39 +74,26 @@ fn process_tar_entry<R: Read>(
         entry
             .take(MAX_FILE_SIZE + 1)
             .read_to_end(content_scratch)
-            .map_err(IngestError::Io)?;
+            .map_err(stream_error)?;
         Ok(Some(content_scratch))
     })
+}
+
+/// Maps any failure while streaming the archive to a request error. Every `io::Error` here comes from the
+/// network body, gzip, or tar decoding, so it never surfaces as a filesystem error.
+fn stream_error(err: std::io::Error) -> IngestError {
+    transport_error(&err.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::Compression;
-    use flate2::write::GzEncoder;
-    use tar::Builder;
-
-    fn create_mock_tarball(entries: &[(&str, &[u8], EntryType)]) -> Vec<u8> {
-        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
-        {
-            let mut tar = Builder::new(&mut gz);
-            for &(name, content, ref entry_type) in entries {
-                let mut header = tar::Header::new_gnu();
-                header.set_entry_type(*entry_type);
-                header.set_size(content.len() as u64);
-                header.set_mode(0o644);
-                header.set_cksum();
-                tar.append_data(&mut header, name, content).unwrap();
-            }
-            tar.finish().unwrap();
-        }
-        gz.finish().unwrap()
-    }
+    use crate::shell::testing::{gzip_archive, gzip_tarball};
 
     #[test]
     fn collects_files_and_extracts_pax_sha() {
         let pax_comment = b"52 comment=c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n";
-        let mock_data = create_mock_tarball(&[
+        let mock_data = gzip_tarball(&[
             ("pax_global_header", pax_comment, EntryType::XGlobalHeader),
             ("repo-root/", b"", EntryType::Directory),
             (
@@ -149,7 +137,7 @@ mod tests {
     fn skips_too_large_files() {
         use crate::core::policy::MAX_FILE_SIZE;
 
-        let mock_data = create_mock_tarball(&[
+        let mock_data = gzip_tarball(&[
             ("repo-root/small.txt", b"small", EntryType::Regular),
             (
                 "repo-root/large.txt",
@@ -172,7 +160,7 @@ mod tests {
 
     #[test]
     fn regular_file_named_pax_global_header_is_not_dropped() {
-        let mock_data = create_mock_tarball(&[(
+        let mock_data = gzip_tarball(&[(
             "repo-root/pax_global_header",
             b"hello content",
             EntryType::Regular,
@@ -190,9 +178,7 @@ mod tests {
 
     #[test]
     fn non_utf8_symlink_or_dir_is_ignored() {
-        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
-        {
-            let mut tar = Builder::new(&mut gz);
+        let mock_data = gzip_archive(|tar| {
             let mut header = tar::Header::new_gnu();
             header.set_entry_type(EntryType::Symlink);
             header.set_size(0);
@@ -210,10 +196,7 @@ mod tests {
             header2.as_mut_bytes()[..name2.len()].copy_from_slice(name2);
             header2.set_cksum();
             tar.append(&header2, &b""[..]).unwrap();
-
-            tar.finish().unwrap();
-        }
-        let mock_data = gz.finish().unwrap();
+        });
 
         let result = collect(mock_data.as_slice(), "https://github.com/owner/repo", None)
             .expect("collection should succeed");
@@ -224,9 +207,7 @@ mod tests {
 
     #[test]
     fn non_utf8_hidden_regular_file_is_ignored() {
-        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
-        {
-            let mut tar = Builder::new(&mut gz);
+        let mock_data = gzip_archive(|tar| {
             let mut header = tar::Header::new_gnu();
             header.set_entry_type(EntryType::Regular);
             header.set_size(5);
@@ -235,9 +216,7 @@ mod tests {
             header.as_mut_bytes()[..name.len()].copy_from_slice(name);
             header.set_cksum();
             tar.append(&header, &b"dummy"[..]).unwrap();
-            tar.finish().unwrap();
-        }
-        let mock_data = gz.finish().unwrap();
+        });
 
         let result = collect(mock_data.as_slice(), "https://github.com/owner/repo", None)
             .expect("collection should succeed");
@@ -252,7 +231,7 @@ mod tests {
     #[test]
     fn accepts_pax_header_after_archive_entries() {
         let pax_comment = b"52 comment=c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n";
-        let mock_data = create_mock_tarball(&[
+        let mock_data = gzip_tarball(&[
             ("repo-root/file.txt", b"content", EntryType::Regular),
             ("pax_global_header", pax_comment, EntryType::XGlobalHeader),
         ]);
@@ -265,5 +244,14 @@ mod tests {
             Some("c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950")
         );
         assert_eq!(result.files.len(), 1);
+    }
+
+    #[test]
+    fn stream_decode_failure_is_http() {
+        let Err(err) = collect(&b"not gzip"[..], "x", None) else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, IngestError::Http(_)), "{err}");
+        assert!(err.to_string().starts_with("GitHub request failed:"));
     }
 }

@@ -1,6 +1,6 @@
 //! Pure GitHub domain rules, URL formatting, origin security policy, and retry decisions.
 
-use crate::core::error::IngestError;
+use crate::core::error::DomainError;
 use crate::core::policy::{MAX_ATTEMPTS, RETRY_INITIAL_DELAY_MS, RETRY_MAX_DELAY_MS};
 use std::time::Duration;
 
@@ -52,52 +52,57 @@ pub(crate) const fn valid_github_name(value: &str) -> bool {
 }
 
 /// Parses a GitHub repository URL into an `(owner, repo)` string pair.
-pub(crate) fn parse_github_url(value: &str) -> Result<(String, String), IngestError> {
+pub(crate) fn parse_github_url(value: &str) -> Result<(String, String), DomainError> {
     let remainder = value.strip_prefix("https://").ok_or_else(|| {
-        IngestError::unsupported_source("only https://github.com/{owner}/{repo} is supported")
+        DomainError::unsupported_source("only https://github.com/{owner}/{repo} is supported")
     })?;
     let (authority, path) = match memchr(b'/', remainder.as_bytes()) {
         Some(index) => (&remainder[..index], &remainder[index..]),
         None => (remainder, ""),
     };
     if authority.is_empty() {
-        return Err(IngestError::invalid_source(value));
+        return Err(DomainError::invalid_source(value));
     }
     let host_port = authority.rsplit('@').next().unwrap_or(authority);
     let host = match host_port.split_once(':') {
         Some((host, port)) => {
             if !port.is_empty() && port.parse::<u16>().is_err() {
-                return Err(IngestError::invalid_source(value));
+                return Err(DomainError::invalid_source(value));
             }
             host
         }
         None => host_port,
     };
     if !host.eq_ignore_ascii_case("github.com") {
-        return Err(IngestError::unsupported_source(
+        return Err(DomainError::unsupported_source(
             "only https://github.com/{owner}/{repo} is supported",
         ));
     }
     if memchr2(b'?', b'#', path.as_bytes()).is_some() {
-        return Err(IngestError::invalid_source(
+        return Err(DomainError::invalid_source(
             "repository URLs cannot contain a query or fragment",
         ));
     }
 
     let mut parts = path.split('/').filter(|part| !part.is_empty());
     let (Some(owner), Some(repo_segment), None) = (parts.next(), parts.next(), parts.next()) else {
-        return Err(IngestError::invalid_source(
+        return Err(DomainError::invalid_source(
             "expected https://github.com/{owner}/{repo}",
         ));
     };
 
     let repo = repo_segment.strip_suffix(".git").unwrap_or(repo_segment);
     if !valid_github_name(owner) || !valid_github_name(repo) {
-        return Err(IngestError::invalid_source(
+        return Err(DomainError::invalid_source(
             "owner and repository names contain invalid characters",
         ));
     }
     Ok((owner.to_string(), repo.to_string()))
+}
+
+/// Canonical public web URL for a repository, used as the digest label for remote sources.
+pub(crate) fn repository_url(owner: &str, repo: &str) -> String {
+    format!("https://github.com/{owner}/{repo}")
 }
 
 /// Constructs the tarball download URL for the given repository and optional Git reference.
@@ -316,7 +321,7 @@ pub(crate) fn api_error(
     status_text: &str,
     body: &[u8],
     retry_after: Option<Duration>,
-) -> IngestError {
+) -> DomainError {
     let raw_detail = String::from_utf8_lossy(body);
     let detail = sanitize_error_detail(&raw_detail);
     let retry_info = retry_after
@@ -324,17 +329,12 @@ pub(crate) fn api_error(
         .unwrap_or_default();
 
     if matches!(status, 429 | 403) {
-        IngestError::api(format!(
+        DomainError::api(format!(
             "HTTP {status_text}: {detail}{retry_info} (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
         ))
     } else {
-        IngestError::api(format!("HTTP {status_text}: {detail}{retry_info}"))
+        DomainError::api(format!("HTTP {status_text}: {detail}{retry_info}"))
     }
-}
-
-/// Error for a transport failure. `error_text` is the transport error's `Display`.
-pub(crate) fn transport_error(error_text: &str) -> IngestError {
-    IngestError::http(sanitize_error_detail(error_text))
 }
 
 /// Warning printed before retrying a non-success response.
@@ -413,7 +413,7 @@ mod tests {
             let err = api_error(status, status_text, body, retry_after);
             assert_eq!(
                 err.to_string(),
-                IngestError::api(expected).to_string(),
+                DomainError::api(expected).to_string(),
                 "status {status}"
             );
         }
@@ -439,10 +439,6 @@ mod tests {
                 "warning: GitHub transport error: connection reset by peer on attempt 2/{MAX_ATTEMPTS} for {url}; retrying in 1s"
             )
         );
-        assert_eq!(
-            transport_error("bad\nhost").to_string(),
-            IngestError::http("bad host").to_string()
-        );
     }
 
     #[test]
@@ -466,6 +462,14 @@ mod tests {
                 "unexpected auth scope for: {url}"
             );
         }
+    }
+
+    #[test]
+    fn builds_repository_url() {
+        assert_eq!(
+            repository_url("but212", "codefeed"),
+            "https://github.com/but212/codefeed"
+        );
     }
 
     #[test]

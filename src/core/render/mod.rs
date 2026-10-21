@@ -3,7 +3,7 @@
 //! Coordinates layout rendering across text and XML formats,
 //! token estimation, and output size cap enforcement.
 
-use crate::core::error::IngestError;
+use crate::core::error::DomainError;
 use crate::core::model::{CollectionResult, DigestFormat};
 
 mod budget;
@@ -55,8 +55,8 @@ impl CollectionResult {
     ///
     /// # Errors
     ///
-    /// Returns [`IngestError::OutputTooLarge`] if output exceeds the maximum size limit.
-    pub(crate) fn render(self, format: DigestFormat) -> Result<RenderedDigest, IngestError> {
+    /// Returns [`DomainError::OutputTooLarge`] if output exceeds the maximum size limit.
+    pub(crate) fn render(self, format: DigestFormat) -> Result<RenderedDigest, DomainError> {
         let capacity = (self.files.total_bytes() as usize).saturating_add(4096);
         let buf = BoundedBuffer::with_capacity(capacity);
         let included = self.files.len();
@@ -75,7 +75,7 @@ impl CollectionResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::error::IngestError;
+    use crate::core::error::DomainError;
     use crate::core::policy::MAX_OUTPUT_SIZE;
     use crate::core::storage::{FileRecord, FileStorage, SortedFiles};
 
@@ -152,7 +152,7 @@ mod tests {
             skipped: 0,
         };
         match collection.render(DigestFormat::Text) {
-            Err(IngestError::OutputTooLarge(largest_files)) => {
+            Err(DomainError::OutputTooLarge(largest_files)) => {
                 assert_eq!(largest_files.len(), 1);
                 assert_eq!(largest_files[0].0, "large.txt");
             }

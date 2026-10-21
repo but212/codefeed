@@ -100,10 +100,10 @@ Any path containing a component starting with a leading dot (`.`) is considered 
 
 | Parameter (`policy.rs`) | Enforcement Mechanism | Failure Mode |
 | :--- | :--- | :--- |
-| `MAX_FILE_COUNT` | `Selector::observe` slot check (GitHub: before body read; local: after bounded body read by workers) | `IngestError::CandidateLimitExceeded` with directory diagnostics |
-| `MAX_PATH_DEPTH` | Path nesting depth check in `classify_path_segments` (archive and local paths) | `IngestError::InvalidMetadata` |
+| `MAX_FILE_COUNT` | `Selector::observe` slot check (GitHub: before body read; local: after bounded body read by workers) | `DomainError::CandidateLimitExceeded` with directory diagnostics |
+| `MAX_PATH_DEPTH` | Path nesting depth check in `classify_path_segments` (archive and local paths) | `DomainError::InvalidMetadata` |
 | `MAX_FILE_SIZE` | Pre-I/O `size_hint` evaluation and stream boundary read (`take(MAX_FILE_SIZE + 1)`) | Skipped; tallied in `skipped_files` report |
-| `MAX_OUTPUT_SIZE` | Early arena total check (`Selector::add_file`) and `BoundedBuffer` byte counter | `IngestError::OutputTooLarge` with Top-5 largest files |
+| `MAX_OUTPUT_SIZE` | Early arena total check (`Selector::add_file`) and `BoundedBuffer` byte counter | `DomainError::OutputTooLarge` with Top-5 largest files |
 | `ARCHIVE_MAX_SECS` | Whole-archive stream transfer timeout | `IngestError::Http` timeout |
 
 ### Candidate vs. Skipped Accounting Rules

@@ -14,7 +14,7 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 - `FileStorage` — Append-only arena buffer (`path_arena`, `content_arena`, `spans`). Provides zero-copy `FileRecord<'a>` borrowed views and in-place component-wise lexicographical sorting (`sort_by_path`) without string reallocations.
 - `FileRecord<'a>` — Zero-copy borrowed digest entry view: `path: &'a str`, `content: &'a str`.
 - `SortedFiles` — Lexicographically sorted file storage arena wrapper guaranteeing path ordering invariants.
-- `CollectionResult` — Uniform format-neutral collection record: `label`, optional `revision`, `files: SortedFiles`, `skipped`. Provides linear consuming transition via `collection.render(format) -> Result<RenderedDigest, IngestError>`.
+- `CollectionResult` — Uniform format-neutral collection record: `label`, optional `revision`, `files: SortedFiles`, `skipped`. Provides linear consuming transition via `collection.render(format) -> Result<RenderedDigest, DomainError>`.
 - `RenderedDigest` — Formatted in-memory digest containing `bytes`, `estimated_tokens`, `included_files`, and `skipped_files`. Directly yields `IngestReport` via `into_report(output)`.
 - `IngestReport` — Output summary report: `output`, `included_files`, `skipped_files`, `estimated_tokens` (`#[non_exhaustive]`).
 - `OutputTarget` — Digest destination: `File(PathBuf)` or `Stdout`.
@@ -39,7 +39,7 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 - Candidate accounting: `Selector::observe` consumes candidate slots before evaluating content. GitHub archive entries are admitted before their bodies are read (the body read runs only inside `observe`); local workers read bounded bodies concurrently, and the main thread calls `observe` afterward. Non-UTF-8 paths consume candidate budget with their valid top-level directory prefix (`"dir/"` or `""`) and are marked as skipped (settled without reading content).
 - `skipped` count: Tracks candidates rejected for content, size, or encoding (binary with NUL bytes, oversized files, or non-UTF-8 paths/content). Ignored paths are never counted in `skipped`.
 - Output bounding & Size cap enforcement: `MAX_OUTPUT_SIZE` is enforced via a two-stage check: `Selector::add_file` early-fails during collection using raw stored arena bytes (`path_arena + content_arena`); `BoundedBuffer` enforces `MAX_OUTPUT_SIZE` during in-memory rendering across headers, tree, framing, and body bytes. Because escaping and framing only expand or preserve byte lengths (`rendered_bytes >= raw_bytes`), early-fail checks never reject valid outputs. Overflow content is never emitted; file and stdout targets emit nothing on overflow.
-- Diagnostic ranking: `largest_files` is called exclusively on output limit overflow paths, sorting by descending size and tie-breaking by component-wise path order (`cmp_path`) to select top-5 largest files deterministically.
+- Diagnostic ranking: `largest_files` is called exclusively on output limit overflow paths, sorting by descending size and tie-breaking by component-wise path order (`cmp_path`) to select top-5 largest files deterministically over the files stored so far; on local early-fail overflow that set depends on worker order and can vary between runs.
 
 ### Rendering & Formats
 
@@ -64,11 +64,11 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
   4. Deterministic output: Resulting storage is sorted component-wise lexicographically via `SortedFiles::new` (`cmp_path`), guaranteeing byte-for-byte reproducibility regardless of thread execution order.
 - CLI argument parsing: Linearly parsed into options and source in pure core (`core::cli`) using `std` only, supporting order-independent sources, short flags (`-o`, `-f`, `-r`, `-h`), key-value `=` syntax, and POSIX `--` delimiters without third-party CLI dependencies. CLI execution, help display, and output reporting are encapsulated via `shell::run_cli`.
 - Candidate budget tracking: Standard `HashMap<String, usize>` during collection. Overflow diagnostics are sorted by count descending then directory ascending, but cover only candidates admitted before abort; local runs can report different counts because worker completion order varies.
-- Digest budget tracking: Tracked directly in `Selector` and error-terminal: limit breach constructs complete `IngestError::OutputTooLarge` diagnostics without internal transactional rollback.
+- Digest budget tracking: Tracked directly in `Selector` and error-terminal: limit breach constructs complete `DomainError::OutputTooLarge` diagnostics without internal transactional rollback.
 
 ### Network & GitHub
 
-- Streaming archive: Single HTTP request streams GitHub repository archive (`/repos/{owner}/{repo}/tarball/{ref}`) via `flate2` and `tar` over a 64 KiB `BufReader` stream, streaming entries into `Selector` (`Selector::observe`) with zero intermediate disk files and fail-fast budget termination. Commit revision is extracted from `pax_global_header`.
+- Streaming archive: Single HTTP request streams GitHub repository archive (`/repos/{owner}/{repo}/tarball/{ref}`) via `flate2` and `tar` over a 64 KiB `BufReader` stream, streaming entries into `Selector` (`Selector::observe`) with zero intermediate disk files and fail-fast budget termination. Commit revision is extracted from `pax_global_header`. Stream, gzip, and tar read failures surface as `IngestError::Http`.
 - Credential isolation: `Authorization: Bearer <token>` attaches strictly to exact-origin GitHub API (`https://api.github.com`); foreign origins and redirects never receive credentials.
 - Retry policy: Retries transient transport errors (`Io`, `Timeout`, `ConnectionFailed`), HTTP 429 / 5xx, and rate-limited 403 responses (`Retry-After` present or `x-ratelimit-remaining: 0`) with bounded exponential backoff up to `MAX_ATTEMPTS` total attempts (1 initial + up to 2 retries). Delay comes from `Retry-After`, else from `x-ratelimit-reset` when `x-ratelimit-remaining` is `0`; a delay above `RETRY_MAX_DELAY_MS` fails instead of waiting. Fails immediately on non-transient transport errors and other 4xx client errors.
 
@@ -86,14 +86,15 @@ Boundary rule: Pure core performs no I/O, clock, or network calls and never depe
   - `model.rs`: Domain value types (`Source`, `CollectionResult`, `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`) and source parsing (`Source::parse`, `Source::parse_os`).
   - `github.rs`: Pure GitHub domain rules, identifier validation (`valid_github_name`), URL parsing (`parse_github_url`), tarball URL construction (`tarball_url`), API origin security policy (`is_github_api_origin`), retry state transitions (`AttemptState::step`), and API error and retry warning text (`api_error`, `status_retry_warning`, `transport_retry_warning`).
   - `storage.rs`: Continuous arena storage (`FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, `largest_files`).
-  - `error.rs`: Domain error enum `IngestError` and diagnostic payloads (`CandidateLimitExceededError`).
+  - `error.rs`: Pure domain error enum `DomainError` and diagnostic payloads (`CandidateLimitExceededError`). Core never constructs effect errors.
   - `selector.rs`: Candidate settlement (`observe`, with internal `Admission` and `PendingEntry`), directory accounting (`CandidateBudget`), content classification, and storage accumulation (`Selector`).
   - `render/`: Format-specific serializers (`formats.rs` with `FormatRenderer`, `TextRenderer`, `XmlRenderer`), format-neutral ASCII hierarchy tree rendering (`tree.rs`), single-pass escaping (`escape.rs`), and bounded buffer with token estimation (`budget.rs`).
   - `archive.rs`: Pax header comment extraction and single-pass tar entry path normalization & policy classification (`normalize_tar_entry_path`).
 - Imperative shell (`src/shell/`):
   - `src/main.rs`: Binary entry point only; delegates to `run_cli`.
   - `shell/mod.rs`: Shell module declarations, pipeline orchestration (`ingest`, `run_cli`), and the stream choice for the completion message.
-  - `shell/testing.rs`: Scoped test fixture isolation (`TempDirGuard`, `temp_dir`).
+  - `shell/error.rs`: Ingestion error `IngestError` (`Domain(DomainError)`, `Io`, `Http`) and the transport error constructor (`transport_error`). The only place effect errors are built.
+  - `shell/testing.rs`: Scoped test fixture isolation (`TempDirGuard`, `temp_dir`) and shared tarball builders (`gzip_archive`, `gzip_tarball`).
   - `shell/local.rs`: Single-pass filesystem candidate traversal, non-symlink metadata validation, and pre-I/O candidate admission in `Selector`.
   - `shell/archive.rs`: Tarball stream decompression, PAX commit SHA extraction, and per-entry admission through `Selector::observe` (`collect`).
   - `shell/github.rs`: Streaming tarball request (`GithubClient`), HTTP transport, retry attempts (`Attempt`), warning printing, body bounding, and token resolution.

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::core::error::IngestError;
+use crate::core::error::DomainError;
 use crate::core::storage::SortedFiles;
 
 /// Validated non-empty Git revision reference (branch, tag, or commit SHA).
@@ -12,15 +12,15 @@ impl GitRef {
     ///
     /// # Errors
     ///
-    /// Returns [`IngestError::InvalidSource`] if `value` is empty or only whitespace.
-    pub fn new(value: impl Into<String>) -> Result<Self, IngestError> {
+    /// Returns [`DomainError::InvalidSource`] if `value` is empty or only whitespace.
+    pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
         let string = value.into();
         let trimmed = string.trim_ascii();
         if trimmed.is_empty() {
-            return Err(IngestError::invalid_source("--ref cannot be empty"));
+            return Err(DomainError::invalid_source("--ref cannot be empty"));
         }
         if trimmed == "." || trimmed == ".." {
-            return Err(IngestError::invalid_source("--ref cannot be '.' or '..'"));
+            return Err(DomainError::invalid_source("--ref cannot be '.' or '..'"));
         }
         Ok(Self(trimmed.to_owned()))
     }
@@ -57,19 +57,19 @@ impl Source {
     ///
     /// # Errors
     ///
-    /// Returns [`IngestError::InvalidSource`] if `owner` or `repo` contain invalid characters,
+    /// Returns [`DomainError::InvalidSource`] if `owner` or `repo` contain invalid characters,
     /// empty strings, or path traversals.
     pub fn github(
         owner: impl Into<String>,
         repo: impl Into<String>,
         reference: Option<GitRef>,
-    ) -> Result<Self, IngestError> {
+    ) -> Result<Self, DomainError> {
         let owner = owner.into();
         let repo = repo.into();
         if !crate::core::github::valid_github_name(&owner)
             || !crate::core::github::valid_github_name(&repo)
         {
-            return Err(IngestError::invalid_source(
+            return Err(DomainError::invalid_source(
                 "owner and repository names contain invalid characters",
             ));
         }
@@ -81,7 +81,7 @@ impl Source {
     }
 
     /// Parses an OS-native string argument into a [`Source`].
-    pub(super) fn parse_os(value: &std::ffi::OsStr) -> Result<Self, IngestError> {
+    pub(super) fn parse_os(value: &std::ffi::OsStr) -> Result<Self, DomainError> {
         match value.to_str() {
             Some(value) => Self::parse(value),
             None => Ok(Self::Local(PathBuf::from(value))),
@@ -92,15 +92,15 @@ impl Source {
     ///
     /// # Errors
     ///
-    /// Returns [`IngestError::UnsupportedSource`] if given an unsupported protocol
-    /// (such as SSH) or [`IngestError::InvalidSource`] if the GitHub URL is malformed.
-    fn parse(value: &str) -> Result<Self, IngestError> {
+    /// Returns [`DomainError::UnsupportedSource`] if given an unsupported protocol
+    /// (such as SSH) or [`DomainError::InvalidSource`] if the GitHub URL is malformed.
+    fn parse(value: &str) -> Result<Self, DomainError> {
         if value.starts_with("http://") || value.starts_with("https://") {
             let (owner, repo) = crate::core::github::parse_github_url(value)?;
             return Self::github(owner, repo, None);
         }
         if value.starts_with("git@") || value.starts_with("ssh://") {
-            return Err(IngestError::unsupported_source(
+            return Err(DomainError::unsupported_source(
                 "only local paths and public HTTPS GitHub URLs are supported",
             ));
         }
@@ -111,13 +111,13 @@ impl Source {
     ///
     /// # Errors
     ///
-    /// Returns [`IngestError::InvalidSource`] if `reference` is [`Some`] when called on a [`Source::Local`] variant,
+    /// Returns [`DomainError::InvalidSource`] if `reference` is [`Some`] when called on a [`Source::Local`] variant,
     /// or if the reference string is empty or only whitespace.
-    pub fn with_reference(self, reference: Option<impl Into<String>>) -> Result<Self, IngestError> {
+    pub fn with_reference(self, reference: Option<impl Into<String>>) -> Result<Self, DomainError> {
         match self {
             Self::Local(_) => {
                 if reference.is_some() {
-                    Err(IngestError::invalid_source(
+                    Err(DomainError::invalid_source(
                         "--ref is only valid for GitHub sources",
                     ))
                 } else {
@@ -201,9 +201,22 @@ pub(crate) struct CollectionResult {
     pub(crate) skipped: usize,
 }
 
+/// Digest label for a local repository root: its final path segment, or `root` when that is
+/// missing, empty, or not UTF-8. The shell extracts `file_name`; this rule decides the fallback.
+pub(crate) fn repository_name(file_name: Option<&str>) -> &str {
+    file_name.filter(|name| !name.is_empty()).unwrap_or("root")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repository_name_falls_back_to_root() {
+        assert_eq!(repository_name(Some("codefeed")), "codefeed");
+        assert_eq!(repository_name(Some("")), "root");
+        assert_eq!(repository_name(None), "root");
+    }
 
     #[test]
     fn git_ref_validates_and_provides_slice_access() {
@@ -217,10 +230,10 @@ mod tests {
         assert!(GitRef::new("   ").is_err());
         assert!(GitRef::new("\t\n").is_err());
         assert!(
-            matches!(GitRef::new("."), Err(IngestError::InvalidSource(m)) if m.contains("--ref cannot be '.' or '..'"))
+            matches!(GitRef::new("."), Err(DomainError::InvalidSource(m)) if m.contains("--ref cannot be '.' or '..'"))
         );
         assert!(
-            matches!(GitRef::new(".."), Err(IngestError::InvalidSource(m)) if m.contains("--ref cannot be '.' or '..'"))
+            matches!(GitRef::new(".."), Err(DomainError::InvalidSource(m)) if m.contains("--ref cannot be '.' or '..'"))
         );
     }
 
@@ -257,17 +270,17 @@ mod tests {
 
         let local_err = local.clone().with_reference(Some("main")).unwrap_err();
         assert!(
-            matches!(local_err, IngestError::InvalidSource(msg) if msg.contains("--ref is only valid for GitHub sources"))
+            matches!(local_err, DomainError::InvalidSource(msg) if msg.contains("--ref is only valid for GitHub sources"))
         );
 
         let local_empty_err = local.with_reference(Some("")).unwrap_err();
         assert!(
-            matches!(local_empty_err, IngestError::InvalidSource(msg) if msg.contains("--ref is only valid for GitHub sources"))
+            matches!(local_empty_err, DomainError::InvalidSource(msg) if msg.contains("--ref is only valid for GitHub sources"))
         );
 
         let gh_empty_err = gh.with_reference(Some("")).unwrap_err();
         assert!(
-            matches!(gh_empty_err, IngestError::InvalidSource(msg) if msg.contains("--ref cannot be empty"))
+            matches!(gh_empty_err, DomainError::InvalidSource(msg) if msg.contains("--ref cannot be empty"))
         );
     }
 

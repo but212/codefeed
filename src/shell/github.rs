@@ -9,10 +9,11 @@ use ureq::typestate::WithoutBody;
 use ureq::{Agent, RequestBuilder};
 use zeroize::Zeroizing;
 
-use crate::core::error::IngestError;
+use super::IngestError;
+use super::error::transport_error;
 use crate::core::github::{
     AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind, api_error,
-    is_github_api_origin, status_retry_warning, tarball_url, transport_error,
+    is_github_api_origin, repository_url, status_retry_warning, tarball_url,
     transport_retry_warning,
 };
 use crate::core::model::CollectionResult;
@@ -92,6 +93,7 @@ impl Attempt {
                     &body_bytes,
                     retry_after,
                 )
+                .into()
             }
             Self::Transport(error) => transport_error(&error.to_string()),
         }
@@ -105,8 +107,9 @@ pub(super) fn collect(
     reference: Option<&str>,
 ) -> Result<CollectionResult, IngestError> {
     let client = GithubClient::new();
-    let reader = client.stream_url(&tarball_url(owner, repo, reference))?;
-    let label = format!("https://github.com/{owner}/{repo}");
+    let url = tarball_url(owner, repo, reference);
+    let reader = client.stream_url(&url)?;
+    let label = repository_url(owner, repo);
     super::archive::collect(reader, &label, reference)
 }
 
@@ -149,12 +152,12 @@ impl GithubClient {
         request.header("X-Github-Api-Version", "2022-11-28")
     }
 
-    fn stream_url(&self, url: &str) -> Result<Box<dyn Read + Send>, IngestError> {
+    fn stream_url(&self, url: &str) -> Result<impl Read + Send, IngestError> {
         let mut attempt_state = AttemptState::new();
         loop {
             let (attempt, outcome) = match self.request(url).call() {
                 Ok(resp) if resp.status().is_success() => {
-                    return Ok(Box::new(resp.into_body().into_reader()));
+                    return Ok(resp.into_body().into_reader());
                 }
                 result => Attempt::from_result(result),
             };
@@ -218,11 +221,13 @@ fn resolve_token_from_env() -> Option<Zeroizing<String>> {
 mod tests {
     use super::*;
     use crate::core::policy::MAX_ATTEMPTS;
+    use crate::shell::testing::gzip_tarball;
     use std::collections::HashMap;
     use std::env::VarError;
     use std::io::Write;
     use std::net::TcpListener;
     use std::thread;
+    use tar::EntryType;
     use ureq::http::StatusCode;
 
     struct MockServer {
@@ -537,5 +542,28 @@ mod tests {
             !req2.to_ascii_lowercase().contains("authorization"),
             "redirected request must not contain authorization header: {req2}"
         );
+    }
+
+    #[test]
+    fn stream_drop_mid_body_is_http() {
+        let gz_bytes = gzip_tarball(&[("repo-root/file.txt", &b"hello"[..], EntryType::Regular)]);
+        let truncated = gz_bytes[..16].to_vec();
+
+        let server = MockServer::spawn(1, move |_index, _req, _port| {
+            let mut response =
+                b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n".to_vec();
+            response.extend_from_slice(&truncated);
+            response
+        });
+
+        let client = GithubClient::new();
+        let url = server.url("/archive");
+        let reader = client.stream_url(&url).expect("200 headers are accepted");
+        let Err(err) = crate::shell::archive::collect(reader, "x", None) else {
+            panic!("expected error");
+        };
+        assert!(matches!(err, IngestError::Http(_)), "{err}");
+
+        server.join();
     }
 }

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use memchr::memchr;
 
-use crate::core::error::IngestError;
+use crate::core::error::DomainError;
 use crate::core::model::CollectionResult;
 use crate::core::policy::{
     MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE, MAX_PATH_BYTES, NormalizedPath, PathStatus,
@@ -30,7 +30,7 @@ struct PendingEntry {
 
 impl PendingEntry {
     /// Evaluates content bytes and either accumulates valid UTF-8 text or marks file as skipped.
-    fn accept(mut self, bytes: &[u8]) -> Result<Selector, IngestError> {
+    fn accept(mut self, bytes: &[u8]) -> Result<Selector, DomainError> {
         match classify_content(bytes) {
             Some(content) => self.selector.add_file(&self.path, content),
             None => {
@@ -69,7 +69,7 @@ struct CandidateBudget {
 
 impl CandidateBudget {
     /// Adds a single observed candidate path to the budget accounting.
-    pub(crate) fn add(mut self, path: &str) -> Result<Self, IngestError> {
+    pub(crate) fn add(mut self, path: &str) -> Result<Self, DomainError> {
         self.count = self.count.saturating_add(1);
         let dir = extract_dir_slice(path);
         if let Some(count) = self.dir_counts.get_mut(dir) {
@@ -84,8 +84,8 @@ impl CandidateBudget {
         Ok(self)
     }
 
-    fn overflow_error(&self) -> IngestError {
-        IngestError::candidate_limit_exceeded(
+    fn overflow_error(&self) -> DomainError {
+        DomainError::candidate_limit_exceeded(
             MAX_FILE_COUNT,
             top_overflow_directories(&self.dir_counts),
         )
@@ -133,17 +133,18 @@ impl Selector {
     ///
     /// # Errors
     ///
-    /// Returns budget or output-limit errors from admission and accumulation, and any error from `read`.
-    pub(crate) fn observe<B: AsRef<[u8]>>(
+    /// Returns budget or output-limit errors from admission and accumulation as `E`, and any
+    /// error from `read` unchanged.
+    pub(crate) fn observe<B: AsRef<[u8]>, E: From<DomainError>>(
         self,
         status: PathStatus,
         size_hint: Option<u64>,
-        read: impl FnOnce() -> Result<Option<B>, IngestError>,
-    ) -> Result<Self, IngestError> {
+        read: impl FnOnce() -> Result<Option<B>, E>,
+    ) -> Result<Self, E> {
         match self.admit(status, size_hint)? {
             Admission::Settled(selector) => Ok(selector),
             Admission::Pending(pending) => match read()? {
-                Some(bytes) => pending.accept(bytes.as_ref()),
+                Some(bytes) => Ok(pending.accept(bytes.as_ref())?),
                 None => Ok(pending.skip()),
             },
         }
@@ -158,7 +159,7 @@ impl Selector {
         mut self,
         status: PathStatus,
         size_hint: Option<u64>,
-    ) -> Result<Admission, IngestError> {
+    ) -> Result<Admission, DomainError> {
         match status {
             PathStatus::Ignored => Ok(Admission::Settled(self)),
             PathStatus::NonUtf8Candidate(path) => {
@@ -181,7 +182,7 @@ impl Selector {
         }
     }
 
-    fn add_file(mut self, path: &NormalizedPath, content: &str) -> Result<Self, IngestError> {
+    fn add_file(mut self, path: &NormalizedPath, content: &str) -> Result<Self, DomainError> {
         self.storage = self.storage.push(path, content);
         // Early fail output bounding check:
         // Accumulated raw arena bytes (path_arena + content_arena) serve as a strict lower
@@ -288,12 +289,12 @@ mod tests {
             selector = selector.observe(
                 PathStatus::Valid(format!("file_{i:02}.txt").into()),
                 None,
-                || Ok(Some(chunk.as_slice())),
+                || Ok::<_, DomainError>(Some(chunk.as_slice())),
             )?;
         }
         let err = selector
             .observe(PathStatus::Valid("overflow.txt".into()), None, || {
-                Ok(Some(chunk.as_slice()))
+                Ok::<_, DomainError>(Some(chunk.as_slice()))
             })
             .unwrap_err();
         let message = err.to_string();
@@ -308,7 +309,8 @@ mod tests {
         let mut selector = Selector::new();
         for i in 0..MAX_FILE_COUNT {
             let path = PathStatus::Valid(format!("file_{i}.txt").into());
-            selector = selector.observe(path, None, || Ok(Some(&b"content"[..])))?;
+            selector =
+                selector.observe(path, None, || Ok::<_, DomainError>(Some(&b"content"[..])))?;
         }
 
         // The 10,001st candidate fails at admission, so its read closure must never run.
@@ -316,12 +318,12 @@ mod tests {
             .observe(
                 PathStatus::Valid("overflow.txt".into()),
                 None,
-                || -> Result<Option<Vec<u8>>, IngestError> {
+                || -> Result<Option<Vec<u8>>, DomainError> {
                     panic!("read must not run past the candidate budget")
                 },
             )
             .unwrap_err();
-        assert!(matches!(err, IngestError::CandidateLimitExceeded(..)));
+        assert!(matches!(err, DomainError::CandidateLimitExceeded(..)));
         Ok(())
     }
 
@@ -342,8 +344,9 @@ mod tests {
             ("gone.txt", None, 0, 1),
         ];
         for (path, content, included, skipped) in cases {
-            let selector =
-                Selector::new().observe(PathStatus::Valid(path.into()), None, || Ok(content))?;
+            let selector = Selector::new().observe(PathStatus::Valid(path.into()), None, || {
+                Ok::<_, DomainError>(content)
+            })?;
             let collection = selector.finish("test".into(), None);
             assert_eq!(collection.files.len(), included, "{path}");
             assert_eq!(collection.skipped, skipped, "{path}");
@@ -371,7 +374,7 @@ mod tests {
             let selector = Selector::new().observe(
                 status,
                 size_hint,
-                || -> Result<Option<Vec<u8>>, IngestError> {
+                || -> Result<Option<Vec<u8>>, DomainError> {
                     panic!("read must not run for settled candidates")
                 },
             )?;
@@ -385,11 +388,22 @@ mod tests {
 
     #[test]
     fn observe_propagates_read_errors() {
+        #[derive(Debug, PartialEq)]
+        enum TestError {
+            Read,
+            Domain,
+        }
+        impl From<DomainError> for TestError {
+            fn from(_: DomainError) -> Self {
+                Self::Domain
+            }
+        }
+
         let err = Selector::new()
             .observe(PathStatus::Valid("a.txt".into()), None, || {
-                Err::<Option<Vec<u8>>, _>(IngestError::Io(std::io::Error::other("read failed")))
+                Err::<Option<Vec<u8>>, _>(TestError::Read)
             })
             .unwrap_err();
-        assert!(matches!(err, IngestError::Io(_)));
+        assert_eq!(err, TestError::Read);
     }
 }

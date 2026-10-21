@@ -4,16 +4,19 @@
 //! core in `crate::core`.
 
 use crate::{
-    IngestError, IngestReport, OutputTarget, RunConfig, Source,
+    IngestReport, OutputTarget, RunConfig, Source,
     core::cli::{CliAction, completion_message, help_text, parse},
 };
 
 mod archive;
+mod error;
 mod github;
 mod local;
 mod output;
 #[cfg(test)]
 mod testing;
+
+pub use error::IngestError;
 
 /// Executes the end-to-end repository ingestion pipeline.
 ///
@@ -29,7 +32,7 @@ pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
     let resolved_output = output::resolve_output_target(&config.output)?;
 
     let collection = match &config.source {
-        Source::Local(path) => local::collect(path, resolved_output.as_deref())?,
+        Source::Local(path) => local::collect(path, &resolved_output)?,
         Source::Github {
             owner,
             repo,
@@ -38,7 +41,7 @@ pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
     };
 
     let rendered = collection.render(config.format)?;
-    output::deliver(resolved_output.as_deref(), &rendered.bytes)?;
+    output::deliver(&resolved_output, &rendered.bytes)?;
 
     Ok(rendered.into_report(config.output.clone()))
 }
