@@ -65,13 +65,13 @@ pub(super) fn collect(
 
     let selector = std::thread::scope(|s| {
         s.spawn(|| {
-            let mut builder = LocalVisitorBuilder {
+            let mut visitor = LocalVisitor {
                 root: &canonical_root,
                 resolved_output,
                 tx,
                 aborted: &aborted,
             };
-            walker.visit(&mut builder);
+            walker.visit(&mut visitor);
         });
 
         drain_channel(rx, &aborted)
@@ -80,29 +80,19 @@ pub(super) fn collect(
     Ok(selector.finish(label, None))
 }
 
-struct LocalVisitorBuilder<'a> {
-    root: &'a Path,
-    resolved_output: Option<&'a Path>,
-    tx: std::sync::mpsc::SyncSender<WorkerMsg>,
-    aborted: &'a AtomicBool,
-}
-
-impl<'s> ignore::ParallelVisitorBuilder<'s> for LocalVisitorBuilder<'s> {
-    fn build(&mut self) -> Box<dyn ignore::ParallelVisitor + 's> {
-        Box::new(LocalVisitor {
-            root: self.root,
-            resolved_output: self.resolved_output,
-            tx: self.tx.clone(),
-            aborted: self.aborted,
-        })
-    }
-}
-
+/// Walker visitor. `build` clones it per worker thread; every clone shares the channel sender and abort flag.
+#[derive(Clone)]
 struct LocalVisitor<'a> {
     root: &'a Path,
     resolved_output: Option<&'a Path>,
     tx: std::sync::mpsc::SyncSender<WorkerMsg>,
     aborted: &'a AtomicBool,
+}
+
+impl<'s> ignore::ParallelVisitorBuilder<'s> for LocalVisitor<'s> {
+    fn build(&mut self) -> Box<dyn ignore::ParallelVisitor + 's> {
+        Box::new(self.clone())
+    }
 }
 
 impl LocalVisitor<'_> {
