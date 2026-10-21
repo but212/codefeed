@@ -194,6 +194,7 @@ pub struct IngestReport {
 
 /// Raw files and metadata collected by the shell before digest rendering.
 #[derive(Debug, Clone)]
+#[must_use]
 pub(crate) struct CollectionResult {
     pub(crate) label: String,
     pub(crate) revision: Option<String>,
@@ -323,9 +324,26 @@ mod tests {
             "https://github.com/../repo",
             "https://github.com:99999/owner/repo",
             "https://github.com:abc/owner/repo",
+            "https://github.com:8080/owner/repo",
+            "https://tok@github.com/owner/repo",
+            "https://tok@github.com:abc/owner/repo",
         ];
         for url in invalid_cases {
             assert!(Source::parse(url).is_err(), "expected error for: {url}");
+        }
+    }
+
+    #[test]
+    fn credential_rejection_does_not_echo_the_url() {
+        for url in [
+            "https://tok@github.com/owner/repo",
+            "https://tok@github.com:abc/owner/repo",
+        ] {
+            let Err(error) = Source::parse(url) else {
+                panic!("expected error for: {url}");
+            };
+            let message = error.to_string();
+            assert!(!message.contains("tok"), "credentials leaked: {message}");
         }
     }
 

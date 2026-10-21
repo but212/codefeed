@@ -2,6 +2,7 @@
 
 use std::fmt::{Display, Formatter, Result};
 use std::io;
+use std::path::Path;
 
 use crate::core::error::DomainError;
 use crate::core::github::sanitize_error_detail;
@@ -17,6 +18,8 @@ pub enum IngestError {
     Io(io::Error),
     /// Network transport or connection failure contacting GitHub.
     Http(String),
+    /// GitHub returned a non-success HTTP status.
+    Api(String),
 }
 
 impl Display for IngestError {
@@ -25,6 +28,7 @@ impl Display for IngestError {
             Self::Domain(error) => write!(f, "{error}"),
             Self::Io(error) => write!(f, "filesystem error: {error}"),
             Self::Http(message) => write!(f, "GitHub request failed: {message}"),
+            Self::Api(message) => write!(f, "GitHub API error: {message}"),
         }
     }
 }
@@ -41,6 +45,14 @@ impl From<io::Error> for IngestError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
     }
+}
+
+/// I/O failure on `path`. Keeps the error kind and names the path, which a bare `io::Error` drops.
+pub(crate) fn io_error_at(path: &Path, err: io::Error) -> IngestError {
+    IngestError::Io(io::Error::new(
+        err.kind(),
+        format!("{}: {err}", path.display()),
+    ))
 }
 
 /// Error for a transport failure. `error_text` is the transport error's `Display`.
@@ -66,6 +78,10 @@ mod tests {
     fn display_matches_each_variant() {
         let limit_mib = MAX_OUTPUT_SIZE / (1024 * 1024);
         let cases: [(IngestError, String); 9] = [
+            (
+                IngestError::Api("boom".into()),
+                "GitHub API error: boom".into(),
+            ),
             (DomainError::usage("bad flag").into(), "bad flag".into()),
             (
                 DomainError::candidate_limit_exceeded(MAX_FILE_COUNT, vec![("src/".into(), 3)])
@@ -81,10 +97,6 @@ mod tests {
             (
                 DomainError::unsupported_source("ssh").into(),
                 "unsupported source: ssh".into(),
-            ),
-            (
-                DomainError::api("boom").into(),
-                "GitHub API error: boom".into(),
             ),
             (
                 DomainError::invalid_metadata("bad").into(),

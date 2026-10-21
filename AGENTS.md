@@ -1,43 +1,46 @@
 # AGENTS.md
 
-Read `context.md`, `README.md`, `docs/coding_convention.md`, and `docs/security_and_filtering.md` before changing code. Do not duplicate domain terms, limits, or module maps here.
+**Audience:** coding agents working in this repository.
 
-## 1. Verify
+This file holds workflow rules only. Each rule points to the document that explains it.
 
-- **Lint & Check:** `cargo clippy --all-targets -- -D warnings`
-- **Format:** `cargo fmt --check`
-- **Documentation:** `cargo doc --no-deps`
-- **Test:** `cargo test` (or `cargo test <name>`)
+## 1. Read First
 
-## 2. Code
+Before changing code, read these four documents:
 
-### FCIS Boundary
+1. [`context.md`](context.md): domain terms, invariants, and the functional-core / imperative-shell boundary.
+2. [`README.md`](README.md): the user-visible CLI and output contract.
+3. [`docs/coding_convention.md`](docs/coding_convention.md): Rust rules.
+4. [`docs/security_and_filtering.md`](docs/security_and_filtering.md): exclusion rules and filesystem and network safety.
 
-- `src/core/`: Pure logic and referential transparency only. Functions are immutable. State transitions use consuming ownership moves (`self` -> `Self` / linear typestates); `&mut self` is forbidden. No `std::fs`, `std::net`, `std::env`, `SystemTime`, `eprintln!`, `crate::shell` imports, interior mutability (`Cell`/`Atomic`/`Mutex`), `static mut`, or `unsafe`. Pass parameters as deterministic values (e.g., `retry_delay(attempt)`). Closed exception list: `std::fmt::Display::fmt`, function-local stack variables (`let mut`), and owned value parameters (`mut self` / `mut val`). Any `&mut` reference parameter (including `&mut self`) is forbidden outside `std::fmt::Display::fmt`.
-- `src/shell/`: Side effects only. Feed each candidate to `Selector::observe` and delegate storage/decisions to `src/core/`.
+## 2. Verify
 
-### Memory & Dependencies
+Run all four before reporting a code change as done. Run them in this order:
 
-- Store paths and contents in contiguous `FileStorage` arenas (`path_arena`, `content_arena`) indexed by 16-byte `FileSpan`. Provides zero-copy `FileRecord<'a>` borrowed views throughout ingestion and in-place lexicographical sorting (`sort_by_path`) without reallocating string data.
-- Keep data structures direct and minimal; avoid speculative micro-optimizations.
-- Render output into pure in-memory `BoundedBuffer` returning `RenderedDigest` using single-pass escape helper (`write_escaped`) with format-specific rules (`escape_header`, `escape_xml_body`, `escape_xml_single_line`).
-- Default to `std`. Add external crates only when in-tree maintenance introduces disproportionate complexity or security risk (e.g., `ignore` for `.gitignore`, `ureq` for HTTP). Crates already transitively included in the dependency graph by required dependencies may also qualify as direct candidates when justified. Document rationale as an inline comment in `Cargo.toml`.
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo fmt --check`
+- `cargo doc --no-deps`
+- `cargo test` (or `cargo test <name>`)
 
-### OS & Network Safety
+Report failures with their output. Do not report a step as passing if it was not run.
 
-- **Local collection (`src/shell/local.rs`):** Parallel producer-consumer pipeline via `ignore::WalkParallel` and bounded `sync_channel(128)` inside `std::thread::scope`. Workers inspect `fs::symlink_metadata` and read bounded content concurrently; main thread feeds linear `Selector`. Never follow symlinks; preserve deterministic order via `SortedFiles` (`cmp_path`); cancel immediately via `AtomicBool` on error.
-- **File writes (`src/shell/output.rs`):** Write through `AtomicFile` with inner `TempFile` RAII guard (closing OS handle before unlink on `Drop`), preserving existing target permissions and syncing parent directory on Unix commit.
-- **HTTP (`src/shell/github.rs`):** Keep `RedirectAuthHeaders::Never` and gate `Authorization` with `is_github_api_origin(url)`.
+## 3. Hard Rules
 
-## 3. Test
+- **Core purity and the `#[must_use]` rule** follow [coding convention §3](docs/coding_convention.md#3-architecture-functional-core-imperative-shell).
+- **Limits and lists** are defined only in `src/core/policy.rs`. Code reads the constant and never copies its value. Limit values are stated only in [security §8](docs/security_and_filtering.md#8-limit-values); other documents link there. When a value changes, update `policy.rs` and §8 in the same change.
+- **Filesystem and network rules** are in [coding convention §5](docs/coding_convention.md#5-os-and-network-rules-at-the-code-level) and [security §5–6](docs/security_and_filtering.md). They are not optional.
+- **Filters and limits move together.** A change to `policy.rs` updates [security §3–4 and §8](docs/security_and_filtering.md#3-exclusion-lists) in the same change.
+- **Behavior changes are logged** under `## [Unreleased]` in `CHANGELOG.md`.
 
-- Use table-driven slice fixtures (`let cases = [...]`) over repetitive test functions.
-- Test `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` in memory via `Selector` / `CandidateBudget`, not disk loops.
-- Use `crate::shell::testing::temp_dir("label")` (`TempDirGuard`) for unit tests in `src/`. Integration tests in `tests/` maintain a local `TempDir` helper.
-- Mock HTTP with local `TcpListener` (`127.0.0.1:0`) threads (via `MockServer` helper in `src/shell/github.rs`).
+## 4. Where Changes Go
 
-## 4. Sync
-
-- **Limits / exclusions / domain types:** Single source of truth is `src/core/policy.rs`. Reference it rather than duplicating constants across documents.
-- **CLI flags / exit codes:** Update `src/core/cli.rs`, `tests/cli.rs`, `README.md`.
-- **Behavior / architecture:** Update `CHANGELOG.md` under `## [Unreleased]`.
+| Change | Update |
+| :--- | :--- |
+| Limit, exclusion list, or domain type | `src/core/policy.rs` (authority), `docs/security_and_filtering.md` §3–4 and §8 |
+| CLI flag or option-value rule | `src/core/cli.rs`, `tests/cli.rs`, `README.md` |
+| Exit code | `src/shell/mod.rs` (`run_cli`), `tests/cli.rs`, `README.md` |
+| Output format | `src/core/render/`, `README.md` (Output), `context.md` §3.5 |
+| Domain invariant or module boundary | `context.md` |
+| Security, filesystem, or network behavior | `docs/security_and_filtering.md` |
+| Rust coding rule | `docs/coding_convention.md` |
+| Any behavior change | `CHANGELOG.md` under `## [Unreleased]` |

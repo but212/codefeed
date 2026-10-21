@@ -13,6 +13,7 @@ pub(crate) const fn help_text() -> &'static str {
 }
 
 /// One-line summary of a finished run, naming where the digest went.
+#[must_use]
 pub(crate) fn completion_message(report: &IngestReport) -> String {
     let included = report.included_files;
     let skipped = report.skipped_files;

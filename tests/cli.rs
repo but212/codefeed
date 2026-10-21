@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static CLI_TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -391,6 +391,24 @@ pub mod deep;
 }
 
 #[test]
+fn file_output_bytes_match_stdout_bytes() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new("file_matches_stdout");
+    let root = temp.path.join("fixture");
+    std::fs::create_dir_all(root.join("src"))?;
+    std::fs::write(root.join("src/lib.rs"), "pub fn lib() {}\n")?;
+    let root = root.to_str().expect("UTF-8 temp path");
+    let output = temp.path.join("digest.txt");
+    let output = output.to_str().expect("UTF-8 temp path");
+
+    let stdout = run(&[root, "-o", "-"]);
+    assert!(stdout.status.success(), "output: {stdout:?}");
+    let file = run(&[root, "-o", output]);
+    assert!(file.status.success(), "output: {file:?}");
+    assert_eq!(std::fs::read(output)?, stdout.stdout);
+    Ok(())
+}
+
+#[test]
 fn ingest_fails_fast_on_directory_output_target() {
     let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
         .args(["--output", ".", "."])
@@ -405,4 +423,26 @@ fn ingest_fails_fast_on_directory_output_target() {
             || stderr.contains("Is a directory"),
         "unexpected stderr: {stderr}"
     );
+}
+
+#[test]
+fn closed_output_pipes_do_not_panic() {
+    let fixture = TempDir::new("closed_pipe");
+    std::fs::write(fixture.path.join("a.txt"), "hello\n").expect("fixture should be written");
+    let fixture_arg = fixture.path.to_str().expect("temp path should be UTF-8");
+
+    // Each run closes both pipes before the CLI writes, so every write sees a broken pipe.
+    let cases: [(&[&str], i32); 2] = [(&[fixture_arg, "-o", "-"], 0), (&["--bogus"], 1)];
+    for (args, expected_code) in cases {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("CLI process should start");
+        drop(child.stdout.take());
+        drop(child.stderr.take());
+        let status = child.wait().expect("CLI process should exit");
+        assert_eq!(status.code(), Some(expected_code), "args={args:?}");
+    }
 }

@@ -9,6 +9,7 @@ use crate::{
 };
 
 mod archive;
+mod atomic;
 mod error;
 mod github;
 mod local;
@@ -58,7 +59,7 @@ where
     let action = match parse(args) {
         Ok(action) => action,
         Err(error) => {
-            eprintln!("error: {error}");
+            output::write_stderr_line(&format!("error: {error}"));
             return 1;
         }
     };
@@ -76,13 +77,13 @@ where
                         output::write_stdout_line(&message);
                     }
                     OutputTarget::Stdout => {
-                        eprintln!("{message}");
+                        output::write_stderr_line(&message);
                     }
                 }
                 0
             }
             Err(error) => {
-                eprintln!("error: {error}");
+                output::write_stderr_line(&format!("error: {error}"));
                 1
             }
         },

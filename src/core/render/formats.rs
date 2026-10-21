@@ -316,6 +316,7 @@ hello\n\
                     &crate::core::policy::NormalizedPath::from(f.path),
                     f.content,
                 )
+                .expect("test fixture fits the output limit")
             },
         );
         let collection = CollectionResult {

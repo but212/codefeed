@@ -11,6 +11,7 @@ use zeroize::Zeroizing;
 
 use super::IngestError;
 use super::error::transport_error;
+use super::output;
 use crate::core::github::{
     AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind, api_error,
     is_github_api_origin, repository_url, status_retry_warning, tarball_url,
@@ -71,7 +72,7 @@ impl Attempt {
                 transport_retry_warning(&error.to_string(), count, url, delay)
             }
         };
-        eprintln!("{message}");
+        output::write_stderr_line(&message);
     }
 
     fn into_error(self) -> IngestError {
@@ -87,13 +88,12 @@ impl Attempt {
                     .into_reader()
                     .take(4096)
                     .read_to_end(&mut body_bytes);
-                api_error(
+                IngestError::Api(api_error(
                     status.as_u16(),
                     &status.to_string(),
                     &body_bytes,
                     retry_after,
-                )
-                .into()
+                ))
             }
             Self::Transport(error) => transport_error(&error.to_string()),
         }
@@ -434,6 +434,7 @@ mod tests {
         let Err(err) = client.stream_url(&url) else {
             panic!("expected error");
         };
+        assert!(matches!(err, IngestError::Api(_)), "{err}");
         assert!(err.to_string().contains("404"));
 
         let (_, connections) = server.join();

@@ -4,10 +4,11 @@
 //! for paths and contents, indexed by compact 16-byte [`FileSpan`] records.
 
 use std::cmp::Ordering;
+use std::iter::once;
 use std::ops::Deref;
 
 use crate::core::error::DomainError;
-use crate::core::policy::NormalizedPath;
+use crate::core::policy::{MAX_OUTPUT_SIZE, NormalizedPath};
 
 /// 16-byte POD indexing a file path and content slice in [`FileStorage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -45,6 +46,7 @@ pub(crate) struct FileRecord<'a> {
 
 /// Wrapper guaranteeing that [`FileStorage`] is sorted component-wise lexicographically by path.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[must_use]
 pub(crate) struct SortedFiles(FileStorage);
 
 impl SortedFiles {
@@ -106,18 +108,30 @@ impl FileStorage {
 
     /// Appends path and content to the arenas and records a [`FileSpan`].
     ///
-    /// Arena offset fit (`u32::MAX`) is statically guaranteed by `policy.rs` constant assertion
-    /// `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX` and post-push size checks in `Selector::add_file`.
-    pub(crate) fn push(mut self, path: &NormalizedPath, content: &str) -> Self {
+    /// # Errors
+    ///
+    /// Returns [`DomainError::OutputTooLarge`] without modifying storage when the raw arena bytes
+    /// would exceed `MAX_OUTPUT_SIZE`. The rejected candidate is included in the largest-file diagnostics.
+    pub(crate) fn push(
+        mut self,
+        path: &NormalizedPath,
+        content: &str,
+    ) -> Result<Self, DomainError> {
         let path = path.as_str();
-        let path_offset =
-            u32::try_from(self.path_arena.len()).expect("path_arena length fits in u32");
-        let path_len = u32::try_from(path.len()).expect("path length fits in u32");
+        if self.total_bytes() + path.len() as u64 + content.len() as u64 > MAX_OUTPUT_SIZE {
+            let candidate = FileRecord { path, content };
+            return Err(DomainError::output_too_large(largest_files(
+                self.iter().chain(once(candidate)),
+            )));
+        }
+        // Accepted total is at most `MAX_OUTPUT_SIZE`, which `policy.rs` asserts is `<= u32::MAX`,
+        // so every arena offset and length below fits in `u32`.
+        let path_offset = self.path_arena.len() as u32;
+        let path_len = path.len() as u32;
         self.path_arena.push_str(path);
 
-        let content_offset =
-            u32::try_from(self.content_arena.len()).expect("content_arena length fits in u32");
-        let content_len = u32::try_from(content.len()).expect("content length fits in u32");
+        let content_offset = self.content_arena.len() as u32;
+        let content_len = content.len() as u32;
         self.content_arena.push_str(content);
 
         let span = FileSpan {
@@ -127,7 +141,7 @@ impl FileStorage {
             content_len,
         };
         self.spans.push(span);
-        self
+        Ok(self)
     }
 
     /// Resolves a [`FileSpan`] into a borrowed [`FileRecord`].
@@ -153,7 +167,9 @@ impl FileStorage {
 impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
     fn from_iter<T: IntoIterator<Item = FileRecord<'a>>>(iter: T) -> Self {
         iter.into_iter().fold(Self::new(), |storage, record| {
-            storage.push(&NormalizedPath::from(record.path), record.content)
+            storage
+                .push(&NormalizedPath::from(record.path), record.content)
+                .expect("test fixture fits the output limit")
         })
     }
 }
@@ -252,13 +268,13 @@ mod tests {
     }
 
     #[test]
-    fn file_storage_maintains_continuous_arena_and_zero_copy_views() {
+    fn file_storage_maintains_continuous_arena_and_zero_copy_views() -> Result<(), DomainError> {
         let storage = FileStorage::new()
             .push(
                 &NormalizedPath::from("path/to/first.rs"),
                 "pub fn first() {}",
-            )
-            .push(&NormalizedPath::from("second.txt"), "second content\n");
+            )?
+            .push(&NormalizedPath::from("second.txt"), "second content\n")?;
 
         assert_eq!(storage.len(), 2);
 
@@ -287,28 +303,56 @@ mod tests {
         // FromIterator verification
         let reconstructed: FileStorage = collected.into_iter().collect();
         assert_eq!(reconstructed, storage);
+        Ok(())
     }
 
     #[test]
-    fn file_storage_sorts_by_path_in_place() {
+    fn file_storage_sorts_by_path_in_place() -> Result<(), DomainError> {
         let storage = FileStorage::new()
-            .push(&NormalizedPath::from("z/file.rs"), "content_z")
-            .push(&NormalizedPath::from("a/file.rs"), "content_a")
-            .push(&NormalizedPath::from("m/file.rs"), "content_m")
+            .push(&NormalizedPath::from("z/file.rs"), "content_z")?
+            .push(&NormalizedPath::from("a/file.rs"), "content_a")?
+            .push(&NormalizedPath::from("m/file.rs"), "content_m")?
             .sort_by_path();
 
         let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
         assert_eq!(paths, vec!["a/file.rs", "m/file.rs", "z/file.rs"]);
+        Ok(())
     }
 
     #[test]
-    fn file_storage_sorts_hierarchically() {
+    fn file_storage_sorts_hierarchically() -> Result<(), DomainError> {
         let storage = FileStorage::new()
-            .push(&NormalizedPath::from("src-test/b.rs"), "content_b")
-            .push(&NormalizedPath::from("src/a.rs"), "content_a")
+            .push(&NormalizedPath::from("src-test/b.rs"), "content_b")?
+            .push(&NormalizedPath::from("src/a.rs"), "content_a")?
             .sort_by_path();
 
         let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
         assert_eq!(paths, vec!["src/a.rs", "src-test/b.rs"]);
+        Ok(())
+    }
+
+    #[test]
+    fn push_enforces_output_limit_at_boundary() {
+        let path = NormalizedPath::from("big.txt");
+        let fill = MAX_OUTPUT_SIZE as usize - path.len();
+        // (content length, expected to fit)
+        let cases = [(fill, true), (fill + 1, false)];
+        for (content_len, fits) in cases {
+            let content = "x".repeat(content_len);
+            match FileStorage::new().push(&path, &content) {
+                Ok(storage) => {
+                    assert!(fits, "content length {content_len} must be rejected");
+                    assert_eq!(storage.total_bytes(), MAX_OUTPUT_SIZE);
+                }
+                Err(DomainError::OutputTooLarge(largest)) => {
+                    assert!(!fits, "content length {content_len} must fit");
+                    assert!(
+                        largest.iter().any(|(p, _)| p == "big.txt"),
+                        "rejected candidate must appear in diagnostics"
+                    );
+                }
+                Err(other) => panic!("expected OutputTooLarge, got {other:?}"),
+            }
+        }
     }
 }

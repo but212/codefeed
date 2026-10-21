@@ -6,9 +6,7 @@ use memchr::memchr;
 
 use crate::core::error::DomainError;
 use crate::core::model::CollectionResult;
-use crate::core::policy::{
-    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_OUTPUT_SIZE, MAX_PATH_BYTES, NormalizedPath, PathStatus,
-};
+use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, PathStatus};
 use crate::core::storage::{FileStorage, SortedFiles};
 
 /// UTF-8 text predicate: NUL-free bytes within size limit, returning string slice.
@@ -73,6 +71,7 @@ fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String,
 /// Pure per-item selection and budget accounting. Owns no I/O; the shell feeds
 /// observations and reads the outcome through [`Selector::finish`].
 #[derive(Debug)]
+#[must_use]
 pub(crate) struct Selector {
     storage: FileStorage,
     candidates: CandidateBudget,
@@ -122,7 +121,12 @@ impl Selector {
         }
         let bytes = read()?;
         match bytes.as_ref().and_then(|b| classify_content(b.as_ref())) {
-            Some(content) => Ok(self.add_file(&path, content)?),
+            Some(content) => {
+                // Raw arena bytes are a strict lower bound for the rendered digest size, so
+                // `push` rejects over-limit content before the final rendering pass.
+                self.storage = self.storage.push(&path, content)?;
+                Ok(self)
+            }
             None => Ok(self.skip()),
         }
     }
@@ -130,18 +134,6 @@ impl Selector {
     fn skip(mut self) -> Self {
         self.skipped = self.skipped.saturating_add(1);
         self
-    }
-
-    fn add_file(mut self, path: &NormalizedPath, content: &str) -> Result<Self, DomainError> {
-        self.storage = self.storage.push(path, content);
-        // Early fail output bounding check:
-        // Accumulated raw arena bytes (path_arena + content_arena) serve as a strict lower
-        // bound for final rendered digest size (rendered_bytes >= raw_bytes). Checking here
-        // aborts ingestion early to save memory and I/O before final rendering pass.
-        if self.storage.total_bytes() > MAX_OUTPUT_SIZE {
-            return Err(self.storage.output_too_large_error());
-        }
-        Ok(self)
     }
 
     /// Finalizes selection, sorting files lexicographically in-place, and returns a [`CollectionResult`].

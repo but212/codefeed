@@ -23,8 +23,6 @@ pub enum DomainError {
     InvalidSource(String),
     /// Source scheme or host is unsupported (e.g. non-GitHub remote or SSH).
     UnsupportedSource(String),
-    /// GitHub HTTP error response or rate limit exceeded.
-    Api(String),
     /// Repository metadata or API response payload is malformed.
     InvalidMetadata(String),
     /// Rendered digest exceeds the maximum allowed output size.
@@ -62,12 +60,6 @@ impl DomainError {
         Self::UnsupportedSource(message.into())
     }
 
-    /// Constructs an [`Api`](Self::Api) error from a descriptive message.
-    #[cold]
-    pub(crate) fn api(message: impl Into<String>) -> Self {
-        Self::Api(message.into())
-    }
-
     /// Constructs an [`InvalidMetadata`](Self::InvalidMetadata) error from a descriptive message.
     #[cold]
     pub(crate) fn invalid_metadata(message: impl Into<String>) -> Self {
@@ -98,7 +90,6 @@ impl Display for DomainError {
             }
             Self::InvalidSource(message) => write!(f, "invalid source: {message}"),
             Self::UnsupportedSource(message) => write!(f, "unsupported source: {message}"),
-            Self::Api(message) => write!(f, "GitHub API error: {message}"),
             Self::InvalidMetadata(message) => write!(f, "invalid repository metadata: {message}"),
             Self::OutputTooLarge(largest_files) => {
                 let limit_mib = MAX_OUTPUT_SIZE / (1024 * 1024);

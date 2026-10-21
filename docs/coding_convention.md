@@ -1,195 +1,148 @@
 # Coding Conventions
 
-Project-wide coding standards and API design principles for `codefeed`. Combines Rust API Guidelines with project architecture, memory, and safety contracts.
+**Audience:** contributors writing Rust in this repository.
+
+**Scope:** Rust API Guidelines plus this project's architecture, memory, and safety rules. Domain behavior is in [`context.md`](../context.md). Filter and safety rules are in [`security_and_filtering.md`](security_and_filtering.md). Verification commands are in [`AGENTS.md`](../AGENTS.md) §2.
 
 ---
 
-## 1. Naming & Case Conventions (Rust API Guidelines: `C-CASE`, `C-GETTER`, `C-CTOR`, `C-ITER`)
+## 1. Naming
 
-### Case Conventions (`C-CASE`, RFC 430)
+### 1.1 Case (`C-CASE`, RFC 430)
 
 | Item | Convention | Example |
 | :--- | :--- | :--- |
-| Crates | `snake_case` (prefer single word) | `codefeed` |
-| Modules, files | `snake_case` | `selector`, `storage` |
-| Types, traits, enums, variants | `UpperCamelCase` | `FileRecord`, `Option::Some` |
+| Crates, modules, files | `snake_case` | `selector`, `storage` |
+| Types, traits, enums, variants | `UpperCamelCase` | `FileRecord`, `Source::Github` |
 | Functions, methods, variables | `snake_case` | `render_text`, `path_arena` |
-| Static items, constants | `SCREAMING_SNAKE_CASE` | `MAX_FILE_COUNT`, `MAX_OUTPUT_SIZE` |
+| Constants and statics | `SCREAMING_SNAKE_CASE` | `MAX_FILE_COUNT` |
 | Type parameters | Concise `UpperCamelCase` | `T`, `W: Write` |
-| Lifetimes | Short `lowercase` | `'a`, `'de` |
-| Features | `kebab-case` | `platform-verifier` |
+| Lifetimes | Short lowercase | `'a`, `'de` |
+| Cargo features | `kebab-case` | `platform-verifier` |
 
-### Fine Points from RFC 430
+- **Acronyms** count as one word in `UpperCamelCase`: `Uuid`, `HttpServer`, `GithubClient`. In `snake_case` they are lowercase: `sha`, `is_xid_start`.
+- **Single letters** are not used as words in `snake_case` or `SCREAMING_SNAKE_CASE`, except as the last word: `btree_map`, `PI_2`.
 
-- **Acronyms and Initialisms:**
-  - In `UpperCamelCase`, acronyms and compound brand names count as a single word (`Uuid`, `HttpServer`, `GithubClient`, `Source::Github` — never `UUID`, `HTTPServer`, `GitHubClient`, `Source::GitHub`).
-  - In `snake_case`, acronyms are lowercased (`is_xid_start`, `sha`).
-- **Single-Letter Words:**
-  - In `snake_case` or `SCREAMING_SNAKE_CASE`, never use single-letter words unless it is the final word (`btree_map` over `b_tree_map`; `PI_2` over `PI2`).
+### 1.2 Methods and Types (`C-GETTER`, `C-CTOR`, `C-ITER`)
 
-### Idiomatic Method & Function Naming
-
-- **Getters & Setters (`C-GETTER`):**
-  - Omit `get_` prefix on getters: `field(&self) -> &Field`.
-  - Mutable borrow getters use `_mut` suffix: `field_mut(&mut self) -> &mut Field` (shell layer only; `&mut self` is forbidden in `src/core/`).
-  - Prefix with `get_` only when lookup by key or runtime search is performed (`get(&self, key)`).
-  - Prefix setters with `set_`: `set_field(&mut self, val: Field)` (shell layer only; `&mut self` is forbidden in `src/core/`).
-
-- **Constructors & Builders (`C-CTOR`, RFC 430):**
-  - Default constructor: `new(...) -> Self`.
-  - Additional constructors use descriptive prefixes: `with_capacity(...)`, `with_more_details(...)`.
-  - Conversion constructors: `from_...(...)` (`from_raw`, `from_utf8`).
-  - Fluent builder configuration methods use `with_` or verb/adjective names directly without redundant prefixes.
-
-- **Unwrapping & Panic-Free Extraction (RFC 430):**
-  - Reserve `unwrap()` strictly for assertions on `Option` and `Result` where failure explicitly panics.
-  - Non-panicking resource extraction must use `into_inner()` (wrappers) or `into_foo()` (concrete target types), never `unwrap()`.
-
-- **Iterators (`C-ITER`):**
-  - Shared reference iterator: `iter(&self) -> Iter`.
-  - Mutable reference iterator: `iter_mut(&mut self) -> IterMut` (shell layer only; `&mut self` is forbidden in `src/core/`).
-  - Consuming iterator: `into_iter(self) -> IntoIter` (via `IntoIterator`).
-
-- **Predicates & Booleans:**
-  - Use descriptive boolean prefixes: `is_empty()`, `has_children()`, `can_read()`.
-  - Avoid negative forms in identifiers (`!is_empty()` over `is_not_empty`).
-
-- **Standard Abbreviations:**
-  - Standard abbreviations: `id`, `url`, `len`, `src`, `dst`, `err`.
-  - Prefer established Rust naming idioms (`len()` over `length()`, `iter()` over `iterator()`).
-  - Do not abbreviate domain terms outside the established list (`extension` / `extensions` over `ext`, e.g., `SENSITIVE_EXTENSIONS`).
-
-- **Brevity vs. Explicitness:**
-  - **No Cryptic Truncation:** Never truncate identifiers to the point of losing domain semantics (avoid `chk_vld_pt()`, `cnt_buf`; use `is_valid_path()`, `buffer_count`).
-  - **No Redundant Verbosity:** Eliminate context already conveyed by the enclosing module, type, or scope (`file_record.path` over `file_record.file_record_path`, `cli::parse()` over `cli::parse_cli()`, `source::parse()` over `source::parse_source()`, `local::collect()` over `local::collect_local()`).
-  - **Direct Intent:** Prefer concise, self-documenting identifiers over paragraph-style names or unnecessary helper wrappers.
+- Getters omit `get_`: `field(&self) -> &Field`. Use `get_` only for lookup by key: `get(&self, key)`.
+- Mutable getters use `_mut`. Setters use `set_`. Both are shell-only, because `&mut self` is forbidden in `src/core/`.
+- Constructors: `new(...)` for the default constructor. Others use descriptive prefixes (`with_capacity`). Conversion constructors use `from_...` (`from_utf8`).
+- Iterators: `iter(&self)`, `iter_mut(&mut self)` (shell-only), and `into_iter(self)`.
+- Predicates use a descriptive prefix (`is_empty`, `has_children`). Avoid negative names: `is_empty`, not `is_not_empty`.
+- Non-panicking extraction uses `into_inner()` or `into_foo()`, never `unwrap()`.
+- Use established abbreviations only: `id`, `url`, `len`, `src`, `dst`, `err`. Domain terms are spelled out: `extension`, not `ext`.
+- Do not truncate identifiers until they lose meaning (`is_valid_path`, not `chk_vld_pt`). Do not repeat the enclosing scope (`cli::parse`, not `cli::parse_cli`).
 
 ---
 
-## 2. Conversion Methods (`C-CONV`, `C-CONV-TRAITS`, `C-CONV-SPECIFIC`)
+## 2. Conversions (`C-CONV`)
 
-Ad-hoc conversions follow strict naming, ownership, and cost contracts:
-
-| Prefix | Cost | Ownership Transition | Receiver | Guideline |
+| Prefix | Cost | Ownership | Receiver | Meaning |
 | :--- | :--- | :--- | :--- | :--- |
-| `as_` | Free ($O(1)$) | Borrowed $\rightarrow$ Borrowed | `&self` or `&mut self` | Returns zero-cost borrowed view or slice |
-| `to_` | Expensive | Borrowed $\rightarrow$ Owned / Borrowed $\rightarrow$ Borrowed / Owned $\rightarrow$ Owned (`Copy`) | `&self` (or `self` for `Copy`) | Performs allocation, clone, or heavy transformation |
-| `into_` | Variable | Owned $\rightarrow$ Owned | `self` (consumed) | Consumes receiver, reuses buffers or transitions ownership |
+| `as_` | Free | Borrowed to borrowed | `&self` | Zero-cost borrowed view |
+| `to_` | Expensive | Borrowed to owned, or `Copy` | `&self` | Allocation or heavy transformation |
+| `into_` | Variable | Owned to owned | `self` | Consumes the receiver |
 
-### Conversion Principles
-
-- **Standard Traits First (`C-CONV-TRAITS`):** Implement `From`, `TryFrom`, `AsRef`, and `AsMut` for canonical conversions instead of custom names.
-- **Locate on Specific Type (`C-CONV-SPECIFIC`):** Define the conversion method on the type carrying stricter invariants (`str::as_bytes` over slice methods).
+- Implement `From`, `TryFrom`, `AsRef`, and `AsMut` for canonical conversions, instead of custom names.
+- Define conversions on the most specific type that carries the invariant: `str::as_bytes`, not a slice method.
 
 ---
 
-## 3. Architecture & Boundaries (Functional Core, Imperative Shell)
+## 3. Architecture (Functional Core, Imperative Shell)
 
-Codebase is strictly partitioned into pure logic and effectful shell:
+The module map is in [`context.md`](../context.md) §5. This section lists only the coding rules.
 
-### `src/core/` (Functional Core)
+### 3.1 `src/core/` (Functional Core)
 
-- **Purity & Referential Transparency:** Pure deterministic logic only. Functions must be referentially transparent and immutable. Side effects strictly belong in `src/shell/`.
-- **State Transitions:** State changes occur via consuming ownership moves (`self` -> `Self` / linear typestates). `&mut self` is forbidden.
-- **Forbidden:** No `std::fs`, `std::net`, `std::env`, `std::time::SystemTime`, `eprintln!`, or `crate::shell` imports. No interior mutability (`Cell`, `RefCell`, `Atomic*`, `Mutex`, `RwLock`), no `static mut`, and no `unsafe`.
-- **Determinism:** Pass parameters explicitly as deterministic values (`retry_delay(attempt)`).
-- **Closed List of Exceptions:**
-  1. `std::fmt::Display::fmt(&self, f: &mut std::fmt::Formatter<'_>)`: Mandated by standard formatting trait.
-  2. Local stack variables and owned value parameters (`let mut` / `mut self`): Enclosed computation with no caller-observable side effects. Any `&mut` reference parameter (including `&mut self`) is forbidden outside `std::fmt::Display::fmt`.
+- Functions are referentially transparent. The core performs no I/O and reads no time, environment, or network state.
+- State changes use consuming ownership: `self -> Self`, or linear typestates. `&mut self` is forbidden.
+- Forbidden: `std::fs`, `std::net`, `std::env`, `SystemTime`, `eprintln!`, any `crate::shell` import, interior mutability (`Cell`, `RefCell`, `Atomic*`, `Mutex`, `RwLock`), `static mut`, and `unsafe`.
+- Pass parameters as deterministic values: `retry_delay(attempt)`, not a global counter.
+- The only exceptions are:
+  1. `std::fmt::Display::fmt(&self, f: &mut Formatter<'_>)`.
+  2. Local `let mut` variables and owned value parameters (`mut self`, `mut val`). Any `&mut` reference parameter is forbidden, except in `Display::fmt`.
 
-### `src/shell/` (Imperative Shell)
+### 3.2 `src/shell/` (Imperative Shell)
 
-- **Side Effects:** All I/O, network calls, filesystem operations, and process interactions live here.
-- **Delegation:** Collect external inputs, settle each candidate via `Selector::observe`, and delegate computation/storage directly to `src/core/`.
-- **Parallel Pipeline:** Local directory collection coordinates workers (`ignore::WalkParallel`) and the main thread via bounded `std::sync::mpsc::sync_channel(128)` inside `std::thread::scope`, hiding filesystem/kernel latency (`CreateFileW`) while preserving pure single-threaded state transitions in `src/core/`.
+- All I/O, network calls, filesystem access, and process interaction live here.
+- The shell collects inputs, settles each candidate with `Selector::observe`, and delegates computation and storage to the core.
+- Local collection runs parallel workers and a bounded channel. The pipeline is described in [context §3.8](../context.md#38-local-traversal-pipeline). Only the main thread calls into the pure selector.
 
-### Type-Driven Invariants ("Parse, Don't Validate")
+### 3.3 Invariants by Type ("Parse, Don't Validate")
 
-Enforce invariants structurally through data types and compile-time evaluation rather than scattered runtime checks:
-
-- **Make Invalid States Unrepresentable:** Model domain states with algebraic data types, linear typestates, and newtypes. Avoid boolean flags, sentinel values (distinguish stdout from file paths via `OutputTarget::Stdout` vs `OutputTarget::File`, never sentinel `"-"` strings), or unvalidated primitive strings.
-- **Validate at Ingestion Boundaries:** Parse untrusted external inputs (CLI flags, URL paths, archive headers) into strict domain value objects (`GitRef`, `Source`) once at the boundary. Downstream core logic assumes validity by type contract without defensive re-validation.
-- **Linear Typestate Transitions:** Enforce multi-phase workflows exposed across call boundaries through consuming ownership transitions (`Selector` $\rightarrow$ `CollectionResult` $\rightarrow$ `RenderedDigest`). Uncompleted workflows must fail to compile (`#[must_use]`). A phase sequence owned by one function stays a plain `match` inside it (`Selector::observe`).
-- **Invariant-Preserving Type Wrappers:** Encapsulate ordering or layout guarantees into dedicated wrappers (`SortedFiles(FileStorage)` guarantees lexicographical order, preventing unsorted access).
-- **Compile-Time Assertions & Static LUTs:** Enforce constant relationships and operational limits via `const _: () = { assert!(...); };` blocks and CTFE-generated lookup tables (`[bool; 256]`). Catch policy violations at build time with zero runtime cost.
-
----
-
-## 4. Memory, Data Layout & Dependencies
-
-Minimize memory footprints, eliminate allocations in loops, and keep dependencies minimal:
-
-- **Arena Storage:** Store file paths and contents in contiguous `FileStorage` arenas (`path_arena`, `content_arena`) indexed by 16-byte `FileSpan`. Iterate via zero-copy `FileRecord<'a>`. Enables in-place lexicographical sorting by swapping offsets without moving string data.
-- **Direct Data Structures:** Use direct, standard data structures (`Vec`, `HashMap`). Avoid speculative layout packing, premature micro-tuning, or pointer-indirected trees; prioritize structural simplicity.
-- **Bounded Value-Passing Rendering:** Render outputs into in-memory `BoundedBuffer` returning `RenderedDigest` using single-pass escape helpers, enforcing `MAX_OUTPUT_SIZE` purely in core without mutable out-parameters or I/O side effects. File delivery writes digest bytes to an atomic temporary file; stdout writes digest bytes on success to guarantee all-or-nothing delivery on overflow.
-- **Std-First Dependencies:** Default to `std`. Introduce external crates only when in-tree maintenance introduces disproportionate complexity or security risk (`.gitignore` parsing via `ignore`, HTTP via `ureq`). Document crate rationale inline in `Cargo.toml`.
+- **Invalid states are unrepresentable.** Use enums, newtypes, and typestates instead of boolean flags, sentinel values, or raw strings. `OutputTarget::Stdout` replaces a `"-"` sentinel.
+- **Validate at the boundary.** Parse CLI flags, URLs, and archive headers into domain values (`GitRef`, `Source`) once. Core code relies on that type and does not re-check.
+- **Linear typestates.** Multi-phase pipelines are consuming chains (`Selector` → `CollectionResult` → `RenderedDigest` → `IngestReport`). Each phase takes its predecessor by value, so a state cannot be reused after a phase. A phase sequence owned by one function is a plain `match` inside it.
+- **`#[must_use]`.** Put it on phase types (`Selector`, `CollectionResult`, `RenderedDigest`, `BoundedBuffer`, `SortedFiles`) and on pure functions whose return value is the point of the call, such as predicates, classification, the retry delay, and the origin gate. Do not add it to a function that returns `Result`, because `Result` is already `#[must_use]` and the attribute would be redundant.
+- **Invariant wrappers.** Ordering or layout guarantees get a wrapper type. `SortedFiles` guarantees path order, and it has no mutating methods.
+- **Compile-time checks.** Relations between limits are enforced with `const _: () = { assert!(...); };`. Lookup tables are computed at compile time (`[bool; 256]`).
 
 ---
 
-## 5. OS & Network Safety
+## 4. Memory, Data Layout, and Dependencies
 
-Enforce defense-in-depth across filesystem and network interactions:
-
-- **Symlink Protection & Worker Safety:** Always verify candidate filesystem entries are regular, non-symlink files using `fs::symlink_metadata` before opening files (`fs::File::open`). Never traverse symlinks. Worker threads validate metadata independently.
-- **Bounded Concurrency Backpressure:** Channel communications between worker threads and collection consumers must use bounded channels (`sync_channel`) to prevent unbounded memory growth during filesystem traversal.
-- **Atomic File Writes:** Perform all disk writes through `AtomicFile` with inner `TempFile` RAII guards, closing OS file handles before unlinking on `Drop` (cross-platform Windows safety), preserving existing Unix file permissions, and syncing the parent directory on commit.
-- **Scoped HTTP Headers:** Enforce `RedirectAuthHeaders::Never`. Gate `Authorization` headers strictly to `is_github_api_origin(url)`.
+- **Arena storage.** Paths and contents live in contiguous arenas indexed by 16-byte `FileSpan`. Iteration yields zero-copy `FileRecord<'a>`. Sorting swaps spans, not strings.
+- **Direct structures.** Use `Vec`, `HashMap`, and plain structs. Avoid speculative packing and pointer-heavy trees. Measure before tuning.
+- **Bounded rendering.** Output goes into `BoundedBuffer`, which returns `RenderedDigest`. Escaping is a single pass (`write_escaped`). Core rendering performs no I/O.
+- **Std first.** Add an external crate only when in-tree code would be disproportionately complex or risky. Each dependency in `Cargo.toml` has an inline comment that gives its rationale. A crate already in the graph through required dependencies may be used directly when that is justified, with the same comment.
 
 ---
 
-## 6. Error Handling & Panics
+## 5. OS and Network Rules at the Code Level
 
-- **Error Types:** Provide domain-specific error enums in `core` and `shell`. Avoid unstructured stringly-typed errors.
-- **No Uncontrolled Panics:** Never call `unwrap()` or `expect()` on user-facing paths or unvalidated input. Reserve `expect()` for mathematically impossible invariants with explanatory message.
-- **Boundary Propagation:** Shell wraps lower-level I/O errors into meaningful domain diagnostics before reporting.
+The reasoning and threat model are in [`security_and_filtering.md`](security_and_filtering.md) §5–6. These are the code-level rules:
 
----
-
-## 7. Documentation & Comments (Rust API Guidelines: `C-CRATE-DOC`, `C-EXAMPLE`, `C-FAILURE`, `C-LINK`, `C-QUESTION-MARK`; RFC 1574)
-
-Clear, accurate documentation is enforced across the codebase as a primary architectural and API contract:
-
-### Rustdoc Standards (RFC 1574, `C-CRATE-DOC`)
-
-- **Doc Comment Syntax:** Use `///` for item-level documentation and `//!` for enclosing crate (`src/lib.rs`) and module documentation (`mod.rs` or file roots).
-- **Opening Summary Line:** The first line must be a concise, single-sentence summary ending with a period, in third-person singular present indicative ("Returns ...", "Parses ...", "Creates ...", not "Return ..." or "This function ...").
-- **Explanatory Body:** Follow summary line with a blank line before providing operational contracts, context, or invariants.
-- **Language & Tone:** English only (RFC 1574). High-density, crisp, reader-first prose. Avoid filler or conversational hedging.
-
-### Standard Section Headers
-
-Structure item documentation using standard Markdown level-1 (`#`) section headers:
-
-- **`# Errors`:** Mandatory on any public or crate-visible function returning `Result`. Exhaustively documents all failure conditions and error variants.
-- **`# Panics`:** Mandatory on any function that can panic. Explicitly states all conditions triggering `panic!` or `expect!`.
-- **`# Safety`:** Mandatory for any `unsafe` function or trait. Explicitly details all safety invariants callers must uphold.
-- **`# Examples`:** Practical usage snippets written as runnable, testable doctests (`cargo test --doc`). Mark with `no_run` when side effects or external environments are required.
-
-### Visibility & Lint Enforcement
-
-- **Compiler Enforcement:** The crate root (`src/lib.rs`) enforces `#![warn(missing_docs)]`. All public items (`pub`) re-exported by the library must be documented without warnings.
-- **Scope & Depth by Visibility:**
-  - **Public API (`pub` in `src/lib.rs`):** Exhaustive documentation with summary line, detailed contracts, `# Errors`, and `# Examples` where applicable.
-  - **Crate-Internal Items (`pub(crate)`):** Single-line summary and doc comments documenting boundary assumptions, invariants, and performance characteristics.
-  - **Private Items (`fn`, `const`):** Self-documenting through direct naming; document non-trivial bitwise operations, regex-free parsers, or specific security policies.
-- **Intra-Doc Links (`C-LINK`):** Use bracketed intra-doc links (`[`Type`]`, [`Module::func`]) to cross-reference types. Public items must not link to private/internal items (`warn(rustdoc::private_intra_doc_links)`); use backticks (`` `core` ``) when referencing internal modules from public documentation.
-
-### Implementation Comments (`//`)
-
-- **"Why, Not What":** Code explains *what* happens; comments explain *why* non-obvious choices were made (protocol quirks, PAX header RFC specifications, ASCII case folding performance, allocation avoidance).
-- **Step Annotations:** In complex multi-phase algorithms, use numbered inline comments (`// 1. PAX Global Header: ...`) to delineate execution stages.
-- **No Dead Code:** Never leave commented-out code blocks in the repository. Version control preserves prior implementations.
+- Check candidate files with `fs::symlink_metadata` before `fs::File::open`. Never follow symlinks.
+- Channels between threads must be bounded (`sync_channel`).
+- Write files only through `AtomicFile`. Its `TempFile` guard closes the OS handle before unlinking on `Drop`.
+- HTTP redirects use `RedirectAuthHeaders::Never`. The `Authorization` header is attached only when `is_github_api_origin(url)`.
 
 ---
 
-## 8. Testing & Verification
+## 6. Errors and Panics
 
-- **Verification Matrix:**
-  - Lint: `cargo clippy --all-targets -- -D warnings`
-  - Format: `cargo fmt --check`
-  - Documentation: `cargo doc --no-deps`
-  - Tests: `cargo test`
-- **Table-Driven Fixtures:** Prefer slice fixtures (`let cases = [...]`) over repetitive individual test functions.
-- **In-Memory Limits:** Test file count and byte limit boundaries (`MAX_FILE_COUNT`, `MAX_OUTPUT_SIZE`) via in-memory data structures (`Selector`, `CandidateBudget`) rather than physical disk loops.
-- **Isolated I/O Tests:** Guard all filesystem-touching tests with `crate::shell::temp_dir` (`TempDirGuard`).
-- **Deterministic Network Tests:** Mock network responses using local `TcpListener` (`127.0.0.1:0`) threads (encapsulated via `MockServer` helpers) instead of external endpoints.
+- Use domain error enums. `DomainError` is in `core`. `IngestError` is in `shell`. Do not use stringly-typed errors on public paths.
+- The shell wraps I/O errors with the path or operation that failed before they reach the user.
+- Never call `unwrap()` or `expect()` on user input or on a path that a user can reach. `expect()` is allowed only for an impossible invariant, with a message that states the invariant. `unwrap()` is allowed in tests and assertions.
+
+---
+
+## 7. Documentation and Comments
+
+### 7.1 Rustdoc
+
+- `///` documents items. `//!` documents modules and the crate root.
+- The first line is a single sentence in the third person, ending with a period: "Returns ...", "Parses ...". Not "Return ..." or "This function ...".
+- After the summary, leave a blank line before the contract, context, or invariants.
+- Documentation is in English.
+
+### 7.2 Sections
+
+- **`# Errors`**: Required on every public function (`pub` item re-exported from `lib.rs`) that returns `Result`. List each failure mode and the error variant it produces. Crate-internal functions state their failure conditions in one line when those conditions are not obvious from the type.
+- **`# Panics`**: Required on any function that can panic.
+- **`# Safety`**: Required on any `unsafe` item. The crate has none.
+- **`# Examples`**: Required on public API where a usage example helps. Examples are doctests. Use `no_run` when an example needs external state.
+
+### 7.3 Visibility
+
+- **Public API** (`pub` in `lib.rs`): summary, contract, `# Errors`, `# Examples` where useful. `#![warn(missing_docs)]` is enforced.
+- **Crate-internal** (`pub(crate)`): one-line summary, plus notes on invariants and boundary assumptions.
+- **Private**: name it so it explains itself. Comment only non-trivial bit operations, parsers, and security policies.
+- **Links**: Use intra-doc links (`` [`Type`] ``). Public docs must not link to private items.
+
+### 7.4 Implementation Comments
+
+- Explain why, not what: protocol quirks, RFC requirements, performance decisions.
+- Number the steps of a multi-phase algorithm (`// 1. PAX global header: ...`).
+- Never leave commented-out code in the repository.
+
+---
+
+## 8. Testing
+
+- **Table-driven fixtures.** Prefer one test over a slice of `(input, expected)` rows, such as `let cases = [...]`, over a test function per case.
+- **In-memory limits.** Test `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` through `Selector` and `CandidateBudget`. Do not write millions of files to disk.
+- **Filesystem tests.** Inside `src/shell/`, use `crate::shell::testing::temp_dir("label")`, which returns a `TempDirGuard`. Integration tests in `tests/` use a local `TempDir` helper, as `tests/cli.rs` does. Core code is pure, so core unit tests do not touch the filesystem.
+- **Network tests.** Mock HTTP with a local `TcpListener` bound to `127.0.0.1:0`, using the `MockServer` test helper in `src/shell/github.rs`. Tests never reach external endpoints.
+- **Compile-time limits.** Relations between limits are checked by `const _` assertions, not by runtime tests.
