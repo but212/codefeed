@@ -18,7 +18,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::sync_channel;
 
 use ignore::{WalkBuilder, WalkState};
-use zeroize::Zeroizing;
 
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
@@ -32,7 +31,7 @@ enum WorkerMsg {
     File {
         path: NormalizedPath,
         file_len: u64,
-        content: Zeroizing<Vec<u8>>,
+        content: Vec<u8>,
     },
     SkipCandidate {
         path: NormalizedPath,
@@ -163,7 +162,7 @@ impl LocalVisitor<'_> {
             }));
         }
 
-        let mut content = Zeroizing::new(Vec::new());
+        let mut content = Vec::new();
         match read_file_content_bounded(entry_path, file_len, MAX_FILE_SIZE, &mut content)? {
             Some(_) => Ok(Some(WorkerMsg::File {
                 path,
