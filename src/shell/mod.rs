@@ -9,6 +9,7 @@ use crate::{
 };
 
 mod archive;
+mod atomic;
 mod error;
 mod github;
 mod local;

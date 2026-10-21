@@ -90,6 +90,7 @@ Contributor-facing. No consumer action required.
 
 - **Typed output target**: `OutputTarget` (`File(path)` or `Stdout`) replaces `None` as the stdout signal. `resolve_output_target` returns `ResolvedOutput`, which `deliver` takes (`src/shell/output.rs`).
 - **Output parent**: `parent_dir` replaces three copies of the parent-or-`.` expression. Removed a redundant directory check (`src/shell/output.rs`).
+- **Atomic write module**: `AtomicFile`, `TempFile`, and `write_atomic` moved from `output.rs` to `src/shell/atomic.rs`. No behavior change.
 - **Local worker message**: `WorkerMsg` has three variants: `NonUtf8(prefix)`, `Regular { path, content }`, `Error`.
   - An unreadable file (unlinked, or unavailable at open) is `Regular` with `content: None`. Skip count unchanged.
   - Impossible states (e.g. non-UTF-8 path with content) are unrepresentable.

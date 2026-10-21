@@ -391,6 +391,24 @@ pub mod deep;
 }
 
 #[test]
+fn file_output_bytes_match_stdout_bytes() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new("file_matches_stdout");
+    let root = temp.path.join("fixture");
+    std::fs::create_dir_all(root.join("src"))?;
+    std::fs::write(root.join("src/lib.rs"), "pub fn lib() {}\n")?;
+    let root = root.to_str().expect("UTF-8 temp path");
+    let output = temp.path.join("digest.txt");
+    let output = output.to_str().expect("UTF-8 temp path");
+
+    let stdout = run(&[root, "-o", "-"]);
+    assert!(stdout.status.success(), "output: {stdout:?}");
+    let file = run(&[root, "-o", output]);
+    assert!(file.status.success(), "output: {file:?}");
+    assert_eq!(std::fs::read(output)?, stdout.stdout);
+    Ok(())
+}
+
+#[test]
 fn ingest_fails_fast_on_directory_output_target() {
     let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
         .args(["--output", ".", "."])

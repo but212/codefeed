@@ -141,7 +141,8 @@ Core code is pure. It performs no I/O, reads no clock or environment, and never 
 - `local.rs` — Parallel walk, bounded reads, and the channel to the selector.
 - `archive.rs` — Gzip and tar streaming, PAX SHA extraction, and entry admission (`collect`).
 - `github.rs` — HTTP client, token resolution, retry loop, and warnings.
-- `output.rs` — `resolve_output_target`, `deliver`, `AtomicFile`, and `TempFile`.
+- `atomic.rs` — `write_atomic`, `AtomicFile`, and `TempFile`: temporary file, sync, and rename.
+- `output.rs` — `resolve_output_target`, `deliver`, and the stdout/stderr line writers.
 - `testing.rs` — Test-only fixtures: `temp_dir` and tarball builders.
 
 ### Public API (`src/lib.rs`)
