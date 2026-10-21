@@ -85,12 +85,6 @@ impl std::ops::Deref for NormalizedPath {
     }
 }
 
-impl std::fmt::Display for NormalizedPath {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
 #[cfg(test)]
 impl From<&str> for NormalizedPath {
     fn from(s: &str) -> Self {
@@ -346,7 +340,6 @@ mod tests {
         };
         assert_eq!(path.as_str(), "src/core/model.rs");
         assert_eq!(&*path, "src/core/model.rs");
-        assert_eq!(path.to_string(), "src/core/model.rs");
     }
 
     #[test]

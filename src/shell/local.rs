@@ -21,14 +21,18 @@ use ignore::{WalkBuilder, WalkState};
 
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
-use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path_segments, is_hidden_segment};
-use crate::core::selector::{Admission, Selector, exceeds_size_limits};
+use crate::core::policy::{
+    MAX_FILE_SIZE, NormalizedPath, PathStatus, classify_path_segments, is_hidden_segment,
+};
+use crate::core::selector::{Selector, exceeds_size_limits};
 
 enum WorkerMsg {
+    /// Non-UTF-8 path prefix. Counted as skipped without reading content.
+    NonUtf8(String),
     /// `content` is `None` when the worker skipped the read, or the file was unlinked after discovery.
-    Candidate {
-        status: PathStatus,
-        size_hint: Option<u64>,
+    Regular {
+        path: NormalizedPath,
+        size: u64,
         content: Option<Vec<u8>>,
     },
     Error(IngestError),
@@ -122,19 +126,20 @@ impl LocalVisitor<'_> {
 
         let path = match classify_local_path(relative)? {
             PathStatus::Ignored => return Ok(None),
-            status @ PathStatus::NonUtf8Candidate(_) => {
-                return Ok(Some(WorkerMsg::Candidate {
-                    status,
-                    size_hint: None,
-                    content: None,
-                }));
-            }
+            PathStatus::NonUtf8Candidate(prefix) => return Ok(Some(WorkerMsg::NonUtf8(prefix))),
             PathStatus::Valid(path) => path,
         };
 
         let meta = match fs::symlink_metadata(entry_path) {
             Ok(m) => m,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+            // Unlinked after discovery: settle through `skip()` like the open-step NotFound path.
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                return Ok(Some(WorkerMsg::Regular {
+                    path,
+                    size: 0,
+                    content: None,
+                }));
+            }
             Err(err) => return Err(IngestError::Io(err)),
         };
 
@@ -150,9 +155,9 @@ impl LocalVisitor<'_> {
                 content = Some(bytes);
             }
         }
-        Ok(Some(WorkerMsg::Candidate {
-            status: PathStatus::Valid(path),
-            size_hint: Some(file_len),
+        Ok(Some(WorkerMsg::Regular {
+            path,
+            size: file_len,
             content,
         }))
     }
@@ -184,20 +189,16 @@ impl ignore::ParallelVisitor for LocalVisitor<'_> {
 }
 
 fn apply_msg(selector: Selector, msg: WorkerMsg) -> Result<Selector, IngestError> {
-    match msg {
-        WorkerMsg::Candidate {
-            status,
-            size_hint,
+    let (status, size_hint, content) = match msg {
+        WorkerMsg::NonUtf8(prefix) => (PathStatus::NonUtf8Candidate(prefix), None, None),
+        WorkerMsg::Regular {
+            path,
+            size,
             content,
-        } => match selector.admit(status, size_hint)? {
-            Admission::Settled(s) => Ok(s),
-            Admission::Pending(pending) => match content {
-                Some(bytes) => pending.accept(&bytes),
-                None => Ok(pending.skip()),
-            },
-        },
-        WorkerMsg::Error(err) => Err(err),
-    }
+        } => (PathStatus::Valid(path), Some(size), content),
+        WorkerMsg::Error(err) => return Err(err),
+    };
+    selector.observe(status, size_hint, || Ok(content))
 }
 
 fn drain_channel(
@@ -242,11 +243,7 @@ fn read_bounded_content_into(
     buf: &mut Vec<u8>,
 ) -> io::Result<()> {
     let to_read = file_len.min(limit.saturating_add(1)) as usize;
-    let needed = buf
-        .len()
-        .saturating_add(to_read)
-        .saturating_sub(buf.capacity());
-    buf.reserve(needed);
+    buf.reserve(to_read);
     let mut handle = file.take(limit.saturating_add(1));
     handle.read_to_end(buf)?;
     Ok(())
@@ -392,6 +389,36 @@ mod tests {
             &mut buf
         )?);
         assert!(buf.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn unlinked_before_metadata_is_counted_as_skipped() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("unlinked_after_discovery")?;
+        let file = root.join("a.txt");
+        fs::write(&file, "content")?;
+        let entry = WalkBuilder::new(&root)
+            .build()
+            .find_map(|entry| entry.ok().filter(|e| e.path() == file.as_path()))
+            .ok_or("walk did not yield a.txt")?;
+        fs::remove_file(&file)?;
+
+        let (tx, _rx) = sync_channel(1);
+        let aborted = AtomicBool::new(false);
+        let visitor = LocalVisitor {
+            root: &root,
+            resolved_output: None,
+            tx,
+            aborted: &aborted,
+        };
+        let msg = visitor
+            .process_entry(entry)?
+            .ok_or("unlinked file must reach the selector as a candidate")?;
+        let selector = apply_msg(Selector::new(), msg)?;
+
+        let result = selector.finish("test".to_string(), None);
+        assert_eq!(result.files.len(), 0);
+        assert_eq!(result.skipped, 1);
         Ok(())
     }
 

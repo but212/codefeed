@@ -55,7 +55,7 @@ fn public_api_types_are_accessible() {
     let _report_type: Option<IngestReport> = None;
     let _err = IngestError::usage("test");
     let git_ref = GitRef::new("main").expect("valid git ref");
-    assert_eq!(git_ref.as_str(), "main");
+    assert_eq!(&*git_ref, "main");
     let source = Source::github("owner", "repo", Some(git_ref)).expect("valid github source");
     match source {
         Source::Github {

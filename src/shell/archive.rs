@@ -9,7 +9,7 @@ use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
 use crate::core::policy::{ARCHIVE_BUFFER_BYTES, MAX_FILE_SIZE};
-use crate::core::selector::{Admission, Selector};
+use crate::core::selector::Selector;
 
 /// Collects files from a tarball reader directly into a [`CollectionResult`].
 ///
@@ -73,15 +73,12 @@ fn process_tar_entry<R: Read>(
 
     let size_hint = entry.header().size().ok();
 
-    // 4. Pre-I/O candidate admission before reading entry body
-    match selector.admit(status, size_hint)? {
-        Admission::Settled(s) => Ok((s, None)),
-        Admission::Pending(pending) => {
-            read_tar_entry_into(entry, MAX_FILE_SIZE, content_scratch)?;
-            let selector = pending.accept(content_scratch)?;
-            Ok((selector, None))
-        }
-    }
+    // 4. Pre-I/O candidate admission: the body is read only if the candidate is admitted
+    let selector = selector.observe(status, size_hint, move || {
+        read_tar_entry_into(entry, MAX_FILE_SIZE, content_scratch)?;
+        Ok(Some(content_scratch))
+    })?;
+    Ok((selector, None))
 }
 
 fn read_tar_entry_into<R: Read>(

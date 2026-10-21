@@ -24,12 +24,6 @@ impl GitRef {
         }
         Ok(Self(trimmed.to_owned()))
     }
-
-    /// Borrows the reference as a string slice.
-    #[inline]
-    pub const fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
 }
 
 impl std::ops::Deref for GitRef {
@@ -38,12 +32,6 @@ impl std::ops::Deref for GitRef {
     #[inline]
     fn deref(&self) -> &Self::Target {
         &self.0
-    }
-}
-
-impl std::fmt::Display for GitRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
     }
 }
 
@@ -220,13 +208,10 @@ mod tests {
     #[test]
     fn git_ref_validates_and_provides_slice_access() {
         let valid = GitRef::new("v1.0.0").unwrap();
-        assert_eq!(valid.as_str(), "v1.0.0");
         assert_eq!(&*valid, "v1.0.0");
-        assert_eq!(valid.to_string(), "v1.0.0");
 
         let untrimmed = GitRef::new("  main\t\n").unwrap();
-        assert_eq!(untrimmed.as_str(), "main");
-        assert_eq!(untrimmed.to_string(), "main");
+        assert_eq!(&*untrimmed, "main");
 
         assert!(GitRef::new("").is_err());
         assert!(GitRef::new("   ").is_err());

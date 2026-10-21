@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **GitHub rate-limit reset**: `x-ratelimit-reset` produces a retry delay only when `x-ratelimit-remaining` is `0`. Previously a 404 reported "retry available" and a 5xx response carrying reset headers was not retried (`src/shell/github.rs`).
+- **Unlinked local files**: A file deleted after directory discovery but before its metadata check is counted as skipped, matching a deletion at file-open time. Previously it was dropped without being counted (`src/shell/local.rs`).
 
 ### Changed
 
@@ -31,9 +32,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Local Read Helper**: `read_file_content_bounded` returns `Result<bool>` instead of an unused borrowed slice. The test-only `read_local_file_into` duplicate was removed, and its tests exercise `collect`.
 - **Dead Code**: Removed a redundant directory check in `src/shell/output.rs` and an unused `AsRef<str>` impl for `NormalizedPath` in `src/core/policy.rs`.
 - **Retry Header Decision**: Rate-limit headers are parsed once per failed GitHub response into `RateLimitHeaders` (`src/core/github.rs`). The retry delay and rate-limited flag are pure functions of the parsed values and an explicit `now_secs`, so their tests no longer depend on the wall clock. Behavior is unchanged.
-- **Local Candidate Message**: `WorkerMsg` has a single `Candidate` variant that always goes through `Selector::admit`, removing the `unreachable!` arm. The path-length and size gate is one core predicate, `exceeds_size_limits`, shared by `admit` and the local worker. The duplicate `LocalVisitorBuilder` is merged into `LocalVisitor`. Behavior is unchanged.
+- **Local Worker Message**: `WorkerMsg` has three variants, `NonUtf8(prefix)`, `Regular { path, size, content }`, and `Error`. Every candidate goes through `Selector::observe`, and impossible combinations such as non-UTF-8 paths with content are no longer representable. The path-length and size gate is one core predicate, `exceeds_size_limits`, shared by admission and the local worker. The duplicate `LocalVisitorBuilder` is merged into `LocalVisitor`. Behavior is unchanged.
 - **Render Dispatch**: `CollectionResult::render` matches `DigestFormat` directly and calls `render_with`. The `DigestFormat::render` method, the `render::render` free function, and the forwarding method on `CollectionResult` were removed. The overflow diagnostic is built once, in `FileStorage::output_too_large_error`.
+- **Single Candidate Entry**: Local and archive collectors settle each candidate through one core method, `Selector::observe(status, size_hint, read)`, which reads the body only after admission. `Admission` and `PendingEntry` are now private to `selector.rs`, so shell code no longer matches on them. Behavior is unchanged.
 - **Sorted View**: `SortedFiles` derefs to `FileStorage` for read-only access instead of re-declaring its getters. Sortedness is still guaranteed by `SortedFiles::new`.
+- **Scratch Buffers**: Local content reads reserve `to_read` bytes directly, and `BoundedBuffer::push_usize` formats through `to_string()`. Output is unchanged.
+
+### Removed
+
+- **Breaking (library API)**: `GitRef::as_str` and `impl Display for GitRef` are removed. `GitRef` derefs to `str`, so use `&*git_ref` (`src/core/model.rs`).
+- **Unused Display**: `impl Display for NormalizedPath` is removed. It had no production caller (`src/core/policy.rs`).
+- **Build config**: The commented-out `[profile.release]` stanza is removed from `Cargo.toml`.
 
 ### Documentation
 

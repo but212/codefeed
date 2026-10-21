@@ -36,9 +36,9 @@ Entry Discovered (Local Walk or Tar Stream)
    │
    └── Candidate
          ├── Non-UTF-8 path: Preserves valid top-level directory prefix ("dir/") or "" ("<root>/");
-         │                    admitted as Admission::Settled directly.
+         │                    settled directly without reading content.
          └── Regular candidate file:
-               └── [Result: Evaluated via Selector::admit (consuming candidate budget); linear completion via PendingEntry::accept (validating UTF-8 text and MAX_FILE_SIZE) or PendingEntry::skip. Non-text or oversized files increment skipped.]
+               └── [Result: Evaluated via Selector::observe (consuming candidate budget; body read only after admission); linear completion via internal PendingEntry::accept (validating UTF-8 text and MAX_FILE_SIZE) or PendingEntry::skip. Non-text or oversized files increment skipped.]
 ```
 
 ### 2.1 Conventional Noise Exclusions
@@ -100,7 +100,7 @@ Any path containing a component starting with a leading dot (`.`) is considered 
 
 | Parameter (`policy.rs`) | Enforcement Mechanism | Failure Mode |
 | :--- | :--- | :--- |
-| `MAX_FILE_COUNT` | `Selector::admit` slot check (GitHub: before body read; local: after bounded body read by workers) | `IngestError::CandidateLimitExceeded` with directory diagnostics |
+| `MAX_FILE_COUNT` | `Selector::observe` slot check (GitHub: before body read; local: after bounded body read by workers) | `IngestError::CandidateLimitExceeded` with directory diagnostics |
 | `MAX_PATH_DEPTH` | Archive entry path nesting depth check in `normalize_tar_entry_path` | `IngestError::InvalidMetadata` |
 | `MAX_FILE_SIZE` | Pre-I/O `size_hint` evaluation and stream boundary read (`take(MAX_FILE_SIZE + 1)`) | Skipped; tallied in `skipped_files` report |
 | `MAX_OUTPUT_SIZE` | Early arena total check (`Selector::add_file`) and `BoundedBuffer` byte counter | `IngestError::OutputTooLarge` with Top-5 largest files |
