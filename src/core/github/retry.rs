@@ -204,7 +204,7 @@ mod tests {
             u64,
             Option<u64>,
         );
-        let cases: [Row<'_>; 7] = [
+        let cases: [Row<'_>; 8] = [
             (None, Some("59"), Some("1002400"), NOW, None),
             (None, Some("0"), Some("1002400"), NOW, Some(2400)),
             (Some("2"), Some("0"), Some("1002400"), NOW, Some(2)),
@@ -212,6 +212,8 @@ mod tests {
             (None, None, Some("1002400"), NOW, None),
             (None, Some("0"), Some("999"), NOW, None),
             (None, Some("0"), Some("1002400"), u64::MAX, None),
+            // HTTP-date form is not parsed: it yields no wait and falls back to backoff.
+            (Some("Wed, 21 Oct 2026 07:28:00 GMT"), None, None, NOW, None),
         ];
 
         for (retry_after, remaining, reset, now, expected) in cases {

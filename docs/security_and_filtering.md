@@ -163,7 +163,7 @@ Implemented in `src/shell/github.rs`, with pure rules in `src/core/github/`.
 - Retried: transport errors that are I/O, timeout, or connection failures; HTTP 429; HTTP 5xx; and HTTP 403 when it is rate-limited (`Retry-After` present, or the quota header reports zero remaining).
 - Not retried: other 4xx responses and non-transient transport errors.
 - The total number of attempts is capped by `MAX_ATTEMPTS`. Backoff starts at `RETRY_INITIAL_DELAY_MS`, doubles on each retry, and is capped at `RETRY_MAX_DELAY_MS`.
-- When the server gives a wait time (`Retry-After`, or the quota reset time once the quota is exhausted), that wait is used. If it is longer than `RETRY_MAX_DELAY_MS`, the run fails instead of waiting.
+- When the server gives a wait time (`Retry-After`, or the quota reset time once the quota is exhausted), that wait is used. If it is longer than `RETRY_MAX_DELAY_MS`, the run fails instead of waiting. Only the delta-seconds form of `Retry-After` is honored. Other forms are treated as rate-limited and fall back to backoff.
 
 ### 6.6 Time Limits
 
