@@ -26,12 +26,17 @@ Library consumers: update code that matches on or calls these items.
 - **TLS trust roots**: `ureq` uses compiled Mozilla roots (`rustls-webpki-roots`), not the platform verifier. Certificates trusted only through the OS store (e.g. corporate proxy CAs) are now rejected.
 - **Inline CLI values**: `--flag=value` accepts a leading `-` (e.g. `--output=-notes.txt`). Separate-argument values still reject a leading `-`, except `-o -` (stdout). `-o -x` still fails (`src/core/cli.rs`).
 - **Output size check**: `FileStorage::push` rejects over-limit content before storing. `Selector` has no post-push check. Output target is typed `ResolvedOutput` (only `resolve_output_target` builds it), so collection and delivery cannot receive an unresolved request (`src/core/storage.rs`, `src/shell/output.rs`).
+- **GitHub URL authority**: `Source::parse` rejects URLs with userinfo (`user@`), with the message "repository URLs cannot contain credentials". The only accepted port is `443`, or none. Before: userinfo was silently ignored, and any port was accepted.
+  - **Action:** remove credentials and non-443 ports from GitHub URLs (`src/core/github/url.rs`).
 
 ### Fixed
 
 - **GitHub rate-limit reset**: `x-ratelimit-reset` gives a retry delay only when `x-ratelimit-remaining` is `0`. Before: a 404 said "retry available"; a 5xx with reset headers was not retried (`src/shell/github.rs`).
 - **Unlinked local files**: A file deleted between discovery and metadata check is skipped, as at open. Before: silently dropped (`src/shell/local.rs`).
 - **Unreadable local files**: A file that fails to open (`PermissionDenied`, Windows sharing violation) is skipped instead of aborting. Unreadable directories still fail fast (`src/shell/local.rs`).
+- **Closed stderr**: A closed stderr no longer panics. Before: exit 101 when the completion message or an error could not be written. Now the run exits with its normal code (`src/shell/output.rs`, `clippy.toml`).
+- **Output parent check**: A file in place of the output directory fails at startup with `NotADirectory`, and the message names the parent. Before: the whole source was collected first (downloading the tarball for GitHub sources), and the failure named no path (`src/shell/output.rs`).
+- **Filesystem error paths**: File I/O errors name the path that failed and keep the error kind. Before: messages such as `os error 3` named no path (`src/shell/error.rs`, `src/shell/output.rs`, `src/shell/local.rs`).
 
 ### Performance
 
@@ -53,6 +58,7 @@ Library consumers: update code that matches on or calls these items.
 - **Inline CLI values**: `README.md` documents that `--flag=value` accepts a leading `-`.
 - **Doc structure**: One audience per document: `README.md` (users), `context.md` (maintainers, domain), `docs/security_and_filtering.md` (filter and safety spec), `docs/coding_convention.md` (Rust rules), `AGENTS.md` (agent workflow). Limit values live only in `docs/security_and_filtering.md` §8; other docs link there. `src/core/policy.rs` is the authority; code never copies the values.
 - **Doc corrections**: Documented `MAX_PATH_BYTES` path skipping, `.ignore` and global-ignore behavior (not read), `transport_error` location, and `# Errors` scope (public API).
+- **Documentation alignment**: `README.md` no longer lists `-h` among the short flags that accept `=`; `-h=x` is an unknown option. Archive entries that are not regular files are dropped and not counted, as local ones are. Only the delta-seconds form of `Retry-After` is honored, and an HTTP-date falls back to backoff (`docs/security_and_filtering.md` §6.5). The non-UTF-8 prefix is the valid segments before the first invalid one (`context.md` §3.2).
 
 ### Internal
 
@@ -84,8 +90,8 @@ Contributor-facing. No consumer action required.
 
 - **Typed output target**: `OutputTarget` (`File(path)` or `Stdout`) replaces `None` as the stdout signal. `resolve_output_target` returns `ResolvedOutput`, which `deliver` takes (`src/shell/output.rs`).
 - **Output parent**: `parent_dir` replaces three copies of the parent-or-`.` expression. Removed a redundant directory check (`src/shell/output.rs`).
-- **Local worker message**: `WorkerMsg` has four variants: `NonUtf8(prefix)`, `Unavailable(path)`, `Regular { path, size, content }`, `Error`.
-  - An unlinked file is `Unavailable`, not a zero-size `Regular`. Skip count unchanged.
+- **Local worker message**: `WorkerMsg` has three variants: `NonUtf8(prefix)`, `Regular { path, content }`, `Error`.
+  - An unreadable file (unlinked, or unavailable at open) is `Regular` with `content: None`. Skip count unchanged.
   - Impossible states (e.g. non-UTF-8 path with content) are unrepresentable.
   - The gate `exceeds_size_limits` is one core predicate shared by admission and the local worker.
   - `LocalVisitorBuilder` merged into `LocalVisitor`.
