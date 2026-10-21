@@ -312,6 +312,85 @@ fn accepts_dash_prefixed_inline_output() -> Result<(), Box<dyn std::error::Error
 }
 
 #[test]
+fn text_and_xml_stdout_bytes_are_stable() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new("golden");
+    let root = temp.path.join("fixture");
+    std::fs::create_dir_all(root.join("src/nested/deep"))?;
+    std::fs::create_dir_all(root.join("bin"))?;
+    std::fs::write(root.join("README.md"), "# fixture\n")?;
+    std::fs::write(root.join("src/lib.rs"), "pub fn lib() {}\n")?;
+    std::fs::write(root.join("src/nested/deep/mod.rs"), "pub mod deep;\n")?;
+    std::fs::write(root.join("bin/tool.bin"), [0u8, 1, 2])?;
+    std::fs::write(root.join(".hidden"), "secret\n")?;
+    std::fs::write(root.join("Cargo.lock"), "[lockfile]\n")?;
+    let root = root.to_str().expect("UTF-8 temp path");
+
+    let expected_text = r#"Repository: fixture
+Files: 3
+Skipped: 1
+
+Directory structure:
+├── README.md
+└── src/
+    ├── lib.rs
+    └── nested/
+        └── deep/
+            └── mod.rs
+
+Files:
+
+==================================================
+FILE: README.md
+==================================================
+
+# fixture
+
+==================================================
+FILE: src/lib.rs
+==================================================
+
+pub fn lib() {}
+
+==================================================
+FILE: src/nested/deep/mod.rs
+==================================================
+
+pub mod deep;
+
+"#;
+    let text = run(&[root, "-o", "-", "-f", "text"]);
+    assert!(text.status.success(), "output: {text:?}");
+    assert_eq!(text.stdout, expected_text.as_bytes());
+
+    let expected_xml = r#"<repository name="fixture">
+<directory_structure>
+├── README.md
+└── src/
+    ├── lib.rs
+    └── nested/
+        └── deep/
+            └── mod.rs
+</directory_structure>
+<files>
+<file path="README.md">
+# fixture
+</file>
+<file path="src/lib.rs">
+pub fn lib() {}
+</file>
+<file path="src/nested/deep/mod.rs">
+pub mod deep;
+</file>
+</files>
+</repository>
+"#;
+    let xml = run(&[root, "-o", "-", "-f", "xml"]);
+    assert!(xml.status.success(), "output: {xml:?}");
+    assert_eq!(xml.stdout, expected_xml.as_bytes());
+    Ok(())
+}
+
+#[test]
 fn ingest_fails_fast_on_directory_output_target() {
     let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
         .args(["--output", ".", "."])
