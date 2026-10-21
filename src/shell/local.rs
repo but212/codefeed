@@ -163,16 +163,17 @@ impl LocalVisitor<'_> {
         }
 
         let mut content = Vec::new();
-        match read_file_content_bounded(entry_path, file_len, MAX_FILE_SIZE, &mut content)? {
-            Some(_) => Ok(Some(WorkerMsg::File {
+        if read_file_content_bounded(entry_path, file_len, MAX_FILE_SIZE, &mut content)? {
+            Ok(Some(WorkerMsg::File {
                 path,
                 file_len,
                 content,
-            })),
-            None => Ok(Some(WorkerMsg::SkipCandidate {
+            }))
+        } else {
+            Ok(Some(WorkerMsg::SkipCandidate {
                 path,
                 size_hint: None,
-            })),
+            }))
         }
     }
 }
@@ -246,35 +247,21 @@ fn drain_channel(
     Ok(selector)
 }
 
-#[cfg(test)]
-fn read_local_file_into<'b>(
-    path: &Path,
-    limit: u64,
-    buf: &'b mut Vec<u8>,
-) -> Result<Option<&'b [u8]>, IngestError> {
-    let meta = match fs::symlink_metadata(path) {
-        Ok(m) => m,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(IngestError::Io(err)),
-    };
-    if meta.is_symlink() || !meta.is_file() {
-        return Ok(None);
-    }
-    read_file_content_bounded(path, meta.len(), limit, buf)
-}
-
-fn read_file_content_bounded<'b>(
+/// Reads up to `limit + 1` bytes of `path` into `buf`; the extra byte lets the caller detect overflow.
+/// Returns `Ok(false)` when the file was unlinked after discovery.
+fn read_file_content_bounded(
     path: &Path,
     file_len: u64,
     limit: u64,
-    buf: &'b mut Vec<u8>,
-) -> Result<Option<&'b [u8]>, IngestError> {
+    buf: &mut Vec<u8>,
+) -> Result<bool, IngestError> {
     let file = match fs::File::open(path) {
         Ok(f) => f,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(err) => return Err(IngestError::Io(err)),
     };
-    read_bounded_content_into(file, file_len, limit, buf).map_err(Into::into)
+    read_bounded_content_into(file, file_len, limit, buf)?;
+    Ok(true)
 }
 
 fn read_bounded_content_into(
@@ -282,7 +269,7 @@ fn read_bounded_content_into(
     file_len: u64,
     limit: u64,
     buf: &mut Vec<u8>,
-) -> io::Result<Option<&[u8]>> {
+) -> io::Result<()> {
     let to_read = file_len.min(limit.saturating_add(1)) as usize;
     let needed = buf
         .len()
@@ -291,7 +278,7 @@ fn read_bounded_content_into(
     buf.reserve(needed);
     let mut handle = file.take(limit.saturating_add(1));
     handle.read_to_end(buf)?;
-    Ok(Some(buf.as_slice()))
+    Ok(())
 }
 
 fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
@@ -371,15 +358,30 @@ mod tests {
         fs::write(&too_large_path, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
 
         let mut buf = Vec::new();
-        assert!(matches!(
-            read_local_file_into(&exact_path, MAX_FILE_SIZE, &mut buf)?,
-            Some(b) if b.len() == MAX_FILE_SIZE as usize
-        ));
+        assert!(read_file_content_bounded(
+            &exact_path,
+            MAX_FILE_SIZE,
+            MAX_FILE_SIZE,
+            &mut buf
+        )?);
+        assert_eq!(buf.len(), MAX_FILE_SIZE as usize);
+
         buf.clear();
-        assert!(matches!(
-            read_local_file_into(&too_large_path, MAX_FILE_SIZE, &mut buf)?,
-            Some(b) if b.len() == MAX_FILE_SIZE as usize + 1
-        ));
+        assert!(read_file_content_bounded(
+            &too_large_path,
+            MAX_FILE_SIZE + 1,
+            MAX_FILE_SIZE,
+            &mut buf
+        )?);
+        assert_eq!(
+            buf.len(),
+            MAX_FILE_SIZE as usize + 1,
+            "one sentinel byte past the limit"
+        );
+
+        let res = collect(&root, None)?;
+        assert_eq!(res.files.len(), 1, "exact-size file is included");
+        assert_eq!(res.skipped, 1, "one byte over the limit is skipped");
         Ok(())
     }
 
@@ -393,8 +395,13 @@ mod tests {
         fs::write(&file_path, &payload)?;
 
         let mut buf = Vec::new();
-        let res = read_local_file_into(&file_path, MAX_FILE_SIZE, &mut buf)?;
-        assert_eq!(res, Some(payload.as_slice()));
+        assert!(read_file_content_bounded(
+            &file_path,
+            payload.len() as u64,
+            MAX_FILE_SIZE,
+            &mut buf
+        )?);
+        assert_eq!(buf, payload);
         assert!(buf.capacity() >= 64 * 1024);
         Ok(())
     }
@@ -407,14 +414,19 @@ mod tests {
         let path = root.join("nonexistent.txt");
 
         let mut buf = Vec::new();
-        assert_eq!(read_local_file_into(&path, MAX_FILE_SIZE, &mut buf)?, None);
+        assert!(!read_file_content_bounded(
+            &path,
+            0,
+            MAX_FILE_SIZE,
+            &mut buf
+        )?);
+        assert!(buf.is_empty());
         Ok(())
     }
 
     #[cfg(unix)]
     #[test]
     fn rejects_symlink_file() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::core::policy::MAX_FILE_SIZE;
         use std::os::unix::fs::symlink;
 
         let root = temp_dir("symlink_test")?;
@@ -423,15 +435,15 @@ mod tests {
         fs::write(&target, "content")?;
         symlink(&target, &link)?;
 
-        let mut buf = Vec::new();
-        assert_eq!(read_local_file_into(&link, MAX_FILE_SIZE, &mut buf)?, None);
+        let res = collect(&root, None)?;
+        assert_eq!(res.files.len(), 1, "only the regular target is collected");
+        assert_eq!(res.skipped, 0);
         Ok(())
     }
 
     #[cfg(windows)]
     #[test]
     fn rejects_windows_symlink_file() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::core::policy::MAX_FILE_SIZE;
         use std::os::windows::fs::symlink_file;
 
         let root = temp_dir("win_symlink_test")?;
@@ -440,8 +452,9 @@ mod tests {
         fs::write(&target, "content")?;
 
         if symlink_file(&target, &link).is_ok() {
-            let mut buf = Vec::new();
-            assert_eq!(read_local_file_into(&link, MAX_FILE_SIZE, &mut buf)?, None);
+            let res = collect(&root, None)?;
+            assert_eq!(res.files.len(), 1, "only the regular target is collected");
+            assert_eq!(res.skipped, 0);
             let _ = fs::remove_file(&link);
         }
         Ok(())
