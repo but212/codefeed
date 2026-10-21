@@ -21,23 +21,16 @@ use ignore::{WalkBuilder, WalkState};
 
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
-use crate::core::policy::{
-    MAX_FILE_SIZE, MAX_PATH_BYTES, NormalizedPath, PathStatus, classify_path_segments,
-    is_hidden_segment,
-};
-use crate::core::selector::{Admission, Selector};
+use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path_segments, is_hidden_segment};
+use crate::core::selector::{Admission, Selector, exceeds_size_limits};
 
 enum WorkerMsg {
-    File {
-        path: NormalizedPath,
-        file_len: u64,
-        content: Vec<u8>,
-    },
-    SkipCandidate {
-        path: NormalizedPath,
+    /// `content` is `None` when the worker skipped the read, or the file was unlinked after discovery.
+    Candidate {
+        status: PathStatus,
         size_hint: Option<u64>,
+        content: Option<Vec<u8>>,
     },
-    NonUtf8Candidate(String),
     Error(IngestError),
 }
 
@@ -137,11 +130,16 @@ impl LocalVisitor<'_> {
             .strip_prefix(self.root)
             .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
 
-        let status = classify_local_path(relative)?;
-        let path = match status {
+        let path = match classify_local_path(relative)? {
             PathStatus::Ignored => return Ok(None),
-            PathStatus::NonUtf8Candidate(p) => return Ok(Some(WorkerMsg::NonUtf8Candidate(p))),
-            PathStatus::Valid(p) => p,
+            status @ PathStatus::NonUtf8Candidate(_) => {
+                return Ok(Some(WorkerMsg::Candidate {
+                    status,
+                    size_hint: None,
+                    content: None,
+                }));
+            }
+            PathStatus::Valid(path) => path,
         };
 
         let meta = match fs::symlink_metadata(entry_path) {
@@ -155,26 +153,18 @@ impl LocalVisitor<'_> {
         }
 
         let file_len = meta.len();
-        if path.len() as u64 > MAX_PATH_BYTES || file_len > MAX_FILE_SIZE {
-            return Ok(Some(WorkerMsg::SkipCandidate {
-                path,
-                size_hint: Some(file_len),
-            }));
+        let mut content = None;
+        if !exceeds_size_limits(path.len(), Some(file_len)) {
+            let mut bytes = Vec::new();
+            if read_file_content_bounded(entry_path, file_len, MAX_FILE_SIZE, &mut bytes)? {
+                content = Some(bytes);
+            }
         }
-
-        let mut content = Vec::new();
-        if read_file_content_bounded(entry_path, file_len, MAX_FILE_SIZE, &mut content)? {
-            Ok(Some(WorkerMsg::File {
-                path,
-                file_len,
-                content,
-            }))
-        } else {
-            Ok(Some(WorkerMsg::SkipCandidate {
-                path,
-                size_hint: None,
-            }))
-        }
+        Ok(Some(WorkerMsg::Candidate {
+            status: PathStatus::Valid(path),
+            size_hint: Some(file_len),
+            content,
+        }))
     }
 }
 
@@ -205,26 +195,17 @@ impl ignore::ParallelVisitor for LocalVisitor<'_> {
 
 fn apply_msg(selector: Selector, msg: WorkerMsg) -> Result<Selector, IngestError> {
     match msg {
-        WorkerMsg::File {
-            path,
-            file_len,
+        WorkerMsg::Candidate {
+            status,
+            size_hint,
             content,
-        } => match selector.admit(PathStatus::Valid(path), Some(file_len))? {
+        } => match selector.admit(status, size_hint)? {
             Admission::Settled(s) => Ok(s),
-            Admission::Pending(pending) => pending.accept(&content),
+            Admission::Pending(pending) => match content {
+                Some(bytes) => pending.accept(&bytes),
+                None => Ok(pending.skip()),
+            },
         },
-        WorkerMsg::SkipCandidate { path, size_hint } => {
-            match selector.admit(PathStatus::Valid(path), size_hint)? {
-                Admission::Settled(s) => Ok(s),
-                Admission::Pending(pending) => Ok(pending.skip()),
-            }
-        }
-        WorkerMsg::NonUtf8Candidate(path) => {
-            match selector.admit(PathStatus::NonUtf8Candidate(path), None)? {
-                Admission::Settled(s) => Ok(s),
-                Admission::Pending(_) => unreachable!(),
-            }
-        }
         WorkerMsg::Error(err) => Err(err),
     }
 }

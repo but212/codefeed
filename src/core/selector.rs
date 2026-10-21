@@ -55,6 +55,11 @@ fn classify_content(bytes: &[u8]) -> Option<&str> {
     std::str::from_utf8(bytes).ok()
 }
 
+/// Path-length and declared-size gate. Shared by [`Selector::admit`] and the shell worker that decides whether to read content.
+pub(crate) fn exceeds_size_limits(path_len: usize, size_hint: Option<u64>) -> bool {
+    path_len as u64 > MAX_PATH_BYTES || size_hint.is_some_and(|hint| hint > MAX_FILE_SIZE)
+}
+
 /// Candidate-count budget owned by the selector that consumes it.
 #[derive(Default, Debug)]
 struct CandidateBudget {
@@ -135,9 +140,7 @@ impl Selector {
             }
             PathStatus::Valid(path) => {
                 self.candidates = self.candidates.add(&path)?;
-                if path.len() as u64 > MAX_PATH_BYTES
-                    || size_hint.is_some_and(|hint| hint > MAX_FILE_SIZE)
-                {
+                if exceeds_size_limits(path.len(), size_hint) {
                     self.skipped = self.skipped.saturating_add(1);
                     Ok(Admission::Settled(self))
                 } else {
