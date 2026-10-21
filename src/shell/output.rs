@@ -46,12 +46,6 @@ pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<Option<Path
             let file_name = path
                 .file_name()
                 .ok_or_else(|| IngestError::usage("output path has no filename"))?;
-            if path.is_dir() {
-                return Err(IngestError::Io(io::Error::new(
-                    io::ErrorKind::IsADirectory,
-                    "output path is a directory",
-                )));
-            }
             let parent = path
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
