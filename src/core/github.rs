@@ -175,6 +175,49 @@ const _: () = {
     assert!(retry_delay(usize::MAX).as_millis() == RETRY_MAX_DELAY_MS as u128);
 };
 
+/// Rate-limit facts from one response's headers. The shell reads the raw values; this type decides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct RateLimitHeaders {
+    retry_after_present: bool,
+    retry_after_secs: Option<u64>,
+    quota_exhausted: bool,
+    reset_epoch_secs: Option<u64>,
+}
+
+impl RateLimitHeaders {
+    /// Parses raw header values, where `None` means the header was absent.
+    pub(crate) fn parse(
+        retry_after: Option<&str>,
+        remaining: Option<&str>,
+        reset: Option<&str>,
+    ) -> Self {
+        Self {
+            retry_after_present: retry_after.is_some(),
+            retry_after_secs: retry_after.and_then(|v| v.trim().parse().ok()),
+            quota_exhausted: remaining.is_some_and(|v| v.trim() == "0"),
+            reset_epoch_secs: reset.and_then(|v| v.trim().parse().ok()),
+        }
+    }
+
+    /// Delay before retrying. `Retry-After` wins; otherwise the reset epoch counts only once quota is exhausted.
+    pub(crate) fn retry_after(self, now_secs: u64) -> Option<Duration> {
+        if let Some(secs) = self.retry_after_secs {
+            return Some(Duration::from_secs(secs));
+        }
+        if !self.quota_exhausted {
+            return None;
+        }
+        self.reset_epoch_secs
+            .filter(|&reset| reset > now_secs)
+            .map(|reset| Duration::from_secs(reset - now_secs))
+    }
+
+    /// Rate-limited when `Retry-After` is present or quota is exhausted.
+    pub(crate) const fn is_rate_limited(self) -> bool {
+        self.retry_after_present || self.quota_exhausted
+    }
+}
+
 /// Classification of transport-level errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransportKind {
@@ -345,6 +388,58 @@ mod tests {
         assert_eq!(retry_delay(4).as_millis(), 4000);
         assert_eq!(retry_delay(5).as_millis(), 5000);
         assert_eq!(retry_delay(10).as_millis(), 5000);
+    }
+
+    #[test]
+    fn retry_after_honors_quota_state() {
+        const NOW: u64 = 1_000_000;
+        // (retry-after, x-ratelimit-remaining, x-ratelimit-reset, now, expected delay in seconds)
+        type Row<'a> = (
+            Option<&'a str>,
+            Option<&'a str>,
+            Option<&'a str>,
+            u64,
+            Option<u64>,
+        );
+        let cases: [Row<'_>; 7] = [
+            (None, Some("59"), Some("1002400"), NOW, None),
+            (None, Some("0"), Some("1002400"), NOW, Some(2400)),
+            (Some("2"), Some("0"), Some("1002400"), NOW, Some(2)),
+            (Some("2"), Some("59"), Some("1002400"), NOW, Some(2)),
+            (None, None, Some("1002400"), NOW, None),
+            (None, Some("0"), Some("999"), NOW, None),
+            (None, Some("0"), Some("1002400"), u64::MAX, None),
+        ];
+
+        for (retry_after, remaining, reset, now, expected) in cases {
+            let got = RateLimitHeaders::parse(retry_after, remaining, reset)
+                .retry_after(now)
+                .map(|d| d.as_secs());
+            assert_eq!(
+                got, expected,
+                "retry-after={retry_after:?} remaining={remaining:?} reset={reset:?} now={now}"
+            );
+        }
+    }
+
+    #[test]
+    fn rate_limited_when_retry_after_present_or_quota_exhausted() {
+        // (retry-after, x-ratelimit-remaining, expected)
+        type Row<'a> = (Option<&'a str>, Option<&'a str>, bool);
+        let cases: [Row<'_>; 5] = [
+            (Some("1"), None, true),
+            (Some("soon"), Some("59"), true),
+            (None, Some("0"), true),
+            (None, Some("59"), false),
+            (None, None, false),
+        ];
+        for (retry_after, remaining, expected) in cases {
+            let got = RateLimitHeaders::parse(retry_after, remaining, None).is_rate_limited();
+            assert_eq!(
+                got, expected,
+                "retry-after={retry_after:?} remaining={remaining:?}"
+            );
+        }
     }
 
     #[test]

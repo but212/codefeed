@@ -18,27 +18,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::sync_channel;
 
 use ignore::{WalkBuilder, WalkState};
-use zeroize::Zeroizing;
 
 use crate::core::error::IngestError;
 use crate::core::model::CollectionResult;
-use crate::core::policy::{
-    MAX_FILE_SIZE, MAX_PATH_BYTES, NormalizedPath, PathStatus, classify_path_segments,
-    is_hidden_segment,
-};
-use crate::core::selector::{Admission, Selector};
+use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path_segments, is_hidden_segment};
+use crate::core::selector::{Admission, Selector, exceeds_size_limits};
 
 enum WorkerMsg {
-    File {
-        path: NormalizedPath,
-        file_len: u64,
-        content: Zeroizing<Vec<u8>>,
-    },
-    SkipCandidate {
-        path: NormalizedPath,
+    /// `content` is `None` when the worker skipped the read, or the file was unlinked after discovery.
+    Candidate {
+        status: PathStatus,
         size_hint: Option<u64>,
+        content: Option<Vec<u8>>,
     },
-    NonUtf8Candidate(String),
     Error(IngestError),
 }
 
@@ -73,13 +65,13 @@ pub(super) fn collect(
 
     let selector = std::thread::scope(|s| {
         s.spawn(|| {
-            let mut builder = LocalVisitorBuilder {
+            let mut visitor = LocalVisitor {
                 root: &canonical_root,
                 resolved_output,
                 tx,
                 aborted: &aborted,
             };
-            walker.visit(&mut builder);
+            walker.visit(&mut visitor);
         });
 
         drain_channel(rx, &aborted)
@@ -88,29 +80,19 @@ pub(super) fn collect(
     Ok(selector.finish(label, None))
 }
 
-struct LocalVisitorBuilder<'a> {
-    root: &'a Path,
-    resolved_output: Option<&'a Path>,
-    tx: std::sync::mpsc::SyncSender<WorkerMsg>,
-    aborted: &'a AtomicBool,
-}
-
-impl<'s> ignore::ParallelVisitorBuilder<'s> for LocalVisitorBuilder<'s> {
-    fn build(&mut self) -> Box<dyn ignore::ParallelVisitor + 's> {
-        Box::new(LocalVisitor {
-            root: self.root,
-            resolved_output: self.resolved_output,
-            tx: self.tx.clone(),
-            aborted: self.aborted,
-        })
-    }
-}
-
+/// Walker visitor. `build` clones it per worker thread; every clone shares the channel sender and abort flag.
+#[derive(Clone)]
 struct LocalVisitor<'a> {
     root: &'a Path,
     resolved_output: Option<&'a Path>,
     tx: std::sync::mpsc::SyncSender<WorkerMsg>,
     aborted: &'a AtomicBool,
+}
+
+impl<'s> ignore::ParallelVisitorBuilder<'s> for LocalVisitor<'s> {
+    fn build(&mut self) -> Box<dyn ignore::ParallelVisitor + 's> {
+        Box::new(self.clone())
+    }
 }
 
 impl LocalVisitor<'_> {
@@ -138,11 +120,16 @@ impl LocalVisitor<'_> {
             .strip_prefix(self.root)
             .map_err(|err| IngestError::invalid_metadata(err.to_string()))?;
 
-        let status = classify_local_path(relative)?;
-        let path = match status {
+        let path = match classify_local_path(relative)? {
             PathStatus::Ignored => return Ok(None),
-            PathStatus::NonUtf8Candidate(p) => return Ok(Some(WorkerMsg::NonUtf8Candidate(p))),
-            PathStatus::Valid(p) => p,
+            status @ PathStatus::NonUtf8Candidate(_) => {
+                return Ok(Some(WorkerMsg::Candidate {
+                    status,
+                    size_hint: None,
+                    content: None,
+                }));
+            }
+            PathStatus::Valid(path) => path,
         };
 
         let meta = match fs::symlink_metadata(entry_path) {
@@ -156,25 +143,18 @@ impl LocalVisitor<'_> {
         }
 
         let file_len = meta.len();
-        if path.len() as u64 > MAX_PATH_BYTES || file_len > MAX_FILE_SIZE {
-            return Ok(Some(WorkerMsg::SkipCandidate {
-                path,
-                size_hint: Some(file_len),
-            }));
+        let mut content = None;
+        if !exceeds_size_limits(path.len(), Some(file_len)) {
+            let mut bytes = Vec::new();
+            if read_file_content_bounded(entry_path, file_len, MAX_FILE_SIZE, &mut bytes)? {
+                content = Some(bytes);
+            }
         }
-
-        let mut content = Zeroizing::new(Vec::new());
-        match read_file_content_bounded(entry_path, file_len, MAX_FILE_SIZE, &mut content)? {
-            Some(_) => Ok(Some(WorkerMsg::File {
-                path,
-                file_len,
-                content,
-            })),
-            None => Ok(Some(WorkerMsg::SkipCandidate {
-                path,
-                size_hint: None,
-            })),
-        }
+        Ok(Some(WorkerMsg::Candidate {
+            status: PathStatus::Valid(path),
+            size_hint: Some(file_len),
+            content,
+        }))
     }
 }
 
@@ -205,26 +185,17 @@ impl ignore::ParallelVisitor for LocalVisitor<'_> {
 
 fn apply_msg(selector: Selector, msg: WorkerMsg) -> Result<Selector, IngestError> {
     match msg {
-        WorkerMsg::File {
-            path,
-            file_len,
+        WorkerMsg::Candidate {
+            status,
+            size_hint,
             content,
-        } => match selector.admit(PathStatus::Valid(path), Some(file_len))? {
+        } => match selector.admit(status, size_hint)? {
             Admission::Settled(s) => Ok(s),
-            Admission::Pending(pending) => pending.accept(&content),
+            Admission::Pending(pending) => match content {
+                Some(bytes) => pending.accept(&bytes),
+                None => Ok(pending.skip()),
+            },
         },
-        WorkerMsg::SkipCandidate { path, size_hint } => {
-            match selector.admit(PathStatus::Valid(path), size_hint)? {
-                Admission::Settled(s) => Ok(s),
-                Admission::Pending(pending) => Ok(pending.skip()),
-            }
-        }
-        WorkerMsg::NonUtf8Candidate(path) => {
-            match selector.admit(PathStatus::NonUtf8Candidate(path), None)? {
-                Admission::Settled(s) => Ok(s),
-                Admission::Pending(_) => unreachable!(),
-            }
-        }
         WorkerMsg::Error(err) => Err(err),
     }
 }
@@ -247,35 +218,21 @@ fn drain_channel(
     Ok(selector)
 }
 
-#[cfg(test)]
-fn read_local_file_into<'b>(
-    path: &Path,
-    limit: u64,
-    buf: &'b mut Vec<u8>,
-) -> Result<Option<&'b [u8]>, IngestError> {
-    let meta = match fs::symlink_metadata(path) {
-        Ok(m) => m,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(IngestError::Io(err)),
-    };
-    if meta.is_symlink() || !meta.is_file() {
-        return Ok(None);
-    }
-    read_file_content_bounded(path, meta.len(), limit, buf)
-}
-
-fn read_file_content_bounded<'b>(
+/// Reads up to `limit + 1` bytes of `path` into `buf`; the extra byte lets the caller detect overflow.
+/// Returns `Ok(false)` when the file was unlinked after discovery.
+fn read_file_content_bounded(
     path: &Path,
     file_len: u64,
     limit: u64,
-    buf: &'b mut Vec<u8>,
-) -> Result<Option<&'b [u8]>, IngestError> {
+    buf: &mut Vec<u8>,
+) -> Result<bool, IngestError> {
     let file = match fs::File::open(path) {
         Ok(f) => f,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(err) => return Err(IngestError::Io(err)),
     };
-    read_bounded_content_into(file, file_len, limit, buf).map_err(Into::into)
+    read_bounded_content_into(file, file_len, limit, buf)?;
+    Ok(true)
 }
 
 fn read_bounded_content_into(
@@ -283,7 +240,7 @@ fn read_bounded_content_into(
     file_len: u64,
     limit: u64,
     buf: &mut Vec<u8>,
-) -> io::Result<Option<&[u8]>> {
+) -> io::Result<()> {
     let to_read = file_len.min(limit.saturating_add(1)) as usize;
     let needed = buf
         .len()
@@ -292,7 +249,7 @@ fn read_bounded_content_into(
     buf.reserve(needed);
     let mut handle = file.take(limit.saturating_add(1));
     handle.read_to_end(buf)?;
-    Ok(Some(buf.as_slice()))
+    Ok(())
 }
 
 fn validate_root(root: &Path) -> Result<PathBuf, IngestError> {
@@ -372,15 +329,30 @@ mod tests {
         fs::write(&too_large_path, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
 
         let mut buf = Vec::new();
-        assert!(matches!(
-            read_local_file_into(&exact_path, MAX_FILE_SIZE, &mut buf)?,
-            Some(b) if b.len() == MAX_FILE_SIZE as usize
-        ));
+        assert!(read_file_content_bounded(
+            &exact_path,
+            MAX_FILE_SIZE,
+            MAX_FILE_SIZE,
+            &mut buf
+        )?);
+        assert_eq!(buf.len(), MAX_FILE_SIZE as usize);
+
         buf.clear();
-        assert!(matches!(
-            read_local_file_into(&too_large_path, MAX_FILE_SIZE, &mut buf)?,
-            Some(b) if b.len() == MAX_FILE_SIZE as usize + 1
-        ));
+        assert!(read_file_content_bounded(
+            &too_large_path,
+            MAX_FILE_SIZE + 1,
+            MAX_FILE_SIZE,
+            &mut buf
+        )?);
+        assert_eq!(
+            buf.len(),
+            MAX_FILE_SIZE as usize + 1,
+            "one sentinel byte past the limit"
+        );
+
+        let res = collect(&root, None)?;
+        assert_eq!(res.files.len(), 1, "exact-size file is included");
+        assert_eq!(res.skipped, 1, "one byte over the limit is skipped");
         Ok(())
     }
 
@@ -394,8 +366,13 @@ mod tests {
         fs::write(&file_path, &payload)?;
 
         let mut buf = Vec::new();
-        let res = read_local_file_into(&file_path, MAX_FILE_SIZE, &mut buf)?;
-        assert_eq!(res, Some(payload.as_slice()));
+        assert!(read_file_content_bounded(
+            &file_path,
+            payload.len() as u64,
+            MAX_FILE_SIZE,
+            &mut buf
+        )?);
+        assert_eq!(buf, payload);
         assert!(buf.capacity() >= 64 * 1024);
         Ok(())
     }
@@ -408,14 +385,19 @@ mod tests {
         let path = root.join("nonexistent.txt");
 
         let mut buf = Vec::new();
-        assert_eq!(read_local_file_into(&path, MAX_FILE_SIZE, &mut buf)?, None);
+        assert!(!read_file_content_bounded(
+            &path,
+            0,
+            MAX_FILE_SIZE,
+            &mut buf
+        )?);
+        assert!(buf.is_empty());
         Ok(())
     }
 
     #[cfg(unix)]
     #[test]
     fn rejects_symlink_file() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::core::policy::MAX_FILE_SIZE;
         use std::os::unix::fs::symlink;
 
         let root = temp_dir("symlink_test")?;
@@ -424,15 +406,15 @@ mod tests {
         fs::write(&target, "content")?;
         symlink(&target, &link)?;
 
-        let mut buf = Vec::new();
-        assert_eq!(read_local_file_into(&link, MAX_FILE_SIZE, &mut buf)?, None);
+        let res = collect(&root, None)?;
+        assert_eq!(res.files.len(), 1, "only the regular target is collected");
+        assert_eq!(res.skipped, 0);
         Ok(())
     }
 
     #[cfg(windows)]
     #[test]
     fn rejects_windows_symlink_file() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::core::policy::MAX_FILE_SIZE;
         use std::os::windows::fs::symlink_file;
 
         let root = temp_dir("win_symlink_test")?;
@@ -441,8 +423,9 @@ mod tests {
         fs::write(&target, "content")?;
 
         if symlink_file(&target, &link).is_ok() {
-            let mut buf = Vec::new();
-            assert_eq!(read_local_file_into(&link, MAX_FILE_SIZE, &mut buf)?, None);
+            let res = collect(&root, None)?;
+            assert_eq!(res.files.len(), 1, "only the regular target is collected");
+            assert_eq!(res.skipped, 0);
             let _ = fs::remove_file(&link);
         }
         Ok(())

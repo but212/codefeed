@@ -11,7 +11,8 @@ use zeroize::Zeroizing;
 
 use crate::core::error::IngestError;
 use crate::core::github::{
-    AttemptState, RequestOutcome, Transition, TransportKind, is_github_api_origin, tarball_url,
+    AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind,
+    is_github_api_origin, tarball_url,
 };
 use crate::core::model::CollectionResult;
 use crate::core::policy::{ARCHIVE_MAX_SECS, GITHUB_TIMEOUT_SECS, MAX_ATTEMPTS};
@@ -19,7 +20,11 @@ use crate::core::policy::{ARCHIVE_MAX_SECS, GITHUB_TIMEOUT_SECS, MAX_ATTEMPTS};
 const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 
 enum Attempt {
-    Status(ureq::http::Response<ureq::Body>),
+    Status {
+        response: ureq::http::Response<ureq::Body>,
+        retry_after: Option<Duration>,
+        is_rate_limit: bool,
+    },
     Transport(ureq::Error),
 }
 
@@ -30,7 +35,7 @@ pub(super) fn collect(
     reference: Option<&str>,
 ) -> Result<CollectionResult, IngestError> {
     let client = GithubClient::new();
-    let reader = client.tarball_stream(owner, repo, reference)?;
+    let reader = client.stream_url(&tarball_url(owner, repo, reference))?;
     let label = format!("https://github.com/{owner}/{repo}");
     super::archive::collect(reader, &label, reference)
 }
@@ -61,16 +66,6 @@ impl GithubClient {
         }
     }
 
-    fn tarball_stream(
-        &self,
-        owner: &str,
-        repo: &str,
-        reference: Option<&str>,
-    ) -> Result<Box<dyn Read + Send>, IngestError> {
-        let url = tarball_url(owner, repo, reference);
-        self.stream_url(&url)
-    }
-
     fn stream_url(&self, url: &str) -> Result<Box<dyn Read + Send>, IngestError> {
         let mut attempt_state = AttemptState::new();
         loop {
@@ -87,22 +82,27 @@ impl GithubClient {
                 Ok(resp) if resp.status().is_success() => {
                     return Ok(Box::new(resp.into_body().into_reader()));
                 }
-                Ok(resp) => Attempt::Status(resp),
+                Ok(resp) => {
+                    let rate_limit = read_rate_limit_headers(resp.headers());
+                    Attempt::Status {
+                        retry_after: rate_limit.retry_after(unix_now_secs()),
+                        is_rate_limit: rate_limit.is_rate_limited(),
+                        response: resp,
+                    }
+                }
                 Err(error) => Attempt::Transport(error),
             };
 
             let outcome = match &attempt {
-                Attempt::Status(resp) => {
-                    let status = resp.status().as_u16();
-                    let headers = resp.headers();
-                    let retry_after = parse_retry_after(headers);
-                    let is_rate_limit = is_rate_limit_403(headers);
-                    RequestOutcome::HttpStatus {
-                        status,
-                        retry_after,
-                        is_rate_limit,
-                    }
-                }
+                Attempt::Status {
+                    response,
+                    retry_after,
+                    is_rate_limit,
+                } => RequestOutcome::HttpStatus {
+                    status: response.status().as_u16(),
+                    retry_after: *retry_after,
+                    is_rate_limit: *is_rate_limit,
+                },
                 Attempt::Transport(error) if is_retryable_transport_error(error) => {
                     RequestOutcome::TransportError(TransportKind::Retryable)
                 }
@@ -117,9 +117,9 @@ impl GithubClient {
                     delay,
                 } => {
                     match &attempt {
-                        Attempt::Status(resp) => eprintln!(
+                        Attempt::Status { response, .. } => eprintln!(
                             "warning: GitHub HTTP status {} on attempt {count}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}",
-                            resp.status()
+                            response.status()
                         ),
                         Attempt::Transport(error) => eprintln!(
                             "warning: GitHub transport error: {} on attempt {count}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}",
@@ -129,9 +129,12 @@ impl GithubClient {
                     std::thread::sleep(delay);
                 }
                 Transition::Fail => match attempt {
-                    Attempt::Status(response) => {
+                    Attempt::Status {
+                        response,
+                        retry_after,
+                        ..
+                    } => {
                         let status = response.status();
-                        let retry_after = parse_retry_after(response.headers());
                         let mut body_bytes = Zeroizing::new(Vec::new());
                         let _ = response
                             .into_body()
@@ -172,38 +175,21 @@ fn sanitize_error_detail(input: &str) -> String {
         .collect()
 }
 
-fn parse_retry_after(headers: &ureq::http::HeaderMap) -> Option<Duration> {
-    if let Some(val) = headers.get("retry-after").and_then(|v| v.to_str().ok())
-        && let Ok(secs) = val.trim().parse::<u64>()
-    {
-        return Some(Duration::from_secs(secs));
-    }
-    if let Some(reset) = headers
-        .get("x-ratelimit-reset")
-        .and_then(|v| v.to_str().ok())
-        && let Ok(epoch_secs) = reset.trim().parse::<u64>()
-        && let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-    {
-        let now_secs = now.as_secs();
-        if epoch_secs > now_secs {
-            return Some(Duration::from_secs(epoch_secs - now_secs));
-        }
-    }
-    None
+/// Reads rate-limit headers from a response. A present but non-UTF-8 header counts as present with no value.
+fn read_rate_limit_headers(headers: &ureq::http::HeaderMap) -> RateLimitHeaders {
+    let text = |name: &str| headers.get(name).map(|v| v.to_str().unwrap_or(""));
+    RateLimitHeaders::parse(
+        text("retry-after"),
+        text("x-ratelimit-remaining"),
+        text("x-ratelimit-reset"),
+    )
 }
 
-fn is_rate_limit_403(headers: &ureq::http::HeaderMap) -> bool {
-    if headers.get("retry-after").is_some() {
-        return true;
-    }
-    if let Some(rem) = headers
-        .get("x-ratelimit-remaining")
-        .and_then(|v| v.to_str().ok())
-        && rem.trim() == "0"
-    {
-        return true;
-    }
-    false
+/// Current Unix time in seconds. A clock before the epoch maps to `u64::MAX`, so no reset is ever in the future.
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(u64::MAX, |now| now.as_secs())
 }
 
 fn api_error(status: StatusCode, body_bytes: &[u8], retry_after: Option<Duration>) -> IngestError {
@@ -382,6 +368,72 @@ mod tests {
             err_msg.contains("\u{FFFD}[31mANSI\u{FFFD}bell\u{FFFD}del"),
             "C0, DEL, and C1 control characters should be replaced with replacement char: {err_msg}"
         );
+    }
+
+    fn epoch_now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_secs()
+    }
+
+    #[test]
+    fn reads_rate_limit_headers_from_response() {
+        let mut headers = ureq::http::HeaderMap::new();
+        headers.insert("x-ratelimit-remaining", "0".parse().expect("header value"));
+        headers.insert("x-ratelimit-reset", "123".parse().expect("header value"));
+        assert_eq!(
+            read_rate_limit_headers(&headers),
+            RateLimitHeaders::parse(None, Some("0"), Some("123"))
+        );
+    }
+
+    #[test]
+    fn api_error_omits_retry_hint_with_remaining_quota() {
+        let reset = (epoch_now_secs() + 2400).to_string();
+        let server = MockServer::spawn(1, move |_index, _req, _port| {
+            format!(
+                "HTTP/1.1 404 Not Found\r\nx-ratelimit-remaining: 59\r\nx-ratelimit-reset: {reset}\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found"
+            )
+            .into_bytes()
+        });
+
+        let client = GithubClient::new();
+        let url = server.url("/test");
+        let Err(err) = client.stream_url(&url) else {
+            panic!("expected error");
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("404"));
+        assert!(!msg.contains("retry available"), "{msg}");
+
+        server.join();
+    }
+
+    #[test]
+    fn retries_server_error_with_ratelimit_headers() {
+        let reset = (epoch_now_secs() + 2400).to_string();
+        let server = MockServer::spawn(2, move |index, _req, _port| {
+            match index {
+            0 => format!(
+                "HTTP/1.1 503 Service Unavailable\r\nx-ratelimit-remaining: 59\r\nx-ratelimit-reset: {reset}\r\nContent-Length: 11\r\nConnection: close\r\n\r\nunavailable"
+            )
+            .into_bytes(),
+            _ => b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess".to_vec(),
+        }
+        });
+
+        let client = GithubClient::new();
+        let url = server.url("/test");
+        let mut reader = client
+            .stream_url(&url)
+            .expect("503 with remaining quota should be retried");
+        let mut body = String::new();
+        reader.read_to_string(&mut body).expect("read body");
+        assert_eq!(body, "success");
+
+        let (_, connections) = server.join();
+        assert_eq!(connections, 2);
     }
 
     #[test]

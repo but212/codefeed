@@ -100,7 +100,7 @@ Any path containing a component starting with a leading dot (`.`) is considered 
 
 | Parameter (`policy.rs`) | Enforcement Mechanism | Failure Mode |
 | :--- | :--- | :--- |
-| `MAX_FILE_COUNT` | `CandidateBudget` slot check before reading content | `IngestError::CandidateLimitExceeded` with directory diagnostics |
+| `MAX_FILE_COUNT` | `Selector::admit` slot check (GitHub: before body read; local: after bounded body read by workers) | `IngestError::CandidateLimitExceeded` with directory diagnostics |
 | `MAX_PATH_DEPTH` | Archive entry path nesting depth check in `normalize_tar_entry_path` | `IngestError::InvalidMetadata` |
 | `MAX_FILE_SIZE` | Pre-I/O `size_hint` evaluation and stream boundary read (`take(MAX_FILE_SIZE + 1)`) | Skipped; tallied in `skipped_files` report |
 | `MAX_OUTPUT_SIZE` | Early arena total check (`Selector::add_file`) and `BoundedBuffer` byte counter | `IngestError::OutputTooLarge` with Top-5 largest files |
@@ -154,7 +154,7 @@ Remote ingestion via `src/shell/github.rs` operates under strict isolation:
    - Archive entries are unpacked via `flate2` and `tar` directly into memory arena buffers (`FileStorage`) without writing tarballs or unpacked files to disk.
 3. **Bounded Retries:**
    - Bounded exponential backoff (`MAX_ATTEMPTS = 3`, initial delay 250 ms, cap 5,000 ms).
-   - Only retryable transport errors (I/O, timeout, connection drop) and HTTP 429 / 5xx status codes trigger retries. 4xx client errors fail immediately.
+   - Only retryable transport errors (I/O, timeout, connection drop), HTTP 429 / 5xx status codes, and rate-limited 403 responses (`Retry-After` present or `x-ratelimit-remaining: 0`) trigger retries. Other 4xx client errors fail immediately.
 
 ---
 

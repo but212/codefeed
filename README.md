@@ -62,6 +62,8 @@ codefeed -- -my-directory
 - `-h`, `--help` — Print usage and exit with code 0.
 - `--` — Option delimiter. Treats all subsequent arguments as positional sources.
 
+A value written inline (`--flag=value`) may start with `-`, for example `--output=-notes.txt`. A value passed as the next argument may not, except `-o -` for stdout.
+
 ### Installation
 
 ```bash
@@ -100,11 +102,11 @@ Credentials are sent as `Authorization: Bearer <token>` strictly to exact-origin
 - **Traversal**: Traverses local filesystems via parallel workers (`ignore::WalkBuilder::build_parallel`, `follow_links(false)`) with bounded channel backpressure, non-symlink metadata validation, canonical output path exclusion, and deterministic lexicographical sorting.
 - **Remote Ingestion**: Streams GitHub repository archives (`/repos/{owner}/{repo}/tarball/{ref}`) in a single HTTP request via `flate2` and `tar` directly into the selection pipeline with zero intermediate disk files. Extracts commit SHA from `pax_global_header`.
 - **Limits**:
-  - Candidate files: Bounded candidate budget; aborts on overflow with deterministically sorted largest-directory diagnostics from observed candidates.
+  - Candidate files: Bounded candidate budget; aborts on overflow with largest-directory diagnostics sorted by count, drawn from candidates observed before the abort (counts can vary between local runs).
   - Per-file size: Individual file cap (`MAX_FILE_SIZE`); exceeding files increment `skipped`.
   - Digest size: Enforced total digest cap (`MAX_OUTPUT_SIZE`); aborts with largest-file diagnostics on overflow.
   - Archive transfer: Bounded whole-archive transfer timeout (`ARCHIVE_MAX_SECS`).
-- **Network Resilience**: Retries transient transport errors (`Io`, `Timeout`, `ConnectionFailed`) and HTTP 429/5xx with exponential backoff up to 3 total attempts. Fails immediately on non-transient transport errors and 4xx client errors.
+- **Network Resilience**: Retries transient transport errors (`Io`, `Timeout`, `ConnectionFailed`), HTTP 429/5xx, and rate-limited 403 responses with exponential backoff up to 3 total attempts. Fails immediately on non-transient transport errors and other 4xx client errors.
 - **Central Policy**: Operational constants, budgets, and patterns reside in `src/core/policy.rs` as the single source of truth.
 
 ## Documentation

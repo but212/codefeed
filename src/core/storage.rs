@@ -4,7 +4,9 @@
 //! for paths and contents, indexed by compact 16-byte [`FileSpan`] records.
 
 use std::cmp::Ordering;
+use std::ops::Deref;
 
+use crate::core::error::IngestError;
 use crate::core::policy::NormalizedPath;
 
 /// 16-byte POD indexing a file path and content slice in [`FileStorage`].
@@ -49,25 +51,14 @@ impl SortedFiles {
     pub(crate) fn new(storage: FileStorage) -> Self {
         Self(storage.sort_by_path())
     }
+}
 
-    pub(crate) const fn len(&self) -> usize {
-        self.0.len()
-    }
+/// Read-only view. `FileStorage` mutators consume `self`, so sortedness cannot be broken through this view.
+impl Deref for SortedFiles {
+    type Target = FileStorage;
 
-    pub(crate) const fn spans(&self) -> &[FileSpan] {
-        self.0.spans()
-    }
-
-    pub(crate) const fn path_arena(&self) -> &str {
-        self.0.path_arena()
-    }
-
-    pub(crate) const fn total_bytes(&self) -> u64 {
-        self.0.total_bytes()
-    }
-
-    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = FileRecord<'_>> {
-        self.0.iter()
+    fn deref(&self) -> &FileStorage {
+        &self.0
     }
 }
 
@@ -150,6 +141,11 @@ impl FileStorage {
     /// Iterator yielding borrowed [`FileRecord`] views over the arena.
     pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = FileRecord<'_>> {
         self.spans.iter().map(move |&span| self.get(span))
+    }
+
+    /// Error for storage that exceeds the output limit, naming the largest files.
+    pub(crate) fn output_too_large_error(&self) -> IngestError {
+        IngestError::output_too_large(largest_files(self.iter()))
     }
 }
 

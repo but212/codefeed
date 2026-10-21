@@ -1,4 +1,4 @@
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use crate::core::error::IngestError;
@@ -78,15 +78,17 @@ where
     let mut reference: Option<String> = None;
     let mut format = DigestFormat::Text;
     let mut state = ParseState::Normal;
+    let mut store = |value: FlagValue| match value {
+        FlagValue::Output(val) => output = Some(val),
+        FlagValue::Reference(val) => reference = Some(val),
+        FlagValue::Format(val) => format = val,
+    };
 
     for arg in args_iter {
         match state {
             ParseState::ExpectValue(flag, flag_str) => {
-                match parse_flag_value(flag, flag_str, arg)? {
-                    FlagValue::Output(val) => output = Some(val),
-                    FlagValue::Reference(val) => reference = Some(val),
-                    FlagValue::Format(val) => format = val,
-                }
+                reject_option_like(flag, flag_str, &arg)?;
+                store(parse_flag_value(flag, arg)?);
                 state = ParseState::Normal;
             }
             ParseState::PositionalOnly => {
@@ -111,11 +113,7 @@ where
                     }
                     if let Some((flag, flag_str, inline_val)) = match_flag(s) {
                         if let Some(inline) = inline_val {
-                            match parse_flag_value(flag, flag_str, OsString::from(inline))? {
-                                FlagValue::Output(val) => output = Some(val),
-                                FlagValue::Reference(val) => reference = Some(val),
-                                FlagValue::Format(val) => format = val,
-                            }
+                            store(parse_flag_value(flag, OsString::from(inline))?);
                         } else {
                             state = ParseState::ExpectValue(flag, flag_str);
                         }
@@ -167,7 +165,10 @@ enum FlagValue {
     Format(DigestFormat),
 }
 
-fn parse_flag_value(flag: Flag, flag_str: &str, val: OsString) -> Result<FlagValue, IngestError> {
+/// Rejects a separate-argument flag value that starts with `-`, so `-o -x` cannot
+/// swallow the next option. `-o -` is the stdout sentinel and stays allowed.
+/// Inline `--flag=value` forms never reach this check.
+fn reject_option_like(flag: Flag, flag_str: &str, val: &OsStr) -> Result<(), IngestError> {
     let allow_dash = matches!(flag, Flag::Output);
     if let Some(s) = val.to_str()
         && s.starts_with('-')
@@ -177,6 +178,10 @@ fn parse_flag_value(flag: Flag, flag_str: &str, val: OsString) -> Result<FlagVal
             "a value is required for '{flag_str}' but none was supplied"
         )));
     }
+    Ok(())
+}
+
+fn parse_flag_value(flag: Flag, val: OsString) -> Result<FlagValue, IngestError> {
     match flag {
         Flag::Output => Ok(FlagValue::Output(val)),
         Flag::Reference => {
@@ -238,6 +243,17 @@ mod tests {
                 assert!(matches!(config.source, Source::Local(_)));
                 assert_eq!(config.format, DigestFormat::Xml);
                 assert_eq!(config.output, OutputTarget::Stdout);
+            }
+            CliAction::Help => panic!("expected Run action"),
+        }
+
+        let run_inline_dash = parse(["codefeed", ".", "--output=-notes.txt"]).unwrap();
+        match run_inline_dash {
+            CliAction::Run(config) => {
+                assert_eq!(
+                    config.output,
+                    OutputTarget::File(PathBuf::from("-notes.txt"))
+                );
             }
             CliAction::Help => panic!("expected Run action"),
         }
@@ -308,6 +324,8 @@ mod tests {
             ],
             &["codefeed", "src", "-f", "-"],
             &["codefeed", "src", "--format", "-"],
+            &["codefeed", "src", "--format=-x"],
+            &["codefeed", "src", "-o", "-x"],
         ];
         for args in invalid_cases {
             assert!(

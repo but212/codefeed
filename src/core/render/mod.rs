@@ -36,48 +36,39 @@ pub(crate) fn render_with<R: FormatRenderer>(
     renderer.write_footer(buf)
 }
 
-impl DigestFormat {
-    pub(crate) fn render(
-        self,
-        buf: BoundedBuffer,
-        collection: &CollectionResult,
-    ) -> Result<BoundedBuffer, OutputLimitExceeded> {
-        match self {
-            Self::Text => render_with(buf, collection, TextRenderer),
-            Self::Xml => render_with(buf, collection, XmlRenderer),
+impl CollectionResult {
+    /// Renders the collected files into [`RenderedDigest`] using the specified format.
+    ///
+    /// Binds output generation to [`MAX_OUTPUT_SIZE`] and calculates the estimated token count.
+    /// Consumes `self` as part of the linear ingestion pipeline.
+    ///
+    /// # Output Size Invariant
+    ///
+    /// Final output size bounding relies on a two-stage guarantee:
+    /// 1. `Selector::add_file` performs early-fail bounding against `MAX_OUTPUT_SIZE` using raw arena byte totals.
+    /// 2. `render` via [`BoundedBuffer`] enforces `MAX_OUTPUT_SIZE` during rendering passes.
+    ///
+    /// For early-fail checks to be sound (never rejecting a collection that would pass final rendering),
+    /// the invariant `rendered_bytes >= raw_bytes` (`files.total_bytes()`) must hold for both Text and XML formats.
+    /// Text rendering appends framing, headers, and tree structure while preserving raw content bytes.
+    /// XML rendering escapes entities and sanitizes control characters, which strictly increases or preserves length.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IngestError::OutputTooLarge`] if output exceeds the maximum size limit.
+    pub(crate) fn render(self, format: DigestFormat) -> Result<RenderedDigest, IngestError> {
+        let capacity = (self.files.total_bytes() as usize).saturating_add(4096);
+        let buf = BoundedBuffer::with_capacity(capacity);
+        let included = self.files.len();
+        let skipped = self.skipped;
+        let rendered = match format {
+            DigestFormat::Text => render_with(buf, &self, TextRenderer),
+            DigestFormat::Xml => render_with(buf, &self, XmlRenderer),
+        };
+        match rendered {
+            Ok(buf) => Ok(buf.finish_with_counts(included, skipped)),
+            Err(OutputLimitExceeded) => Err(self.files.output_too_large_error()),
         }
-    }
-}
-
-/// Renders a collection according to the chosen digest format into a [`RenderedDigest`].
-///
-/// Binds output generation to [`MAX_OUTPUT_SIZE`] and calculates the estimated token count.
-///
-/// # Output Size Invariant
-///
-/// Final output size bounding relies on a two-stage guarantee:
-/// 1. `Selector::add_file` performs early-fail bounding against `MAX_OUTPUT_SIZE` using raw arena byte totals.
-/// 2. `render` via [`BoundedBuffer`] enforces `MAX_OUTPUT_SIZE` during rendering passes.
-///
-/// For early-fail checks to be sound (never rejecting a collection that would pass final rendering),
-/// the invariant `rendered_bytes >= raw_bytes` (`files.total_bytes()`) must hold for both Text and XML formats.
-/// Text rendering appends framing, headers, and tree structure while preserving raw content bytes.
-/// XML rendering escapes entities and sanitizes control characters, which strictly increases or preserves length.
-///
-/// # Errors
-///
-/// Returns [`IngestError::OutputTooLarge`] if output exceeds the maximum size limit.
-pub(crate) fn render(
-    collection: CollectionResult,
-    format: DigestFormat,
-) -> Result<RenderedDigest, IngestError> {
-    let capacity = (collection.files.total_bytes() as usize).saturating_add(4096);
-    let buf = BoundedBuffer::with_capacity(capacity);
-    let included = collection.files.len();
-    let skipped = collection.skipped;
-    match format.render(buf, &collection) {
-        Ok(buf) => Ok(buf.finish_with_counts(included, skipped)),
-        Err(OutputLimitExceeded) => Err(collection.output_too_large_error()),
     }
 }
 

@@ -4,7 +4,6 @@ use std::io::{BufReader, Read};
 
 use flate2::read::GzDecoder;
 use tar::{Archive, EntryType};
-use zeroize::Zeroizing;
 
 use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::error::IngestError;
@@ -29,7 +28,7 @@ pub(super) fn collect<R: Read>(
     let entries = archive.entries().map_err(IngestError::Io)?;
     let mut parsed_revision = None;
     let mut selector = Selector::new();
-    let mut content_scratch = Zeroizing::new(Vec::with_capacity(32 * 1024));
+    let mut content_scratch = Vec::with_capacity(32 * 1024);
 
     for entry_res in entries {
         let mut entry = entry_res.map_err(IngestError::Io)?;
