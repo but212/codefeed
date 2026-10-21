@@ -32,12 +32,10 @@ use crate::core::selector::{Selector, exceeds_size_limits};
 enum WorkerMsg {
     /// Non-UTF-8 path prefix. Counted as skipped without reading content.
     NonUtf8(String),
-    /// Regular file unlinked after discovery. Counted as skipped without reading content.
-    Unavailable(NormalizedPath),
-    /// `content` is `None` when the worker skipped the read (size limit or unavailable at open).
+    /// `content` is `None` when the worker skipped the read: over the size limit, unlinked after
+    /// discovery, or unavailable at open. The selector counts each of these as skipped.
     Regular {
         path: NormalizedPath,
-        size: u64,
         content: Option<Vec<u8>>,
     },
     Error(IngestError),
@@ -138,9 +136,12 @@ impl LocalVisitor<'_> {
 
         let meta = match fs::symlink_metadata(entry_path) {
             Ok(m) => m,
-            // Unlinked after discovery: settle through `skip()` like the open-step NotFound path.
+            // Unlinked after discovery: send it without content so the selector skips it.
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                return Ok(Some(WorkerMsg::Unavailable(path)));
+                return Ok(Some(WorkerMsg::Regular {
+                    path,
+                    content: None,
+                }));
             }
             Err(err) => return Err(io_error_at(entry_path, err)),
         };
@@ -155,11 +156,7 @@ impl LocalVisitor<'_> {
         } else {
             read_bounded(entry_path, file_len)?
         };
-        Ok(Some(WorkerMsg::Regular {
-            path,
-            size: file_len,
-            content,
-        }))
+        Ok(Some(WorkerMsg::Regular { path, content }))
     }
 }
 
@@ -189,17 +186,12 @@ impl ignore::ParallelVisitor for LocalVisitor<'_> {
 }
 
 fn apply_msg(selector: Selector, msg: WorkerMsg) -> Result<Selector, IngestError> {
-    let (status, size_hint, content) = match msg {
-        WorkerMsg::NonUtf8(prefix) => (PathStatus::NonUtf8Candidate(prefix), None, None),
-        WorkerMsg::Unavailable(path) => (PathStatus::Valid(path), None, None),
-        WorkerMsg::Regular {
-            path,
-            size,
-            content,
-        } => (PathStatus::Valid(path), Some(size), content),
+    let (status, content) = match msg {
+        WorkerMsg::NonUtf8(prefix) => (PathStatus::NonUtf8Candidate(prefix), None),
+        WorkerMsg::Regular { path, content } => (PathStatus::Valid(path), content),
         WorkerMsg::Error(err) => return Err(err),
     };
-    selector.observe(status, size_hint, || Ok(content))
+    selector.observe(status, None, || Ok(content))
 }
 
 fn drain_channel(
@@ -388,8 +380,8 @@ mod tests {
             .process_entry(entry)?
             .ok_or("unlinked file must reach the selector as a candidate")?;
         assert!(
-            matches!(&msg, WorkerMsg::Unavailable(_)),
-            "unlinked file must be a typed Unavailable message"
+            matches!(&msg, WorkerMsg::Regular { content: None, .. }),
+            "unlinked file must be a Regular message without content"
         );
         let selector = apply_msg(Selector::new(), msg)?;
 
