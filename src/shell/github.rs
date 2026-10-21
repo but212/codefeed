@@ -178,6 +178,13 @@ fn parse_retry_after(headers: &ureq::http::HeaderMap) -> Option<Duration> {
     {
         return Some(Duration::from_secs(secs));
     }
+    let quota_exhausted = headers
+        .get("x-ratelimit-remaining")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|rem| rem.trim() == "0");
+    if !quota_exhausted {
+        return None;
+    }
     if let Some(reset) = headers
         .get("x-ratelimit-reset")
         .and_then(|v| v.to_str().ok())
@@ -382,6 +389,123 @@ mod tests {
             err_msg.contains("\u{FFFD}[31mANSI\u{FFFD}bell\u{FFFD}del"),
             "C0, DEL, and C1 control characters should be replaced with replacement char: {err_msg}"
         );
+    }
+
+    fn epoch_now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_secs()
+    }
+
+    fn header_map(pairs: &[(&'static str, &str)]) -> ureq::http::HeaderMap {
+        let mut headers = ureq::http::HeaderMap::new();
+        for (name, value) in pairs {
+            let value = ureq::http::HeaderValue::from_str(value).expect("valid header value");
+            headers.insert(*name, value);
+        }
+        headers
+    }
+
+    #[test]
+    fn retry_after_honors_quota_state() {
+        type Row<'a> = (&'a [(&'static str, &'a str)], Option<u64>);
+        let reset = (epoch_now_secs() + 2400).to_string();
+        let cases: [Row<'_>; 5] = [
+            (
+                &[
+                    ("x-ratelimit-remaining", "59"),
+                    ("x-ratelimit-reset", &reset),
+                ],
+                None,
+            ),
+            (
+                &[
+                    ("x-ratelimit-remaining", "0"),
+                    ("x-ratelimit-reset", &reset),
+                ],
+                Some(2400),
+            ),
+            (
+                &[
+                    ("retry-after", "2"),
+                    ("x-ratelimit-remaining", "0"),
+                    ("x-ratelimit-reset", &reset),
+                ],
+                Some(2),
+            ),
+            (
+                &[
+                    ("retry-after", "2"),
+                    ("x-ratelimit-remaining", "59"),
+                    ("x-ratelimit-reset", &reset),
+                ],
+                Some(2),
+            ),
+            (&[("x-ratelimit-reset", &reset)], None),
+        ];
+
+        for (pairs, expected) in cases {
+            let got = parse_retry_after(&header_map(pairs)).map(|d| d.as_secs());
+            // The reset header is wall-clock relative; allow one second of drift between clock reads.
+            let matches = match (got, expected) {
+                (None, None) => true,
+                (Some(g), Some(w)) => g.abs_diff(w) <= 1,
+                _ => false,
+            };
+            assert!(
+                matches,
+                "headers {pairs:?}: expected {expected:?}, got {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn api_error_omits_retry_hint_with_remaining_quota() {
+        let reset = (epoch_now_secs() + 2400).to_string();
+        let server = MockServer::spawn(1, move |_index, _req, _port| {
+            format!(
+                "HTTP/1.1 404 Not Found\r\nx-ratelimit-remaining: 59\r\nx-ratelimit-reset: {reset}\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found"
+            )
+            .into_bytes()
+        });
+
+        let client = GithubClient::new();
+        let url = server.url("/test");
+        let Err(err) = client.stream_url(&url) else {
+            panic!("expected error");
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("404"));
+        assert!(!msg.contains("retry available"), "{msg}");
+
+        server.join();
+    }
+
+    #[test]
+    fn retries_server_error_with_ratelimit_headers() {
+        let reset = (epoch_now_secs() + 2400).to_string();
+        let server = MockServer::spawn(2, move |index, _req, _port| {
+            match index {
+            0 => format!(
+                "HTTP/1.1 503 Service Unavailable\r\nx-ratelimit-remaining: 59\r\nx-ratelimit-reset: {reset}\r\nContent-Length: 11\r\nConnection: close\r\n\r\nunavailable"
+            )
+            .into_bytes(),
+            _ => b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess".to_vec(),
+        }
+        });
+
+        let client = GithubClient::new();
+        let url = server.url("/test");
+        let mut reader = client
+            .stream_url(&url)
+            .expect("503 with remaining quota should be retried");
+        let mut body = String::new();
+        reader.read_to_string(&mut body).expect("read body");
+        assert_eq!(body, "success");
+
+        let (_, connections) = server.join();
+        assert_eq!(connections, 2);
     }
 
     #[test]
