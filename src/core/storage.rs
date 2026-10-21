@@ -6,6 +6,7 @@
 use std::cmp::Ordering;
 use std::ops::Deref;
 
+use crate::core::error::IngestError;
 use crate::core::policy::NormalizedPath;
 
 /// 16-byte POD indexing a file path and content slice in [`FileStorage`].
@@ -140,6 +141,11 @@ impl FileStorage {
     /// Iterator yielding borrowed [`FileRecord`] views over the arena.
     pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = FileRecord<'_>> {
         self.spans.iter().map(move |&span| self.get(span))
+    }
+
+    /// Error for storage that exceeds the output limit, naming the largest files.
+    pub(crate) fn output_too_large_error(&self) -> IngestError {
+        IngestError::output_too_large(largest_files(self.iter()))
     }
 }
 

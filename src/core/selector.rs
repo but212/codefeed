@@ -160,9 +160,7 @@ impl Selector {
         // bound for final rendered digest size (rendered_bytes >= raw_bytes). Checking here
         // aborts ingestion early to save memory and I/O before final rendering pass.
         if self.storage.total_bytes() > MAX_OUTPUT_SIZE {
-            return Err(IngestError::output_too_large(
-                crate::core::storage::largest_files(self.storage.iter()),
-            ));
+            return Err(self.storage.output_too_large_error());
         }
         Ok(self)
     }
