@@ -11,6 +11,7 @@ use zeroize::Zeroizing;
 
 use super::IngestError;
 use super::error::transport_error;
+use super::output;
 use crate::core::github::{
     AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind, api_error,
     is_github_api_origin, repository_url, status_retry_warning, tarball_url,
@@ -71,7 +72,7 @@ impl Attempt {
                 transport_retry_warning(&error.to_string(), count, url, delay)
             }
         };
-        eprintln!("{message}");
+        output::write_stderr_line(&message);
     }
 
     fn into_error(self) -> IngestError {

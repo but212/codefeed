@@ -20,14 +20,21 @@ fn ignore_broken_pipe(result: io::Result<()>) -> io::Result<()> {
     }
 }
 
-pub(super) fn write_stdout_line_to<W: io::Write>(out: &mut W, line: &str) -> io::Result<()> {
+pub(super) fn write_line_to<W: io::Write>(out: &mut W, line: &str) -> io::Result<()> {
     ignore_broken_pipe(writeln!(out, "{line}"))
 }
 
 pub(super) fn write_stdout_line(line: &str) {
     let stdout = io::stdout();
     let mut lock = stdout.lock();
-    let _ = write_stdout_line_to(&mut lock, line);
+    let _ = write_line_to(&mut lock, line);
+}
+
+/// Writes one line to stderr. A closed stderr is not an error, so the failure is dropped.
+pub(super) fn write_stderr_line(line: &str) {
+    let stderr = io::stderr();
+    let mut lock = stderr.lock();
+    let _ = write_line_to(&mut lock, line);
 }
 
 /// Returns the elapsed duration since the Unix epoch in nanoseconds.
@@ -280,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn write_stdout_line_ignores_broken_pipe() {
+    fn write_line_ignores_broken_pipe() {
         struct BrokenPipeWriter;
         impl io::Write for BrokenPipeWriter {
             fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
@@ -291,7 +298,7 @@ mod tests {
             }
         }
         let mut writer = BrokenPipeWriter;
-        assert!(write_stdout_line_to(&mut writer, "hello").is_ok());
+        assert!(write_line_to(&mut writer, "hello").is_ok());
     }
 
     #[test]
