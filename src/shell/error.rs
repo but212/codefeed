@@ -2,6 +2,7 @@
 
 use std::fmt::{Display, Formatter, Result};
 use std::io;
+use std::path::Path;
 
 use crate::core::error::DomainError;
 use crate::core::github::sanitize_error_detail;
@@ -44,6 +45,14 @@ impl From<io::Error> for IngestError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
     }
+}
+
+/// I/O failure on `path`. Keeps the error kind and names the path, which a bare `io::Error` drops.
+pub(crate) fn io_error_at(path: &Path, err: io::Error) -> IngestError {
+    IngestError::Io(io::Error::new(
+        err.kind(),
+        format!("{}: {err}", path.display()),
+    ))
 }
 
 /// Error for a transport failure. `error_text` is the transport error's `Display`.

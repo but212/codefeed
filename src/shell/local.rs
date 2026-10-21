@@ -20,6 +20,7 @@ use std::sync::mpsc::sync_channel;
 use ignore::{WalkBuilder, WalkState};
 
 use super::IngestError;
+use super::error::io_error_at;
 use super::output::ResolvedOutput;
 use crate::core::error::DomainError;
 use crate::core::model::{CollectionResult, repository_name};
@@ -141,7 +142,7 @@ impl LocalVisitor<'_> {
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
                 return Ok(Some(WorkerMsg::Unavailable(path)));
             }
-            Err(err) => return Err(IngestError::Io(err)),
+            Err(err) => return Err(io_error_at(entry_path, err)),
         };
 
         if meta.is_symlink() || !meta.is_file() {
@@ -234,10 +235,12 @@ fn read_bounded(path: &Path, file_len: u64) -> Result<Option<Vec<u8>>, IngestErr
     let file = match fs::File::open(path) {
         Ok(f) => f,
         Err(err) if is_unavailable_file(&err) => return Ok(None),
-        Err(err) => return Err(IngestError::Io(err)),
+        Err(err) => return Err(io_error_at(path, err)),
     };
     let mut buf = Vec::with_capacity(file_len.min(MAX_FILE_SIZE + 1) as usize);
-    file.take(MAX_FILE_SIZE + 1).read_to_end(&mut buf)?;
+    file.take(MAX_FILE_SIZE + 1)
+        .read_to_end(&mut buf)
+        .map_err(|err| io_error_at(path, err))?;
     Ok(Some(buf))
 }
 

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::IngestError;
+use super::error::io_error_at;
 use crate::core::error::DomainError;
 use crate::core::model::OutputTarget;
 
@@ -162,7 +163,7 @@ impl TempFile {
                     });
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(IngestError::Io(error)),
+                Err(error) => return Err(io_error_at(&path, error)),
             }
         }
     }
@@ -192,10 +193,11 @@ impl TempFile {
             return Err(IngestError::Io(closed_error()));
         };
         // A failure below leaves `Closed` in place, so `Drop` still unlinks the temporary file.
-        file.sync_all()?;
+        file.sync_all()
+            .map_err(|err| io_error_at(&self.path, err))?;
         drop(file);
 
-        fs::rename(&self.path, target)?;
+        fs::rename(&self.path, target).map_err(|err| io_error_at(target, err))?;
         self.state = TempState::Committed;
         Ok(())
     }
@@ -236,7 +238,7 @@ impl AtomicFile {
                 temp_file.set_permissions(metadata.permissions())?;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(IngestError::Io(error)),
+            Err(error) => return Err(io_error_at(target, error)),
         }
 
         Ok(Self {
@@ -246,8 +248,12 @@ impl AtomicFile {
     }
 
     fn write_all(&mut self, bytes: &[u8]) -> Result<(), IngestError> {
-        self.temp_file.file_mut()?.write_all(bytes)?;
-        Ok(())
+        let file = self
+            .temp_file
+            .file_mut()
+            .map_err(|err| io_error_at(&self.target, err))?;
+        file.write_all(bytes)
+            .map_err(|err| io_error_at(&self.target, err))
     }
 
     /// Commits the atomic file write by syncing content, renaming to the target path,
@@ -263,8 +269,9 @@ impl AtomicFile {
 
         #[cfg(unix)]
         {
-            let dir = fs::File::open(parent_dir(&self.target))?;
-            dir.sync_all()?;
+            let parent = parent_dir(&self.target);
+            let dir = fs::File::open(parent).map_err(|err| io_error_at(parent, err))?;
+            dir.sync_all().map_err(|err| io_error_at(parent, err))?;
         }
 
         Ok(())
@@ -427,6 +434,22 @@ mod tests {
         assert_eq!(
             temp_count, 0,
             "temporary file must be unlinked on write_atomic failure"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn atomic_write_error_names_path() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("error_names_path")?;
+        let output = root.join("missing").join("out.txt");
+
+        let err = match write_atomic(&output, b"new") {
+            Err(err) => err,
+            Ok(()) => return Err("write into a missing directory must fail".into()),
+        };
+        assert!(
+            err.to_string().contains("missing"),
+            "unexpected message: {err}"
         );
         Ok(())
     }
