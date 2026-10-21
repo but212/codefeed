@@ -9,67 +9,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+### Breaking
 
-- **GitHub rate-limit reset**: `x-ratelimit-reset` produces a retry delay only when `x-ratelimit-remaining` is `0`. Previously a 404 reported "retry available" and a 5xx response carrying reset headers was not retried (`src/shell/github.rs`).
-- **Unlinked local files**: A file deleted after directory discovery but before its metadata check is counted as skipped, matching a deletion at file-open time. Previously it was dropped without being counted (`src/shell/local.rs`).
-- **Unreadable local files**: A file that cannot be opened (`PermissionDenied`, or a Windows sharing violation from another process holding it) is counted as skipped instead of aborting the run, matching `docs/security_and_filtering.md`. Unreadable directories still fail fast (`src/shell/local.rs`).
+Library consumers: update code that matches on or calls these items.
+
+- **Error types split**: `IngestError` is now `Domain(DomainError)`, `Io(io::Error)`, or `Http(String)`. `DomainError` (re-exported from the crate root) has `Usage`, `CandidateLimitExceeded`, `InvalidSource`, `UnsupportedSource`, `Api`, `InvalidMetadata`, `OutputTooLarge`.
+  - **Action:** match `IngestError::Domain(DomainError::...)` instead of the flat variants.
+  - `GitRef::new`, `Source::github`, and `Source::with_reference` return `Result<_, DomainError>`. `IngestError::usage` moved to `DomainError::usage`.
+  - `?` converts both types into `IngestError`. `Display` strings are unchanged (`src/core/error.rs`, `src/shell/error.rs`).
+- **`GitRef` string access removed**: `GitRef::as_str` and `impl Display for GitRef` are gone.
+  - **Action:** use `&*git_ref` (`GitRef` derefs to `str`) (`src/core/model.rs`).
 
 ### Changed
 
-- **Breaking: error types split into domain and shell**: `IngestError` is now the shell's error type with three variants: `Domain(DomainError)`, `Io(io::Error)`, and `Http(String)`. Pure rule failures are `DomainError` (`Usage`, `CandidateLimitExceeded`, `InvalidSource`, `UnsupportedSource`, `Api`, `InvalidMetadata`, `OutputTooLarge`), re-exported from the crate root. Code that matched the flat variants must match `IngestError::Domain(DomainError::...)`. `GitRef::new`, `Source::github`, and `Source::with_reference` now return `Result<_, DomainError>`, and `IngestError::usage` moved to `DomainError::usage`. `?` still converts both types into `IngestError`. Every `Display` string is unchanged (`src/core/error.rs`, `src/shell/error.rs`).
-- **Dash-prefixed inline CLI values**: `--flag=value` accepts a value starting with `-`, such as `--output=-notes.txt`. Separate-argument values still reject a leading `-` except `-o -` for stdout, and `-o -x` still fails (`src/core/cli.rs`).
-- **GitHub stream errors**: Timeouts, connection drops, and gzip/tar decode failures while streaming the archive return `IngestError::Http` ("GitHub request failed") instead of `IngestError::Io` ("filesystem error"), matching `docs/security_and_filtering.md` (`src/shell/archive.rs`).
+- **GitHub stream errors**: Timeouts, connection drops, and gzip/tar decode failures during archive streaming return `IngestError::Http` ("GitHub request failed"), not `Io` ("filesystem error").
+  - **Action:** code matching `Io` for these errors must match `Http` (`src/shell/archive.rs`).
+- **TLS trust roots**: `ureq` uses compiled Mozilla roots (`rustls-webpki-roots`) instead of the platform verifier. Certificates trusted only through the OS store (e.g. corporate proxy CAs) are no longer accepted.
+- **Inline CLI values**: `--flag=value` accepts a leading `-` (e.g. `--output=-notes.txt`). Separate-argument values still reject a leading `-`, except `-o -` (stdout). `-o -x` still fails (`src/core/cli.rs`).
+
+### Fixed
+
+- **GitHub rate-limit reset**: `x-ratelimit-reset` yields a retry delay only when `x-ratelimit-remaining` is `0`. Before: a 404 said "retry available", and a 5xx with reset headers was not retried (`src/shell/github.rs`).
+- **Unlinked local files**: A file deleted between discovery and metadata check counts as skipped, as a deletion at open does. Before: silently dropped (`src/shell/local.rs`).
+- **Unreadable local files**: A file that fails to open (`PermissionDenied`, or a Windows sharing violation) counts as skipped instead of aborting. Unreadable directories still fail fast (`src/shell/local.rs`).
 
 ### Performance
 
-- **WebPKI Root Certificate Verification**: Switched `ureq` TLS roots from platform verifier to compiled Mozilla roots (`rustls-webpki-roots`), removing Windows CryptoAPI (`CertGetCertificateChain`) traversal overhead and trimming OS-specific C-bindings from dependencies.
-- **Archive Stream Decompression Buffering**: Buffered incoming archive stream ahead of `GzDecoder` in `codefeed::shell::archive::collect` with a tuned 64 KiB buffer (`ARCHIVE_BUFFER_BYTES`), smoothing chunked decompression I/O.
-- **Parallel Directory Traversal and Reading**: Parallelized local directory walking, metadata inspection, and bounded content reading in `codefeed::shell::local::collect` using `ignore::WalkParallel` with worker channels and thread scoping, preserving zero-copy arena storage, non-symlink security checks, and deterministic lexicographical ordering.
-- **Metadata and I/O Deduplication**: Deduplicated local file metadata queries in `codefeed::shell::local::collect`, replacing the triple `entry.metadata()`, `symlink_metadata()`, and `file.metadata()` sequence with a single `fs::symlink_metadata()` check per valid candidate, eliminating redundant post-open stat calls and pre-reserving read buffer capacity up to bounded file limits.
-
-### Internal
-
-- **Core Effect-Free Errors**: Core constructs only `DomainError`. The GitHub transport error constructor moved to the shell (`src/shell/error.rs`), and `Selector::observe` is generic over the caller's error type (`E: From<DomainError>`), so read errors pass through unchanged.
-- **Typed Output Target**: `resolve_output_target` returns `OutputTarget` (`File` with the canonical path, or `Stdout`) instead of `Option<PathBuf>`, and `deliver` takes the same type. `None` no longer means stdout at any call boundary.
-- **Unavailable Local Files**: A file unlinked after discovery is `WorkerMsg::Unavailable` instead of a zero-size `Regular` placeholder. The skip count is unchanged.
-- **Pure Label Rules**: `repository_url` (`src/core/github.rs`) and `repository_name` (`src/core/model.rs`) hold the digest label rules. The shell extracts the path or name and calls them.
-- **Shared Tar Fixtures**: Archive and GitHub tests build tarballs through `gzip_tarball` and `gzip_archive` in `src/shell/testing.rs`. `stream_url` returns `impl Read + Send` instead of a boxed reader.
-- **Archive Stream Decoupling**: Extracted tarball stream decompression, PAX commit SHA parsing, and entry admission into a dedicated `codefeed::shell::archive` module, separating HTTP transport concerns in `codefeed::shell::github` from streaming tar entry processing.
-- **Content Buffers**: Local and archive file-content buffers are plain `Vec<u8>`. `Zeroizing` remains only for the GitHub token and error bodies.
-- **Local Read Helper**: `read_bounded` returns `Result<Option<Vec<u8>>>` (`None` for an unavailable file) instead of filling an out-parameter buffer. The test-only `read_local_file_into` duplicate was removed, and its tests exercise `collect`. Behavior is unchanged (`src/shell/local.rs`).
-- **Dead Code**: Removed a redundant directory check in `src/shell/output.rs` and an unused `AsRef<str>` impl for `NormalizedPath` in `src/core/policy.rs`.
-- **Retry Header Decision**: Rate-limit headers are parsed once per failed GitHub response into `RateLimitHeaders` (`src/core/github.rs`). The retry delay and rate-limited flag are pure functions of the parsed values and an explicit `now_secs`, so their tests no longer depend on the wall clock. Behavior is unchanged.
-- **Local Worker Message**: `WorkerMsg` has four variants, `NonUtf8(prefix)`, `Unavailable(path)`, `Regular { path, size, content }`, and `Error`. Every candidate goes through `Selector::observe`, and impossible combinations such as non-UTF-8 paths with content are no longer representable. The path-length and size gate is one core predicate, `exceeds_size_limits`, shared by admission and the local worker. The duplicate `LocalVisitorBuilder` is merged into `LocalVisitor`. Behavior is unchanged.
-- **Render Dispatch**: `CollectionResult::render` matches `DigestFormat` directly and calls `render_with`. The `DigestFormat::render` method, the `render::render` free function, and the forwarding method on `CollectionResult` were removed. The overflow diagnostic is built once, in `FileStorage::output_too_large_error`.
-- **Single Candidate Entry**: Local and archive collectors settle each candidate through one core method, `Selector::observe(status, size_hint, read)`, which reads the body only after admission. `Admission`, `PendingEntry`, and `admit` are removed; `observe` settles the candidate in one `match`, since it was their only caller. Behavior is unchanged.
-- **Sorted View**: `SortedFiles` derefs to `FileStorage` for read-only access instead of re-declaring its getters. Sortedness is still guaranteed by `SortedFiles::new`.
-- **Scratch Buffers**: Local content reads pre-size the buffer to `min(file length, MAX_FILE_SIZE + 1)`, and `BoundedBuffer::push_usize` formats through `to_string()`. Output is unchanged.
-- **Path Normalization**: `classify_path_segments` drops empty and `.` segments itself, so every `NormalizedPath` is free of them regardless of caller; the archive no longer pre-filters, and two unreachable branches are removed. Behavior is unchanged (`src/core/policy.rs`, `src/core/archive.rs`).
-- **GitHub Attempt**: `Attempt::from_result`, `Attempt::warn`, and `Attempt::into_error` hold response classification, retry warnings, and error construction, and `Attempt::Status` no longer duplicates `is_rate_limit`. `GithubClient::request` attaches the origin-gated headers. Behavior is unchanged (`src/shell/github.rs`).
-- **GitHub Retry Transition**: `AttemptState::retry` builds the next state and `Transition::Retry` in one place, and `AttemptState::step` only decides which delay applies. Behavior is unchanged (`src/core/github.rs`).
-- **Output Parent**: `parent_dir` replaces three copies of the parent-or-`.` expression in `src/shell/output.rs`. Behavior is unchanged.
-- **Completion Message**: `completion_message` moved from `src/shell/mod.rs` to `src/core/cli.rs`, since it is pure formatting. `run_cli` only chooses the stream. Text is unchanged.
-- **CLI Parse Accumulator**: `cli::parse` folds flag values and the source positional through a consuming `Parsed` accumulator. One function owns the "unexpected argument" check and one owns the "a value is required" message. Accepted arguments and error text are unchanged (`src/core/cli.rs`).
-- **Archive Entry Loop**: `shell/archive.rs` handles the PAX header inside the entry loop and returns `Selector` from `process_tar_entry`, replacing the out-parameter and tuple return. The separate bounded-read helper was inlined. Revision and skip behavior are unchanged.
-- **GitHub Error Text**: `api_error`, `sanitize_error_detail`, `status_retry_warning`, `transport_retry_warning`, and `transport_error` moved from `src/shell/github.rs` to `src/core/github.rs`. The shell keeps HTTP calls, body reads, `eprintln!`, and sleeps. Message bytes are unchanged.
-- **Selector Constructor**: `Selector::new` builds the empty state directly, and the separate `impl Default for Selector` was removed. The HashMap capacity is unchanged.
-- **Test Tables**: Selector tests drive `Selector::observe` only. The `feed_file` and `feed_skipped` helpers were removed, and their cases are now rows in `observe_counts_candidates_by_content_outcome` and `observe_does_not_read_settled_candidates`, plus the new `observe_enforces_candidate_budget_before_read`. The retry decision test and archive path normalization test are tables. The vacuous capacity assertion in the local read test was dropped.
-- **Tests**: Removed `test_archive_buffer_bytes_invariant`, which restated the constant; `ARCHIVE_BUFFER_BYTES > 0` stays a compile-time assertion.
+- **Archive buffering**: The archive stream is buffered before `GzDecoder` in `codefeed::shell::archive::collect` (64 KiB, `ARCHIVE_BUFFER_BYTES`).
+- **Parallel local traversal**: `codefeed::shell::local::collect` walks, inspects metadata, and reads bounded content in parallel (`ignore::WalkParallel`, worker channels, thread scope). Zero-copy arenas, non-symlink checks, and deterministic lexicographic order are kept.
+- **Metadata dedup**: One `fs::symlink_metadata()` per valid candidate replaces the `entry.metadata()` / `symlink_metadata()` / `file.metadata()` sequence. No post-open stat; read buffers are pre-reserved up to bounded limits.
 
 ### Removed
 
-- **Breaking (library API)**: `GitRef::as_str` and `impl Display for GitRef` are removed. `GitRef` derefs to `str`, so use `&*git_ref` (`src/core/model.rs`).
-- **Unused Display**: `impl Display for NormalizedPath` is removed. It had no production caller (`src/core/policy.rs`).
-- **Build config**: The commented-out `[profile.release]` stanza is removed from `Cargo.toml`.
+- **Unused Display**: `impl Display for NormalizedPath` removed. It had no production caller (`src/core/policy.rs`).
+- **Build config**: Commented-out `[profile.release]` removed from `Cargo.toml`.
 
 ### Documentation
 
-- **Retry Policy**: `README.md`, `context.md`, and `docs/security_and_filtering.md` now state that rate-limited 403 responses are retried.
-- **Ingestion Order**: Docs now state that local workers read file bodies before the main thread calls `Selector::observe`; GitHub archive entries are admitted before reading.
-- **Zeroization Scope**: `docs/security_and_filtering.md` now states which buffers `Zeroizing` erases and which copies (HTTP client headers, process environment, error messages) it does not.
-- **Overflow Diagnostics**: Docs now state that overflow diagnostics cover only candidates admitted before abort, so local counts can vary between runs.
-- **Inline CLI Values**: `README.md` documents that `--flag=value` accepts values starting with `-`.
+- **Retry policy**: `README.md`, `context.md`, and `docs/security_and_filtering.md` state that rate-limited 403 responses are retried.
+- **Ingestion order**: Local workers read bodies before `Selector::observe`. GitHub archive entries are admitted before reading.
+- **Zeroization scope**: `docs/security_and_filtering.md` lists which buffers `Zeroizing` erases and which copies it does not (HTTP client headers, process environment, error messages).
+- **Overflow diagnostics**: Cover only candidates admitted before abort, so local counts can vary between runs.
+- **Inline CLI values**: `README.md` documents that `--flag=value` accepts a leading `-`.
+
+### Internal
+
+Contributor-facing. No consumer action required.
+
+#### Core
+
+- **Effect-free errors**: Core constructs only `DomainError`. The GitHub transport error constructor moved to the shell (`src/shell/error.rs`). `Selector::observe<E: From<DomainError>>` passes read errors through unchanged.
+- **Single candidate entry**: `Selector::observe(status, size_hint, read)` settles each candidate and reads the body only after admission. Removed `Admission`, `PendingEntry`, `admit`.
+- **`Selector::new`**: Builds the empty state directly; removed `impl Default for Selector`.
+- **Sorted view**: `SortedFiles` derefs to `FileStorage` (read-only). `SortedFiles::new` still guarantees sortedness.
+- **Render dispatch**: `CollectionResult::render` matches `DigestFormat` and calls `render_with`. Removed `DigestFormat::render`, `render::render`, and the forwarding method. The overflow diagnostic is built once in `FileStorage::output_too_large_error`.
+- **Scratch output**: `BoundedBuffer::push_usize` uses `to_string()`.
+- **Path normalization**: `classify_path_segments` drops empty and `.` segments itself, so every `NormalizedPath` is clean regardless of caller. The archive no longer pre-filters; two unreachable branches removed (`src/core/policy.rs`, `src/core/archive.rs`).
+- **Pure label rules**: `repository_url` (`src/core/github.rs`) and `repository_name` (`src/core/model.rs`) hold digest label rules. The shell extracts the path or name and calls them.
+- **Retry headers**: Rate-limit headers are parsed once into `RateLimitHeaders` (`src/core/github.rs`). Retry delay and rate-limited flag are pure functions of parsed values and an explicit `now_secs`.
+- **Retry transition**: `AttemptState::retry` builds the next state and `Transition::Retry`. `AttemptState::step` only picks the delay (`src/core/github.rs`).
+- **GitHub error text**: `api_error`, `sanitize_error_detail`, `status_retry_warning`, `transport_retry_warning`, `transport_error` moved from `src/shell/github.rs` to `src/core/github.rs`.
+- **Dead code**: Unused `AsRef<str>` for `NormalizedPath` removed (`src/core/policy.rs`).
+
+#### CLI
+
+- **Completion message**: `completion_message` moved from `src/shell/mod.rs` to `src/core/cli.rs`. `run_cli` only chooses the stream.
+- **Parse accumulator**: `cli::parse` folds flag values and the source positional through a consuming `Parsed`. One function owns the "unexpected argument" check; one owns the "a value is required" message (`src/core/cli.rs`).
+
+#### Shell
+
+- **Typed output target**: `resolve_output_target` returns `OutputTarget` (`File(canonical path)` or `Stdout`). `deliver` takes the same type. `None` no longer means stdout.
+- **Output parent**: `parent_dir` replaces three copies of the parent-or-`.` expression. Removed a redundant directory check (`src/shell/output.rs`).
+- **Local worker message**: `WorkerMsg` has four variants: `NonUtf8(prefix)`, `Unavailable(path)`, `Regular { path, size, content }`, `Error`.
+  - An unlinked file is `Unavailable` instead of a zero-size `Regular`. The skip count is unchanged.
+  - Impossible states, such as a non-UTF-8 path with content, are unrepresentable.
+  - The gate `exceeds_size_limits` is one core predicate shared by admission and the local worker.
+  - `LocalVisitorBuilder` merged into `LocalVisitor`.
+- **Local reads**: `read_bounded` returns `Result<Option<Vec<u8>>>` (`None` = unavailable) instead of filling an out-parameter. Buffers pre-size to `min(file length, MAX_FILE_SIZE + 1)`. Test-only `read_local_file_into` removed (`src/shell/local.rs`).
+- **Buffers**: Local and archive content is `Vec<u8>`. `Zeroizing` only for the GitHub token and error bodies.
+- **Archive stream**: Tar decompression, PAX commit SHA parsing, and entry admission live in `codefeed::shell::archive`. HTTP stays in `codefeed::shell::github`. `process_tar_entry` returns `Selector` (no out-param or tuple). The PAX header is handled inside the entry loop, and the bounded-read helper is inlined.
+- **GitHub attempt**: `Attempt::from_result`, `warn`, and `into_error` hold classification, warnings, and error construction. `Attempt::Status` no longer duplicates `is_rate_limit`. `GithubClient::request` attaches origin-gated headers. The shell keeps HTTP, body reads, `eprintln!`, and sleeps (`src/shell/github.rs`).
+
+#### Tests
+
+- **Selector tables**: Selector tests drive `observe` only. Removed `feed_file` and `feed_skipped`; their cases are rows in `observe_counts_candidates_by_content_outcome` and `observe_does_not_read_settled_candidates`, plus the new `observe_enforces_candidate_budget_before_read`.
+- **Table tests**: The retry decision and archive path normalization tests are tables. The vacuous capacity assertion in the local read test was dropped, and local read tests exercise `collect`.
+- **Shared tar fixtures**: `gzip_tarball` and `gzip_archive` in `src/shell/testing.rs`. `stream_url` returns `impl Read + Send`.
+- **Removed test**: `test_archive_buffer_bytes_invariant` restated the constant. `ARCHIVE_BUFFER_BYTES > 0` remains a compile-time assertion.
 
 ## [0.3.2]
 
