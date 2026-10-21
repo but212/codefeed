@@ -62,6 +62,8 @@ codefeed -- -my-directory
 - `-h`, `--help` — Print usage and exit with code 0.
 - `--` — Option delimiter. Treats all subsequent arguments as positional sources.
 
+A value written inline (`--flag=value`) may start with `-`, for example `--output=-notes.txt`. A value passed as the next argument may not, except `-o -` for stdout.
+
 ### Installation
 
 ```bash

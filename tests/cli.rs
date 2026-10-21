@@ -297,6 +297,21 @@ fn accepts_double_dash_delimiter() {
 }
 
 #[test]
+fn accepts_dash_prefixed_inline_output() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TempDir::new("inline_dash");
+    std::fs::write(root.path.join("visible.txt"), "visible")?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+        .current_dir(&root.path)
+        .args(["--output=-notes.txt", "."])
+        .output()?;
+
+    assert!(output.status.success(), "output: {output:?}");
+    assert!(root.path.join("-notes.txt").is_file());
+    Ok(())
+}
+
+#[test]
 fn ingest_fails_fast_on_directory_output_target() {
     let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
         .args(["--output", ".", "."])
