@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **GitHub rate-limit reset**: `x-ratelimit-reset` produces a retry delay only when `x-ratelimit-remaining` is `0`. Previously a 404 reported "retry available" and a 5xx response carrying reset headers was not retried (`src/shell/github.rs`).
 - **Unlinked local files**: A file deleted after directory discovery but before its metadata check is counted as skipped, matching a deletion at file-open time. Previously it was dropped without being counted (`src/shell/local.rs`).
+- **Unreadable local files**: A file that cannot be opened (`PermissionDenied`, or a Windows sharing violation from another process holding it) is counted as skipped instead of aborting the run, matching `docs/security_and_filtering.md`. Unreadable directories still fail fast (`src/shell/local.rs`).
 
 ### Changed
 
@@ -29,14 +30,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Archive Stream Decoupling**: Extracted tarball stream decompression, PAX commit SHA parsing, and entry admission into a dedicated `codefeed::shell::archive` module, separating HTTP transport concerns in `codefeed::shell::github` from streaming tar entry processing.
 - **Content Buffers**: Local and archive file-content buffers are plain `Vec<u8>`. `Zeroizing` remains only for the GitHub token and error bodies.
-- **Local Read Helper**: `read_file_content_bounded` returns `Result<bool>` instead of an unused borrowed slice. The test-only `read_local_file_into` duplicate was removed, and its tests exercise `collect`.
+- **Local Read Helper**: `read_bounded` returns `Result<Option<Vec<u8>>>` (`None` for an unavailable file) instead of filling an out-parameter buffer. The test-only `read_local_file_into` duplicate was removed, and its tests exercise `collect`. Behavior is unchanged (`src/shell/local.rs`).
 - **Dead Code**: Removed a redundant directory check in `src/shell/output.rs` and an unused `AsRef<str>` impl for `NormalizedPath` in `src/core/policy.rs`.
 - **Retry Header Decision**: Rate-limit headers are parsed once per failed GitHub response into `RateLimitHeaders` (`src/core/github.rs`). The retry delay and rate-limited flag are pure functions of the parsed values and an explicit `now_secs`, so their tests no longer depend on the wall clock. Behavior is unchanged.
 - **Local Worker Message**: `WorkerMsg` has three variants, `NonUtf8(prefix)`, `Regular { path, size, content }`, and `Error`. Every candidate goes through `Selector::observe`, and impossible combinations such as non-UTF-8 paths with content are no longer representable. The path-length and size gate is one core predicate, `exceeds_size_limits`, shared by admission and the local worker. The duplicate `LocalVisitorBuilder` is merged into `LocalVisitor`. Behavior is unchanged.
 - **Render Dispatch**: `CollectionResult::render` matches `DigestFormat` directly and calls `render_with`. The `DigestFormat::render` method, the `render::render` free function, and the forwarding method on `CollectionResult` were removed. The overflow diagnostic is built once, in `FileStorage::output_too_large_error`.
 - **Single Candidate Entry**: Local and archive collectors settle each candidate through one core method, `Selector::observe(status, size_hint, read)`, which reads the body only after admission. `Admission` and `PendingEntry` are now private to `selector.rs`, so shell code no longer matches on them. Behavior is unchanged.
 - **Sorted View**: `SortedFiles` derefs to `FileStorage` for read-only access instead of re-declaring its getters. Sortedness is still guaranteed by `SortedFiles::new`.
-- **Scratch Buffers**: Local content reads reserve `to_read` bytes directly, and `BoundedBuffer::push_usize` formats through `to_string()`. Output is unchanged.
+- **Scratch Buffers**: Local content reads pre-size the buffer to `min(file length, MAX_FILE_SIZE + 1)`, and `BoundedBuffer::push_usize` formats through `to_string()`. Output is unchanged.
+- **Path Normalization**: `classify_path_segments` drops empty and `.` segments itself, so every `NormalizedPath` is free of them regardless of caller; the archive no longer pre-filters, and two unreachable branches are removed. Behavior is unchanged (`src/core/policy.rs`, `src/core/archive.rs`).
+- **GitHub Attempt**: `Attempt::from_result`, `Attempt::warn`, and `Attempt::into_error` hold response classification, retry warnings, and error construction, and `Attempt::Status` no longer duplicates `is_rate_limit`. `GithubClient::request` attaches the origin-gated headers. Behavior is unchanged (`src/shell/github.rs`).
+- **GitHub Retry Transition**: `AttemptState::retry` builds the next state and `Transition::Retry` in one place, and `AttemptState::step` only decides which delay applies. Behavior is unchanged (`src/core/github.rs`).
+- **Output Parent**: `parent_dir` replaces three copies of the parent-or-`.` expression in `src/shell/output.rs`. Behavior is unchanged.
+- **Completion Message**: `completion_message` moved from `src/shell/mod.rs` to `src/core/cli.rs`, since it is pure formatting. `run_cli` only chooses the stream. Text is unchanged.
+- **CLI Parse Accumulator**: `cli::parse` folds flag values and the source positional through a consuming `Parsed` accumulator. One function owns the "unexpected argument" check and one owns the "a value is required" message. Accepted arguments and error text are unchanged (`src/core/cli.rs`).
+- **Archive Entry Loop**: `shell/archive.rs` handles the PAX header inside the entry loop and returns `Selector` from `process_tar_entry`, replacing the out-parameter and tuple return. The separate bounded-read helper was inlined. Revision and skip behavior are unchanged.
+- **GitHub Error Text**: `api_error`, `sanitize_error_detail`, `status_retry_warning`, `transport_retry_warning`, and `transport_error` moved from `src/shell/github.rs` to `src/core/github.rs`. The shell keeps HTTP calls, body reads, `eprintln!`, and sleeps. Message bytes are unchanged.
+- **Selector Constructor**: `Selector::new` builds the empty state directly, and the separate `impl Default for Selector` was removed. The HashMap capacity is unchanged.
+- **Test Tables**: Selector tests drive `Selector::observe` only. The `feed_file` and `feed_skipped` helpers were removed, and their cases are now rows in `observe_counts_candidates_by_content_outcome` and `observe_does_not_read_settled_candidates`, plus the new `observe_enforces_candidate_budget_before_read`. The retry decision test and archive path normalization test are tables. The vacuous capacity assertion in the local read test was dropped.
+- **Tests**: Removed `test_archive_buffer_bytes_invariant`, which restated the constant; `ARCHIVE_BUFFER_BYTES > 0` stays a compile-time assertion.
 
 ### Removed
 

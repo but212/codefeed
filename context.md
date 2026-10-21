@@ -9,7 +9,7 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 - `Source` — `Local(PathBuf)` or `Github { owner, repo, reference }` (`#[non_exhaustive]`, constructed via `Source::github`). Enforces owner/repo identifier validation and reference invariants via `GitRef`.
 - `GitRef` — Validated non-empty Git revision reference (branch, tag, commit SHA), rejecting empty and whitespace-only strings.
 - `RunConfig` — Execution configuration unifying `source`, `output`, and `format`.
-- `Admission` & `PendingEntry` — Linear two-phase admission typestate in `Selector`. `Selector::admit(status, size_hint)` evaluates paths against policy and budget limits without allocating closures, yielding `Admission::Settled(Selector)` (ignored/skipped paths with updated counts) or `Admission::Pending(PendingEntry)`. Admitted candidates complete linearly via `pending.accept(&[u8])` (evaluates UTF-8 text and NUL-free content; stores in arena or increments `skipped` on oversize, binary, or non-UTF-8) or `pending.skip()` (unreadable/missing files). Shell collectors filter non-regular files (FIFOs, sockets, devices, symlinks) and noise/sensitive/hidden paths pre-candidate, map files unlinked after discovery to `skip()`, and abort unexpected I/O errors as `IngestError::Io`.
+- `Admission` & `PendingEntry` — Linear two-phase admission typestate in `Selector`. `Selector::admit(status, size_hint)` evaluates paths against policy and budget limits without allocating closures, yielding `Admission::Settled(Selector)` (ignored/skipped paths with updated counts) or `Admission::Pending(PendingEntry)`. Admitted candidates complete linearly via `pending.accept(&[u8])` (evaluates UTF-8 text and NUL-free content; stores in arena or increments `skipped` on oversize, binary, or non-UTF-8) or `pending.skip()` (unreadable/missing files). Shell collectors filter non-regular files (FIFOs, sockets, devices, symlinks) and noise/sensitive/hidden paths pre-candidate, map files unlinked after discovery or unreadable at open (`PermissionDenied`, Windows sharing violation) to `skip()`, and abort unexpected I/O errors as `IngestError::Io`.
 - `FileSpan` — 16-byte POD indexing path and content byte spans via private offsets, accessed via borrowed slice methods (`path(&arena)`, `content(&arena)`).
 - `FileStorage` — Append-only arena buffer (`path_arena`, `content_arena`, `spans`). Provides zero-copy `FileRecord<'a>` borrowed views and in-place component-wise lexicographical sorting (`sort_by_path`) without string reallocations.
 - `FileRecord<'a>` — Zero-copy borrowed digest entry view: `path: &'a str`, `content: &'a str`.
@@ -54,11 +54,11 @@ Convert a local directory or public GitHub repository into a single LLM-friendly
 
 - File target: Validates and resolves output path at startup (`resolve_output_target`). Writes atomically via `AtomicFile` with inner `TempFile` closing open handles before unlinking on `Drop` (cross-platform Windows safety), preserving existing Unix permissions, syncing to disk, renaming on commit, disarming cleanup, and syncing parent directory on Unix. Automatically unlinks temp files on error or panic.
 - Stdout target: Buffers output into memory up to `MAX_OUTPUT_SIZE` and writes to stdout only on success, preventing partial emission on overflow.
-- Completion messages: Emitted to stdout for file targets and stderr for stdout targets via `shell/mod.rs::run_cli`.
-- Broken pipe: Downstream pipe closure (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0 (preserves estimated tokens on buffer flush; defaults to 0 on mid-stream write termination).
+- Completion messages: Text built by `core/cli.rs::completion_message`; `shell/mod.rs::run_cli` writes it to stdout for file targets and stderr for stdout targets.
+- Broken pipe: Downstream pipe closure (`BrokenPipe` / `EPIPE`) on stdout exits cleanly with status 0.
 - Local walk exclusion: Excludes existing output files via canonical path comparison resolved once at startup (`resolve_output_target`), avoiding repeated syscalls during traversal. Assumes a quiescent directory tree during scan (see `docs/security_and_filtering.md`).
 - Local walk pipeline:
-  1. Producer-consumer concurrency: `ignore::WalkBuilder::build_parallel` workers walk directories, classify paths (`classify_local_path`), inspect `fs::symlink_metadata` (rejecting symlinks pre-open), and read bounded content (`read_bounded_content_into` with capacity pre-reservation) concurrently across available CPU cores.
+  1. Producer-consumer concurrency: `ignore::WalkBuilder::build_parallel` workers walk directories, classify paths (`classify_local_path`), inspect `fs::symlink_metadata` (rejecting symlinks pre-open), and read bounded content (`read_bounded`, capped at `MAX_FILE_SIZE + 1`) concurrently across available CPU cores.
   2. Bounded channel backpressure: Workers transmit `WorkerMsg` through `std::sync::mpsc::sync_channel(128)` to the main thread inside `std::thread::scope`, strictly bounding memory usage.
   3. Linear consumption & cancellation: Main thread consumes messages sequentially into `Selector` (`observe`). Traversal aborts immediately via `AtomicBool` flag and receiver hang-up on error or budget overflow (`CandidateLimitExceeded`, `OutputTooLarge`).
   4. Deterministic output: Resulting storage is sorted component-wise lexicographically via `SortedFiles::new` (`cmp_path`), guaranteeing byte-for-byte reproducibility regardless of thread execution order.
@@ -81,19 +81,20 @@ Operational constants, limits, thresholds, noise lists, and sensitive patterns a
 Boundary rule: Pure core performs no I/O, clock, or network calls and never depends on shell code; shell depends on core in one direction.
 
 - Pure core (`src/core/`):
-  - `cli.rs`: CLI argument parsing, help detection, and `CliAction` generation (`parse`).
+  - `cli.rs`: CLI argument parsing (`parse`, folded through the `Parsed` accumulator), help detection, `CliAction` generation, and the completion summary text (`completion_message`).
   - `policy.rs`: Operational limits, noise patterns, sensitive patterns, and path classification (`PathStatus`, `is_ignored_filename`, `is_hidden_segment`). Single source of truth for limits and path exclusion rules.
   - `model.rs`: Domain value types (`Source`, `CollectionResult`, `IngestReport`, `RunConfig`, `OutputTarget`, `DigestFormat`) and source parsing (`Source::parse`, `Source::parse_os`).
-  - `github.rs`: Pure GitHub domain rules, identifier validation (`valid_github_name`), URL parsing (`parse_github_url`), tarball URL construction (`tarball_url`), API origin security policy (`is_github_api_origin`), and retry state transitions (`AttemptState::step`).
+  - `github.rs`: Pure GitHub domain rules, identifier validation (`valid_github_name`), URL parsing (`parse_github_url`), tarball URL construction (`tarball_url`), API origin security policy (`is_github_api_origin`), retry state transitions (`AttemptState::step`), and API error and retry warning text (`api_error`, `status_retry_warning`, `transport_retry_warning`).
   - `storage.rs`: Continuous arena storage (`FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, `largest_files`).
   - `error.rs`: Domain error enum `IngestError` and diagnostic payloads (`CandidateLimitExceededError`).
   - `selector.rs`: Candidate settlement (`observe`, with internal `Admission` and `PendingEntry`), directory accounting (`CandidateBudget`), content classification, and storage accumulation (`Selector`).
   - `render/`: Format-specific serializers (`formats.rs` with `FormatRenderer`, `TextRenderer`, `XmlRenderer`), format-neutral ASCII hierarchy tree rendering (`tree.rs`), single-pass escaping (`escape.rs`), and bounded buffer with token estimation (`budget.rs`).
   - `archive.rs`: Pax header comment extraction and single-pass tar entry path normalization & policy classification (`normalize_tar_entry_path`).
 - Imperative shell (`src/shell/`):
-  - `src/main.rs`: Binary entry point and CLI completion report formatting.
-  - `shell/mod.rs`: Shell module declarations and pipeline orchestration (`ingest`, `run_cli`).
+  - `src/main.rs`: Binary entry point only; delegates to `run_cli`.
+  - `shell/mod.rs`: Shell module declarations, pipeline orchestration (`ingest`, `run_cli`), and the stream choice for the completion message.
   - `shell/testing.rs`: Scoped test fixture isolation (`TempDirGuard`, `temp_dir`).
   - `shell/local.rs`: Single-pass filesystem candidate traversal, non-symlink metadata validation, and pre-I/O candidate admission in `Selector`.
-  - `shell/github.rs`: Streaming archive tarball collection (`collect_archive`), HTTP transport (`GithubClient`), retry handling, body bounding, and token resolution.
+  - `shell/archive.rs`: Tarball stream decompression, PAX commit SHA extraction, and per-entry admission through `Selector::observe` (`collect`).
+  - `shell/github.rs`: Streaming tarball request (`GithubClient`), HTTP transport, retry attempts (`Attempt`), warning printing, body bounding, and token resolution.
   - `shell/output.rs`: Atomic file writing via RAII commit guard (`AtomicFile`) and inner `TempFile` guard, stdout streaming, and canonical output path resolution (`resolve_output_target`).

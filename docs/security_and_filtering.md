@@ -101,7 +101,7 @@ Any path containing a component starting with a leading dot (`.`) is considered 
 | Parameter (`policy.rs`) | Enforcement Mechanism | Failure Mode |
 | :--- | :--- | :--- |
 | `MAX_FILE_COUNT` | `Selector::observe` slot check (GitHub: before body read; local: after bounded body read by workers) | `IngestError::CandidateLimitExceeded` with directory diagnostics |
-| `MAX_PATH_DEPTH` | Archive entry path nesting depth check in `normalize_tar_entry_path` | `IngestError::InvalidMetadata` |
+| `MAX_PATH_DEPTH` | Path nesting depth check in `classify_path_segments` (archive and local paths) | `IngestError::InvalidMetadata` |
 | `MAX_FILE_SIZE` | Pre-I/O `size_hint` evaluation and stream boundary read (`take(MAX_FILE_SIZE + 1)`) | Skipped; tallied in `skipped_files` report |
 | `MAX_OUTPUT_SIZE` | Early arena total check (`Selector::add_file`) and `BoundedBuffer` byte counter | `IngestError::OutputTooLarge` with Top-5 largest files |
 | `ARCHIVE_MAX_SECS` | Whole-archive stream transfer timeout | `IngestError::Http` timeout |
@@ -132,7 +132,7 @@ Local directory traversal in `src/shell/local.rs` adheres to the following invar
    - Syncs the parent directory on Unix upon rename commit to ensure metadata durability across crashes.
    - Temporary file writer handle is closed before unlinking on `Drop` (`TempFile`), ensuring reliable cleanup on Windows and Unix during error or panic unwinding.
 4. **Directory Traversal Fail-Fast:**
-   - Unreadable individual files are recorded as unavailable and tallied in `skipped_files`.
+   - Individual files that fail to open with `NotFound`, `PermissionDenied`, or a Windows sharing violation are recorded as unavailable and tallied in `skipped_files`. Other open or read errors fail fast with `IngestError::Io`.
    - Unreadable directories during local traversal fail fast with explicit path context and preserve the underlying `std::io::ErrorKind` (e.g., `PermissionDenied`) to prevent silent emission of incomplete digests while retaining actionable error categories.
 5. **Parallel Traversal Isolation & Memory Backpressure:**
    - Multi-threaded traversal (`WalkParallel`) processes entries concurrently across worker threads, each independently verifying `fs::symlink_metadata` before calling `fs::File::open`.

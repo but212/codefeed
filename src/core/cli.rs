@@ -2,7 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use crate::core::error::IngestError;
-use crate::core::model::{DigestFormat, OutputTarget, RunConfig, Source};
+use crate::core::model::{DigestFormat, IngestReport, OutputTarget, RunConfig, Source};
 
 const HELP: &str =
     "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]";
@@ -10,6 +10,22 @@ const HELP: &str =
 /// Returns the static command-line help message.
 pub(crate) const fn help_text() -> &'static str {
     HELP
+}
+
+/// One-line summary of a finished run, naming where the digest went.
+pub(crate) fn completion_message(report: &IngestReport) -> String {
+    let included = report.included_files;
+    let skipped = report.skipped_files;
+    let tokens = report.estimated_tokens;
+    match &report.output {
+        OutputTarget::File(path) => {
+            let path_display = path.display();
+            format!("Wrote {path_display} ({included} files, {skipped} skipped, ~{tokens} tokens)")
+        }
+        OutputTarget::Stdout => {
+            format!("Wrote to stdout ({included} files, {skipped} skipped, ~{tokens} tokens)")
+        }
+    }
 }
 
 /// Action determined by parsing command-line arguments.
@@ -33,6 +49,44 @@ enum ParseState {
     Normal,
     ExpectValue(Flag, &'static str),
     PositionalOnly,
+}
+
+/// Option values folded in argument order. A repeated flag keeps its last value.
+#[derive(Debug, Default)]
+struct Parsed {
+    source: Option<OsString>,
+    output: Option<OsString>,
+    reference: Option<String>,
+    format: DigestFormat,
+}
+
+impl Parsed {
+    /// Stores one flag value after validating it for that flag.
+    fn with_value(mut self, flag: Flag, val: OsString) -> Result<Self, IngestError> {
+        match flag {
+            Flag::Output => self.output = Some(val),
+            Flag::Reference => {
+                let val_str = val
+                    .into_string()
+                    .map_err(|_| IngestError::usage("git reference must be valid utf-8"))?;
+                self.reference = Some(val_str);
+            }
+            Flag::Format => self.format = parse_format(&val.to_string_lossy())?,
+        }
+        Ok(self)
+    }
+
+    /// Stores the source positional. A second one is rejected.
+    fn with_positional(mut self, arg: OsString) -> Result<Self, IngestError> {
+        if self.source.is_some() {
+            return Err(IngestError::usage(format!(
+                "unexpected argument '{}' found",
+                arg.to_string_lossy()
+            )));
+        }
+        self.source = Some(arg);
+        Ok(self)
+    }
 }
 
 fn match_flag(s: &str) -> Option<(Flag, &'static str, Option<&str>)> {
@@ -73,32 +127,18 @@ where
     let mut args_iter = args.into_iter().map(Into::into);
     let _bin = args_iter.next(); // Skip binary name
 
-    let mut source: Option<OsString> = None;
-    let mut output: Option<OsString> = None;
-    let mut reference: Option<String> = None;
-    let mut format = DigestFormat::Text;
+    let mut parsed = Parsed::default();
     let mut state = ParseState::Normal;
-    let mut store = |value: FlagValue| match value {
-        FlagValue::Output(val) => output = Some(val),
-        FlagValue::Reference(val) => reference = Some(val),
-        FlagValue::Format(val) => format = val,
-    };
 
     for arg in args_iter {
         match state {
             ParseState::ExpectValue(flag, flag_str) => {
                 reject_option_like(flag, flag_str, &arg)?;
-                store(parse_flag_value(flag, arg)?);
+                parsed = parsed.with_value(flag, arg)?;
                 state = ParseState::Normal;
             }
             ParseState::PositionalOnly => {
-                if source.is_some() {
-                    return Err(IngestError::usage(format!(
-                        "unexpected argument '{}' found",
-                        arg.to_string_lossy()
-                    )));
-                }
-                source = Some(arg);
+                parsed = parsed.with_positional(arg)?;
             }
             ParseState::Normal => {
                 let arg_str = arg.to_str();
@@ -113,7 +153,7 @@ where
                     }
                     if let Some((flag, flag_str, inline_val)) = match_flag(s) {
                         if let Some(inline) = inline_val {
-                            store(parse_flag_value(flag, OsString::from(inline))?);
+                            parsed = parsed.with_value(flag, OsString::from(inline))?;
                         } else {
                             state = ParseState::ExpectValue(flag, flag_str);
                         }
@@ -124,23 +164,21 @@ where
                     }
                 }
 
-                if source.is_some() {
-                    return Err(IngestError::usage(format!(
-                        "unexpected argument '{}' found",
-                        arg.to_string_lossy()
-                    )));
-                }
-                source = Some(arg);
+                parsed = parsed.with_positional(arg)?;
             }
         }
     }
 
     if let ParseState::ExpectValue(_, flag_str) = state {
-        return Err(IngestError::usage(format!(
-            "a value is required for '{flag_str}' but none was supplied"
-        )));
+        return Err(missing_value(flag_str));
     }
 
+    let Parsed {
+        source,
+        output,
+        reference,
+        format,
+    } = parsed;
     let source_os = source.ok_or_else(|| {
         IngestError::usage("the following required arguments were not provided:\n  <SOURCE>")
     })?;
@@ -159,12 +197,6 @@ where
     )))
 }
 
-enum FlagValue {
-    Output(OsString),
-    Reference(String),
-    Format(DigestFormat),
-}
-
 /// Rejects a separate-argument flag value that starts with `-`, so `-o -x` cannot
 /// swallow the next option. `-o -` is the stdout sentinel and stays allowed.
 /// Inline `--flag=value` forms never reach this check.
@@ -174,27 +206,16 @@ fn reject_option_like(flag: Flag, flag_str: &str, val: &OsStr) -> Result<(), Ing
         && s.starts_with('-')
         && !(allow_dash && s == "-")
     {
-        return Err(IngestError::usage(format!(
-            "a value is required for '{flag_str}' but none was supplied"
-        )));
+        return Err(missing_value(flag_str));
     }
     Ok(())
 }
 
-fn parse_flag_value(flag: Flag, val: OsString) -> Result<FlagValue, IngestError> {
-    match flag {
-        Flag::Output => Ok(FlagValue::Output(val)),
-        Flag::Reference => {
-            let val_str = val
-                .into_string()
-                .map_err(|_| IngestError::usage("git reference must be valid utf-8"))?;
-            Ok(FlagValue::Reference(val_str))
-        }
-        Flag::Format => {
-            let format = parse_format(&val.to_string_lossy())?;
-            Ok(FlagValue::Format(format))
-        }
-    }
+/// The one "a value is required" message, for a flag with no value or with an option-like value.
+fn missing_value(flag_str: &str) -> IngestError {
+    IngestError::usage(format!(
+        "a value is required for '{flag_str}' but none was supplied"
+    ))
 }
 
 fn parse_format(val: &str) -> Result<DigestFormat, IngestError> {
@@ -211,6 +232,33 @@ fn parse_format(val: &str) -> Result<DigestFormat, IngestError> {
 mod tests {
     use super::*;
     use crate::core::model::{GitRef, Source};
+
+    #[test]
+    fn completion_message_names_destination() {
+        let cases = [
+            (
+                IngestReport {
+                    output: OutputTarget::File(PathBuf::from("digest.txt")),
+                    included_files: 10,
+                    skipped_files: 2,
+                    estimated_tokens: 1500,
+                },
+                "Wrote digest.txt (10 files, 2 skipped, ~1500 tokens)",
+            ),
+            (
+                IngestReport {
+                    output: OutputTarget::Stdout,
+                    included_files: 5,
+                    skipped_files: 0,
+                    estimated_tokens: 300,
+                },
+                "Wrote to stdout (5 files, 0 skipped, ~300 tokens)",
+            ),
+        ];
+        for (report, expected) in cases {
+            assert_eq!(completion_message(&report), expected);
+        }
+    }
 
     #[test]
     fn cli_parses_valid_invocations() {
@@ -332,6 +380,46 @@ mod tests {
                 parse(args.iter().copied()).is_err(),
                 "expected error for: {args:?}"
             );
+        }
+    }
+
+    #[test]
+    fn cli_usage_messages_are_stable() {
+        // (argv, expected message fragment) for each failure path `parse` owns
+        let cases: [(&[&str], &str); 8] = [
+            (
+                &["codefeed", ".", "--output"][..],
+                "a value is required for '--output' but none was supplied",
+            ),
+            (
+                &["codefeed", ".", "-o", "-x"][..],
+                "a value is required for '-o' but none was supplied",
+            ),
+            (
+                &["codefeed", ".", "--format", "-"][..],
+                "a value is required for '--format' but none was supplied",
+            ),
+            (
+                &["codefeed", ".", "extra"][..],
+                "unexpected argument 'extra' found",
+            ),
+            (
+                &["codefeed", "--", ".", "extra"][..],
+                "unexpected argument 'extra' found",
+            ),
+            (&["codefeed", ".", "--bogus"][..], "unknown option: --bogus"),
+            (
+                &["codefeed", ".", "-f", "yaml"][..],
+                "invalid value 'yaml' for '--format <text|xml>'",
+            ),
+            (
+                &["codefeed"][..],
+                "the following required arguments were not provided",
+            ),
+        ];
+        for (args, expected) in cases {
+            let err = parse(args.iter().copied()).unwrap_err();
+            assert!(err.to_string().contains(expected), "{args:?}: {err}");
         }
     }
 

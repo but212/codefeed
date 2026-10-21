@@ -32,14 +32,17 @@ pub(super) fn collect<R: Read>(
 
     for entry_res in entries {
         let mut entry = entry_res.map_err(IngestError::Io)?;
-        content_scratch.clear();
-        let (next_selector, sha) = process_tar_entry(&mut entry, selector, &mut content_scratch)?;
-        selector = next_selector;
-        if let Some(sha) = sha
-            && parsed_revision.is_none()
-        {
-            parsed_revision = Some(sha);
+        if entry.header().entry_type() == EntryType::XGlobalHeader {
+            content_scratch.clear();
+            entry
+                .take(1024)
+                .read_to_end(&mut content_scratch)
+                .map_err(IngestError::Io)?;
+            parsed_revision = parsed_revision.or_else(|| parse_pax_comment(&content_scratch));
+            continue;
         }
+        content_scratch.clear();
+        selector = process_tar_entry(&mut entry, selector, &mut content_scratch)?;
     }
 
     let revision = parsed_revision.or_else(|| default_reference.map(str::to_string));
@@ -50,48 +53,29 @@ fn process_tar_entry<R: Read>(
     entry: &mut tar::Entry<R>,
     selector: Selector,
     content_scratch: &mut Vec<u8>,
-) -> Result<(Selector, Option<String>), IngestError> {
-    let entry_type = entry.header().entry_type();
-
-    // 1. PAX Global Header: Extract git commit SHA from comment
-    if entry_type == EntryType::XGlobalHeader {
-        entry
-            .take(1024)
-            .read_to_end(content_scratch)
-            .map_err(IngestError::Io)?;
-        return Ok((selector, parse_pax_comment(content_scratch)));
+) -> Result<Selector, IngestError> {
+    // 1. Skip directories, symlinks, and special entries before path decoding
+    if !matches!(
+        entry.header().entry_type(),
+        EntryType::Regular | EntryType::Continuous
+    ) {
+        return Ok(selector);
     }
 
-    // 2. Skip directories, symlinks, and special entries before path decoding
-    if !matches!(entry_type, EntryType::Regular | EntryType::Continuous) {
-        return Ok((selector, None));
-    }
-
-    // 3. Path decoding, root stripping, normalization & policy classification
+    // 2. Path decoding, root stripping, normalization & policy classification
     let path_bytes = entry.path_bytes();
     let status = normalize_tar_entry_path(&path_bytes)?;
 
     let size_hint = entry.header().size().ok();
 
-    // 4. Pre-I/O candidate admission: the body is read only if the candidate is admitted
-    let selector = selector.observe(status, size_hint, move || {
-        read_tar_entry_into(entry, MAX_FILE_SIZE, content_scratch)?;
+    // 3. Pre-I/O candidate admission: the body is read only if the candidate is admitted
+    selector.observe(status, size_hint, move || {
+        entry
+            .take(MAX_FILE_SIZE + 1)
+            .read_to_end(content_scratch)
+            .map_err(IngestError::Io)?;
         Ok(Some(content_scratch))
-    })?;
-    Ok((selector, None))
-}
-
-fn read_tar_entry_into<R: Read>(
-    entry: &mut tar::Entry<R>,
-    limit: u64,
-    buf: &mut Vec<u8>,
-) -> Result<(), IngestError> {
-    entry
-        .take(limit.saturating_add(1))
-        .read_to_end(buf)
-        .map_err(IngestError::Io)?;
-
-    Ok(())
+    })
 }
 
 #[cfg(test)]

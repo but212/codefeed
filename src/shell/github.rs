@@ -3,19 +3,20 @@
 use std::io::Read;
 use std::time::Duration;
 
-use ureq::Agent;
 use ureq::config::RedirectAuthHeaders;
-use ureq::http::StatusCode;
 use ureq::tls::{RootCerts, TlsConfig};
+use ureq::typestate::WithoutBody;
+use ureq::{Agent, RequestBuilder};
 use zeroize::Zeroizing;
 
 use crate::core::error::IngestError;
 use crate::core::github::{
-    AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind,
-    is_github_api_origin, tarball_url,
+    AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind, api_error,
+    is_github_api_origin, status_retry_warning, tarball_url, transport_error,
+    transport_retry_warning,
 };
 use crate::core::model::CollectionResult;
-use crate::core::policy::{ARCHIVE_MAX_SECS, GITHUB_TIMEOUT_SECS, MAX_ATTEMPTS};
+use crate::core::policy::{ARCHIVE_MAX_SECS, GITHUB_TIMEOUT_SECS};
 
 const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 
@@ -23,9 +24,78 @@ enum Attempt {
     Status {
         response: ureq::http::Response<ureq::Body>,
         retry_after: Option<Duration>,
-        is_rate_limit: bool,
     },
     Transport(ureq::Error),
+}
+
+impl Attempt {
+    /// Classifies a call that did not succeed: `Ok` is a non-2xx response, `Err` a transport failure.
+    fn from_result(
+        result: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+    ) -> (Self, RequestOutcome) {
+        match result {
+            Ok(response) => {
+                let rate_limit = read_rate_limit_headers(response.headers());
+                let retry_after = rate_limit.retry_after(unix_now_secs());
+                let outcome = RequestOutcome::HttpStatus {
+                    status: response.status().as_u16(),
+                    retry_after,
+                    is_rate_limit: rate_limit.is_rate_limited(),
+                };
+                (
+                    Self::Status {
+                        response,
+                        retry_after,
+                    },
+                    outcome,
+                )
+            }
+            Err(error) => {
+                let kind = if is_retryable_transport_error(&error) {
+                    TransportKind::Retryable
+                } else {
+                    TransportKind::Permanent
+                };
+                (Self::Transport(error), RequestOutcome::TransportError(kind))
+            }
+        }
+    }
+
+    fn warn(&self, count: usize, url: &str, delay: Duration) {
+        let message = match self {
+            Self::Status { response, .. } => {
+                status_retry_warning(&response.status().to_string(), count, url, delay)
+            }
+            Self::Transport(error) => {
+                transport_retry_warning(&error.to_string(), count, url, delay)
+            }
+        };
+        eprintln!("{message}");
+    }
+
+    fn into_error(self) -> IngestError {
+        match self {
+            Self::Status {
+                response,
+                retry_after,
+            } => {
+                let status = response.status();
+                let mut body_bytes = Zeroizing::new(Vec::new());
+                let _ = response
+                    .into_body()
+                    .into_reader()
+                    .take(4096)
+                    .read_to_end(&mut body_bytes);
+                api_error(
+                    status.as_u16(),
+                    &status.to_string(),
+                    &body_bytes,
+                    retry_after,
+                )
+            }
+            Self::Transport(error) => transport_error(&error.to_string()),
+        }
+    }
 }
 
 /// Collects files from a remote GitHub repository via streaming tarball download.
@@ -66,47 +136,27 @@ impl GithubClient {
         }
     }
 
+    /// Builds a GET for `url`. Auth and API-version headers are sent only to the GitHub API origin.
+    fn request(&self, url: &str) -> RequestBuilder<WithoutBody> {
+        let request = self.agent.get(url);
+        if !is_github_api_origin(url) {
+            return request;
+        }
+        let request = match &self.auth_header {
+            Some(auth) => request.header("Authorization", auth.as_str()),
+            None => request,
+        };
+        request.header("X-Github-Api-Version", "2022-11-28")
+    }
+
     fn stream_url(&self, url: &str) -> Result<Box<dyn Read + Send>, IngestError> {
         let mut attempt_state = AttemptState::new();
         loop {
-            let mut request = self.agent.get(url);
-
-            if is_github_api_origin(url) {
-                if let Some(auth) = &self.auth_header {
-                    request = request.header("Authorization", auth.as_str());
-                }
-                request = request.header("X-Github-Api-Version", "2022-11-28");
-            }
-
-            let attempt = match request.call() {
+            let (attempt, outcome) = match self.request(url).call() {
                 Ok(resp) if resp.status().is_success() => {
                     return Ok(Box::new(resp.into_body().into_reader()));
                 }
-                Ok(resp) => {
-                    let rate_limit = read_rate_limit_headers(resp.headers());
-                    Attempt::Status {
-                        retry_after: rate_limit.retry_after(unix_now_secs()),
-                        is_rate_limit: rate_limit.is_rate_limited(),
-                        response: resp,
-                    }
-                }
-                Err(error) => Attempt::Transport(error),
-            };
-
-            let outcome = match &attempt {
-                Attempt::Status {
-                    response,
-                    retry_after,
-                    is_rate_limit,
-                } => RequestOutcome::HttpStatus {
-                    status: response.status().as_u16(),
-                    retry_after: *retry_after,
-                    is_rate_limit: *is_rate_limit,
-                },
-                Attempt::Transport(error) if is_retryable_transport_error(error) => {
-                    RequestOutcome::TransportError(TransportKind::Retryable)
-                }
-                Attempt::Transport(_) => RequestOutcome::TransportError(TransportKind::Permanent),
+                result => Attempt::from_result(result),
             };
 
             let (next_state, transition) = attempt_state.step(&outcome);
@@ -116,37 +166,10 @@ impl GithubClient {
                     attempt: count,
                     delay,
                 } => {
-                    match &attempt {
-                        Attempt::Status { response, .. } => eprintln!(
-                            "warning: GitHub HTTP status {} on attempt {count}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}",
-                            response.status()
-                        ),
-                        Attempt::Transport(error) => eprintln!(
-                            "warning: GitHub transport error: {} on attempt {count}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}",
-                            sanitize_error_detail(&error.to_string())
-                        ),
-                    }
+                    attempt.warn(count, url, delay);
                     std::thread::sleep(delay);
                 }
-                Transition::Fail => match attempt {
-                    Attempt::Status {
-                        response,
-                        retry_after,
-                        ..
-                    } => {
-                        let status = response.status();
-                        let mut body_bytes = Zeroizing::new(Vec::new());
-                        let _ = response
-                            .into_body()
-                            .into_reader()
-                            .take(4096)
-                            .read_to_end(&mut body_bytes);
-                        return Err(api_error(status, &body_bytes, retry_after));
-                    }
-                    Attempt::Transport(error) => {
-                        return Err(IngestError::http(sanitize_error_detail(&error.to_string())));
-                    }
-                },
+                Transition::Fail => return Err(attempt.into_error()),
             }
         }
     }
@@ -157,22 +180,6 @@ const fn is_retryable_transport_error(error: &ureq::Error) -> bool {
         error,
         ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed
     )
-}
-
-/// Sanitizes control characters in error detail string.
-/// Converts `\t`, `\r`, `\n` to space `' '` for single-line output formatting.
-/// Converts all other Unicode control characters (`c.is_control()`) to `\u{FFFD}`.
-/// Note: Unlike digest header escaping which escapes `\n` and `\r` as `\n` / `\r` literals,
-/// error message formatting converts line breaks to spaces for compact single-line stderr diagnostics.
-fn sanitize_error_detail(input: &str) -> String {
-    input
-        .chars()
-        .map(|c| match c {
-            '\t' | '\r' | '\n' => ' ',
-            c if c.is_control() => '\u{FFFD}',
-            c => c,
-        })
-        .collect()
 }
 
 /// Reads rate-limit headers from a response. A present but non-UTF-8 header counts as present with no value.
@@ -190,22 +197,6 @@ fn unix_now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(u64::MAX, |now| now.as_secs())
-}
-
-fn api_error(status: StatusCode, body_bytes: &[u8], retry_after: Option<Duration>) -> IngestError {
-    let raw_detail = String::from_utf8_lossy(body_bytes);
-    let detail = sanitize_error_detail(&raw_detail);
-    let retry_info = retry_after
-        .map(|d| format!(" (retry available in {}s)", d.as_secs()))
-        .unwrap_or_default();
-
-    if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::FORBIDDEN {
-        IngestError::api(format!(
-            "HTTP {status}: {detail}{retry_info} (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
-        ))
-    } else {
-        IngestError::api(format!("HTTP {status}: {detail}{retry_info}"))
-    }
 }
 
 fn resolve_token_with<F>(mut lookup: F) -> Option<Zeroizing<String>>
@@ -226,11 +217,13 @@ fn resolve_token_from_env() -> Option<Zeroizing<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::policy::MAX_ATTEMPTS;
     use std::collections::HashMap;
     use std::env::VarError;
     use std::io::Write;
     use std::net::TcpListener;
     use std::thread;
+    use ureq::http::StatusCode;
 
     struct MockServer {
         port: u16,
@@ -334,40 +327,6 @@ mod tests {
 
         let env = HashMap::new();
         assert_eq!(resolve_token_with(mock_env(env)), None);
-    }
-
-    #[test]
-    fn api_error_suggests_token_on_rate_limit_and_forbidden() {
-        let err_429 = api_error(StatusCode::TOO_MANY_REQUESTS, b"rate limit", None);
-        assert!(err_429.to_string().contains("GITHUB_TOKEN"));
-
-        let err_403 = api_error(
-            StatusCode::FORBIDDEN,
-            b"forbidden",
-            Some(Duration::from_secs(30)),
-        );
-        let err_403_msg = err_403.to_string();
-        assert!(err_403_msg.contains("GITHUB_TOKEN"));
-        assert!(err_403_msg.contains("(retry available in 30s)"));
-
-        let err_404 = api_error(StatusCode::NOT_FOUND, b"not found", None);
-        assert!(!err_404.to_string().contains("GITHUB_TOKEN"));
-    }
-
-    #[test]
-    fn sanitizes_control_characters_in_api_error_detail() {
-        let raw = b"error\twith\nnewlines\r\nand\x1b[31mANSI\x07bell\x7fdel\x80c1";
-        let err = api_error(StatusCode::BAD_REQUEST, raw, None);
-        let err_msg = err.to_string();
-
-        assert!(
-            !err_msg.contains('\n') && !err_msg.contains('\r') && !err_msg.contains('\t'),
-            "newlines, tabs, and carriage returns should be converted to spaces: {err_msg}"
-        );
-        assert!(
-            err_msg.contains("\u{FFFD}[31mANSI\u{FFFD}bell\u{FFFD}del"),
-            "C0, DEL, and C1 control characters should be replaced with replacement char: {err_msg}"
-        );
     }
 
     fn epoch_now_secs() -> u64 {

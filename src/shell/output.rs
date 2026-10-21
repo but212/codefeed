@@ -36,6 +36,13 @@ fn current_epoch_nanos() -> u128 {
         .unwrap_or(0)
 }
 
+/// Parent directory of `path`, or `.` when the path is a bare filename.
+fn parent_dir(path: &Path) -> &Path {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
 /// Resolves an [`OutputTarget`] into an optional canonical file destination.
 ///
 /// Returns `None` when writing directly to [`OutputTarget::Stdout`].
@@ -46,10 +53,7 @@ pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<Option<Path
             let file_name = path
                 .file_name()
                 .ok_or_else(|| IngestError::usage("output path has no filename"))?;
-            let parent = path
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new("."));
+            let parent = parent_dir(path);
             let canonical_parent = fs::canonicalize(parent).map_err(|e| {
                 IngestError::Io(io::Error::new(
                     e.kind(),
@@ -184,12 +188,7 @@ impl AtomicFile {
             .file_name()
             .ok_or_else(|| IngestError::usage("output path has no filename"))?;
         let file_name = file_name.to_string_lossy();
-        let parent = target
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-
-        let temp_file = TempFile::create(parent, &file_name)?;
+        let temp_file = TempFile::create(parent_dir(target), &file_name)?;
 
         #[cfg(unix)]
         match fs::metadata(target) {
@@ -224,12 +223,7 @@ impl AtomicFile {
 
         #[cfg(unix)]
         {
-            let parent = self
-                .target
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new("."));
-            let dir = fs::File::open(parent)?;
+            let dir = fs::File::open(parent_dir(&self.target))?;
             dir.sync_all()?;
         }
 

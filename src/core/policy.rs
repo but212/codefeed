@@ -158,6 +158,7 @@ pub(crate) struct DepthExceededError;
 /// Classifies a sequence of raw path segment bytes into [`PathStatus`].
 ///
 /// Builds a normalized UTF-8 path string for valid candidates or prefix strings for non-UTF-8 candidates.
+/// Empty and `.` segments are dropped, so a [`NormalizedPath`] never contains them.
 pub(crate) fn classify_path_segments<'a, I>(segments: I) -> Result<PathStatus, DepthExceededError>
 where
     I: IntoIterator<Item = &'a [u8]>,
@@ -167,7 +168,10 @@ where
     let mut last_segment: Option<&'a [u8]> = None;
     let mut segment_count = 0usize;
 
-    for segment in segments {
+    for segment in segments
+        .into_iter()
+        .filter(|seg| !seg.is_empty() && *seg != b".")
+    {
         if is_hidden_segment(segment) {
             return Ok(PathStatus::Ignored);
         }
@@ -198,9 +202,6 @@ where
         return Ok(PathStatus::Ignored);
     };
 
-    if last.is_empty() {
-        return Ok(PathStatus::Ignored);
-    }
     if matches!(std::str::from_utf8(last), Ok(filename) if is_ignored_filename(filename)) {
         return Ok(PathStatus::Ignored);
     }
@@ -210,13 +211,7 @@ where
     }
 
     match state {
-        PathClassifierState::ValidUtf8 => {
-            if scratch.is_empty() {
-                Ok(PathStatus::Ignored)
-            } else {
-                Ok(PathStatus::Valid(NormalizedPath(scratch)))
-            }
-        }
+        PathClassifierState::ValidUtf8 => Ok(PathStatus::Valid(NormalizedPath(scratch))),
         PathClassifierState::NonUtf8Prefix => Ok(PathStatus::NonUtf8Candidate(scratch)),
     }
 }
@@ -343,8 +338,21 @@ mod tests {
     }
 
     #[test]
-    fn test_archive_buffer_bytes_invariant() {
-        assert_eq!(ARCHIVE_BUFFER_BYTES, 64 * 1024);
+    fn classify_path_segments_drops_empty_and_dot_segments() {
+        let cases: [(&[&[u8]], PathStatus); 5] = [
+            (&[b"a", b"", b"b"], PathStatus::Valid("a/b".into())),
+            (&[b"a", b".", b"b"], PathStatus::Valid("a/b".into())),
+            (&[b"", b""], PathStatus::Ignored),
+            (&[b"."], PathStatus::Ignored),
+            (&[b"a", b"", b""], PathStatus::Valid("a".into())),
+        ];
+        for (segments, expected) in cases {
+            assert_eq!(
+                classify_path_segments(segments.iter().copied()),
+                Ok(expected),
+                "segments: {segments:?}"
+            );
+        }
     }
 
     #[test]
