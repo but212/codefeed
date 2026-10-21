@@ -63,15 +63,20 @@ pub(crate) fn parse_github_url(value: &str) -> Result<(String, String), DomainEr
     if authority.is_empty() {
         return Err(DomainError::invalid_source(value));
     }
-    let host_port = authority.rsplit('@').next().unwrap_or(authority);
-    let host = match host_port.split_once(':') {
+    // Checked before the port, and the URL is not echoed: `user:token@` must never reach stderr.
+    if authority.contains('@') {
+        return Err(DomainError::invalid_source(
+            "repository URLs cannot contain credentials",
+        ));
+    }
+    let host = match authority.split_once(':') {
         Some((host, port)) => {
-            if !port.is_empty() && port.parse::<u16>().is_err() {
+            if !port.is_empty() && port != "443" {
                 return Err(DomainError::invalid_source(value));
             }
             host
         }
-        None => host_port,
+        None => authority,
     };
     if !host.eq_ignore_ascii_case("github.com") {
         return Err(DomainError::unsupported_source(

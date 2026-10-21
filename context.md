@@ -51,7 +51,7 @@ codefeed turns a local directory or a public GitHub repository into one text dig
 
 - CLI arguments and URLs become value objects at the boundary (`cli::parse`, `Source::parse`, `GitRef::new`). Core code after that point assumes validity and does not re-validate.
 - `--ref` is rejected for local sources.
-- A GitHub URL must be exactly `https://github.com/{owner}/{repo}`, with an optional trailing `.git`. Other schemes and hosts are rejected.
+- A GitHub URL must be exactly `https://github.com/{owner}/{repo}`, with an optional trailing `.git`. Other schemes and hosts are rejected. Userinfo (`user@`) is rejected, and the port must be empty or `443`.
 
 ### 3.2 Path classification
 

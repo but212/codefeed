@@ -11,7 +11,7 @@
 ## Sources
 
 - **Local directory**: `./path/to/project`
-- **GitHub repository**: `https://github.com/{owner}/{repo}`. A trailing `.git` is accepted. Query strings and fragments are rejected.
+- **GitHub repository**: `https://github.com/{owner}/{repo}`. A trailing `.git` is accepted. Query strings, fragments, credentials (`user@`), and ports other than `443` are rejected.
 
 Not supported: `git@` and `ssh://` URLs, `http://` URLs, and non-GitHub hosts such as GitLab or Bitbucket. For those, clone first:
 
