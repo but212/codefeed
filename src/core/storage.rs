@@ -1,7 +1,7 @@
 //! Continuous arena storage and zero-copy views for collected files.
 //!
 //! Eliminates per-file heap allocations by maintaining contiguous string arenas
-//! for paths and contents, indexed by compact 16-byte [`FileSpan`] records.
+//! for paths and contents, indexed by compact 16-byte span records kept private to this module.
 
 use std::cmp::Ordering;
 use std::iter::once;
@@ -11,8 +11,10 @@ use crate::core::error::DomainError;
 use crate::core::policy::{MAX_OUTPUT_SIZE, NormalizedPath};
 
 /// 16-byte POD indexing a file path and content slice in [`FileStorage`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct FileSpan {
+///
+/// Private to this module: a span carries no owner, so it is only resolved inside `FileStorage`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileSpan {
     path_offset: u32,
     path_len: u32,
     content_offset: u32,
@@ -96,22 +98,6 @@ impl FileStorage {
         self.spans.len()
     }
 
-    pub(crate) const fn spans(&self) -> &[FileSpan] {
-        self.spans.as_slice()
-    }
-
-    /// Resolves the path of a [`FileSpan`] issued by this storage.
-    ///
-    /// Spans carry no owner, so a span from a different storage is not detected. If its range
-    /// fits this arena, the call returns unrelated bytes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `span`'s range is out of bounds for this arena.
-    pub(crate) fn path(&self, span: FileSpan) -> &str {
-        span.path(&self.path_arena)
-    }
-
     pub(crate) const fn total_bytes(&self) -> u64 {
         (self.path_arena.len() + self.content_arena.len()) as u64
     }
@@ -124,7 +110,7 @@ impl FileStorage {
         self
     }
 
-    /// Appends path and content to the arenas and records a [`FileSpan`].
+    /// Appends path and content to the arenas and records a span for them.
     ///
     /// # Errors
     ///
@@ -162,24 +148,12 @@ impl FileStorage {
         Ok(self)
     }
 
-    /// Resolves a [`FileSpan`] into a borrowed [`FileRecord`].
-    ///
-    /// Spans carry no owner, so a span from a different storage is not detected. If its range
-    /// fits this arena, the call returns unrelated bytes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `span`'s range is out of bounds for this arena.
-    pub(crate) fn get(&self, span: FileSpan) -> FileRecord<'_> {
-        FileRecord {
-            path: span.path(&self.path_arena),
-            content: span.content(&self.content_arena),
-        }
-    }
-
     /// Iterator yielding borrowed [`FileRecord`] views over the arena.
     pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = FileRecord<'_>> {
-        self.spans.iter().map(move |&span| self.get(span))
+        self.spans.iter().map(move |span| FileRecord {
+            path: span.path(&self.path_arena),
+            content: span.content(&self.content_arena),
+        })
     }
 
     /// Error for storage that exceeds the output limit, naming the largest files.
@@ -303,26 +277,20 @@ mod tests {
 
         assert_eq!(storage.len(), 2);
 
-        let span1 = storage.spans()[0];
-        let span2 = storage.spans()[1];
-        let rec1 = storage.get(span1);
+        let mut iter = storage.iter();
+        let rec1 = iter.next().expect("first record");
         assert_eq!(rec1.path, "path/to/first.rs");
         assert_eq!(rec1.content, "pub fn first() {}");
 
-        let rec2 = storage.get(span2);
+        let rec2 = iter.next().expect("second record");
         assert_eq!(rec2.path, "second.txt");
         assert_eq!(rec2.content, "second content\n");
-
-        let mut iter = storage.iter();
-        assert_eq!(iter.next(), Some(rec1));
-        assert_eq!(iter.next(), Some(rec2));
         assert_eq!(iter.next(), None);
 
         let collected: Vec<FileRecord<'_>> = storage.iter().collect();
         assert_eq!(collected, vec![rec1, rec2]);
 
         // Arena contents verification
-        assert_eq!(storage.path(span1), "path/to/first.rs");
         assert_eq!(storage.path_arena, "path/to/first.rssecond.txt");
         assert_eq!(storage.content_arena, "pub fn first() {}second content\n");
 
@@ -330,19 +298,6 @@ mod tests {
         let reconstructed: FileStorage = collected.into_iter().collect();
         assert_eq!(reconstructed, storage);
         Ok(())
-    }
-
-    #[test]
-    #[should_panic]
-    fn path_panics_on_foreign_span() {
-        let long = FileStorage::new()
-            .push(&NormalizedPath::from("a/very/long/path.rs"), "")
-            .expect("fixture fits the output limit");
-        let short = FileStorage::new()
-            .push(&NormalizedPath::from("x"), "")
-            .expect("fixture fits the output limit");
-        let foreign = long.spans()[0];
-        let _ = short.path(foreign);
     }
 
     #[test]
