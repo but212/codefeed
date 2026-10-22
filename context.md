@@ -29,7 +29,7 @@ codefeed turns a local directory or a public GitHub repository into one text dig
 
 ### Storage
 
-- `FileStorage` -- Append-only `path_arena` and `content_arena` plus a `spans` vector.
+- `FileStorage` -- Append-only private `path_arena` and `content_arena` plus a `spans` vector. Spans resolve only through `FileStorage` (`path`, `get`, `iter`). Limit: a `FileSpan` has no owner, so a span from another storage is not detected; it can resolve to unrelated bytes if its range fits.
 - `FileSpan` -- 16-byte POD of four `u32` values (offsets and lengths) into the arenas.
 - `FileRecord<'a>` -- Borrowed `path` and `content` views.
 - `SortedFiles` -- `FileStorage` sorted by `cmp_path`. Read-only through `Deref`.

@@ -1,7 +1,7 @@
 use memchr::memchr;
 
 use super::budget::{BoundedBuffer, OutputLimitExceeded};
-use crate::core::storage::{FileSpan, SortedFiles};
+use crate::core::storage::{FileSpan, FileStorage, SortedFiles};
 
 const TREE_BRANCH: &str = "├── ";
 const TREE_LAST: &str = "└── ";
@@ -17,21 +17,13 @@ pub(crate) fn render_tree<F>(
 where
     F: Fn(BoundedBuffer, &str) -> Result<BoundedBuffer, OutputLimitExceeded> + Copy,
 {
-    render_level(
-        buf,
-        files.spans(),
-        files.path_arena(),
-        0,
-        String::new(),
-        format_name,
-    )
-    .map(|(buf, _)| buf)
+    render_level(buf, files, files.spans(), 0, String::new(), format_name).map(|(buf, _)| buf)
 }
 
 fn render_level<F>(
     mut buf: BoundedBuffer,
+    files: &FileStorage,
     spans: &[FileSpan],
-    path_arena: &str,
     offset: usize,
     mut prefix: String,
     format_name: F,
@@ -42,15 +34,15 @@ where
     let mut i = 0;
     while let Some((name, is_dir)) = spans
         .get(i)
-        .and_then(|s| component_at_offset(s.path(path_arena), offset))
+        .and_then(|s| component_at_offset(files.path(*s), offset))
     {
         let start = i;
         i += 1;
         if is_dir {
-            let dir_prefix = &spans[start].path(path_arena)[offset..offset + name.len() + 1];
+            let dir_prefix = &files.path(spans[start])[offset..offset + name.len() + 1];
             while spans
                 .get(i)
-                .and_then(|s| s.path(path_arena).get(offset..))
+                .and_then(|s| files.path(*s).get(offset..))
                 .is_some_and(|rem| rem.starts_with(dir_prefix))
             {
                 i += 1;
@@ -69,8 +61,8 @@ where
             prefix.push_str(if is_last { TREE_SPACE } else { TREE_VERT });
             (buf, prefix) = render_level(
                 buf,
+                files,
                 &spans[start..end],
-                path_arena,
                 offset + name.len() + 1,
                 prefix,
                 format_name,
@@ -98,7 +90,6 @@ pub(super) fn component_at_offset(path: &str, offset: usize) -> Option<(&str, bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::storage::FileStorage;
 
     #[test]
     fn renders_ascii_tree_correctly() -> Result<(), Box<dyn std::error::Error>> {

@@ -8,6 +8,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Contributors
+
+Internal refactors and test changes. No consumer action required.
+
+#### Core
+
+- **Private arenas**: `FileStorage` arenas are private. `FileStorage::path(span)` replaces `path_arena()`, and the tree renderer resolves paths through storage. Spans carry no owner: a span from another storage is not detected. It panics only when out of range and can otherwise resolve to unrelated bytes (`src/core/storage.rs`, `src/core/render/tree.rs`).
+
+### Maintainers
+
+Documentation, build, and removals.
+
+#### Build
+
+- **Release profile**: `lto = "thin"` replaces whole-program LTO. `codegen-units = 1` and `panic = "unwind"` are unchanged (`Cargo.toml`).
+  - Clean `cargo build --release` on Windows, measured in the same session: fat LTO 58 s, 3,664,896 bytes; thin LTO 33 s, 3,838,464 bytes (about 4.7% larger). Runtime was not measured.
+
+---
+
 ## [0.4.0]
 
 ### Library consumers and CLI users

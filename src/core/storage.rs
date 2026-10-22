@@ -22,15 +22,25 @@ pub(crate) struct FileSpan {
 const _: () = assert!(core::mem::size_of::<FileSpan>() == 16);
 
 impl FileSpan {
+    /// Slices this span's path out of `arena`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the span's range is out of bounds for `arena`.
     #[inline(always)]
-    pub(super) fn path<'a>(&self, arena: &'a str) -> &'a str {
+    fn path<'a>(&self, arena: &'a str) -> &'a str {
         let start = self.path_offset as usize;
         let end = start + self.path_len as usize;
         &arena[start..end]
     }
 
+    /// Slices this span's content out of `arena`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the span's range is out of bounds for `arena`.
     #[inline(always)]
-    pub(super) fn content<'a>(&self, arena: &'a str) -> &'a str {
+    fn content<'a>(&self, arena: &'a str) -> &'a str {
         let start = self.content_offset as usize;
         let end = start + self.content_len as usize;
         &arena[start..end]
@@ -90,8 +100,16 @@ impl FileStorage {
         self.spans.as_slice()
     }
 
-    pub(crate) const fn path_arena(&self) -> &str {
-        self.path_arena.as_str()
+    /// Resolves the path of a [`FileSpan`] issued by this storage.
+    ///
+    /// Spans carry no owner, so a span from a different storage is not detected. If its range
+    /// fits this arena, the call returns unrelated bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `span`'s range is out of bounds for this arena.
+    pub(crate) fn path(&self, span: FileSpan) -> &str {
+        span.path(&self.path_arena)
     }
 
     pub(crate) const fn total_bytes(&self) -> u64 {
@@ -145,6 +163,13 @@ impl FileStorage {
     }
 
     /// Resolves a [`FileSpan`] into a borrowed [`FileRecord`].
+    ///
+    /// Spans carry no owner, so a span from a different storage is not detected. If its range
+    /// fits this arena, the call returns unrelated bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `span`'s range is out of bounds for this arena.
     pub(crate) fn get(&self, span: FileSpan) -> FileRecord<'_> {
         FileRecord {
             path: span.path(&self.path_arena),
@@ -297,6 +322,7 @@ mod tests {
         assert_eq!(collected, vec![rec1, rec2]);
 
         // Arena contents verification
+        assert_eq!(storage.path(span1), "path/to/first.rs");
         assert_eq!(storage.path_arena, "path/to/first.rssecond.txt");
         assert_eq!(storage.content_arena, "pub fn first() {}second content\n");
 
@@ -304,6 +330,19 @@ mod tests {
         let reconstructed: FileStorage = collected.into_iter().collect();
         assert_eq!(reconstructed, storage);
         Ok(())
+    }
+
+    #[test]
+    #[should_panic]
+    fn path_panics_on_foreign_span() {
+        let long = FileStorage::new()
+            .push(&NormalizedPath::from("a/very/long/path.rs"), "")
+            .expect("fixture fits the output limit");
+        let short = FileStorage::new()
+            .push(&NormalizedPath::from("x"), "")
+            .expect("fixture fits the output limit");
+        let foreign = long.spans()[0];
+        let _ = short.path(foreign);
     }
 
     #[test]
