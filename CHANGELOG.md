@@ -42,6 +42,9 @@ Library consumers: update code that matches on or calls these items.
 - **Closed stderr**: No panic. Before: exit 101 when completion message or error was unwritable. Now exits with normal code (`src/shell/output.rs`, `clippy.toml`).
 - **Output parent check**: File in place of output directory fails at startup with `NotADirectory`, naming the parent. Before: whole source collected first (tarball downloaded for GitHub), failure named no path (`src/shell/output.rs`).
 - **Filesystem error paths**: I/O errors name the failing path and keep the error kind. Before: e.g. `os error 3`, no path (`src/shell/error.rs`, `src/shell/output.rs`, `src/shell/local.rs`).
+- **Credential names with invalid UTF-8**: A credential-named file whose final name segment is not valid UTF-8 (e.g. `id_rsa<bytes>.key`) is ignored, as its valid-UTF-8 twin is. Before: counted in the summary as skipped, which exposed its existence (`src/core/policy.rs`).
+  - **Action:** `skipped` drops by one for each such file. Expect smaller skipped counts in scripts that compare them.
+- **Output directory sync after rename**: A failed parent-directory sync after the new digest is in place is a warning on stderr, and the run exits 0. Before: exit 1 although the output file had already been replaced (`src/shell/atomic.rs`).
 
 #### Performance
 
@@ -55,6 +58,7 @@ Internal refactors and test changes. No consumer action required.
 
 #### Core
 
+- **Commit SHA predicate**: `is_valid_commit_sha` is a plain `fn` over an iterator, not a `const fn` with a manual loop. Same accepted set: exactly 40 or 64 hex characters (`src/core/archive.rs`).
 - **Output size check**: `FileStorage::push` rejects over-limit content before storing; `Selector` has no post-push check. Output target typed `ResolvedOutput` (only `resolve_output_target` builds it), so collection and delivery cannot receive an unresolved request (`src/core/storage.rs`, `src/shell/output.rs`).
 - **Effect-free errors**: Core builds only `DomainError`. GitHub transport error constructor -> shell (`src/shell/error.rs`). `Selector::observe<E: From<DomainError>>` passes read errors through.
 - **Single candidate entry**: `Selector::observe(status, size_hint, read)` settles each candidate; reads body only after admission. Removed `Admission`, `PendingEntry`, `admit`.

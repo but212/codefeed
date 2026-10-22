@@ -90,6 +90,8 @@ Lockfiles contain generated metadata that adds tokens without source value. They
 
 Environment files such as `.env` are excluded by the hidden-entry rule (§3.1), not by this list.
 
+The name rules apply to the final segment even when it is not valid UTF-8. Prefixes and extensions are ASCII, so a name such as `id_rsa\xff.key` is ignored, not counted as skipped (§4).
+
 ### 3.4 Path Limits
 
 | Rule | Effect |
@@ -128,7 +130,7 @@ Implemented in `src/shell/local.rs` and `src/shell/output.rs`.
 
 1. **No symlink following.** The walk uses `follow_links(false)`. Symlinks are dropped before path classification. Before opening any file, the worker calls `fs::symlink_metadata` and requires a regular file that is not a symlink. Symlinks to files, directories, or special files are never read.
 2. **Output exclusion.** The output path is resolved once at startup (`resolve_output_target`) and excluded from the walk by canonical path. This prevents the digest from ingesting itself.
-3. **Atomic writes.** The digest is written to a temporary file in the destination's parent directory. The file is synced, then renamed to the destination. On Unix, the existing file's permissions are kept and the parent directory is synced after the rename. The temporary handle is closed before the file is unlinked on `Drop`, which keeps cleanup reliable on Windows and Unix, including during error and panic unwinding.
+3. **Atomic writes.** The digest is written to a temporary file in the destination's parent directory. The file is synced, then renamed to the destination. On Unix, the existing file's permissions are kept and the parent directory is synced after the rename. A failed sync is reported as a warning on stderr, because the rename has already replaced the target. The temporary handle is closed before the file is unlinked on `Drop`, which keeps cleanup reliable on Windows and Unix, including during error and panic unwinding.
 4. **Unavailable versus fatal.** Per file, `NotFound`, `PermissionDenied`, and the Windows sharing violation are recorded as unavailable and counted as skipped. Any other open or read error fails the run with `IngestError::Io`. An unreadable directory fails the run and names the directory.
 5. **Bounded concurrency.** Workers and the main thread communicate through `sync_channel(128)`, so the queue cannot grow without bound during a large scan. An error or budget overflow sets an `AtomicBool` and drops the receiver, which stops all workers promptly.
 

@@ -78,7 +78,7 @@ codefeed -- -my-directory
 
 ## Output
 
-- **File output** (`-o <PATH>`): The digest is written atomically. It goes to a temporary file, which is synced and then renamed over the target. If the run fails, the previous file is left unchanged. On Unix, the existing file's permissions are kept. The summary line `Wrote <PATH> (<N> files, <N> skipped, ~<N> tokens)` is printed to stdout.
+- **File output** (`-o <PATH>`): The digest is written atomically. It goes to a temporary file, which is synced and then renamed over the target. If the run fails, the previous file is left unchanged. On Unix, the existing file's permissions are kept. If syncing the parent directory fails after the rename, a warning goes to stderr and the run still succeeds, because the new file is already in place. The summary line `Wrote <PATH> (<N> files, <N> skipped, ~<N> tokens)` is printed to stdout.
 - **Stream output** (`-o -`): The digest goes to stdout and the summary goes to stderr. Nothing is written if the run fails.
 - **Header**: Local digests start with `Repository: <directory name>`. GitHub digests start with `Repository: https://github.com/{owner}/{repo}`.
 - **Text format** (`text`): File contents are copied exactly as valid UTF-8. Files that contain a NUL byte or are not valid UTF-8 are skipped. Header labels and file paths are escaped, and ANSI sequences in file contents are kept.

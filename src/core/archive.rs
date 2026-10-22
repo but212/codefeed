@@ -70,20 +70,8 @@ pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
     })
 }
 
-const fn is_valid_commit_sha(sha: &str) -> bool {
-    let bytes = sha.as_bytes();
-    let len = bytes.len();
-    if len != 40 && len != 64 {
-        return false;
-    }
-    let mut i = 0;
-    while i < len {
-        if !bytes[i].is_ascii_hexdigit() {
-            return false;
-        }
-        i += 1;
-    }
-    true
+fn is_valid_commit_sha(sha: &str) -> bool {
+    matches!(sha.len(), 40 | 64) && sha.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -128,6 +116,12 @@ mod tests {
         for (raw, expected) in ok_cases {
             assert_eq!(normalize_tar_entry_path(raw).unwrap(), expected, "{raw:?}");
         }
+
+        // Sensitive name with an invalid-UTF-8 final segment is ignored, not counted as skipped.
+        assert_eq!(
+            normalize_tar_entry_path(b"repo-root/id_rsa\xff.key").unwrap(),
+            PathStatus::Ignored
+        );
 
         // Rejected: path traversal (`..`, `.` root) and embedded NUL
         let err_cases: [&[u8]; 7] = [
@@ -180,6 +174,22 @@ mod tests {
 
         let invalid = b"52 comment=not-a-sha\n";
         assert_eq!(parse_pax_comment(invalid), None);
+
+        // Only exactly 40 or 64 hex characters are a commit SHA.
+        let boundary = [
+            ("a".repeat(39), false),
+            ("a".repeat(40), true),
+            ("a".repeat(41), false),
+            ("a".repeat(63), false),
+            ("a".repeat(64), true),
+            ("a".repeat(65), false),
+        ];
+        for (sha, valid) in boundary {
+            let line = format!("comment={sha}\n");
+            assert_eq!(parse_pax_comment(line.as_bytes()).is_some(), valid, "{sha}");
+        }
+        let non_hex = format!("comment={}g\n", "a".repeat(39));
+        assert_eq!(parse_pax_comment(non_hex.as_bytes()), None);
 
         let empty = b"";
         assert_eq!(parse_pax_comment(empty), None);

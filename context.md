@@ -82,7 +82,7 @@ codefeed turns a local directory or a public GitHub repository into one text dig
 ### 3.6 Output delivery
 
 - File targets are resolved once at startup. The parent directory must exist, and a directory target is rejected. The canonical output path is excluded from the walk, so the digest never ingests itself.
-- File writes are atomic: temp file, sync, rename, then sync the parent directory on Unix. A failed run leaves the previous file in place.
+- File writes are atomic: temp file, sync, rename, then sync the parent directory on Unix. A failed run leaves the previous file in place. A failed parent-directory sync after the rename is a warning, not a failure, because the new file is already in place.
 - Stdout targets buffer the whole digest and write it only on success.
 - A broken pipe on stdout is not an error.
 - The completion summary goes to stdout for file targets and to stderr for stdout targets. It is built by `completion_message` in `core/cli.rs`. `run_cli` in `shell/mod.rs` chooses the stream.
