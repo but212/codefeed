@@ -1,6 +1,8 @@
 # Changelog
 
-All notable changes to this project are documented here.
+**Audience:** library consumers and CLI users (what to change or expect), contributors (internal code), maintainers (docs, build, releases). Unreleased entries are grouped by audience; released versions keep their original categories.
+
+All notable changes are listed here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
@@ -8,106 +10,113 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 ## [Unreleased]
 
-### Breaking
+### Library consumers and CLI users
+
+Observable behavior. **Action** = code or config change required.
+
+#### Breaking
 
 Library consumers: update code that matches on or calls these items.
 
-- **Error types split**: `IngestError` is now `Domain(DomainError)`, `Io(io::Error)`, `Http(String)`, or `Api(String)`. `DomainError` (crate root re-export): `Usage`, `CandidateLimitExceeded`, `InvalidSource`, `UnsupportedSource`, `InvalidMetadata`, `OutputTooLarge`.
-  - **Action:** match `IngestError::Domain(DomainError::...)`, not flat variants. GitHub non-success responses are `Api`; transport failures are `Http`.
-  - `GitRef::new`, `Source::github`, `Source::with_reference` return `Result<_, DomainError>`. `IngestError::usage` moved to `DomainError::usage`.
-  - `?` converts both types into `IngestError`. `Display` strings unchanged (`src/core/error.rs`, `src/shell/error.rs`).
-- **`GitRef` string access removed**: `GitRef::as_str` and `impl Display for GitRef` removed.
+- **Error types split**: `IngestError` is now `Domain(DomainError)`, `Io(io::Error)`, `Http(String)`, or `Api(String)`. `DomainError` (crate root): `Usage`, `CandidateLimitExceeded`, `InvalidSource`, `UnsupportedSource`, `InvalidMetadata`, `OutputTooLarge`.
+  - **Action:** match `IngestError::Domain(DomainError::...)`, not flat variants. GitHub non-success responses -> `Api`; transport failures -> `Http`.
+  - `GitRef::new`, `Source::github`, `Source::with_reference` return `Result<_, DomainError>`. `IngestError::usage` -> `DomainError::usage`.
+  - `?` converts both into `IngestError`. `Display` strings unchanged (`src/core/error.rs`, `src/shell/error.rs`).
+- **`GitRef` string access removed**: `GitRef::as_str` and `impl Display for GitRef`.
   - **Action:** use `&*git_ref` (`GitRef` derefs to `str`) (`src/core/model.rs`).
 
-### Changed
+#### Changed
 
-- **GitHub stream errors**: Timeouts, connection drops, and gzip/tar decode failures during archive streaming return `IngestError::Http` ("GitHub request failed"), not `Io` ("filesystem error").
-  - **Action:** match `Http`, not `Io`, for these errors (`src/shell/archive.rs`).
-- **TLS trust roots**: `ureq` uses compiled Mozilla roots (`rustls-webpki-roots`), not the platform verifier. Certificates trusted only through the OS store (e.g. corporate proxy CAs) are now rejected.
-- **Inline CLI values**: `--flag=value` accepts a leading `-` (e.g. `--output=-notes.txt`). Separate-argument values still reject a leading `-`, except `-o -` (stdout). `-o -x` still fails (`src/core/cli.rs`).
-- **Output size check**: `FileStorage::push` rejects over-limit content before storing. `Selector` has no post-push check. Output target is typed `ResolvedOutput` (only `resolve_output_target` builds it), so collection and delivery cannot receive an unresolved request (`src/core/storage.rs`, `src/shell/output.rs`).
-- **GitHub URL authority**: `Source::parse` rejects URLs with userinfo (`user@`), with the message "repository URLs cannot contain credentials". The only accepted port is `443`, or none. Before: userinfo was silently ignored, and any port was accepted.
+- **GitHub stream errors**: Timeouts, connection drops, and gzip/tar decode failures during archive streaming -> `IngestError::Http` ("GitHub request failed"), was `Io` ("filesystem error").
+  - **Action:** match `Http`, not `Io` (`src/shell/archive.rs`).
+- **TLS trust roots**: `ureq` uses compiled Mozilla roots (`rustls-webpki-roots`), not the platform verifier. CAs trusted only via OS store (e.g. corporate proxy) now rejected.
+- **Inline CLI values**: `--flag=value` accepts a leading `-` (e.g. `--output=-notes.txt`). Separate-argument values still reject a leading `-`, except `-o -` (stdout); `-o -x` fails. `README.md` documents this (`src/core/cli.rs`).
+- **GitHub URL authority**: `Source::parse` rejects userinfo (`user@`) with "repository URLs cannot contain credentials". Only port `443` or none accepted. Before: userinfo ignored, any port accepted.
   - **Action:** remove credentials and non-443 ports from GitHub URLs (`src/core/github/url.rs`).
 
-### Fixed
+#### Fixed
 
 - **GitHub rate-limit reset**: `x-ratelimit-reset` gives a retry delay only when `x-ratelimit-remaining` is `0`. Before: a 404 said "retry available"; a 5xx with reset headers was not retried (`src/shell/github.rs`).
-- **Unlinked local files**: A file deleted between discovery and metadata check is skipped, as at open. Before: silently dropped (`src/shell/local.rs`).
-- **Unreadable local files**: A file that fails to open (`PermissionDenied`, Windows sharing violation) is skipped instead of aborting. Unreadable directories still fail fast (`src/shell/local.rs`).
-- **Closed stderr**: A closed stderr no longer panics. Before: exit 101 when the completion message or an error could not be written. Now the run exits with its normal code (`src/shell/output.rs`, `clippy.toml`).
-- **Output parent check**: A file in place of the output directory fails at startup with `NotADirectory`, and the message names the parent. Before: the whole source was collected first (downloading the tarball for GitHub sources), and the failure named no path (`src/shell/output.rs`).
-- **Filesystem error paths**: File I/O errors name the path that failed and keep the error kind. Before: messages such as `os error 3` named no path (`src/shell/error.rs`, `src/shell/output.rs`, `src/shell/local.rs`).
+- **Unlinked local files**: File deleted between discovery and metadata check is skipped, as at open. Before: silently dropped (`src/shell/local.rs`).
+- **Unreadable local files**: Open failure (`PermissionDenied`, Windows sharing violation) -> skipped, not abort. Unreadable directories still fail fast (`src/shell/local.rs`).
+- **Closed stderr**: No panic. Before: exit 101 when completion message or error was unwritable. Now exits with normal code (`src/shell/output.rs`, `clippy.toml`).
+- **Output parent check**: File in place of output directory fails at startup with `NotADirectory`, naming the parent. Before: whole source collected first (tarball downloaded for GitHub), failure named no path (`src/shell/output.rs`).
+- **Filesystem error paths**: I/O errors name the failing path and keep the error kind. Before: e.g. `os error 3`, no path (`src/shell/error.rs`, `src/shell/output.rs`, `src/shell/local.rs`).
 
-### Performance
+#### Performance
 
-- **Archive buffering**: Archive stream is buffered before `GzDecoder` in `codefeed::shell::archive::collect` (64 KiB, `ARCHIVE_BUFFER_BYTES`).
+- **Archive buffering**: Archive stream buffered before `GzDecoder` in `codefeed::shell::archive::collect` (size in [security section 8](docs/security_and_filtering.md#8-limit-values), `ARCHIVE_BUFFER_BYTES`).
 - **Parallel local traversal**: `codefeed::shell::local::collect` walks, reads metadata, and reads bounded content in parallel (`ignore::WalkParallel`, worker channels, thread scope). Kept: zero-copy arenas, non-symlink checks, deterministic lexicographic order.
-- **Metadata dedup**: One `fs::symlink_metadata()` per valid candidate replaces the `entry.metadata()` / `symlink_metadata()` / `file.metadata()` sequence. No post-open stat. Read buffers are pre-reserved up to bounded limits.
+- **Metadata dedup**: One `fs::symlink_metadata()` per valid candidate replaces `entry.metadata()` / `symlink_metadata()` / `file.metadata()`. No post-open stat. Read buffers pre-reserved to bounded limits.
 
-### Removed
+### Contributors
 
-- **Unused Display**: `impl Display for NormalizedPath` (no production caller) (`src/core/policy.rs`).
-- **Build config**: Commented-out `[profile.release]` in `Cargo.toml`.
-
-### Documentation
-
-- **Retry policy**: `README.md`, `context.md`, and `docs/security_and_filtering.md` state that rate-limited 403 responses are retried.
-- **Ingestion order**: Local workers read bodies before `Selector::observe`. GitHub archive entries are admitted before reading.
-- **Zeroization scope**: `docs/security_and_filtering.md` lists which buffers `Zeroizing` erases and which copies it does not (HTTP client headers, process environment, error messages).
-- **Overflow diagnostics**: Cover only candidates admitted before abort, so local counts vary between runs.
-- **Inline CLI values**: `README.md` documents that `--flag=value` accepts a leading `-`.
-- **Doc structure**: One audience per document: `README.md` (users), `context.md` (maintainers, domain), `docs/security_and_filtering.md` (filter and safety spec), `docs/coding_convention.md` (Rust rules), `AGENTS.md` (agent workflow). Limit values live only in `docs/security_and_filtering.md` §8; other docs link there. `src/core/policy.rs` is the authority; code never copies the values.
-- **Doc corrections**: Documented `MAX_PATH_BYTES` path skipping, `.ignore` and global-ignore behavior (not read), `transport_error` location, and `# Errors` scope (public API).
-- **Documentation alignment**: `README.md` no longer lists `-h` among the short flags that accept `=`; `-h=x` is an unknown option. Archive entries that are not regular files are dropped and not counted, as local ones are. Only the delta-seconds form of `Retry-After` is honored, and an HTTP-date falls back to backoff (`docs/security_and_filtering.md` §6.5). The non-UTF-8 prefix is the valid segments before the first invalid one (`context.md` §3.2).
-
-### Internal
-
-Contributor-facing. No consumer action required.
+Internal refactors and test changes. No consumer action required.
 
 #### Core
 
-- **Effect-free errors**: Core builds only `DomainError`. GitHub transport error constructor moved to shell (`src/shell/error.rs`). `Selector::observe<E: From<DomainError>>` passes read errors through unchanged.
-- **Single candidate entry**: `Selector::observe(status, size_hint, read)` settles each candidate and reads the body only after admission. Removed `Admission`, `PendingEntry`, `admit`.
-- **`Selector::new`**: Builds the empty state directly; removed `impl Default for Selector`.
+- **Output size check**: `FileStorage::push` rejects over-limit content before storing; `Selector` has no post-push check. Output target typed `ResolvedOutput` (only `resolve_output_target` builds it), so collection and delivery cannot receive an unresolved request (`src/core/storage.rs`, `src/shell/output.rs`).
+- **Effect-free errors**: Core builds only `DomainError`. GitHub transport error constructor -> shell (`src/shell/error.rs`). `Selector::observe<E: From<DomainError>>` passes read errors through.
+- **Single candidate entry**: `Selector::observe(status, size_hint, read)` settles each candidate; reads body only after admission. Removed `Admission`, `PendingEntry`, `admit`.
+- **`Selector::new`**: Builds empty state directly; removed `impl Default for Selector`.
 - **Sorted view**: `SortedFiles` derefs to `FileStorage` (read-only). `SortedFiles::new` still guarantees sortedness.
-- **Render dispatch**: `CollectionResult::render` matches `DigestFormat` and calls `render_with`. Removed `DigestFormat::render`, `render::render`, and the forwarding method. Overflow diagnostic built once in `FileStorage::output_too_large_error`.
+- **Render dispatch**: `CollectionResult::render` matches `DigestFormat`, calls `render_with`. Removed `DigestFormat::render`, `render::render`, and the forwarding method. Overflow diagnostic built once in `FileStorage::output_too_large_error`.
 - **Scratch output**: `BoundedBuffer::push_usize` uses `to_string()`.
-- **Path normalization**: `classify_path_segments` drops empty and `.` segments itself, so every `NormalizedPath` is clean regardless of caller. Archive no longer pre-filters; two unreachable branches removed (`src/core/policy.rs`, `src/core/archive.rs`).
-- **Pure label rules**: `repository_url` (`src/core/github/url.rs`) and `repository_name` (`src/core/model.rs`) hold digest label rules. Shell extracts the path or name and calls them.
-- **Retry headers**: Rate-limit headers are parsed once into `RateLimitHeaders` (`src/core/github/retry.rs`). Retry delay and rate-limited flag are pure functions of parsed values and explicit `now_secs`.
-- **Retry transition**: `AttemptState::retry` builds the next state and `Transition::Retry`. `AttemptState::step` only picks the delay (`src/core/github/retry.rs`).
-- **GitHub error text**: `api_error`, `sanitize_error_detail`, `status_retry_warning`, `transport_retry_warning` moved from `src/shell/github.rs` to `src/core/github/mod.rs`. `transport_error` stays in the shell (`src/shell/error.rs`).
-- **GitHub module split**: `core/github.rs` is now `core/github/{url,retry,mod}.rs`. `mod.rs` re-exports what the shell and model use; call paths unchanged.
+- **Path normalization**: `classify_path_segments` drops empty and `.` segments, so every `NormalizedPath` is clean regardless of caller. Archive no longer pre-filters; two unreachable branches removed (`src/core/policy.rs`, `src/core/archive.rs`).
+- **Pure label rules**: `repository_url` (`src/core/github/url.rs`) and `repository_name` (`src/core/model.rs`) hold digest label rules; shell extracts path/name and calls them.
+- **Retry headers**: Rate-limit headers parsed once into `RateLimitHeaders` (`src/core/github/retry.rs`). Retry delay and rate-limited flag are pure functions of parsed values and explicit `now_secs`.
+- **Retry transition**: `AttemptState::retry` builds next state and `Transition::Retry`. `AttemptState::step` only picks the delay (`src/core/github/retry.rs`).
+- **GitHub error text**: `api_error`, `sanitize_error_detail`, `status_retry_warning`, `transport_retry_warning` moved from `src/shell/github.rs` to `src/core/github/mod.rs`. `transport_error` stays in shell (`src/shell/error.rs`).
+- **GitHub module split**: `core/github.rs` -> `core/github/{url,retry,mod}.rs`. `mod.rs` re-exports what shell and model use; call paths unchanged.
 - **Dead code**: Unused `AsRef<str>` for `NormalizedPath` removed (`src/core/policy.rs`).
 - **Must-use**: Pipeline phase types (`Selector`, `CollectionResult`, `RenderedDigest`, `BoundedBuffer`, `SortedFiles`) and pure value-returning functions (classification, retry delay, origin gate) carry `#[must_use]`.
 
 #### CLI
 
 - **Completion message**: `completion_message` moved from `src/shell/mod.rs` to `src/core/cli.rs`. `run_cli` only chooses the stream.
-- **Parse accumulator**: `cli::parse` folds flag values and the source positional through a consuming `Parsed`. One function owns the "unexpected argument" check; one owns the "a value is required" message (`src/core/cli.rs`).
+- **Parse accumulator**: `cli::parse` folds flag values and the source positional through a consuming `Parsed`. One function owns "unexpected argument"; one owns "a value is required" (`src/core/cli.rs`).
 
 #### Shell
 
 - **Typed output target**: `OutputTarget` (`File(path)` or `Stdout`) replaces `None` as the stdout signal. `resolve_output_target` returns `ResolvedOutput`, which `deliver` takes (`src/shell/output.rs`).
 - **Output parent**: `parent_dir` replaces three copies of the parent-or-`.` expression. Removed a redundant directory check (`src/shell/output.rs`).
-- **Atomic write module**: `AtomicFile`, `TempFile`, and `write_atomic` moved from `output.rs` to `src/shell/atomic.rs`. No behavior change.
-- **Local worker message**: `WorkerMsg` has three variants: `NonUtf8(prefix)`, `Regular { path, content }`, `Error`.
-  - An unreadable file (unlinked, or unavailable at open) is `Regular` with `content: None`. Skip count unchanged.
+- **Atomic write module**: `AtomicFile`, `TempFile`, `write_atomic` moved from `output.rs` to `src/shell/atomic.rs`. No behavior change.
+- **Local worker message**: `WorkerMsg` has `NonUtf8(prefix)`, `Regular { path, content }`, `Error`.
+  - Unreadable file (unlinked, or unavailable at open) -> `Regular` with `content: None`. Skip count unchanged.
   - Impossible states (e.g. non-UTF-8 path with content) are unrepresentable.
-  - The gate `exceeds_size_limits` is one core predicate shared by admission and the local worker.
+  - `exceeds_size_limits` is one core predicate shared by admission and the local worker.
   - `LocalVisitorBuilder` merged into `LocalVisitor`.
 - **Local reads**: `read_bounded` returns `Result<Option<Vec<u8>>>` (`None` = unavailable) instead of an out-parameter. Buffers pre-size to `min(file length, MAX_FILE_SIZE + 1)`. Test-only `read_local_file_into` removed (`src/shell/local.rs`).
 - **Buffers**: Local and archive content is `Vec<u8>`. `Zeroizing` only for the GitHub token and error bodies.
-- **Archive stream**: Tar decompression, PAX commit SHA parsing, and entry admission live in `codefeed::shell::archive`. HTTP stays in `codefeed::shell::github`. `process_tar_entry` returns `Selector` (no out-param or tuple). PAX header handled inside the entry loop; bounded-read helper inlined.
+- **Archive stream**: Tar decompression, PAX commit SHA parsing, and entry admission live in `codefeed::shell::archive`; HTTP stays in `codefeed::shell::github`. `process_tar_entry` returns `Selector` (no out-param or tuple). PAX header handled in the entry loop; bounded-read helper inlined.
 - **GitHub attempt**: `Attempt::from_result`, `warn`, `into_error` hold classification, warnings, and error construction. `Attempt::Status` no longer duplicates `is_rate_limit`. `GithubClient::request` attaches origin-gated headers. Shell keeps HTTP, body reads, `eprintln!`, and sleeps (`src/shell/github.rs`).
-- **Temp file state**: `TempFile` holds a `TempState` (`Writing(File)`, `Closed`, `Committed`) instead of `Option<File>` plus `active: bool`. Invalid access returns `io::Error`, not a panic (`src/shell/output.rs`).
+- **Temp file state**: `TempFile` holds `TempState` (`Writing(File)`, `Closed`, `Committed`) instead of `Option<File>` + `active: bool`. Invalid access returns `io::Error`, not a panic (`src/shell/output.rs`).
 
 #### Tests
 
-- **Selector tables**: Selector tests drive `observe` only. Removed `feed_file` and `feed_skipped`; their cases are rows in `observe_counts_candidates_by_content_outcome` and `observe_does_not_read_settled_candidates`, plus the new `observe_enforces_candidate_budget_before_read`.
-- **Table tests**: Retry decision and archive path normalization tests are tables. Vacuous capacity assertion in the local read test dropped; local read tests exercise `collect`.
+- **Selector tables**: Selector tests drive `observe` only. Removed `feed_file` and `feed_skipped`; their cases are rows in `observe_counts_candidates_by_content_outcome` and `observe_does_not_read_settled_candidates`, plus new `observe_enforces_candidate_budget_before_read`.
+- **Table tests**: Retry decision and archive path normalization tests are tables. Vacuous capacity assertion dropped from the local read test; local read tests exercise `collect`.
 - **Shared tar fixtures**: `gzip_tarball` and `gzip_archive` in `src/shell/testing.rs`. `stream_url` returns `impl Read + Send`.
 - **Removed test**: `test_archive_buffer_bytes_invariant` restated the constant. `ARCHIVE_BUFFER_BYTES > 0` remains a compile-time assertion.
+
+### Maintainers
+
+Documentation, build, and removals.
+
+#### Removed
+
+- **Unused Display**: `impl Display for NormalizedPath` (`pub(crate)`, no production caller) (`src/core/policy.rs`).
+- **Build config**: Commented-out `[profile.release]` in `Cargo.toml`.
+
+#### Documentation
+
+- **Retry policy**: `README.md`, `context.md`, and `docs/security_and_filtering.md` state that rate-limited 403 responses are retried.
+- **Ingestion order**: Local workers read bodies before `Selector::observe`. GitHub archive entries are admitted before reading.
+- **Zeroization scope**: `docs/security_and_filtering.md` lists buffers `Zeroizing` erases and copies it does not (HTTP client headers, process environment, error messages).
+- **Overflow diagnostics**: Cover only candidates admitted before abort; local counts vary between runs.
+- **Doc structure**: One audience per document: `README.md` (users), `context.md` (maintainers, domain), `docs/security_and_filtering.md` (filter and safety spec), `docs/coding_convention.md` (Rust rules), `AGENTS.md` (agent workflow). Limit values only in `docs/security_and_filtering.md` section 8; other docs link there. `src/core/policy.rs` is the authority; code never copies the values.
+- **Doc corrections**: Documented `MAX_PATH_BYTES` path skipping, `.ignore` and global-ignore behavior (not read), `transport_error` location, and `# Errors` scope (public API).
+- **Documentation alignment**: `README.md` no longer lists `-h` among short flags that accept `=`; `-h=x` is an unknown option. Non-regular archive entries are dropped and not counted, as local ones are. Only delta-seconds `Retry-After` is honored; an HTTP-date falls back to backoff (`docs/security_and_filtering.md` section 6.5). The non-UTF-8 prefix is the valid segments before the first invalid one (`context.md` section 3.2).
 
 ## [0.3.2]
 
@@ -130,7 +139,7 @@ Contributor-facing. No consumer action required.
 
 ### Internal
 
-- **Pipeline typestates**: Core collection is a consuming chain (`Selector` → `CollectionResult` → `RenderedDigest` → `IngestReport`). `CollectionResult::render` consumes the collection by value with metrics.
+- **Pipeline typestates**: Core collection is a consuming chain (`Selector` -> `CollectionResult` -> `RenderedDigest` -> `IngestReport`). `CollectionResult::render` consumes the collection by value with metrics.
 - **Output transport**: `output::emit` replaced by pure I/O `output::deliver(target, bytes)`; `src/shell/output.rs` drops render-format and collection dependencies.
 - **Policy matching**: Prefix checks in `src/core/policy.rs` consolidated into `SENSITIVE_PREFIXES`; extension extraction in `is_sensitive_file` is lazy.
 - **Tree render**: `render_level` threads one owned `prefix` buffer (`push_str`/`truncate`) instead of cloning per directory.
@@ -160,7 +169,7 @@ Contributor-facing. No consumer action required.
 ### Internal
 
 - **Admission**: `Ignored` and `Skipped` merged into `Settled(Selector)`. `PendingEntry` must be consumed by `accept` or `skip` (enforced at compile time). Removed `record_entry`, `record_with`, `CandidateSlot`, `Observation`, `ContentResult`. Shell collectors read into reusable scratch buffers. `CandidateBudget` is private to `selector.rs`.
-- **Pure core**: No `&mut` parameters in `src/core/` (except `Display::fmt`). Selector, storage, and retry state use value-passing `self`; `AttemptState::step` returns `(Self, Transition)`. CLI parsing uses `ParseState`; path classification uses `PathClassifierState`. `classify_path_segments` and `normalize_tar_entry_path` return owned `PathStatus`. Rendering writes into an in-memory `BoundedBuffer` → `RenderedDigest`; physical writes moved to `shell/output.rs`.
+- **Pure core**: No `&mut` parameters in `src/core/` (except `Display::fmt`). Selector, storage, and retry state use value-passing `self`; `AttemptState::step` returns `(Self, Transition)`. CLI parsing uses `ParseState`; path classification uses `PathClassifierState`. `classify_path_segments` and `normalize_tar_entry_path` return owned `PathStatus`. Rendering writes into an in-memory `BoundedBuffer` -> `RenderedDigest`; physical writes moved to `shell/output.rs`.
 - **Storage**: `Deref` removed from `SortedFiles` in favor of explicit accessors. `largest_files` uses stable `sort_by_key` and `truncate(5)`. `FileStorage::push` uses `expect` on `u32` conversions.
 - **Render**: `render_text`, `render_xml`, and `DigestFormat::render` return `std::io::Result<()>`; the size cap is `written > MAX_OUTPUT_SIZE`. ASCII tree grouping uses slice matching. Escaping goes through `write_escaped` with `escape_header`, `escape_xml_body`, `escape_xml_single_line`. `output_too_large_error` unified.
 - **Policy**: Limits centralized in `policy.rs`. `MAX_RETRIES` renamed `MAX_ATTEMPTS`.
