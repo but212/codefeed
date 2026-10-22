@@ -1,7 +1,7 @@
 //! Continuous arena storage and zero-copy views for collected files.
 //!
 //! Eliminates per-file heap allocations by maintaining contiguous string arenas
-//! for paths and contents, indexed by compact 16-byte [`FileSpan`] records.
+//! for paths and contents, indexed by compact 16-byte span records kept private to this module.
 
 use std::cmp::Ordering;
 use std::iter::once;
@@ -11,8 +11,10 @@ use crate::core::error::DomainError;
 use crate::core::policy::{MAX_OUTPUT_SIZE, NormalizedPath};
 
 /// 16-byte POD indexing a file path and content slice in [`FileStorage`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct FileSpan {
+///
+/// Private to this module: a span carries no owner, so it is only resolved inside `FileStorage`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileSpan {
     path_offset: u32,
     path_len: u32,
     content_offset: u32,
@@ -22,15 +24,25 @@ pub(crate) struct FileSpan {
 const _: () = assert!(core::mem::size_of::<FileSpan>() == 16);
 
 impl FileSpan {
+    /// Slices this span's path out of `arena`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the span's range is out of bounds for `arena`.
     #[inline(always)]
-    pub(super) fn path<'a>(&self, arena: &'a str) -> &'a str {
+    fn path<'a>(&self, arena: &'a str) -> &'a str {
         let start = self.path_offset as usize;
         let end = start + self.path_len as usize;
         &arena[start..end]
     }
 
+    /// Slices this span's content out of `arena`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the span's range is out of bounds for `arena`.
     #[inline(always)]
-    pub(super) fn content<'a>(&self, arena: &'a str) -> &'a str {
+    fn content<'a>(&self, arena: &'a str) -> &'a str {
         let start = self.content_offset as usize;
         let end = start + self.content_len as usize;
         &arena[start..end]
@@ -86,14 +98,6 @@ impl FileStorage {
         self.spans.len()
     }
 
-    pub(crate) const fn spans(&self) -> &[FileSpan] {
-        self.spans.as_slice()
-    }
-
-    pub(crate) const fn path_arena(&self) -> &str {
-        self.path_arena.as_str()
-    }
-
     pub(crate) const fn total_bytes(&self) -> u64 {
         (self.path_arena.len() + self.content_arena.len()) as u64
     }
@@ -106,7 +110,7 @@ impl FileStorage {
         self
     }
 
-    /// Appends path and content to the arenas and records a [`FileSpan`].
+    /// Appends path and content to the arenas and records a span for them.
     ///
     /// # Errors
     ///
@@ -144,17 +148,12 @@ impl FileStorage {
         Ok(self)
     }
 
-    /// Resolves a [`FileSpan`] into a borrowed [`FileRecord`].
-    pub(crate) fn get(&self, span: FileSpan) -> FileRecord<'_> {
-        FileRecord {
-            path: span.path(&self.path_arena),
-            content: span.content(&self.content_arena),
-        }
-    }
-
     /// Iterator yielding borrowed [`FileRecord`] views over the arena.
     pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = FileRecord<'_>> {
-        self.spans.iter().map(move |&span| self.get(span))
+        self.spans.iter().map(move |span| FileRecord {
+            path: span.path(&self.path_arena),
+            content: span.content(&self.content_arena),
+        })
     }
 
     /// Error for storage that exceeds the output limit, naming the largest files.
@@ -278,19 +277,14 @@ mod tests {
 
         assert_eq!(storage.len(), 2);
 
-        let span1 = storage.spans()[0];
-        let span2 = storage.spans()[1];
-        let rec1 = storage.get(span1);
+        let mut iter = storage.iter();
+        let rec1 = iter.next().expect("first record");
         assert_eq!(rec1.path, "path/to/first.rs");
         assert_eq!(rec1.content, "pub fn first() {}");
 
-        let rec2 = storage.get(span2);
+        let rec2 = iter.next().expect("second record");
         assert_eq!(rec2.path, "second.txt");
         assert_eq!(rec2.content, "second content\n");
-
-        let mut iter = storage.iter();
-        assert_eq!(iter.next(), Some(rec1));
-        assert_eq!(iter.next(), Some(rec2));
         assert_eq!(iter.next(), None);
 
         let collected: Vec<FileRecord<'_>> = storage.iter().collect();

@@ -3,6 +3,8 @@
 //! Shell modules perform all effects and feed observations to the functional
 //! core in `crate::core`.
 
+use std::fmt::Display;
+
 use crate::{
     IngestReport, OutputTarget, RunConfig, Source,
     core::cli::{CliAction, completion_message, help_text, parse},
@@ -58,36 +60,33 @@ where
 {
     let action = match parse(args) {
         Ok(action) => action,
-        Err(error) => {
-            output::write_stderr_line(&format!("error: {error}"));
-            return 1;
-        }
+        Err(error) => return report_error(&error),
     };
 
-    match action {
+    let config = match action {
         CliAction::Help => {
             output::write_stdout_line(help_text());
-            0
+            return 0;
         }
-        CliAction::Run(config) => match ingest(&config) {
-            Ok(report) => {
-                let message = completion_message(&report);
-                match &report.output {
-                    OutputTarget::File(_) => {
-                        output::write_stdout_line(&message);
-                    }
-                    OutputTarget::Stdout => {
-                        output::write_stderr_line(&message);
-                    }
-                }
-                0
-            }
-            Err(error) => {
-                output::write_stderr_line(&format!("error: {error}"));
-                1
-            }
-        },
+        CliAction::Run(config) => config,
+    };
+
+    let report = match ingest(&config) {
+        Ok(report) => report,
+        Err(error) => return report_error(&error),
+    };
+    let message = completion_message(&report);
+    match &report.output {
+        OutputTarget::File(_) => output::write_stdout_line(&message),
+        OutputTarget::Stdout => output::write_stderr_line(&message),
     }
+    0
+}
+
+/// Writes one `error:` line to stderr and returns the failure exit code.
+fn report_error(error: &impl Display) -> i32 {
+    output::write_stderr_line(&format!("error: {error}"));
+    1
 }
 
 #[cfg(test)]

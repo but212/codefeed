@@ -111,6 +111,40 @@ fn match_flag(s: &str) -> Option<(Flag, &'static str, Option<&str>)> {
     None
 }
 
+/// Meaning of one argument seen in `ParseState::Normal`.
+enum Arg<'a> {
+    /// `--`: every later argument is positional.
+    Separator,
+    /// `-h` or `--help`.
+    Help,
+    /// A known flag, with its inline `=value` when one is given.
+    Flag(Flag, &'static str, Option<&'a str>),
+    /// An option-like argument that is not a known flag.
+    Unknown(&'a str),
+    /// The source positional. Also `-` and any argument that is not valid UTF-8.
+    Positional,
+}
+
+/// Classifies one argument. Checks run in order: separator, help, known flag, unknown option.
+fn classify_arg(arg: &OsStr) -> Arg<'_> {
+    let Some(s) = arg.to_str() else {
+        return Arg::Positional;
+    };
+    if s == "--" {
+        return Arg::Separator;
+    }
+    if s == "-h" || s == "--help" {
+        return Arg::Help;
+    }
+    if let Some((flag, flag_str, inline)) = match_flag(s) {
+        return Arg::Flag(flag, flag_str, inline);
+    }
+    if s.starts_with('-') && s != "-" {
+        return Arg::Unknown(s);
+    }
+    Arg::Positional
+}
+
 /// Parses command-line arguments into a [`CliAction`].
 ///
 /// Skips the first element (the binary name) and interprets remaining arguments
@@ -141,32 +175,20 @@ where
             ParseState::PositionalOnly => {
                 parsed = parsed.with_positional(arg)?;
             }
-            ParseState::Normal => {
-                let arg_str = arg.to_str();
-                if arg_str == Some("--") {
-                    state = ParseState::PositionalOnly;
-                    continue;
+            ParseState::Normal => match classify_arg(&arg) {
+                Arg::Separator => state = ParseState::PositionalOnly,
+                Arg::Help => return Ok(CliAction::Help),
+                Arg::Flag(flag, _, Some(inline)) => {
+                    parsed = parsed.with_value(flag, OsString::from(inline))?;
                 }
-
-                if let Some(s) = arg_str {
-                    if s == "-h" || s == "--help" {
-                        return Ok(CliAction::Help);
-                    }
-                    if let Some((flag, flag_str, inline_val)) = match_flag(s) {
-                        if let Some(inline) = inline_val {
-                            parsed = parsed.with_value(flag, OsString::from(inline))?;
-                        } else {
-                            state = ParseState::ExpectValue(flag, flag_str);
-                        }
-                        continue;
-                    }
-                    if s.starts_with('-') && s != "-" {
-                        return Err(DomainError::usage(format!("unknown option: {s}")));
-                    }
+                Arg::Flag(flag, flag_str, None) => {
+                    state = ParseState::ExpectValue(flag, flag_str);
                 }
-
-                parsed = parsed.with_positional(arg)?;
-            }
+                Arg::Unknown(s) => {
+                    return Err(DomainError::usage(format!("unknown option: {s}")));
+                }
+                Arg::Positional => parsed = parsed.with_positional(arg)?,
+            },
         }
     }
 

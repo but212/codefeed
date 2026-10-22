@@ -11,10 +11,10 @@
 | # | Threat | Mitigation | Where |
 | :--- | :--- | :--- | :--- |
 | T1 | Secret disclosure into prompts or output | Hidden-entry, noise, and sensitive-name exclusion (sec. 3). Content is not scanned (non-goal, sec. 1.2). | `policy.rs`, `selector.rs` |
-| T2 | Resource exhaustion | Size, count, depth, and path-length limits; output cap; bounded reads and channels; archive timeout (sec. 5, sec. 6). | `policy.rs`, `local.rs`, `github.rs` |
+| T2 | Resource exhaustion | Size, count, depth, and path-length limits; output cap; bounded reads and channels; archive timeout (sec. 5, sec. 6). | `policy.rs`, `local/`, `github.rs` |
 | T3 | Credential forwarding to other origins | Exact-origin gate; redirects never carry authorization (sec. 6). | `core/github/url.rs`, `shell/github.rs` |
 | T4 | Output injection into terminals, XML, or LLM context boundaries | Format-specific escaping (sec. 7). | `core/render/escape.rs` |
-| T5 | Reading files outside the source root | Symlinks are never followed; metadata is checked before open (sec. 5). | `shell/local.rs` |
+| T5 | Reading files outside the source root | Symlinks are never followed; metadata is checked before open (sec. 5). | `shell/local/` |
 
 ### 1.1 Assumptions
 
@@ -126,13 +126,13 @@ When the candidate budget overflows, the run fails and no partial digest is writ
 
 ## 5. Local Filesystem Safety
 
-Implemented in `src/shell/local.rs` and `src/shell/output.rs`.
+Implemented in `src/shell/local/` and `src/shell/output.rs`.
 
 1. **No symlink following.** The walk uses `follow_links(false)`. Symlinks are dropped before path classification. Before opening any file, the worker calls `fs::symlink_metadata` and requires a regular file that is not a symlink. Symlinks to files, directories, or special files are never read.
 2. **Output exclusion.** The output path is resolved once at startup (`resolve_output_target`) and excluded from the walk by canonical path. This prevents the digest from ingesting itself.
 3. **Atomic writes.** The digest is written to a temporary file in the destination's parent directory. The file is synced, then renamed to the destination. On Unix, the existing file's permissions are kept and the parent directory is synced after the rename. A failed sync is reported as a warning on stderr, because the rename has already replaced the target. The temporary handle is closed before the file is unlinked on `Drop`, which keeps cleanup reliable on Windows and Unix, including during error and panic unwinding.
-4. **Unavailable versus fatal.** At the metadata, open, and read steps, a per-file `NotFound`, `PermissionDenied`, or Windows sharing (32) or lock (33) violation is recorded as unavailable and counted as skipped. Any other error at those steps fails the run with `IngestError::Io`. An unreadable directory fails the run and names the directory. When several files fail fatally, the first error to reach the main thread is reported, so the path and error kind can vary between runs.
-5. **Bounded concurrency.** Workers and the main thread communicate through a `sync_channel` of `LOCAL_CHANNEL_CAPACITY` messages (sec. 8), so the queue cannot grow without bound during a large scan. A full queue blocks the workers, which bounds read-ahead memory to about that many files plus one per worker. An error or budget overflow sets an `AtomicBool` and drops the receiver, which stops all workers promptly.
+4. **Unavailable versus fatal.** At the metadata, open, and read steps, a per-file `NotFound`, `PermissionDenied`, or Windows sharing (32) or lock (33) violation is recorded as unavailable and counted as skipped. Any other error at those steps fails the run with `IngestError::Io`. An unreadable directory fails the run and names the directory. When several entries fail, the first one in walk order is reported, so the same input gives the same error on every run.
+5. **Bounded concurrency.** The producer, the workers, and the main thread communicate through two `sync_channel`s of `LOCAL_CHANNEL_CAPACITY` messages (sec. 8): jobs from the producer to the workers, and slots from the producer to the main thread. A full channel blocks its sender, so no queue grows without bound during a large scan. At most `LOCAL_CHANNEL_CAPACITY + 2` file bodies are held at once: those in the slot channel, the one the producer holds while it waits to send, and the one the main thread is settling. The bound does not depend on the worker count. Each body is at most `MAX_FILE_SIZE + 1` bytes (sec. 4). This bounds the bytes read and then discarded when a budget overflow or error stops the run. An error or budget overflow sets an `AtomicBool`, so workers skip their remaining reads, and the main thread drops its receiver, which stops the producer.
 
 ---
 
@@ -203,7 +203,8 @@ This section is the only place in the documentation that states limit values. Ot
 | `MAX_FILE_COUNT` | 10,000 candidate files | Candidate budget (sec. 4) | Run fails; lists up to three largest directories |
 | `MAX_OUTPUT_SIZE` | 20 MiB | Storage early check and rendering buffer | Run fails; no output; lists five largest files |
 | `ARCHIVE_BUFFER_BYTES` | 64 KiB | Archive read buffer | Not a limit; sets buffering only |
-| `LOCAL_CHANNEL_CAPACITY` | 64 messages | Local worker queue (sec. 5.5) | Not a limit; full queue blocks workers |
+| `LOCAL_CHANNEL_CAPACITY` | 64 messages | Local job and slot channels (sec. 5.5) | Not a limit; a full channel blocks its sender |
+| `MAX_LOCAL_WORKERS` | 12 threads | Local read workers (sec. 5.5) | Not a limit; fewer cores use fewer threads |
 | `ARCHIVE_MAX_SECS` | 300 seconds | Whole archive transfer (sec. 6.6) | Download fails with a request error |
 | `GITHUB_TIMEOUT_SECS` | 30 seconds | Response headers (sec. 6.6) | Treated as transient; retried (sec. 6.5) |
 | `MAX_ATTEMPTS` | 3 attempts (1 initial, 2 retries) | Retry loop (sec. 6.5) | Transient failures stop retrying; the run fails |

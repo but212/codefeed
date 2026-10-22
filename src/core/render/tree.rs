@@ -1,7 +1,7 @@
 use memchr::memchr;
 
 use super::budget::{BoundedBuffer, OutputLimitExceeded};
-use crate::core::storage::{FileSpan, SortedFiles};
+use crate::core::storage::SortedFiles;
 
 const TREE_BRANCH: &str = "├── ";
 const TREE_LAST: &str = "└── ";
@@ -17,21 +17,13 @@ pub(crate) fn render_tree<F>(
 where
     F: Fn(BoundedBuffer, &str) -> Result<BoundedBuffer, OutputLimitExceeded> + Copy,
 {
-    render_level(
-        buf,
-        files.spans(),
-        files.path_arena(),
-        0,
-        String::new(),
-        format_name,
-    )
-    .map(|(buf, _)| buf)
+    let paths: Vec<&str> = files.iter().map(|f| f.path).collect();
+    render_level(buf, &paths, 0, String::new(), format_name).map(|(buf, _)| buf)
 }
 
 fn render_level<F>(
     mut buf: BoundedBuffer,
-    spans: &[FileSpan],
-    path_arena: &str,
+    paths: &[&str],
     offset: usize,
     mut prefix: String,
     format_name: F,
@@ -40,24 +32,24 @@ where
     F: Fn(BoundedBuffer, &str) -> Result<BoundedBuffer, OutputLimitExceeded> + Copy,
 {
     let mut i = 0;
-    while let Some((name, is_dir)) = spans
+    while let Some((name, is_dir)) = paths
         .get(i)
-        .and_then(|s| component_at_offset(s.path(path_arena), offset))
+        .and_then(|path| component_at_offset(path, offset))
     {
         let start = i;
         i += 1;
         if is_dir {
-            let dir_prefix = &spans[start].path(path_arena)[offset..offset + name.len() + 1];
-            while spans
+            let dir_prefix = &paths[start][offset..offset + name.len() + 1];
+            while paths
                 .get(i)
-                .and_then(|s| s.path(path_arena).get(offset..))
+                .and_then(|path| path.get(offset..))
                 .is_some_and(|rem| rem.starts_with(dir_prefix))
             {
                 i += 1;
             }
         }
         let end = i;
-        let is_last = end == spans.len();
+        let is_last = end == paths.len();
 
         buf = buf.push_str(&prefix)?;
         buf = buf.push_str(if is_last { TREE_LAST } else { TREE_BRANCH })?;
@@ -69,8 +61,7 @@ where
             prefix.push_str(if is_last { TREE_SPACE } else { TREE_VERT });
             (buf, prefix) = render_level(
                 buf,
-                &spans[start..end],
-                path_arena,
+                &paths[start..end],
                 offset + name.len() + 1,
                 prefix,
                 format_name,

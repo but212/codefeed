@@ -14,9 +14,11 @@ pub(crate) const MAX_PATH_DEPTH: usize = 256;
 pub(crate) const MAX_PATH_BYTES: u64 = 4096;
 /// Capacity in bytes for buffering incoming archive decompression streams (64 KiB).
 pub(crate) const ARCHIVE_BUFFER_BYTES: usize = 64 * 1024;
-/// Capacity in messages of the local worker queue. Full queues block workers, which bounds read-ahead
-/// memory to roughly this many files plus one per worker (security §5, §8).
+/// Capacity in messages of each local pipeline channel (jobs and slots). A full channel blocks its
+/// sender, which bounds the file bodies held at once to this value plus two (security §5.5, §8).
 pub(crate) const LOCAL_CHANNEL_CAPACITY: usize = 64;
+/// Maximum local read workers. Fewer available cores use fewer workers (security §5.5, §8).
+pub(crate) const MAX_LOCAL_WORKERS: usize = 12;
 
 /// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
 pub(crate) const ARCHIVE_MAX_SECS: u64 = 300;
@@ -41,6 +43,7 @@ const _: () = {
     assert!(GITHUB_TIMEOUT_SECS <= ARCHIVE_MAX_SECS);
     assert!(ARCHIVE_BUFFER_BYTES > 0);
     assert!(LOCAL_CHANNEL_CAPACITY > 0);
+    assert!(MAX_LOCAL_WORKERS > 0);
 };
 
 /// Conventional lockfiles excluded before candidate budget accounting.
