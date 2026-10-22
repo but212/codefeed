@@ -138,7 +138,7 @@ Core code is pure. It performs no I/O, reads no clock or environment, and never 
 - `main.rs` (crate root binary) -- Calls `run_cli` and exits with its code.
 - `mod.rs` -- `ingest` (pipeline) and `run_cli` (exit codes and stream choice).
 - `error.rs` -- `IngestError` and `transport_error`, the only place effect errors are built.
-- `local.rs` -- Sorted producer walk, bounded parallel reads, and in-order settlement to the selector.
+- `local/` -- `mod.rs` (`collect`, root validation, label, and candidate observation), `walk.rs` (sorted walker and path classification), `read.rs` (one file's metadata, size gate, and bounded body), and `pipeline.rs` (producer, read workers, and in-order settlement to the selector).
 - `archive.rs` -- Gzip and tar streaming, PAX SHA extraction, and entry admission (`collect`).
 - `github.rs` -- HTTP client, token resolution, retry loop, and warnings.
 - `atomic.rs` -- `write_atomic`, `AtomicFile`, and `TempFile`: temporary file, sync, and rename.
