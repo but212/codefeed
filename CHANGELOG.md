@@ -24,6 +24,8 @@ Internal refactors and test changes. No consumer action required.
 
 #### Core
 
+- **Test fixture and parser consolidation**: Unified XML and text rendering test fixtures with a generic `render_digest` helper in `src/core/render/formats.rs`, and consolidated repetitive CLI valid invocation assertions with `parse_run` in `src/core/cli.rs` (`src/core/render/formats.rs`, `src/core/cli.rs`).
+- **Test suite diet**: Pruned redundant subprocess CLI parsing tests in `tests/cli.rs`, decoupled `FileStorage` unit tests from internal arena fields in `src/core/storage.rs`, and removed test-only helper panic tests in `src/core/policy.rs` (`tests/cli.rs`, `src/core/storage.rs`, `src/core/policy.rs`).
 - **Private storage spans**: `FileSpan` is private to `src/core/storage.rs`. Callers read records only through `FileStorage::iter`, and the tree renderer works on paths from that iterator. A span can no longer be passed to another storage (`src/core/storage.rs`, `src/core/render/tree.rs`).
 - **Argument classification**: `cli::parse` classifies each argument with `classify_arg` (separator, help, flag, unknown option, or positional) before it folds the value. Behavior is unchanged (`src/core/cli.rs`).
 

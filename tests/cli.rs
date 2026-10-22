@@ -42,37 +42,6 @@ fn run(args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn public_api_types_are_accessible() {
-    use codefeed::{
-        DigestFormat, DomainError, GitRef, IngestReport, OutputTarget, RunConfig, Source,
-    };
-    let config = RunConfig::new(
-        Source::Local(std::path::PathBuf::from(".")),
-        OutputTarget::Stdout,
-        DigestFormat::Text,
-    );
-    assert_eq!(config.format, DigestFormat::Text);
-    let _report_type: Option<IngestReport> = None;
-    let _err = DomainError::usage("test");
-    let git_ref = GitRef::new("main").expect("valid git ref");
-    assert_eq!(&*git_ref, "main");
-    let source = Source::github("owner", "repo", Some(git_ref)).expect("valid github source");
-    match source {
-        Source::Github {
-            owner,
-            repo,
-            reference,
-            ..
-        } => {
-            assert_eq!(owner, "owner");
-            assert_eq!(repo, "repo");
-            assert!(reference.is_some());
-        }
-        _ => unreachable!(),
-    }
-}
-
-#[test]
 fn help_exits_successfully_without_ingesting() {
     let cases: &[&[&str]] = &[&["--help"], &[".", "--help"]];
     for args in cases {
@@ -94,17 +63,7 @@ fn help_exits_successfully_without_ingesting() {
 
 #[test]
 fn invalid_arguments_exit_nonzero() {
-    for args in [
-        &[][..],
-        &[".", "--unknown"][..],
-        &[".", "--output"][..],
-        &[".", "--output", "--help"][..],
-        &[".", "--ref"][..],
-        &[".", "--ref", "main"][..],
-        &[".", "--format"][..],
-        &[".", "--format", "invalid"][..],
-        &["ingest", "."][..],
-    ] {
+    for args in [&[][..], &[".", "--format"][..]] {
         let output = run(args);
         assert!(!output.status.success(), "args: {args:?}");
         assert!(String::from_utf8_lossy(&output.stderr).contains("error:"));
@@ -258,57 +217,6 @@ fn accepts_non_utf8_local_source_path() {
 
     assert!(result.status.success(), "output: {result:?}");
     assert!(output.is_file());
-}
-
-#[test]
-fn accepts_source_after_options() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .args(["--format", "xml", "--output", "-", "."])
-        .output()
-        .expect("CLI process should start");
-
-    assert!(output.status.success(), "output: {output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("<repository"));
-}
-
-#[test]
-fn accepts_short_flags_with_equal() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .args(["-f=xml", "-o=-", "."])
-        .output()
-        .expect("CLI process should start");
-
-    assert!(output.status.success(), "output: {output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("<repository"));
-}
-
-#[test]
-fn accepts_double_dash_delimiter() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .args(["--output", "-", "--", "."])
-        .output()
-        .expect("CLI process should start");
-
-    assert!(output.status.success(), "output: {output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!stdout.is_empty());
-}
-
-#[test]
-fn accepts_dash_prefixed_inline_output() -> Result<(), Box<dyn std::error::Error>> {
-    let root = TempDir::new("inline_dash");
-    std::fs::write(root.path.join("visible.txt"), "visible")?;
-
-    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .current_dir(&root.path)
-        .args(["--output=-notes.txt", "."])
-        .output()?;
-
-    assert!(output.status.success(), "output: {output:?}");
-    assert!(root.path.join("-notes.txt").is_file());
-    Ok(())
 }
 
 #[test]

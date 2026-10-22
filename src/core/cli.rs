@@ -256,6 +256,13 @@ mod tests {
     use super::*;
     use crate::core::model::{GitRef, Source};
 
+    fn parse_run<'a>(args: impl IntoIterator<Item = &'a str>) -> RunConfig {
+        match parse(args).expect("expected parse to succeed") {
+            CliAction::Run(config) => config,
+            CliAction::Help => panic!("expected Run action, got Help"),
+        }
+    }
+
     #[test]
     fn completion_message_names_destination() {
         let cases = [
@@ -288,84 +295,45 @@ mod tests {
         assert_eq!(parse(["codefeed", "--help"]).unwrap(), CliAction::Help);
         assert_eq!(parse(["codefeed", ".", "-h"]).unwrap(), CliAction::Help);
 
-        let run_standard = parse(["codefeed", ".", "--format", "xml", "--output", "-"]).unwrap();
-        match run_standard {
-            CliAction::Run(config) => {
-                assert!(matches!(config.source, Source::Local(_)));
-                assert_eq!(config.format, DigestFormat::Xml);
-                assert_eq!(config.output, OutputTarget::Stdout);
-            }
-            CliAction::Help => panic!("expected Run action"),
+        let standard_cases: [&[&str]; 3] = [
+            &["codefeed", ".", "--format", "xml", "--output", "-"],
+            &["codefeed", "-f", "xml", "-o", "-", "."],
+            &["codefeed", "--format=xml", "-o=-", "."],
+        ];
+        for args in standard_cases {
+            let config = parse_run(args.iter().copied());
+            assert!(matches!(config.source, Source::Local(_)));
+            assert_eq!(config.format, DigestFormat::Xml);
+            assert_eq!(config.output, OutputTarget::Stdout);
         }
 
-        let run_short = parse(["codefeed", "-f", "xml", "-o", "-", "."]).unwrap();
-        match run_short {
-            CliAction::Run(config) => {
-                assert!(matches!(config.source, Source::Local(_)));
-                assert_eq!(config.format, DigestFormat::Xml);
-                assert_eq!(config.output, OutputTarget::Stdout);
-            }
-            CliAction::Help => panic!("expected Run action"),
-        }
+        let config = parse_run(["codefeed", ".", "--output=-notes.txt"]);
+        assert_eq!(
+            config.output,
+            OutputTarget::File(PathBuf::from("-notes.txt"))
+        );
 
-        let run_eq = parse(["codefeed", "--format=xml", "-o=-", "."]).unwrap();
-        match run_eq {
-            CliAction::Run(config) => {
-                assert!(matches!(config.source, Source::Local(_)));
-                assert_eq!(config.format, DigestFormat::Xml);
-                assert_eq!(config.output, OutputTarget::Stdout);
-            }
-            CliAction::Help => panic!("expected Run action"),
-        }
+        let config = parse_run(["codefeed", "--", "-weird-path"]);
+        assert_eq!(config.source, Source::Local(PathBuf::from("-weird-path")));
 
-        let run_inline_dash = parse(["codefeed", ".", "--output=-notes.txt"]).unwrap();
-        match run_inline_dash {
-            CliAction::Run(config) => {
-                assert_eq!(
-                    config.output,
-                    OutputTarget::File(PathBuf::from("-notes.txt"))
-                );
-            }
-            CliAction::Help => panic!("expected Run action"),
-        }
+        let config = parse_run(["codefeed", "-o", "-", "--", "-"]);
+        assert_eq!(config.source, Source::Local(PathBuf::from("-")));
+        assert_eq!(config.output, OutputTarget::Stdout);
 
-        let run_delimiter = parse(["codefeed", "--", "-weird-path"]).unwrap();
-        match run_delimiter {
-            CliAction::Run(config) => {
-                assert_eq!(config.source, Source::Local(PathBuf::from("-weird-path")));
-            }
-            CliAction::Help => panic!("expected Run action"),
-        }
-
-        let run_dash = parse(["codefeed", "-o", "-", "--", "-"]).unwrap();
-        match run_dash {
-            CliAction::Run(config) => {
-                assert_eq!(config.source, Source::Local(PathBuf::from("-")));
-                assert_eq!(config.output, OutputTarget::Stdout);
-            }
-            CliAction::Help => panic!("expected Run action"),
-        }
-
-        let run_gh = parse([
+        let config = parse_run([
             "codefeed",
             "https://github.com/rust-lang/cargo",
             "--ref",
             "main",
-        ])
-        .unwrap();
-        match run_gh {
-            CliAction::Run(config) => {
-                assert_eq!(
-                    config.source,
-                    Source::Github {
-                        owner: "rust-lang".into(),
-                        repo: "cargo".into(),
-                        reference: Some(GitRef::new("main").unwrap()),
-                    }
-                );
+        ]);
+        assert_eq!(
+            config.source,
+            Source::Github {
+                owner: "rust-lang".into(),
+                repo: "cargo".into(),
+                reference: Some(GitRef::new("main").unwrap()),
             }
-            CliAction::Help => panic!("expected Run action"),
-        }
+        );
     }
 
     #[test]

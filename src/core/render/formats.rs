@@ -187,7 +187,8 @@ mod tests {
     use crate::core::render::render_with;
     use crate::core::storage::{FileRecord, FileStorage, SortedFiles};
 
-    fn render_text_digest(
+    fn render_digest<R: FormatRenderer>(
+        renderer: R,
         label: &str,
         revision: Option<&str>,
         files: &[FileRecord<'_>],
@@ -200,8 +201,26 @@ mod tests {
             files: SortedFiles::new(storage),
             skipped,
         };
-        let buf = render_with(BoundedBuffer::default(), &collection, TextRenderer)?;
+        let buf = render_with(BoundedBuffer::default(), &collection, renderer)?;
         Ok(String::from_utf8(buf.finish().bytes).unwrap())
+    }
+
+    fn render_text_digest(
+        label: &str,
+        revision: Option<&str>,
+        files: &[FileRecord<'_>],
+        skipped: usize,
+    ) -> Result<String, OutputLimitExceeded> {
+        render_digest(TextRenderer, label, revision, files, skipped)
+    }
+
+    fn render_xml_digest(
+        label: &str,
+        revision: Option<&str>,
+        files: &[FileRecord<'_>],
+        skipped: usize,
+    ) -> Result<String, OutputLimitExceeded> {
+        render_digest(XmlRenderer, label, revision, files, skipped)
     }
 
     #[test]
@@ -362,16 +381,7 @@ hello\n\
                 content: "a & b",
             },
         ];
-        let storage: FileStorage = files.into_iter().collect();
-        let collection = CollectionResult {
-            label: "my-repo".into(),
-            revision: Some("v1.0".into()),
-            files: SortedFiles::new(storage),
-            skipped: 1,
-        };
-        let buf = render_with(BoundedBuffer::default(), &collection, XmlRenderer)?;
-        let digest = buf.finish();
-        let xml_str = std::str::from_utf8(&digest.bytes)?;
+        let xml_str = render_xml_digest("my-repo", Some("v1.0"), &files, 1)?;
         let expected = "\
 <repository name=\"my-repo\" revision=\"v1.0\">
 <directory_structure>
@@ -398,16 +408,7 @@ z &lt; 10
             path: "dir\nname\r\t\\back/file.rs",
             content: "fn main() {\n\tprintln!(\"hello\");\r\n}\n",
         }];
-        let storage: FileStorage = files.into_iter().collect();
-        let collection = CollectionResult {
-            label: "my\trepo\n".into(),
-            revision: Some("rev\r\n1".into()),
-            files: SortedFiles::new(storage),
-            skipped: 0,
-        };
-        let buf = render_with(BoundedBuffer::default(), &collection, XmlRenderer)?;
-        let digest = buf.finish();
-        let xml_str = std::str::from_utf8(&digest.bytes)?;
+        let xml_str = render_xml_digest("my\trepo\n", Some("rev\r\n1"), &files, 0)?;
 
         assert!(
             xml_str.contains("<repository name=\"my&#9;repo&#10;\" revision=\"rev&#13;&#10;1\">")

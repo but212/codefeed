@@ -290,9 +290,10 @@ mod tests {
         let collected: Vec<FileRecord<'_>> = storage.iter().collect();
         assert_eq!(collected, vec![rec1, rec2]);
 
-        // Arena contents verification
-        assert_eq!(storage.path_arena, "path/to/first.rssecond.txt");
-        assert_eq!(storage.content_arena, "pub fn first() {}second content\n");
+        // Storage byte metrics verification via public contract
+        let expected_bytes =
+            (rec1.path.len() + rec1.content.len() + rec2.path.len() + rec2.content.len()) as u64;
+        assert_eq!(storage.total_bytes(), expected_bytes);
 
         // FromIterator verification
         let reconstructed: FileStorage = collected.into_iter().collect();

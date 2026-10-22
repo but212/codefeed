@@ -398,10 +398,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    #[should_panic(expected = "NormalizedPath cannot be empty")]
-    fn test_normalized_path_rejects_empty_in_test_helper() {
-        let _ = NormalizedPath::from("");
-    }
 }
