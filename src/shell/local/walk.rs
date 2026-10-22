@@ -110,4 +110,52 @@ mod tests {
         let result = classify_local_path(&normal);
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn format_ignore_error_covers_all_wrapping_and_kind_variants() {
+        let path = PathBuf::from("dir/file.txt");
+
+        // 1. WithPath wrapping WithDepth wrapping Io error
+        let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "access denied");
+        let depth_err = ignore::Error::WithDepth {
+            depth: 2,
+            err: Box::new(ignore::Error::Io(io_err)),
+        };
+        let with_path = ignore::Error::WithPath {
+            path: path.clone(),
+            err: Box::new(depth_err),
+        };
+        let res = format_ignore_error(&with_path);
+        assert_eq!(res.kind(), io::ErrorKind::PermissionDenied);
+        assert!(res.to_string().contains("dir/file.txt: access denied"));
+
+        // 2. Direct Io error with None path
+        let io_not_found = io::Error::new(io::ErrorKind::NotFound, "file not found");
+        let direct_io = ignore::Error::Io(io_not_found);
+        let res = format_ignore_error(&direct_io);
+        assert_eq!(res.kind(), io::ErrorKind::NotFound);
+        assert_eq!(res.to_string(), "file not found");
+
+        // 3. WithDepth without path wrapping non-Io error (None, _)
+        let loop_err = ignore::Error::Loop {
+            ancestor: PathBuf::from("a"),
+            child: PathBuf::from("b"),
+        };
+        let depth_loop = ignore::Error::WithDepth {
+            depth: 3,
+            err: Box::new(loop_err.clone()),
+        };
+        let res = format_ignore_error(&depth_loop);
+        assert_eq!(res.kind(), io::ErrorKind::Other);
+        assert!(!res.to_string().is_empty());
+
+        // 4. WithPath wrapping non-Io error (Some(p), _)
+        let with_path_loop = ignore::Error::WithPath {
+            path: path.clone(),
+            err: Box::new(loop_err),
+        };
+        let res = format_ignore_error(&with_path_loop);
+        assert_eq!(res.kind(), io::ErrorKind::Other);
+        assert!(res.to_string().contains("dir/file.txt"));
+    }
 }

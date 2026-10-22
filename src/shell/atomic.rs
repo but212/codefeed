@@ -293,6 +293,21 @@ mod tests {
     }
 
     #[test]
+    fn temp_file_closed_state_returns_closed_error() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("atomic_closed_test")?;
+        let mut temp = TempFile {
+            path: root.join("fake_temp.tmp"),
+            state: TempState::Closed,
+        };
+        let file_err = temp.file_mut().unwrap_err();
+        assert_eq!(file_err.to_string(), "temporary file is closed");
+
+        let commit_err = temp.commit(&root.join("target.txt")).unwrap_err();
+        assert!(matches!(commit_err, IngestError::Io(err) if err.to_string().contains("closed")));
+        Ok(())
+    }
+
+    #[test]
     fn atomic_write_error_names_path() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("error_names_path")?;
         let output = root.join("missing").join("out.txt");

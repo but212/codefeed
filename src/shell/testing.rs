@@ -2,9 +2,13 @@
 
 use std::error::Error;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::Duration;
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -79,6 +83,74 @@ pub(super) fn gzip_tarball(entries: &[(&str, &[u8], EntryType)]) -> Vec<u8> {
             tar.append_data(&mut header, name, content).unwrap();
         }
     })
+}
+
+pub(super) struct MockServer {
+    pub(super) port: u16,
+    handle: thread::JoinHandle<(Vec<String>, usize)>,
+}
+
+impl MockServer {
+    pub(super) fn spawn<F>(expected_connections: usize, mut handler: F) -> Self
+    where
+        F: FnMut(usize, &str, u16) -> Vec<u8> + Send + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let handle = thread::spawn(move || {
+            let mut recorded = Vec::new();
+            let mut count = 0;
+
+            for index in 0..expected_connections {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(res) => res,
+                    Err(_) => break,
+                };
+                count += 1;
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+
+                let mut req_buf = Vec::new();
+                let mut temp = [0u8; 512];
+                loop {
+                    if req_buf.windows(4).any(|w| w == b"\r\n\r\n") || req_buf.len() >= 8192 {
+                        break;
+                    }
+                    match stream.read(&mut temp) {
+                        Ok(0) => break,
+                        Ok(n) => req_buf.extend_from_slice(&temp[..n]),
+                        Err(ref e)
+                            if e.kind() == std::io::ErrorKind::WouldBlock
+                                || e.kind() == std::io::ErrorKind::TimedOut =>
+                        {
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+
+                let req_str = String::from_utf8_lossy(&req_buf).to_string();
+                recorded.push(req_str.clone());
+
+                let response_bytes = handler(index, &req_str, port);
+                if !response_bytes.is_empty() {
+                    let _ = stream.write_all(&response_bytes);
+                }
+            }
+
+            (recorded, count)
+        });
+
+        Self { port, handle }
+    }
+
+    pub(super) fn join(self) -> (Vec<String>, usize) {
+        self.handle.join().expect("mock server thread finish")
+    }
+
+    pub(super) fn url(&self, path: &str) -> String {
+        format!("http://127.0.0.1:{}{path}", self.port)
+    }
 }
 
 #[cfg(test)]

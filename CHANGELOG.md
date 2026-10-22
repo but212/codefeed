@@ -31,6 +31,7 @@ Internal refactors and test changes. No consumer action required.
 
 #### Shell
 
+- **GitHub module split**: `src/shell/github.rs` is now `src/shell/github/`, with `client` and `stream` submodules. `MockServer` is promoted to `src/shell/testing.rs` as a reusable shell test fixture. Tests moved to their respective submodules; behavior and test names are unchanged (`src/shell/github/`, `src/shell/testing.rs`).
 - **Local pipeline**: the local walk runs sorted on a producer thread (`ignore::WalkBuilder::sort_by_file_name`), workers read bodies concurrently, and the main thread settles them in walk order. Bodies held at once are bounded by `LOCAL_CHANNEL_CAPACITY + 2`, independent of the worker count. Measured with hyperfine on a release build (Windows, 30 runs each): a 9,000-file synthetic tree 333.5 ms → 335.4 ms (+0.6%); this repository 18.4 ms → 18.0 ms (−2.0%) (`src/shell/local/pipeline.rs`, `src/core/policy.rs`).
 - **Local module split**: `src/shell/local.rs` is now `src/shell/local/`, with `walk`, `read`, and `pipeline` submodules. No behavior change. The local tests moved with the functions they exercise; the set of test names is unchanged. `run_cli` reports errors through one helper (`src/shell/mod.rs`).
 

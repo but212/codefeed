@@ -173,6 +173,54 @@ mod tests {
     }
 
     #[test]
+    fn resolve_output_target_rejects_non_existent_parent() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = temp_dir("non_existent_parent")?;
+        let non_existent_parent = root.join("missing_dir").join("out.txt");
+
+        let result = resolve_output_target(&OutputTarget::File(non_existent_parent));
+        match result {
+            Err(IngestError::Io(err)) => {
+                assert_eq!(err.kind(), io::ErrorKind::NotFound);
+                assert!(err.to_string().contains("missing_dir"));
+            }
+            other => panic!("expected IngestError::Io(NotFound), got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_output_target_rejects_path_without_filename() {
+        let empty_path = PathBuf::from("");
+        let err = resolve_output_target(&OutputTarget::File(empty_path)).unwrap_err();
+        assert!(
+            matches!(err, IngestError::Domain(DomainError::Usage(msg)) if msg.contains("no filename"))
+        );
+    }
+
+    #[test]
+    fn deliver_to_stdout_handles_empty_slice() -> Result<(), Box<dyn std::error::Error>> {
+        let target = resolve_output_target(&OutputTarget::Stdout)?;
+        deliver(&target, b"")?;
+        Ok(())
+    }
+
+    #[test]
+    fn render_stdout_to_ignores_broken_pipe() {
+        struct BrokenPipeWriter;
+        impl io::Write for BrokenPipeWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
+            }
+        }
+        let mut writer = BrokenPipeWriter;
+        assert!(render_stdout_to(&mut writer, b"test content").is_ok());
+    }
+
+    #[test]
     fn resolve_output_target_rejects_directory() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("output_dir_resolve_test")?;
         let existing_dir = root.join("existing_subdir");

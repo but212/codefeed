@@ -1,26 +1,18 @@
-//! GitHub collection orchestration: single-request streaming tarball ingestion and HTTP transport.
+//! GitHub streaming tarball ingestion and HTTP retry loop orchestration.
 
 use std::io::Read;
 use std::time::Duration;
 
-use ureq::config::RedirectAuthHeaders;
-use ureq::tls::{RootCerts, TlsConfig};
-use ureq::typestate::WithoutBody;
-use ureq::{Agent, RequestBuilder};
 use zeroize::Zeroizing;
 
-use super::IngestError;
-use super::error::transport_error;
-use super::output;
+use super::client::GithubClient;
 use crate::core::github::{
     AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind, api_error,
-    is_github_api_origin, repository_url, status_retry_warning, tarball_url,
-    transport_retry_warning,
+    status_retry_warning, transport_retry_warning,
 };
-use crate::core::model::CollectionResult;
-use crate::core::policy::{ARCHIVE_MAX_SECS, GITHUB_TIMEOUT_SECS};
-
-const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
+use crate::shell::IngestError;
+use crate::shell::error::transport_error;
+use crate::shell::output;
 
 enum Attempt {
     Status {
@@ -100,59 +92,8 @@ impl Attempt {
     }
 }
 
-/// Collects files from a remote GitHub repository via streaming tarball download.
-pub(super) fn collect(
-    owner: &str,
-    repo: &str,
-    reference: Option<&str>,
-) -> Result<CollectionResult, IngestError> {
-    let client = GithubClient::new();
-    let url = tarball_url(owner, repo, reference);
-    let reader = client.stream_url(&url)?;
-    let label = repository_url(owner, repo);
-    super::archive::collect(reader, &label, reference)
-}
-
-struct GithubClient {
-    agent: Agent,
-    auth_header: Option<Zeroizing<String>>,
-}
-
 impl GithubClient {
-    fn new() -> Self {
-        let tls = TlsConfig::builder().root_certs(RootCerts::WebPki).build();
-        let config = Agent::config_builder()
-            .user_agent(GITHUB_USER_AGENT)
-            .redirect_auth_headers(RedirectAuthHeaders::Never)
-            .timeout_recv_response(Some(Duration::from_secs(GITHUB_TIMEOUT_SECS)))
-            .timeout_recv_body(Some(Duration::from_secs(ARCHIVE_MAX_SECS)))
-            .http_status_as_error(false)
-            .tls_config(tls)
-            .build();
-
-        let auth_header = resolve_token_from_env()
-            .map(|token| Zeroizing::new(format!("Bearer {}", token.as_str())));
-
-        Self {
-            agent: Agent::new_with_config(config),
-            auth_header,
-        }
-    }
-
-    /// Builds a GET for `url`. Auth and API-version headers are sent only to the GitHub API origin.
-    fn request(&self, url: &str) -> RequestBuilder<WithoutBody> {
-        let request = self.agent.get(url);
-        if !is_github_api_origin(url) {
-            return request;
-        }
-        let request = match &self.auth_header {
-            Some(auth) => request.header("Authorization", auth.as_str()),
-            None => request,
-        };
-        request.header("X-Github-Api-Version", "2022-11-28")
-    }
-
-    fn stream_url(&self, url: &str) -> Result<impl Read + Send, IngestError> {
+    pub(super) fn stream_url(&self, url: &str) -> Result<impl Read + Send, IngestError> {
         let mut attempt_state = AttemptState::new();
         loop {
             let (attempt, outcome) = match self.request(url).call() {
@@ -202,137 +143,13 @@ fn unix_now_secs() -> u64 {
         .map_or(u64::MAX, |now| now.as_secs())
 }
 
-fn resolve_token_with<F>(mut lookup: F) -> Option<Zeroizing<String>>
-where
-    F: FnMut(&str) -> Result<String, std::env::VarError>,
-{
-    ["GITHUB_TOKEN", "GH_TOKEN"].into_iter().find_map(|key| {
-        let raw = Zeroizing::new(lookup(key).ok()?);
-        let trimmed = raw.trim_ascii();
-        (!trimmed.is_empty()).then(|| Zeroizing::new(trimmed.to_string()))
-    })
-}
-
-fn resolve_token_from_env() -> Option<Zeroizing<String>> {
-    resolve_token_with(|k| std::env::var(k))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::policy::MAX_ATTEMPTS;
-    use crate::shell::testing::gzip_tarball;
-    use std::collections::HashMap;
-    use std::env::VarError;
-    use std::io::Write;
-    use std::net::TcpListener;
-    use std::thread;
+    use crate::shell::testing::{MockServer, gzip_tarball};
+    use std::io::Read;
     use tar::EntryType;
-    use ureq::http::StatusCode;
-
-    struct MockServer {
-        port: u16,
-        handle: thread::JoinHandle<(Vec<String>, usize)>,
-    }
-
-    impl MockServer {
-        fn spawn<F>(expected_connections: usize, mut handler: F) -> Self
-        where
-            F: FnMut(usize, &str, u16) -> Vec<u8> + Send + 'static,
-        {
-            let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
-            let port = listener.local_addr().expect("local addr").port();
-
-            let handle = thread::spawn(move || {
-                let mut recorded = Vec::new();
-                let mut count = 0;
-
-                for index in 0..expected_connections {
-                    let (mut stream, _) = match listener.accept() {
-                        Ok(res) => res,
-                        Err(_) => break,
-                    };
-                    count += 1;
-                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-
-                    let mut req_buf = Vec::new();
-                    let mut temp = [0u8; 512];
-                    loop {
-                        if req_buf.windows(4).any(|w| w == b"\r\n\r\n") || req_buf.len() >= 8192 {
-                            break;
-                        }
-                        match stream.read(&mut temp) {
-                            Ok(0) => break,
-                            Ok(n) => req_buf.extend_from_slice(&temp[..n]),
-                            Err(ref e)
-                                if e.kind() == std::io::ErrorKind::WouldBlock
-                                    || e.kind() == std::io::ErrorKind::TimedOut =>
-                            {
-                                break;
-                            }
-                            Err(_) => break,
-                        }
-                    }
-
-                    let req_str = String::from_utf8_lossy(&req_buf).to_string();
-                    recorded.push(req_str.clone());
-
-                    let response_bytes = handler(index, &req_str, port);
-                    if !response_bytes.is_empty() {
-                        let _ = stream.write_all(&response_bytes);
-                    }
-                }
-
-                (recorded, count)
-            });
-
-            Self { port, handle }
-        }
-
-        fn join(self) -> (Vec<String>, usize) {
-            self.handle.join().expect("mock server thread finish")
-        }
-
-        fn url(&self, path: &str) -> String {
-            format!("http://127.0.0.1:{}{path}", self.port)
-        }
-    }
-
-    #[test]
-    fn resolves_token_with_correct_precedence_and_trimming() {
-        let mock_env = |map: HashMap<&'static str, &'static str>| {
-            move |key: &str| {
-                map.get(key)
-                    .copied()
-                    .map(String::from)
-                    .ok_or(VarError::NotPresent)
-            }
-        };
-
-        let env = HashMap::from([("GITHUB_TOKEN", "token_a"), ("GH_TOKEN", "token_b")]);
-        assert_eq!(
-            resolve_token_with(mock_env(env)),
-            Some(Zeroizing::new("token_a".into()))
-        );
-
-        let env = HashMap::from([("GH_TOKEN", "token_b")]);
-        assert_eq!(
-            resolve_token_with(mock_env(env)),
-            Some(Zeroizing::new("token_b".into()))
-        );
-
-        let env = HashMap::from([("GITHUB_TOKEN", "   "), ("GH_TOKEN", "valid_token")]);
-        assert_eq!(
-            resolve_token_with(mock_env(env)),
-            Some(Zeroizing::new("valid_token".into()))
-        );
-
-        let env = HashMap::from([("GITHUB_TOKEN", "")]);
-        assert_eq!(resolve_token_with(mock_env(env)), None);
-
-        let env = HashMap::new();
-        assert_eq!(resolve_token_with(mock_env(env)), None);
-    }
 
     fn epoch_now_secs() -> u64 {
         std::time::SystemTime::now()
@@ -483,69 +300,6 @@ mod tests {
     }
 
     #[test]
-    fn transmits_user_agent_header_in_http_request() {
-        let server = MockServer::spawn(1, |_index, _req, _port| {
-            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".to_vec()
-        });
-
-        let client = GithubClient::new();
-        let url = server.url("/user-agent-check");
-        let mut reader = client.stream_url(&url).expect("stream_url should succeed");
-        let mut body = String::new();
-        reader.read_to_string(&mut body).expect("read body");
-        assert_eq!(body, "ok");
-
-        let (requests, connections) = server.join();
-        assert_eq!(connections, 1);
-
-        let req = &requests[0];
-        let expected_ua_header = format!("user-agent: {GITHUB_USER_AGENT}");
-        assert!(
-            req.to_ascii_lowercase().contains(&expected_ua_header),
-            "HTTP request must transmit expected User-Agent header ({expected_ua_header}): {req}"
-        );
-    }
-
-    #[test]
-    fn strips_authorization_header_on_redirect() {
-        let server = MockServer::spawn(2, |index, _req, port| {
-            match index {
-            0 => format!(
-                "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/dest\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            )
-            .into_bytes(),
-            _ => b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess".to_vec(),
-        }
-        });
-
-        let client = GithubClient::new();
-        let url = server.url("/start");
-        let resp = client
-            .agent
-            .get(&url)
-            .header("Authorization", "Bearer test-token")
-            .call()
-            .expect("call should follow redirect and succeed");
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let (requests, connections) = server.join();
-        assert_eq!(connections, 2);
-
-        let req1 = &requests[0];
-        assert!(
-            req1.to_ascii_lowercase()
-                .contains("authorization: bearer test-token"),
-            "first request must contain authorization header: {req1}"
-        );
-
-        let req2 = &requests[1];
-        assert!(
-            !req2.to_ascii_lowercase().contains("authorization"),
-            "redirected request must not contain authorization header: {req2}"
-        );
-    }
-
-    #[test]
     fn stream_drop_mid_body_is_http() {
         let gz_bytes = gzip_tarball(&[("repo-root/file.txt", &b"hello"[..], EntryType::Regular)]);
         let truncated = gz_bytes[..16].to_vec();
@@ -566,5 +320,11 @@ mod tests {
         assert!(matches!(err, IngestError::Http(_)), "{err}");
 
         server.join();
+    }
+
+    #[test]
+    fn attempt_warn_handles_transport_error() {
+        let attempt = Attempt::Transport(ureq::Error::ConnectionFailed);
+        attempt.warn(1, "https://api.github.com/test", Duration::from_millis(50));
     }
 }
