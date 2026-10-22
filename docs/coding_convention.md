@@ -2,7 +2,7 @@
 
 **Audience:** contributors writing Rust in this repository.
 
-**Scope:** Rust API Guidelines plus this project's architecture, memory, and safety rules. Domain behavior is in [`context.md`](../context.md). Filter and safety rules are in [`security_and_filtering.md`](security_and_filtering.md). Verification commands are in [`AGENTS.md`](../AGENTS.md) §2.
+**Scope:** Rust API Guidelines plus this project's architecture, memory, and safety rules. Domain behavior is in [`context.md`](../context.md). Filter and safety rules are in [`security_and_filtering.md`](security_and_filtering.md). Verification commands are in [`AGENTS.md`](../AGENTS.md) sec. 2.
 
 ---
 
@@ -51,7 +51,7 @@
 
 ## 3. Architecture (Functional Core, Imperative Shell)
 
-The module map is in [`context.md`](../context.md) §5. This section lists only the coding rules.
+The module map is in [`context.md`](../context.md) sec. 5. This section lists only the coding rules.
 
 ### 3.1 `src/core/` (Functional Core)
 
@@ -67,13 +67,13 @@ The module map is in [`context.md`](../context.md) §5. This section lists only 
 
 - All I/O, network calls, filesystem access, and process interaction live here.
 - The shell collects inputs, settles each candidate with `Selector::observe`, and delegates computation and storage to the core.
-- Local collection runs parallel workers and a bounded channel. The pipeline is described in [context §3.8](../context.md#38-local-traversal-pipeline). Only the main thread calls into the pure selector.
+- Local collection runs parallel workers and a bounded channel. The pipeline is described in [context sec. 3.8](../context.md#38-local-traversal-pipeline). Only the main thread calls into the pure selector.
 
 ### 3.3 Invariants by Type ("Parse, Don't Validate")
 
 - **Invalid states are unrepresentable.** Use enums, newtypes, and typestates instead of boolean flags, sentinel values, or raw strings. `OutputTarget::Stdout` replaces a `"-"` sentinel.
 - **Validate at the boundary.** Parse CLI flags, URLs, and archive headers into domain values (`GitRef`, `Source`) once. Core code relies on that type and does not re-check.
-- **Linear typestates.** Multi-phase pipelines are consuming chains (`Selector` → `CollectionResult` → `RenderedDigest` → `IngestReport`). Each phase takes its predecessor by value, so a state cannot be reused after a phase. A phase sequence owned by one function is a plain `match` inside it.
+- **Linear typestates.** Multi-phase pipelines are consuming chains (`Selector` -> `CollectionResult` -> `RenderedDigest` -> `IngestReport`). Each phase takes its predecessor by value, so a state cannot be reused after a phase. A phase sequence owned by one function is a plain `match` inside it.
 - **`#[must_use]`.** Put it on phase types (`Selector`, `CollectionResult`, `RenderedDigest`, `BoundedBuffer`, `SortedFiles`) and on pure functions whose return value is the point of the call, such as predicates, classification, the retry delay, and the origin gate. Do not add it to a function that returns `Result`, because `Result` is already `#[must_use]` and the attribute would be redundant.
 - **Invariant wrappers.** Ordering or layout guarantees get a wrapper type. `SortedFiles` guarantees path order, and it has no mutating methods.
 - **Compile-time checks.** Relations between limits are enforced with `const _: () = { assert!(...); };`. Lookup tables are computed at compile time (`[bool; 256]`).
@@ -91,7 +91,7 @@ The module map is in [`context.md`](../context.md) §5. This section lists only 
 
 ## 5. OS and Network Rules at the Code Level
 
-The reasoning and threat model are in [`security_and_filtering.md`](security_and_filtering.md) §5–6. These are the code-level rules:
+The reasoning and threat model are in [`security_and_filtering.md`](security_and_filtering.md) sec. 5-6. These are the code-level rules:
 
 - Check candidate files with `fs::symlink_metadata` before `fs::File::open`. Never follow symlinks.
 - Channels between threads must be bounded (`sync_channel`).

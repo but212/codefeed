@@ -110,13 +110,13 @@ Ignore rules for local sources:
 - `.ignore` files are not read.
 - The global gitignore, `.git/info/exclude`, and `.gitignore` files above the source root are not read.
 
-The complete lists are in [`docs/security_and_filtering.md`](docs/security_and_filtering.md) §3.
+The complete lists are in [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 3.
 
 > **Note:** Filtering matches file names and extensions only. It does not scan contents. Do not rely on `codefeed` to remove secrets that are written into tracked source files.
 
 ## Limits
 
-Each limit either skips an entry or ends the run. The values and the enforcement rules are in [`docs/security_and_filtering.md`](docs/security_and_filtering.md) §8.
+Each limit either skips an entry or ends the run. The values and the enforcement rules are in [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 8.
 
 | Limit | When it is reached |
 | :--- | :--- |
@@ -125,8 +125,8 @@ Each limit either skips an entry or ends the run. The values and the enforcement
 | `MAX_PATH_DEPTH` | The run fails. Hidden and noise entries are dropped before this check, so they never fail the run. |
 | `MAX_FILE_COUNT` | The run fails. The error lists the largest directories. Local runs may list different directories from run to run. |
 | `MAX_OUTPUT_SIZE` | The run fails and no digest is written. The error lists the largest files. |
-| `ARCHIVE_MAX_SECS`, `GITHUB_TIMEOUT_SECS` | The GitHub request times out. Timeouts on response headers are retried. See [§6.5–6.6](docs/security_and_filtering.md#6-github-network-safety). |
-| `MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS` | Transient GitHub failures are retried with backoff. If GitHub asks you to wait longer than the cap, the run fails instead of waiting. See [§6.5](docs/security_and_filtering.md#6-github-network-safety). |
+| `ARCHIVE_MAX_SECS`, `GITHUB_TIMEOUT_SECS` | The GitHub request times out. Timeouts on response headers are retried. See [sec. 6.5-6.6](docs/security_and_filtering.md#6-github-network-safety). |
+| `MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS` | Transient GitHub failures are retried with backoff. If GitHub asks you to wait longer than the cap, the run fails instead of waiting. See [sec. 6.5](docs/security_and_filtering.md#6-github-network-safety). |
 
 ## Authentication
 
