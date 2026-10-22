@@ -38,7 +38,7 @@ Library consumers: update code that matches on or calls these items.
 
 - **GitHub rate-limit reset**: `x-ratelimit-reset` gives a retry delay only when `x-ratelimit-remaining` is `0`. Before: a 404 said "retry available"; a 5xx with reset headers was not retried (`src/shell/github.rs`).
 - **Unlinked local files**: File deleted between discovery and metadata check is skipped, as at open. Before: silently dropped (`src/shell/local.rs`).
-- **Unreadable local files**: Open failure (`PermissionDenied`, Windows sharing violation) -> skipped, not abort. Unreadable directories still fail fast (`src/shell/local.rs`).
+- **Unreadable local files**: `NotFound`, `PermissionDenied`, and Windows sharing or lock violations (32, 33) at the metadata, open, or read step -> skipped, not abort. Before: only open failures were skipped; a metadata or read failure failed the run. Unreadable directories still fail fast (`src/shell/local.rs`).
 - **Closed stderr**: No panic. Before: exit 101 when completion message or error was unwritable. Now exits with normal code (`src/shell/output.rs`, `clippy.toml`).
 - **Output parent check**: File in place of output directory fails at startup with `NotADirectory`, naming the parent. Before: whole source collected first (tarball downloaded for GitHub), failure named no path (`src/shell/output.rs`).
 - **Filesystem error paths**: I/O errors name the failing path and keep the error kind. Before: e.g. `os error 3`, no path (`src/shell/error.rs`, `src/shell/output.rs`, `src/shell/local.rs`).
@@ -51,6 +51,7 @@ Library consumers: update code that matches on or calls these items.
 - **Archive buffering**: Archive stream buffered before `GzDecoder` in `codefeed::shell::archive::collect` (size in [security section 8](docs/security_and_filtering.md#8-limit-values), `ARCHIVE_BUFFER_BYTES`).
 - **Parallel local traversal**: `codefeed::shell::local::collect` walks, reads metadata, and reads bounded content in parallel (`ignore::WalkParallel`, worker channels, thread scope). Kept: zero-copy arenas, non-symlink checks, deterministic lexicographic order.
 - **Metadata dedup**: One `fs::symlink_metadata()` per valid candidate replaces `entry.metadata()` / `symlink_metadata()` / `file.metadata()`. No post-open stat. Read buffers pre-reserved to bounded limits.
+- **Local queue depth**: Workers block when the local queue is full, so read-ahead memory is bounded by its capacity (`LOCAL_CHANNEL_CAPACITY`, [security section 8](docs/security_and_filtering.md#8-limit-values)) plus one file per worker. This is a throughput trade-off: a smaller queue can slow large local scans. On a 9,000-file synthetic tree (Windows, release build), the current queue was not measurably slower than the previous 128-message queue; a much smaller queue was about 15% slower.
 
 ### Contributors
 
@@ -73,7 +74,7 @@ Internal refactors and test changes. No consumer action required.
 - **GitHub error text**: `api_error`, `sanitize_error_detail`, `status_retry_warning`, `transport_retry_warning` moved from `src/shell/github.rs` to `src/core/github/mod.rs`. `transport_error` stays in shell (`src/shell/error.rs`).
 - **GitHub module split**: `core/github.rs` -> `core/github/{url,retry,mod}.rs`. `mod.rs` re-exports what shell and model use; call paths unchanged.
 - **Dead code**: Unused `AsRef<str>` for `NormalizedPath` removed (`src/core/policy.rs`).
-- **Must-use**: Pipeline phase types (`Selector`, `CollectionResult`, `RenderedDigest`, `BoundedBuffer`, `SortedFiles`) and pure value-returning functions (classification, retry delay, origin gate) carry `#[must_use]`.
+- **Must-use**: Pipeline phase types (`Selector`, `CollectionResult`, `RenderedDigest`, `BoundedBuffer`, `SortedFiles`) and pure value-returning functions (classification, retry delay, origin gate, size gate, repository label, commit SHA check, GitHub error and warning text) carry `#[must_use]`.
 
 #### CLI
 
@@ -85,16 +86,17 @@ Internal refactors and test changes. No consumer action required.
 - **Typed output target**: `OutputTarget` (`File(path)` or `Stdout`) replaces `None` as the stdout signal. `resolve_output_target` returns `ResolvedOutput`, which `deliver` takes (`src/shell/output.rs`).
 - **Output parent**: `parent_dir` replaces three copies of the parent-or-`.` expression. Removed a redundant directory check (`src/shell/output.rs`).
 - **Atomic write module**: `AtomicFile`, `TempFile`, `write_atomic` moved from `output.rs` to `src/shell/atomic.rs`. No behavior change.
-- **Local worker message**: `WorkerMsg` has `NonUtf8(prefix)`, `Regular { path, content }`, `Error`.
-  - Unreadable file (unlinked, or unavailable at open) -> `Regular` with `content: None`. Skip count unchanged.
-  - Impossible states (e.g. non-UTF-8 path with content) are unrepresentable.
-  - `exceeds_size_limits` is one core predicate shared by admission and the local worker.
+- **Local worker message**: `WorkerMsg = Result<Candidate, IngestError>`. `Candidate` is `NonUtf8(prefix)` or `File(path, Body)`. `Body` is `Unavailable`, `OverLimit(len)`, or `Read(bytes)`.
+  - Unreadable file (unlinked, or unavailable at metadata, open, or read) -> `Body::Unavailable`. Skip count unchanged.
+  - `OverLimit(len)` carries the metadata length. `observe_candidate` passes it as `size_hint`, so an oversized file is skipped before its read runs. The worker still skips the read itself.
+  - Impossible states (e.g. non-UTF-8 path with content, or a read body with an over-limit size) are unrepresentable. A fatal error is the `Err` arm, so there is one error channel.
+  - `exceeds_size_limits` is one core predicate. `Selector::observe` and the local worker both call it, so the two gates apply one rule.
   - `LocalVisitorBuilder` merged into `LocalVisitor`.
 - **Local reads**: `read_bounded` returns `Result<Option<Vec<u8>>>` (`None` = unavailable) instead of an out-parameter. Buffers pre-size to `min(file length, MAX_FILE_SIZE + 1)`. Test-only `read_local_file_into` removed (`src/shell/local.rs`).
 - **Buffers**: Local and archive content is `Vec<u8>`. `Zeroizing` only for the GitHub token and error bodies.
 - **Archive stream**: Tar decompression, PAX commit SHA parsing, and entry admission live in `codefeed::shell::archive`; HTTP stays in `codefeed::shell::github`. `process_tar_entry` returns `Selector` (no out-param or tuple). PAX header handled in the entry loop; bounded-read helper inlined.
-- **GitHub attempt**: `Attempt::from_result`, `warn`, `into_error` hold classification, warnings, and error construction. `Attempt::Status` no longer duplicates `is_rate_limit`. `GithubClient::request` attaches origin-gated headers. Shell keeps HTTP, body reads, `eprintln!`, and sleeps (`src/shell/github.rs`).
-- **Temp file state**: `TempFile` holds `TempState` (`Writing(File)`, `Closed`, `Committed`) instead of `Option<File>` + `active: bool`. Invalid access returns `io::Error`, not a panic (`src/shell/output.rs`).
+- **GitHub attempt**: `Attempt::from_result`, `warn`, `into_error` hold classification, warnings, and error construction. `Attempt::Status` no longer duplicates `is_rate_limit`. `GithubClient::request` attaches origin-gated headers. Shell keeps HTTP, body reads, stderr writes (`write_stderr_line`), and sleeps (`src/shell/github.rs`).
+- **Temp file state**: `TempFile` holds `TempState` (`Writing(File)`, `Closed`, `Committed`) instead of `Option<File>` + `active: bool`. Invalid access returns `io::Error`, not a panic (`src/shell/atomic.rs`).
 
 #### Tests
 
@@ -117,7 +119,7 @@ Documentation, build, and removals.
 - **Retry policy**: `README.md`, `context.md`, and `docs/security_and_filtering.md` state that rate-limited 403 responses are retried.
 - **Ingestion order**: Local workers read bodies before `Selector::observe`. GitHub archive entries are admitted before reading.
 - **Zeroization scope**: `docs/security_and_filtering.md` lists buffers `Zeroizing` erases and copies it does not (HTTP client headers, process environment, error messages).
-- **Overflow diagnostics**: Cover only candidates admitted before abort; local counts vary between runs.
+- **Overflow diagnostics**: Cover only candidates admitted before abort; local counts vary between runs. Local runs also report whichever fatal error reaches the main thread first, so the path and error kind can vary between runs.
 - **Doc structure**: One audience per document: `README.md` (users), `context.md` (maintainers, domain), `docs/security_and_filtering.md` (filter and safety spec), `docs/coding_convention.md` (Rust rules), `AGENTS.md` (agent workflow). Limit values only in `docs/security_and_filtering.md` section 8; other docs link there. `src/core/policy.rs` is the authority; code never copies the values.
 - **Doc corrections**: Documented `MAX_PATH_BYTES` path skipping, `.ignore` and global-ignore behavior (not read), `transport_error` location, and `# Errors` scope (public API).
 - **Documentation alignment**: `README.md` no longer lists `-h` among short flags that accept `=`; `-h=x` is an unknown option. Non-regular archive entries are dropped and not counted, as local ones are. Only delta-seconds `Retry-After` is honored; an HTTP-date falls back to backoff (`docs/security_and_filtering.md` section 6.5). The non-UTF-8 prefix is the valid segments before the first invalid one (`context.md` section 3.2).

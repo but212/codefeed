@@ -204,6 +204,7 @@ pub(crate) struct CollectionResult {
 
 /// Digest label for a local repository root: its final path segment, or `root` when that is
 /// missing, empty, or not UTF-8. The shell extracts `file_name`; this rule decides the fallback.
+#[must_use]
 pub(crate) fn repository_name(file_name: Option<&str>) -> &str {
     file_name.filter(|name| !name.is_empty()).unwrap_or("root")
 }

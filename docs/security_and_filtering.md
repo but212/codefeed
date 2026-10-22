@@ -115,7 +115,7 @@ The name rules apply to the final segment even when it is not valid UTF-8. Prefi
 | Non-UTF-8 path | Yes | Yes | No |
 | Path longer than `MAX_PATH_BYTES` | Yes | Yes | No |
 | Declared size above `MAX_FILE_SIZE` | Yes | Yes | No |
-| Unavailable at open or unlinked after discovery | Yes | Yes | Attempted |
+| Unavailable at metadata, open, or read (including unlinked after discovery) | Yes | Yes | Attempted, unless metadata failed |
 | Binary (NUL) or invalid UTF-8 | Yes | Yes | Yes |
 | Read exceeds `MAX_FILE_SIZE` | Yes | Yes | Bounded |
 | Included | Yes | No | Yes |
@@ -131,8 +131,8 @@ Implemented in `src/shell/local.rs` and `src/shell/output.rs`.
 1. **No symlink following.** The walk uses `follow_links(false)`. Symlinks are dropped before path classification. Before opening any file, the worker calls `fs::symlink_metadata` and requires a regular file that is not a symlink. Symlinks to files, directories, or special files are never read.
 2. **Output exclusion.** The output path is resolved once at startup (`resolve_output_target`) and excluded from the walk by canonical path. This prevents the digest from ingesting itself.
 3. **Atomic writes.** The digest is written to a temporary file in the destination's parent directory. The file is synced, then renamed to the destination. On Unix, the existing file's permissions are kept and the parent directory is synced after the rename. A failed sync is reported as a warning on stderr, because the rename has already replaced the target. The temporary handle is closed before the file is unlinked on `Drop`, which keeps cleanup reliable on Windows and Unix, including during error and panic unwinding.
-4. **Unavailable versus fatal.** Per file, `NotFound`, `PermissionDenied`, and the Windows sharing violation are recorded as unavailable and counted as skipped. Any other open or read error fails the run with `IngestError::Io`. An unreadable directory fails the run and names the directory.
-5. **Bounded concurrency.** Workers and the main thread communicate through `sync_channel(128)`, so the queue cannot grow without bound during a large scan. An error or budget overflow sets an `AtomicBool` and drops the receiver, which stops all workers promptly.
+4. **Unavailable versus fatal.** At the metadata, open, and read steps, a per-file `NotFound`, `PermissionDenied`, or Windows sharing (32) or lock (33) violation is recorded as unavailable and counted as skipped. Any other error at those steps fails the run with `IngestError::Io`. An unreadable directory fails the run and names the directory. When several files fail fatally, the first error to reach the main thread is reported, so the path and error kind can vary between runs.
+5. **Bounded concurrency.** Workers and the main thread communicate through a `sync_channel` of `LOCAL_CHANNEL_CAPACITY` messages (§8), so the queue cannot grow without bound during a large scan. A full queue blocks the workers, which bounds read-ahead memory to about that many files plus one per worker. An error or budget overflow sets an `AtomicBool` and drops the receiver, which stops all workers promptly.
 
 ---
 
@@ -203,6 +203,7 @@ This section is the only place in the documentation that states limit values. Ot
 | `MAX_FILE_COUNT` | 10,000 candidate files | Candidate budget (§4) | Run fails; lists up to three largest directories |
 | `MAX_OUTPUT_SIZE` | 20 MiB | Storage early check and rendering buffer | Run fails; no output; lists five largest files |
 | `ARCHIVE_BUFFER_BYTES` | 64 KiB | Archive read buffer | Not a limit; sets buffering only |
+| `LOCAL_CHANNEL_CAPACITY` | 64 messages | Local worker queue (§5.5) | Not a limit; full queue blocks workers |
 | `ARCHIVE_MAX_SECS` | 300 seconds | Whole archive transfer (§6.6) | Download fails with a request error |
 | `GITHUB_TIMEOUT_SECS` | 30 seconds | Response headers (§6.6) | Treated as transient; retried (§6.5) |
 | `MAX_ATTEMPTS` | 3 attempts (1 initial, 2 retries) | Retry loop (§6.5) | Transient failures stop retrying; the run fails |

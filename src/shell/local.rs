@@ -2,7 +2,8 @@
 //!
 //! # Concurrency & Performance Architecture
 //! - **Producer-Consumer Pipeline**: Directory traversal and file reads run concurrently
-//!   via `ignore::WalkParallel` worker threads, piped through a bounded `sync_channel(128)`.
+//!   via `ignore::WalkParallel` worker threads, piped through a bounded `sync_channel` of
+//!   `LOCAL_CHANNEL_CAPACITY` messages.
 //!   Eliminates single-threaded OS kernel `CreateFileW` latency without unbound memory growth.
 //! - **FCIS Invariant**: Thread workers perform side-effecting I/O and pre-open symlink
 //!   checks (`fs::symlink_metadata`), delegating pure linear accumulation to `Selector` on
@@ -25,21 +26,29 @@ use super::output::ResolvedOutput;
 use crate::core::error::DomainError;
 use crate::core::model::{CollectionResult, repository_name};
 use crate::core::policy::{
-    MAX_FILE_SIZE, NormalizedPath, PathStatus, classify_path_segments, is_hidden_segment,
+    LOCAL_CHANNEL_CAPACITY, MAX_FILE_SIZE, NormalizedPath, PathStatus, classify_path_segments,
+    is_hidden_segment,
 };
 use crate::core::selector::{Selector, exceeds_size_limits};
 
-enum WorkerMsg {
-    /// Non-UTF-8 path prefix. Counted as skipped without reading content.
-    NonUtf8(String),
-    /// `content` is `None` when the worker skipped the read: over the size limit, unlinked after
-    /// discovery, or unavailable at open. The selector counts each of these as skipped.
-    Regular {
-        path: NormalizedPath,
-        content: Option<Vec<u8>>,
-    },
-    Error(IngestError),
+/// What a worker learned about one regular-file candidate.
+enum Body {
+    /// Unavailable at metadata, open, or read (`is_unavailable_file`).
+    Unavailable,
+    /// Path or declared length over the size limits; not read. Carries the declared length.
+    OverLimit(u64),
+    /// Bounded read of at most `MAX_FILE_SIZE + 1` bytes.
+    Read(Vec<u8>),
 }
+
+/// One walk result: a non-UTF-8 path prefix, or a regular file with its outcome.
+enum Candidate {
+    NonUtf8(String),
+    File(NormalizedPath, Body),
+}
+
+/// Channel message: one candidate, or the error that aborts the run.
+type WorkerMsg = Result<Candidate, IngestError>;
 
 /// Collects files from a local directory root, excluding the output file if located inside it.
 ///
@@ -68,7 +77,7 @@ pub(super) fn collect(
         .follow_links(false)
         .build_parallel();
 
-    let (tx, rx) = sync_channel::<WorkerMsg>(128);
+    let (tx, rx) = sync_channel::<WorkerMsg>(LOCAL_CHANNEL_CAPACITY);
     let aborted = AtomicBool::new(false);
 
     let selector = std::thread::scope(|s| {
@@ -103,61 +112,54 @@ impl<'s> ignore::ParallelVisitorBuilder<'s> for LocalVisitor<'s> {
     }
 }
 
-impl LocalVisitor<'_> {
-    fn fail(&self, err: IngestError) -> WalkState {
-        self.aborted.store(true, Ordering::Relaxed);
-        let _ = self.tx.send(WorkerMsg::Error(err));
-        WalkState::Quit
+/// Inspects one walk entry. `Ok(None)` means it is not a candidate: the root, the output file,
+/// a directory, an ignored path, a symlink, or a non-file.
+fn inspect_entry(
+    root: &Path,
+    output: Option<&Path>,
+    entry: ignore::DirEntry,
+) -> Result<Option<Candidate>, IngestError> {
+    let entry_path = entry.path();
+    if entry_path == root || output.is_some_and(|target| entry_path == target) {
+        return Ok(None);
     }
 
-    fn process_entry(&self, entry: ignore::DirEntry) -> Result<Option<WorkerMsg>, IngestError> {
-        let entry_path = entry.path();
-        if entry_path == self.root
-            || self
-                .resolved_output
-                .is_some_and(|target| entry_path == target)
-        {
-            return Ok(None);
-        }
-
-        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-            return Ok(None);
-        }
-
-        let relative = entry_path
-            .strip_prefix(self.root)
-            .map_err(|err| DomainError::invalid_metadata(err.to_string()))?;
-
-        let path = match classify_local_path(relative)? {
-            PathStatus::Ignored => return Ok(None),
-            PathStatus::NonUtf8Candidate(prefix) => return Ok(Some(WorkerMsg::NonUtf8(prefix))),
-            PathStatus::Valid(path) => path,
-        };
-
-        let meta = match fs::symlink_metadata(entry_path) {
-            Ok(m) => m,
-            // Unlinked after discovery: send it without content so the selector skips it.
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                return Ok(Some(WorkerMsg::Regular {
-                    path,
-                    content: None,
-                }));
-            }
-            Err(err) => return Err(io_error_at(entry_path, err)),
-        };
-
-        if meta.is_symlink() || !meta.is_file() {
-            return Ok(None);
-        }
-
-        let file_len = meta.len();
-        let content = if exceeds_size_limits(path.len(), Some(file_len)) {
-            None
-        } else {
-            read_bounded(entry_path, file_len)?
-        };
-        Ok(Some(WorkerMsg::Regular { path, content }))
+    if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+        return Ok(None);
     }
+
+    let relative = entry_path
+        .strip_prefix(root)
+        .map_err(|err| DomainError::invalid_metadata(err.to_string()))?;
+
+    let path = match classify_local_path(relative)? {
+        PathStatus::Ignored => return Ok(None),
+        PathStatus::NonUtf8Candidate(prefix) => return Ok(Some(Candidate::NonUtf8(prefix))),
+        PathStatus::Valid(path) => path,
+    };
+
+    let meta = match fs::symlink_metadata(entry_path) {
+        Ok(m) => m,
+        // Unlinked or locked after discovery: the selector counts it as skipped.
+        Err(err) if is_unavailable_file(&err) => {
+            return Ok(Some(Candidate::File(path, Body::Unavailable)));
+        }
+        Err(err) => return Err(io_error_at(entry_path, err)),
+    };
+
+    if meta.is_symlink() || !meta.is_file() {
+        return Ok(None);
+    }
+
+    let file_len = meta.len();
+    if exceeds_size_limits(path.len(), Some(file_len)) {
+        return Ok(Some(Candidate::File(path, Body::OverLimit(file_len))));
+    }
+    let body = match read_bounded(entry_path, file_len)? {
+        Some(bytes) => Body::Read(bytes),
+        None => Body::Unavailable,
+    };
+    Ok(Some(Candidate::File(path, body)))
 }
 
 impl ignore::ParallelVisitor for LocalVisitor<'_> {
@@ -166,63 +168,70 @@ impl ignore::ParallelVisitor for LocalVisitor<'_> {
             return WalkState::Quit;
         }
 
-        let entry = match entry {
-            Ok(e) => e,
-            Err(err) => return self.fail(IngestError::Io(format_ignore_error(&err))),
-        };
+        let candidate = entry
+            .map_err(|err| IngestError::Io(format_ignore_error(&err)))
+            .and_then(|entry| inspect_entry(self.root, self.resolved_output, entry))
+            .transpose();
 
-        match self.process_entry(entry) {
-            Ok(Some(msg)) => {
-                if self.tx.send(msg).is_err() {
+        match candidate {
+            None => WalkState::Continue,
+            Some(Ok(candidate)) => {
+                if self.tx.send(Ok(candidate)).is_err() {
                     WalkState::Quit
                 } else {
                     WalkState::Continue
                 }
             }
-            Ok(None) => WalkState::Continue,
-            Err(err) => self.fail(err),
+            Some(Err(err)) => {
+                self.aborted.store(true, Ordering::Relaxed);
+                let _ = self.tx.send(Err(err));
+                WalkState::Quit
+            }
         }
     }
 }
 
-fn apply_msg(selector: Selector, msg: WorkerMsg) -> Result<Selector, IngestError> {
-    let (status, content) = match msg {
-        WorkerMsg::NonUtf8(prefix) => (PathStatus::NonUtf8Candidate(prefix), None),
-        WorkerMsg::Regular { path, content } => (PathStatus::Valid(path), content),
-        WorkerMsg::Error(err) => return Err(err),
+fn observe_candidate(selector: Selector, candidate: Candidate) -> Result<Selector, IngestError> {
+    let (status, size_hint, content) = match candidate {
+        Candidate::NonUtf8(prefix) => (PathStatus::NonUtf8Candidate(prefix), None, None),
+        Candidate::File(path, Body::Unavailable) => (PathStatus::Valid(path), None, None),
+        Candidate::File(path, Body::OverLimit(len)) => (PathStatus::Valid(path), Some(len), None),
+        Candidate::File(path, Body::Read(bytes)) => (PathStatus::Valid(path), None, Some(bytes)),
     };
-    selector.observe(status, None, || Ok(content))
+    selector.observe(status, size_hint, || Ok(content))
 }
 
 fn drain_channel(
     rx: std::sync::mpsc::Receiver<WorkerMsg>,
     aborted: &AtomicBool,
 ) -> Result<Selector, IngestError> {
-    let mut selector = Selector::new();
-    while let Ok(msg) = rx.recv() {
-        match apply_msg(selector, msg) {
-            Ok(next) => selector = next,
-            Err(err) => {
-                aborted.store(true, Ordering::Relaxed);
-                drop(rx);
-                return Err(err);
-            }
-        }
+    let result = rx.iter().try_fold(Selector::new(), |selector, msg| {
+        observe_candidate(selector, msg?)
+    });
+    if result.is_err() {
+        aborted.store(true, Ordering::Relaxed);
     }
-    Ok(selector)
+    drop(rx);
+    result
 }
 
-/// Open errors that make one file unavailable without invalidating the walk.
+/// Errors that make one file unavailable without invalidating the walk. Applied at metadata, open,
+/// and read; any other error fails the run.
 fn is_unavailable_file(err: &io::Error) -> bool {
     const ERROR_SHARING_VIOLATION: i32 = 32;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
     matches!(
         err.kind(),
         io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
-    ) || (cfg!(windows) && err.raw_os_error() == Some(ERROR_SHARING_VIOLATION))
+    ) || (cfg!(windows)
+        && matches!(
+            err.raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+        ))
 }
 
 /// Reads at most `MAX_FILE_SIZE + 1` bytes; the extra byte lets the selector detect overflow.
-/// Returns `Ok(None)` when the file is unavailable at open (`is_unavailable_file`).
+/// Returns `Ok(None)` when the file is unavailable at open or read (`is_unavailable_file`).
 fn read_bounded(path: &Path, file_len: u64) -> Result<Option<Vec<u8>>, IngestError> {
     let file = match fs::File::open(path) {
         Ok(f) => f,
@@ -230,10 +239,11 @@ fn read_bounded(path: &Path, file_len: u64) -> Result<Option<Vec<u8>>, IngestErr
         Err(err) => return Err(io_error_at(path, err)),
     };
     let mut buf = Vec::with_capacity(file_len.min(MAX_FILE_SIZE + 1) as usize);
-    file.take(MAX_FILE_SIZE + 1)
-        .read_to_end(&mut buf)
-        .map_err(|err| io_error_at(path, err))?;
-    Ok(Some(buf))
+    match file.take(MAX_FILE_SIZE + 1).read_to_end(&mut buf) {
+        Ok(_) => Ok(Some(buf)),
+        Err(err) if is_unavailable_file(&err) => Ok(None),
+        Err(err) => Err(io_error_at(path, err)),
+    }
 }
 
 fn validate_root(root: &Path) -> Result<PathBuf, DomainError> {
@@ -368,27 +378,60 @@ mod tests {
             .ok_or("walk did not yield a.txt")?;
         fs::remove_file(&file)?;
 
-        let (tx, _rx) = sync_channel(1);
-        let aborted = AtomicBool::new(false);
-        let visitor = LocalVisitor {
-            root: &root,
-            resolved_output: None,
-            tx,
-            aborted: &aborted,
-        };
-        let msg = visitor
-            .process_entry(entry)?
+        let candidate = inspect_entry(&root, None, entry)?
             .ok_or("unlinked file must reach the selector as a candidate")?;
         assert!(
-            matches!(&msg, WorkerMsg::Regular { content: None, .. }),
-            "unlinked file must be a Regular message without content"
+            matches!(&candidate, Candidate::File(_, Body::Unavailable)),
+            "unlinked file must be an unavailable candidate"
         );
-        let selector = apply_msg(Selector::new(), msg)?;
+        let selector = observe_candidate(Selector::new(), candidate)?;
 
         let result = selector.finish("test".to_string(), None);
         assert_eq!(result.files.len(), 0);
         assert_eq!(result.skipped, 1);
         Ok(())
+    }
+
+    #[test]
+    fn oversized_file_carries_size_hint() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("oversized_size_hint")?;
+        let file = root.join("large.txt");
+        fs::write(&file, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
+        let entry = WalkBuilder::new(&root)
+            .build()
+            .find_map(|entry| entry.ok().filter(|e| e.path() == file.as_path()))
+            .ok_or("walk did not yield large.txt")?;
+
+        let candidate = inspect_entry(&root, None, entry)?
+            .ok_or("oversized file must reach the selector as a candidate")?;
+        assert!(
+            matches!(
+                &candidate,
+                Candidate::File(_, Body::OverLimit(len)) if *len == MAX_FILE_SIZE + 1
+            ),
+            "oversized file must carry its declared size and no read"
+        );
+        let selector = observe_candidate(Selector::new(), candidate)?;
+
+        let result = selector.finish("test".to_string(), None);
+        assert_eq!(result.files.len(), 0);
+        assert_eq!(result.skipped, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_errors_skip_others_fail() {
+        // Windows delete-pending and lock-violation codes are unavailable; other errors are fatal.
+        let cases = [
+            (io::Error::from(io::ErrorKind::NotFound), true),
+            (io::Error::from(io::ErrorKind::PermissionDenied), true),
+            (io::Error::from_raw_os_error(32), cfg!(windows)),
+            (io::Error::from_raw_os_error(33), cfg!(windows)),
+            (io::Error::other("disk failure"), false),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(is_unavailable_file(&err), expected, "{err:?}");
+        }
     }
 
     #[cfg(unix)]

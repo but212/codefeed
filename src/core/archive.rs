@@ -70,6 +70,7 @@ pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
     })
 }
 
+#[must_use]
 fn is_valid_commit_sha(sha: &str) -> bool {
     matches!(sha.len(), 40 | 64) && sha.bytes().all(|b| b.is_ascii_hexdigit())
 }

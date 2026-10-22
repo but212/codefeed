@@ -18,6 +18,7 @@ pub(crate) use url::{
 /// Converts all other Unicode control characters (`c.is_control()`) to `\u{FFFD}`.
 /// Note: Unlike digest header escaping which escapes `\n` and `\r` as `\n` / `\r` literals,
 /// error message formatting converts line breaks to spaces for compact single-line stderr diagnostics.
+#[must_use]
 pub(crate) fn sanitize_error_detail(input: &str) -> String {
     input
         .chars()
@@ -31,6 +32,7 @@ pub(crate) fn sanitize_error_detail(input: &str) -> String {
 
 /// Message for a non-success response, without the error-kind prefix. `status_text` is the status
 /// as `Display` renders it (`429 Too Many Requests`), so the message keeps the reason phrase.
+#[must_use]
 pub(crate) fn api_error(
     status: u16,
     status_text: &str,
@@ -53,6 +55,7 @@ pub(crate) fn api_error(
 }
 
 /// Warning printed before retrying a non-success response.
+#[must_use]
 pub(crate) fn status_retry_warning(
     status_text: &str,
     attempt: usize,
@@ -65,6 +68,7 @@ pub(crate) fn status_retry_warning(
 }
 
 /// Warning printed before retrying a transport failure. `error_text` is the transport error's `Display`.
+#[must_use]
 pub(crate) fn transport_retry_warning(
     error_text: &str,
     attempt: usize,
