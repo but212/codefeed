@@ -8,7 +8,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [0.4.0]
 
 ### Library consumers and CLI users
 
