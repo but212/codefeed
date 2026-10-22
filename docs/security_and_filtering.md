@@ -10,11 +10,11 @@
 
 | # | Threat | Mitigation | Where |
 | :--- | :--- | :--- | :--- |
-| T1 | Secret disclosure into prompts or output | Hidden-entry, noise, and sensitive-name exclusion (§3). Content is not scanned (non-goal, §1.2). | `policy.rs`, `selector.rs` |
-| T2 | Resource exhaustion | Size, count, depth, and path-length limits; output cap; bounded reads and channels; archive timeout (§5, §6). | `policy.rs`, `local.rs`, `github.rs` |
-| T3 | Credential forwarding to other origins | Exact-origin gate; redirects never carry authorization (§6). | `core/github/url.rs`, `shell/github.rs` |
-| T4 | Output injection into terminals, XML, or LLM context boundaries | Format-specific escaping (§7). | `core/render/escape.rs` |
-| T5 | Reading files outside the source root | Symlinks are never followed; metadata is checked before open (§5). | `shell/local.rs` |
+| T1 | Secret disclosure into prompts or output | Hidden-entry, noise, and sensitive-name exclusion (sec. 3). Content is not scanned (non-goal, sec. 1.2). | `policy.rs`, `selector.rs` |
+| T2 | Resource exhaustion | Size, count, depth, and path-length limits; output cap; bounded reads and channels; archive timeout (sec. 5, sec. 6). | `policy.rs`, `local.rs`, `github.rs` |
+| T3 | Credential forwarding to other origins | Exact-origin gate; redirects never carry authorization (sec. 6). | `core/github/url.rs`, `shell/github.rs` |
+| T4 | Output injection into terminals, XML, or LLM context boundaries | Format-specific escaping (sec. 7). | `core/render/escape.rs` |
+| T5 | Reading files outside the source root | Symlinks are never followed; metadata is checked before open (sec. 5). | `shell/local.rs` |
 
 ### 1.1 Assumptions
 
@@ -24,7 +24,7 @@
 ### 1.2 Non-goals
 
 - **No content scanning.** Filters match path conventions, not file contents. They are not an entropy or secret scanner. Do not rely on codefeed to redact credentials hard-coded in tracked source files.
-- **In-memory copies of tokens.** Copies held by the HTTP client, the process environment, and rendered error messages are not zeroized (§6.2).
+- **In-memory copies of tokens.** Copies held by the HTTP client, the process environment, and rendered error messages are not zeroized (sec. 6.2).
 
 ---
 
@@ -32,26 +32,26 @@
 
 ```
 Entry (local walk or tar stream)
- │
- ├── Not a regular file: local symlink, FIFO, socket, or device; archive entry of any other tar type
- │     └── Dropped. Not counted.
- │
- ├── Path classification (policy::classify_path_segments)
- │     ├── Hidden segment, noise lockfile, or sensitive name
- │     │     └── Ignored. Dropped. Not counted.
- │     ├── Depth above MAX_PATH_DEPTH
- │     │     └── Run fails (InvalidMetadata).
- │     ├── Non-UTF-8 segment
- │     │     └── Candidate with prefix: valid segments before the first invalid one ("a/b/"), or "" if the first is invalid.
- │     └── Valid path
- │           └── Candidate.
- │
- └── Candidate (Selector::observe)
-       ├── Consumes one candidate slot. Exceeding MAX_FILE_COUNT fails the run.
-       ├── Path or declared size over its limit: skipped, body not read.
-       ├── Body read (local: bounded by a worker; GitHub: bounded by the stream)
-       └── Included only if it passes the content checks. Otherwise skipped.
-             Outcomes per case: §4.
+ |
+ +-- Not a regular file: local symlink, FIFO, socket, or device; archive entry of any other tar type
+ |     `-- Dropped. Not counted.
+ |
+ +-- Path classification (policy::classify_path_segments)
+ |     +-- Hidden segment, noise lockfile, or sensitive name
+ |     |     `-- Ignored. Dropped. Not counted.
+ |     +-- Depth above MAX_PATH_DEPTH
+ |     |     `-- Run fails (InvalidMetadata).
+ |     +-- Non-UTF-8 segment
+ |     |     `-- Candidate with prefix: valid segments before the first invalid one ("a/b/"), or "" if the first is invalid.
+ |     `-- Valid path
+ |           `-- Candidate.
+ |
+ `-- Candidate (Selector::observe)
+       +-- Consumes one candidate slot. Exceeding MAX_FILE_COUNT fails the run.
+       +-- Path or declared size over its limit: skipped, body not read.
+       +-- Body read (local: bounded by a worker; GitHub: bounded by the stream)
+       `-- Included only if it passes the content checks. Otherwise skipped.
+             Outcomes per case: sec. 4.
 ```
 
 ---
@@ -88,7 +88,9 @@ Lockfiles contain generated metadata that adds tokens without source value. They
 - **Filename prefixes** (`SENSITIVE_PREFIXES`): `id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`, `credentials`. Each prefix matches the start of the final segment, so `id_rsa`, `id_rsa.pub`, and `credentials.json` are all excluded.
 - **Extensions** (`SENSITIVE_EXTENSIONS`): `pem`, `key`, `p12`, `pkcs12`, `pfx`, `credentials`. The extension is the text after the last dot, so `server.key` and `aws.credentials` are excluded.
 
-Environment files such as `.env` are excluded by the hidden-entry rule (§3.1), not by this list.
+Environment files such as `.env` are excluded by the hidden-entry rule (sec. 3.1), not by this list.
+
+The name rules apply to the final segment even when it is not valid UTF-8. Prefixes and extensions are ASCII, so a name such as `id_rsa\xff.key` is ignored, not counted as skipped (sec. 4).
 
 ### 3.4 Path Limits
 
@@ -109,11 +111,11 @@ Environment files such as `.env` are excluded by the hidden-entry rule (§3.1), 
 
 | Outcome | Candidate slot | Counted as skipped | Body read |
 | :--- | :---: | :---: | :---: |
-| Ignored by §3 | No | No | No |
+| Ignored by sec. 3 | No | No | No |
 | Non-UTF-8 path | Yes | Yes | No |
 | Path longer than `MAX_PATH_BYTES` | Yes | Yes | No |
 | Declared size above `MAX_FILE_SIZE` | Yes | Yes | No |
-| Unavailable at open or unlinked after discovery | Yes | Yes | Attempted |
+| Unavailable at metadata, open, or read (including unlinked after discovery) | Yes | Yes | Attempted, unless metadata failed |
 | Binary (NUL) or invalid UTF-8 | Yes | Yes | Yes |
 | Read exceeds `MAX_FILE_SIZE` | Yes | Yes | Bounded |
 | Included | Yes | No | Yes |
@@ -128,9 +130,9 @@ Implemented in `src/shell/local.rs` and `src/shell/output.rs`.
 
 1. **No symlink following.** The walk uses `follow_links(false)`. Symlinks are dropped before path classification. Before opening any file, the worker calls `fs::symlink_metadata` and requires a regular file that is not a symlink. Symlinks to files, directories, or special files are never read.
 2. **Output exclusion.** The output path is resolved once at startup (`resolve_output_target`) and excluded from the walk by canonical path. This prevents the digest from ingesting itself.
-3. **Atomic writes.** The digest is written to a temporary file in the destination's parent directory. The file is synced, then renamed to the destination. On Unix, the existing file's permissions are kept and the parent directory is synced after the rename. The temporary handle is closed before the file is unlinked on `Drop`, which keeps cleanup reliable on Windows and Unix, including during error and panic unwinding.
-4. **Unavailable versus fatal.** Per file, `NotFound`, `PermissionDenied`, and the Windows sharing violation are recorded as unavailable and counted as skipped. Any other open or read error fails the run with `IngestError::Io`. An unreadable directory fails the run and names the directory.
-5. **Bounded concurrency.** Workers and the main thread communicate through `sync_channel(128)`, so the queue cannot grow without bound during a large scan. An error or budget overflow sets an `AtomicBool` and drops the receiver, which stops all workers promptly.
+3. **Atomic writes.** The digest is written to a temporary file in the destination's parent directory. The file is synced, then renamed to the destination. On Unix, the existing file's permissions are kept and the parent directory is synced after the rename. A failed sync is reported as a warning on stderr, because the rename has already replaced the target. The temporary handle is closed before the file is unlinked on `Drop`, which keeps cleanup reliable on Windows and Unix, including during error and panic unwinding.
+4. **Unavailable versus fatal.** At the metadata, open, and read steps, a per-file `NotFound`, `PermissionDenied`, or Windows sharing (32) or lock (33) violation is recorded as unavailable and counted as skipped. Any other error at those steps fails the run with `IngestError::Io`. An unreadable directory fails the run and names the directory. When several files fail fatally, the first error to reach the main thread is reported, so the path and error kind can vary between runs.
+5. **Bounded concurrency.** Workers and the main thread communicate through a `sync_channel` of `LOCAL_CHANNEL_CAPACITY` messages (sec. 8), so the queue cannot grow without bound during a large scan. A full queue blocks the workers, which bounds read-ahead memory to about that many files plus one per worker. An error or budget overflow sets an `AtomicBool` and drops the receiver, which stops all workers promptly.
 
 ---
 
@@ -147,7 +149,7 @@ Implemented in `src/shell/github.rs`, with pure rules in `src/core/github/`.
 ### 6.2 Memory
 
 - The resolved token, the environment lookup buffer, and the raw error-body buffer are held in `zeroize::Zeroizing` and erased on drop.
-- Copies held by the HTTP client's request headers, the process environment, and rendered error messages are not zeroized (§1.2).
+- Copies held by the HTTP client's request headers, the process environment, and rendered error messages are not zeroized (sec. 1.2).
 
 ### 6.3 Transport and TLS
 
@@ -179,13 +181,13 @@ Escaping is applied in one pass by `write_escaped`, with rules chosen per contex
 1. **Text** (`--format text`)
    - Header labels and file paths: backslash, CR, and LF are escaped. Other control characters in the list below become `\u{FFFD}`.
    - File bodies: valid UTF-8 with no NUL byte is emitted verbatim, so code is exact for the LLM. ANSI sequences are preserved.
-   - Control characters for header and path escaping: `0x00`–`0x08`, `0x0B`, `0x0C`, `0x0E`–`0x1F`, and `0x7F`.
+   - Control characters for header and path escaping: `0x00`-`0x08`, `0x0B`, `0x0C`, `0x0E`-`0x1F`, and `0x7F`.
 2. **XML** (`--format xml`)
    - Entities `&`, `<`, `>`, `"`, and `'` are escaped.
    - Tabs, LF, and CR in attribute values are written as character references (`&#9;`, `&#10;`, `&#13;`).
    - Tabs, LF, and CR in element bodies are kept.
-   - Disallowed XML 1.0 control characters (`U+0000`–`U+001F` except tab, LF, and CR) become `\u{FFFD}`.
-3. **Tree labels**: Node labels in the ASCII tree are escaped for control codes and XML entities, so a file name cannot break a line or corrupt the terminal or XML structure.
+   - Disallowed XML 1.0 control characters (`U+0000`-`U+001F` except tab, LF, and CR) become `\u{FFFD}`.
+3. **Tree labels**: Node labels in the tree are escaped for control codes and XML entities, so a file name cannot break a line or corrupt the terminal or XML structure.
 
 ---
 
@@ -195,15 +197,16 @@ This section is the only place in the documentation that states limit values. Ot
 
 | Constant | Value | Enforced by | On overflow |
 | :--- | :--- | :--- | :--- |
-| `MAX_FILE_SIZE` | 1 MiB per file | Declared size and bounded read (§4) | Skipped, counted as skipped |
-| `MAX_PATH_BYTES` | 4,096 bytes | Path classification (§3.4) | Skipped, counted as skipped |
-| `MAX_PATH_DEPTH` | 256 levels | Path classification (§3.4) | Run fails (`InvalidMetadata`) |
-| `MAX_FILE_COUNT` | 10,000 candidate files | Candidate budget (§4) | Run fails; lists up to three largest directories |
+| `MAX_FILE_SIZE` | 1 MiB per file | Declared size and bounded read (sec. 4) | Skipped, counted as skipped |
+| `MAX_PATH_BYTES` | 4,096 bytes | Path classification (sec. 3.4) | Skipped, counted as skipped |
+| `MAX_PATH_DEPTH` | 256 levels | Path classification (sec. 3.4) | Run fails (`InvalidMetadata`) |
+| `MAX_FILE_COUNT` | 10,000 candidate files | Candidate budget (sec. 4) | Run fails; lists up to three largest directories |
 | `MAX_OUTPUT_SIZE` | 20 MiB | Storage early check and rendering buffer | Run fails; no output; lists five largest files |
 | `ARCHIVE_BUFFER_BYTES` | 64 KiB | Archive read buffer | Not a limit; sets buffering only |
-| `ARCHIVE_MAX_SECS` | 300 seconds | Whole archive transfer (§6.6) | Download fails with a request error |
-| `GITHUB_TIMEOUT_SECS` | 30 seconds | Response headers (§6.6) | Treated as transient; retried (§6.5) |
-| `MAX_ATTEMPTS` | 3 attempts (1 initial, 2 retries) | Retry loop (§6.5) | Transient failures stop retrying; the run fails |
-| `RETRY_INITIAL_DELAY_MS` | 250 ms | Backoff (§6.5) | Not an overflow; first retry delay |
-| `RETRY_MAX_DELAY_MS` | 5,000 ms | Backoff cap and server wait limit (§6.5) | Longer server wait fails the run |
-| `ASCII_BYTES_PER_TOKEN` | 4 | Token estimate (context §3.5) | Not a limit; estimate ratio only |
+| `LOCAL_CHANNEL_CAPACITY` | 64 messages | Local worker queue (sec. 5.5) | Not a limit; full queue blocks workers |
+| `ARCHIVE_MAX_SECS` | 300 seconds | Whole archive transfer (sec. 6.6) | Download fails with a request error |
+| `GITHUB_TIMEOUT_SECS` | 30 seconds | Response headers (sec. 6.6) | Treated as transient; retried (sec. 6.5) |
+| `MAX_ATTEMPTS` | 3 attempts (1 initial, 2 retries) | Retry loop (sec. 6.5) | Transient failures stop retrying; the run fails |
+| `RETRY_INITIAL_DELAY_MS` | 250 ms | Backoff (sec. 6.5) | Not an overflow; first retry delay |
+| `RETRY_MAX_DELAY_MS` | 5,000 ms | Backoff cap and server wait limit (sec. 6.5) | Longer server wait fails the run |
+| `ASCII_BYTES_PER_TOKEN` | 4 | Token estimate (context sec. 3.5) | Not a limit; estimate ratio only |

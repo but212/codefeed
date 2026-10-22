@@ -14,6 +14,9 @@ pub(crate) const MAX_PATH_DEPTH: usize = 256;
 pub(crate) const MAX_PATH_BYTES: u64 = 4096;
 /// Capacity in bytes for buffering incoming archive decompression streams (64 KiB).
 pub(crate) const ARCHIVE_BUFFER_BYTES: usize = 64 * 1024;
+/// Capacity in messages of the local worker queue. Full queues block workers, which bounds read-ahead
+/// memory to roughly this many files plus one per worker (security §5, §8).
+pub(crate) const LOCAL_CHANNEL_CAPACITY: usize = 64;
 
 /// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
 pub(crate) const ARCHIVE_MAX_SECS: u64 = 300;
@@ -37,6 +40,7 @@ const _: () = {
     assert!(ASCII_BYTES_PER_TOKEN > 0);
     assert!(GITHUB_TIMEOUT_SECS <= ARCHIVE_MAX_SECS);
     assert!(ARCHIVE_BUFFER_BYTES > 0);
+    assert!(LOCAL_CHANNEL_CAPACITY > 0);
 };
 
 /// Conventional lockfiles excluded before candidate budget accounting.
@@ -204,7 +208,9 @@ where
         return Ok(PathStatus::Ignored);
     };
 
-    if matches!(std::str::from_utf8(last), Ok(filename) if is_ignored_filename(filename)) {
+    // Lossy decoding keeps the ASCII name rules exact: invalid bytes become U+FFFD, which never
+    // equals a noise name, and prefix and extension matches see the same ASCII bytes.
+    if is_ignored_filename(&String::from_utf8_lossy(last)) {
         return Ok(PathStatus::Ignored);
     }
 
@@ -255,6 +261,39 @@ mod tests {
             classify_path_segments(segments.iter().copied()),
             Ok(PathStatus::NonUtf8Candidate("src/".to_string()))
         );
+
+        // C-01: sensitive prefix or extension on an invalid-UTF-8 final segment -> Ignored
+        let sensitive: [&[&[u8]]; 3] = [
+            &[b"dir", b"id_rsa\xff.key"],
+            &[b"secret\xff.key"],
+            &[b"dir", b"credentials\xff"],
+        ];
+        for segments in sensitive {
+            assert_eq!(
+                classify_path_segments(segments.iter().copied()),
+                Ok(PathStatus::Ignored),
+                "segments: {segments:?}"
+            );
+        }
+
+        // C-02: invalid-UTF-8 final segment with no sensitive match -> NonUtf8Candidate
+        let plain: [&[&[u8]]; 2] = [&[b"notes\xff.txt"], &[b"src", b"\xff.rs"]];
+        for segments in plain {
+            assert!(
+                matches!(
+                    classify_path_segments(segments.iter().copied()),
+                    Ok(PathStatus::NonUtf8Candidate(_))
+                ),
+                "segments: {segments:?}"
+            );
+        }
+
+        // C-03: noise names match exactly; invalid bytes make Cargo.lock differ
+        let noise_suffix: &[&[u8]] = &[b"Cargo.lock\xff"];
+        assert!(matches!(
+            classify_path_segments(noise_suffix.iter().copied()),
+            Ok(PathStatus::NonUtf8Candidate(_))
+        ));
     }
 
     #[test]

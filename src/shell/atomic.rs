@@ -156,21 +156,31 @@ impl AtomicFile {
     ///
     /// # Errors
     ///
-    /// Returns [`IngestError::Io`] if flushing, renaming, or directory syncing fails.
-    /// If parent directory sync fails on Unix after rename, target replacement has already
-    /// completed and durability synchronization failed.
+    /// Returns [`IngestError::Io`] if flushing or renaming fails. A parent-directory sync failure
+    /// after the rename is a warning on stderr, not an error, because the target already holds the
+    /// new digest and the run has succeeded.
     fn commit(self) -> Result<(), IngestError> {
         self.temp_file.commit(&self.target)?;
 
         #[cfg(unix)]
         {
             let parent = parent_dir(&self.target);
-            let dir = fs::File::open(parent).map_err(|err| io_error_at(parent, err))?;
-            dir.sync_all().map_err(|err| io_error_at(parent, err))?;
+            let synced = fs::File::open(parent).and_then(|dir| dir.sync_all());
+            if let Some(warning) = sync_warning(parent, synced) {
+                super::output::write_stderr_line(&warning);
+            }
         }
 
         Ok(())
     }
+}
+
+/// Warning text for a failed parent-directory sync, or `None` when the sync succeeded.
+#[cfg(unix)]
+fn sync_warning(parent: &Path, synced: io::Result<()>) -> Option<String> {
+    synced
+        .err()
+        .map(|err| format!("warning: {}: {err}", parent.display()))
 }
 
 /// Replaces `output` with `bytes`, so a failed write leaves the previous file in place.
@@ -377,5 +387,16 @@ mod tests {
             "temporary file must be unlinked when AtomicFile::create fails during metadata check"
         );
         Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_warning_reports_only_failed_directory_syncs() {
+        let parent = Path::new("/var/data");
+        assert_eq!(sync_warning(parent, Ok(())), None);
+
+        let warning = sync_warning(parent, Err(io::Error::other("fsync rejected")))
+            .expect("failed sync yields a warning");
+        assert_eq!(warning, "warning: /var/data: fsync rejected");
     }
 }

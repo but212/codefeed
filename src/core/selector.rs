@@ -18,6 +18,7 @@ fn classify_content(bytes: &[u8]) -> Option<&str> {
 }
 
 /// Path-length and declared-size gate. Shared by [`Selector::observe`] and the shell worker that decides whether to read content.
+#[must_use]
 pub(crate) fn exceeds_size_limits(path_len: usize, size_hint: Option<u64>) -> bool {
     path_len as u64 > MAX_PATH_BYTES || size_hint.is_some_and(|hint| hint > MAX_FILE_SIZE)
 }
