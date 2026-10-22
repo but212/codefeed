@@ -67,7 +67,7 @@ The module map is in [`context.md`](../context.md) sec. 5. This section lists on
 
 - All I/O, network calls, filesystem access, and process interaction live here.
 - The shell collects inputs, settles each candidate with `Selector::observe`, and delegates computation and storage to the core.
-- Local collection runs parallel workers and a bounded channel. The pipeline is described in [context sec. 3.8](../context.md#38-local-traversal-pipeline). Only the main thread calls into the pure selector.
+- Local collection reads files on worker threads and settles results in walk order through bounded channels. The pipeline is described in [context sec. 3.8](../context.md#38-local-traversal-pipeline). Only the main thread calls into the pure selector.
 
 ### 3.3 Invariants by Type ("Parse, Don't Validate")
 

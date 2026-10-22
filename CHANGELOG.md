@@ -10,17 +10,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Library consumers and CLI users
+
+Observable behavior. **Action** = code or config change required.
+
+#### Changed
+
+- **Deterministic local errors**: For local directories, the reported diagnostics no longer vary between runs. `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` errors list the same directories and files on every run. When several files fail with a fatal I/O error, the first one in walk order is reported. Before, the first to arrive was reported (`src/shell/local.rs`).
+
 ### Contributors
 
 Internal refactors and test changes. No consumer action required.
 
 #### Core
 
-- **Private arenas**: `FileStorage` arenas are private. `FileStorage::path(span)` replaces `path_arena()`, and the tree renderer resolves paths through storage. Spans carry no owner: a span from another storage is not detected. It panics only when out of range and can otherwise resolve to unrelated bytes (`src/core/storage.rs`, `src/core/render/tree.rs`).
+- **Private storage spans**: `FileSpan` is private to `src/core/storage.rs`. Callers read records only through `FileStorage::iter`, and the tree renderer works on paths from that iterator. A span can no longer be passed to another storage (`src/core/storage.rs`, `src/core/render/tree.rs`).
 
 #### Shell
 
-- **Local worker cap**: the local walk sets its thread count explicitly to `min(available cores, MAX_LOCAL_WORKERS)` instead of relying on the `ignore` crate default. Behavior is unchanged (`src/shell/local.rs`, `src/core/policy.rs`).
+- **Local pipeline**: the local walk runs sorted on a producer thread (`ignore::WalkBuilder::sort_by_file_name`), workers read bodies concurrently, and the main thread settles them in walk order. Bodies held at once are bounded by `LOCAL_CHANNEL_CAPACITY + 2`, independent of the worker count. Measured with hyperfine on a release build (Windows, 30 runs each): a 9,000-file synthetic tree 333.5 ms → 335.4 ms (+0.6%); this repository 18.4 ms → 18.0 ms (−2.0%) (`src/shell/local.rs`, `src/core/policy.rs`).
 
 ### Maintainers
 

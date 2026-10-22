@@ -1,25 +1,26 @@
-//! Local directory collection orchestration: parallel walk, bounded I/O, linear selection.
+//! Local directory collection orchestration: sorted walk, bounded parallel reads, ordered selection.
 //!
 //! # Concurrency & Performance Architecture
-//! - **Producer-Consumer Pipeline**: Directory traversal and file reads run concurrently
-//!   via `ignore::WalkParallel` worker threads, piped through a bounded `sync_channel` of
-//!   `LOCAL_CHANNEL_CAPACITY` messages.
-//!   Eliminates single-threaded OS kernel `CreateFileW` latency without unbound memory growth.
-//! - **FCIS Invariant**: Thread workers perform side-effecting I/O and pre-open symlink
-//!   checks (`fs::symlink_metadata`), delegating pure linear accumulation to `Selector` on
-//!   the main thread inside `std::thread::scope`.
-//! - **Determinism & Cancellation**: Storage ordering is guaranteed post-collection via
-//!   `SortedFiles` (`cmp_path`). Errors or budget overflows abort workers immediately via
-//!   `AtomicBool` and receiver disconnection.
+//! - **Ordered Pipeline**: A producer thread walks in sorted order and sends one slot per entry.
+//!   Workers read regular files concurrently and answer on their slot. The main thread settles
+//!   slots in walk order, so `Selector` observes candidates in `cmp_path` order.
+//!   Bounded `sync_channel`s of `LOCAL_CHANNEL_CAPACITY` messages keep memory bounded.
+//! - **FCIS Invariant**: Workers perform side-effecting I/O and pre-open symlink checks
+//!   (`fs::symlink_metadata`), delegating pure linear accumulation to `Selector` on the main
+//!   thread inside `std::thread::scope`.
+//! - **Determinism & Cancellation**: The first failure in walk order is reported, so the result
+//!   is the same on every run. An error or budget overflow sets `AtomicBool`, so workers skip
+//!   further reads, and the main thread drops its receiver, which stops the producer.
 
 use std::fs;
 use std::io::{self, Read};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::sync_channel;
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
-use ignore::{WalkBuilder, WalkState};
+use ignore::WalkBuilder;
 
 use super::IngestError;
 use super::error::io_error_at;
@@ -48,23 +49,51 @@ enum Candidate {
     File(NormalizedPath, Body),
 }
 
-/// Channel message: one candidate, or the error that aborts the run.
-type WorkerMsg = Result<Candidate, IngestError>;
+/// Worker reply for one job: a candidate, `None` when the entry is no longer a regular file, or the
+/// error that aborts the run.
+type WorkerMsg = Result<Option<Candidate>, IngestError>;
+
+/// One regular file queued for a worker. The worker answers once on `reply`.
+struct Job {
+    path: NormalizedPath,
+    entry_path: PathBuf,
+    reply: SyncSender<WorkerMsg>,
+}
+
+/// One walk entry in walk order: decided on the producer thread, or waiting for a worker.
+enum Slot {
+    Ready(WorkerMsg),
+    Pending(Receiver<WorkerMsg>),
+}
 
 /// Collects files from a local directory root, excluding the output file if located inside it.
 ///
-/// Uses parallel workers to concurrently evaluate path policy, inspect metadata (rejecting symlinks
-/// pre-open), and read file contents into pre-allocated buffers. Results are streamed through a
-/// bounded channel to maintain backpressure and preserve pure sequential accumulation in `Selector`.
+/// A producer thread walks in sorted order, workers read file bodies concurrently, and the calling
+/// thread settles results in that same order, so `Selector` observes candidates in `cmp_path` order.
 pub(super) fn collect(
     root: &Path,
     output: &ResolvedOutput,
 ) -> Result<CollectionResult, IngestError> {
     let canonical_root = validate_root(root)?;
     let label = local_label(&canonical_root);
-    let resolved_output = output.file();
+    let selector = fold_candidates(
+        &canonical_root,
+        output.file(),
+        Selector::new(),
+        observe_candidate,
+    )?;
 
-    let walker = WalkBuilder::new(&canonical_root)
+    Ok(selector.finish(label, None))
+}
+
+/// Walks `root` in sorted order and folds each candidate through `step` in that order.
+fn fold_candidates<T>(
+    root: &Path,
+    output: Option<&Path>,
+    init: T,
+    step: impl FnMut(T, Candidate) -> Result<T, IngestError>,
+) -> Result<T, IngestError> {
+    let walker = WalkBuilder::new(root)
         .hidden(false)
         .filter_entry(|entry| {
             entry.depth() == 0 || !is_hidden_segment(entry.file_name().as_encoded_bytes())
@@ -76,70 +105,104 @@ pub(super) fn collect(
         .require_git(false)
         .parents(false)
         .follow_links(false)
-        .threads(local_worker_count(std::thread::available_parallelism()))
-        .build_parallel();
+        .sort_by_file_name(|a, b| a.cmp(b))
+        .build();
 
-    let (tx, rx) = sync_channel::<WorkerMsg>(LOCAL_CHANNEL_CAPACITY);
     let aborted = AtomicBool::new(false);
+    let (job_tx, job_rx) = sync_channel::<Job>(LOCAL_CHANNEL_CAPACITY);
+    let jobs = Mutex::new(job_rx);
+    let (slot_tx, slot_rx) = sync_channel::<Slot>(LOCAL_CHANNEL_CAPACITY);
+    std::thread::scope(|s| {
+        for _ in 0..local_worker_count(std::thread::available_parallelism()) {
+            s.spawn(|| run_worker(&jobs, &aborted));
+        }
+        // Senders move into the producer, so they drop before the workers are joined.
+        s.spawn(move || produce_slots(walker, root, output, job_tx, slot_tx));
 
-    let selector = std::thread::scope(|s| {
-        s.spawn(|| {
-            let mut visitor = LocalVisitor {
-                root: &canonical_root,
-                resolved_output,
-                tx,
-                aborted: &aborted,
-            };
-            walker.visit(&mut visitor);
-        });
-
-        drain_channel(rx, &aborted)
-    })?;
-
-    Ok(selector.finish(label, None))
+        let result = settle_slots(slot_rx, init, step);
+        if result.is_err() {
+            aborted.store(true, Ordering::Relaxed);
+        }
+        result
+    })
 }
 
-/// Walker visitor. `build` clones it per worker thread; every clone shares the channel sender and abort flag.
-#[derive(Clone)]
-struct LocalVisitor<'a> {
-    root: &'a Path,
-    resolved_output: Option<&'a Path>,
-    tx: std::sync::mpsc::SyncSender<WorkerMsg>,
-    aborted: &'a AtomicBool,
-}
-
-impl<'s> ignore::ParallelVisitorBuilder<'s> for LocalVisitor<'s> {
-    fn build(&mut self) -> Box<dyn ignore::ParallelVisitor + 's> {
-        Box::new(self.clone())
-    }
-}
-
-/// Inspects one walk entry. `Ok(None)` means it is not a candidate: the root, the output file,
-/// a directory, an ignored path, a symlink, or a non-file.
-fn inspect_entry(
+/// Classifies one walk entry on the producer thread. `Ignored` covers the root, the output file,
+/// directories, and non-files.
+fn classify_entry(
     root: &Path,
     output: Option<&Path>,
-    entry: ignore::DirEntry,
-) -> Result<Option<Candidate>, IngestError> {
+    entry: &ignore::DirEntry,
+) -> Result<PathStatus, IngestError> {
     let entry_path = entry.path();
     if entry_path == root || output.is_some_and(|target| entry_path == target) {
-        return Ok(None);
+        return Ok(PathStatus::Ignored);
     }
 
     if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-        return Ok(None);
+        return Ok(PathStatus::Ignored);
     }
 
     let relative = entry_path
         .strip_prefix(root)
         .map_err(|err| DomainError::invalid_metadata(err.to_string()))?;
+    classify_local_path(relative).map_err(IngestError::from)
+}
 
-    let path = match classify_local_path(relative)? {
-        PathStatus::Ignored => return Ok(None),
-        PathStatus::NonUtf8Candidate(prefix) => return Ok(Some(Candidate::NonUtf8(prefix))),
-        PathStatus::Valid(path) => path,
+/// Routes one walk entry: `None` when it is not a candidate, a ready reply when it is decided on
+/// the producer thread, or a pending reply when a worker reads its body.
+fn dispatch(
+    entry: Result<ignore::DirEntry, ignore::Error>,
+    root: &Path,
+    output: Option<&Path>,
+    jobs: &SyncSender<Job>,
+) -> Option<Slot> {
+    let entry = match entry {
+        Ok(entry) => entry,
+        Err(err) => return Some(Slot::Ready(Err(IngestError::Io(format_ignore_error(&err))))),
+    };
+    let path = match classify_entry(root, output, &entry) {
+        Ok(PathStatus::Ignored) => return None,
+        Ok(PathStatus::NonUtf8Candidate(prefix)) => {
+            return Some(Slot::Ready(Ok(Some(Candidate::NonUtf8(prefix)))));
+        }
+        Ok(PathStatus::Valid(path)) => path,
+        Err(err) => return Some(Slot::Ready(Err(err))),
     };
 
+    let (reply, pending) = sync_channel(1);
+    let job = Job {
+        path,
+        entry_path: entry.into_path(),
+        reply,
+    };
+    if jobs.send(job).is_err() {
+        return Some(Slot::Ready(Err(worker_stopped())));
+    }
+    Some(Slot::Pending(pending))
+}
+
+/// Answers jobs until the job channel closes. After an abort, workers answer without touching the
+/// filesystem, so the remaining queue drains quickly.
+fn run_worker(jobs: &Mutex<Receiver<Job>>, aborted: &AtomicBool) {
+    while let Some(job) = next_job(jobs) {
+        let msg = if aborted.load(Ordering::Relaxed) {
+            Ok(None)
+        } else {
+            read_candidate(&job.entry_path, job.path)
+        };
+        // The settling side may already have stopped after an error; the reply is then unused.
+        let _ = job.reply.send(msg);
+    }
+}
+
+/// Takes the next job. The lock covers only the receive, so workers do not serialize on the reads.
+fn next_job(jobs: &Mutex<Receiver<Job>>) -> Option<Job> {
+    jobs.lock().ok()?.recv().ok()
+}
+
+/// Reads one regular file's metadata and body. `Ok(None)` when the entry is a symlink or non-file.
+fn read_candidate(entry_path: &Path, path: NormalizedPath) -> WorkerMsg {
     let meta = match fs::symlink_metadata(entry_path) {
         Ok(m) => m,
         // Unlinked or locked after discovery: the selector counts it as skipped.
@@ -164,33 +227,8 @@ fn inspect_entry(
     Ok(Some(Candidate::File(path, body)))
 }
 
-impl ignore::ParallelVisitor for LocalVisitor<'_> {
-    fn visit(&mut self, entry: Result<ignore::DirEntry, ignore::Error>) -> WalkState {
-        if self.aborted.load(Ordering::Relaxed) {
-            return WalkState::Quit;
-        }
-
-        let candidate = entry
-            .map_err(|err| IngestError::Io(format_ignore_error(&err)))
-            .and_then(|entry| inspect_entry(self.root, self.resolved_output, entry))
-            .transpose();
-
-        match candidate {
-            None => WalkState::Continue,
-            Some(Ok(candidate)) => {
-                if self.tx.send(Ok(candidate)).is_err() {
-                    WalkState::Quit
-                } else {
-                    WalkState::Continue
-                }
-            }
-            Some(Err(err)) => {
-                self.aborted.store(true, Ordering::Relaxed);
-                let _ = self.tx.send(Err(err));
-                WalkState::Quit
-            }
-        }
-    }
+fn worker_stopped() -> IngestError {
+    IngestError::Io(io::Error::other("local read worker stopped"))
 }
 
 fn observe_candidate(selector: Selector, candidate: Candidate) -> Result<Selector, IngestError> {
@@ -203,21 +241,54 @@ fn observe_candidate(selector: Selector, candidate: Candidate) -> Result<Selecto
     selector.observe(status, size_hint, || Ok(content))
 }
 
-fn drain_channel(
-    rx: std::sync::mpsc::Receiver<WorkerMsg>,
-    aborted: &AtomicBool,
-) -> Result<Selector, IngestError> {
-    let result = rx.iter().try_fold(Selector::new(), |selector, msg| {
-        observe_candidate(selector, msg?)
-    });
-    if result.is_err() {
-        aborted.store(true, Ordering::Relaxed);
+/// Waits for one slot's reply and folds its candidate into `acc`.
+fn settle<T>(
+    slot: Slot,
+    acc: T,
+    step: &mut impl FnMut(T, Candidate) -> Result<T, IngestError>,
+) -> Result<T, IngestError> {
+    let msg = match slot {
+        Slot::Ready(msg) => msg,
+        Slot::Pending(reply) => reply.recv().unwrap_or_else(|_| Err(worker_stopped())),
+    };
+    match msg? {
+        Some(candidate) => step(acc, candidate),
+        None => Ok(acc),
     }
-    drop(rx);
-    result
 }
 
-/// Walker thread count: available cores capped at `MAX_LOCAL_WORKERS`, or 1 when unknown.
+/// Walks and dispatches on its own thread, sending slots in walk order. Stops at the first walk or
+/// classification error, or when the settling side hangs up.
+fn produce_slots(
+    walker: ignore::Walk,
+    root: &Path,
+    output: Option<&Path>,
+    jobs: SyncSender<Job>,
+    slots: SyncSender<Slot>,
+) {
+    for entry in walker {
+        let Some(slot) = dispatch(entry, root, output, &jobs) else {
+            continue;
+        };
+        let fatal = matches!(slot, Slot::Ready(Err(_)));
+        if slots.send(slot).is_err() || fatal {
+            break;
+        }
+    }
+}
+
+/// Settles slots in the order they arrive. The first failure in walk order stops the fold.
+fn settle_slots<T>(
+    slots: Receiver<Slot>,
+    init: T,
+    mut step: impl FnMut(T, Candidate) -> Result<T, IngestError>,
+) -> Result<T, IngestError> {
+    slots
+        .iter()
+        .try_fold(init, |acc, slot| settle(slot, acc, &mut step))
+}
+
+/// Read worker count: available cores capped at `MAX_LOCAL_WORKERS`, or 1 when unknown.
 fn local_worker_count(available: io::Result<NonZeroUsize>) -> usize {
     available.map_or(1, |cores| cores.get().min(MAX_LOCAL_WORKERS))
 }
@@ -312,7 +383,7 @@ mod tests {
     use super::super::testing::temp_dir;
     use super::*;
     use crate::core::model::{DigestFormat, OutputTarget, RunConfig, Source};
-    use crate::core::storage::{FileRecord, cmp_path};
+    use crate::core::storage::cmp_path;
     use crate::ingest;
 
     #[test]
@@ -379,13 +450,9 @@ mod tests {
         let root = temp_dir("unlinked_after_discovery")?;
         let file = root.join("a.txt");
         fs::write(&file, "content")?;
-        let entry = WalkBuilder::new(&root)
-            .build()
-            .find_map(|entry| entry.ok().filter(|e| e.path() == file.as_path()))
-            .ok_or("walk did not yield a.txt")?;
         fs::remove_file(&file)?;
 
-        let candidate = inspect_entry(&root, None, entry)?
+        let candidate = read_candidate(&file, NormalizedPath::from("a.txt"))?
             .ok_or("unlinked file must reach the selector as a candidate")?;
         assert!(
             matches!(&candidate, Candidate::File(_, Body::Unavailable)),
@@ -404,12 +471,8 @@ mod tests {
         let root = temp_dir("oversized_size_hint")?;
         let file = root.join("large.txt");
         fs::write(&file, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
-        let entry = WalkBuilder::new(&root)
-            .build()
-            .find_map(|entry| entry.ok().filter(|e| e.path() == file.as_path()))
-            .ok_or("walk did not yield large.txt")?;
 
-        let candidate = inspect_entry(&root, None, entry)?
+        let candidate = read_candidate(&file, NormalizedPath::from("large.txt"))?
             .ok_or("oversized file must reach the selector as a candidate")?;
         assert!(
             matches!(
@@ -527,20 +590,26 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let root = temp_dir("unreadable_dir")?;
-        let locked = root.join("locked");
-        fs::create_dir(&locked)?;
-        fs::write(locked.join("file.txt"), "content")?;
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o0000))?;
+        let locked = ["a_locked", "b_locked"].map(|name| root.join(name));
+        for dir in &locked {
+            fs::create_dir(dir)?;
+            fs::write(dir.join("file.txt"), "content")?;
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o0000))?;
+        }
 
-        if fs::read_dir(&locked).is_ok() {
-            let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o0755));
+        if fs::read_dir(&locked[0]).is_ok() {
+            for dir in &locked {
+                let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o0755));
+            }
             return Ok(());
         }
 
         let res = collect(&root, &ResolvedOutput::STDOUT);
 
         // Restore permissions so TempDirGuard can clean up
-        let _ = fs::set_permissions(&locked, fs::Permissions::from_mode(0o0755));
+        for dir in &locked {
+            let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o0755));
+        }
 
         let err = res.unwrap_err();
         assert!(
@@ -549,8 +618,8 @@ mod tests {
         );
         let msg = err.to_string();
         assert!(
-            msg.contains("locked"),
-            "error message should contain path context 'locked', got: {msg}"
+            msg.contains("a_locked") && !msg.contains("b_locked"),
+            "first directory in walk order must be reported alone, got: {msg}"
         );
         Ok(())
     }
@@ -746,9 +815,9 @@ mod tests {
     }
 
     #[test]
-    fn walk_preserves_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("parallel_order")?;
-        for dir in ["b_dir", "a_dir", "c_dir", "src-test", "src"] {
+    fn candidates_arrive_in_path_order() -> Result<(), Box<dyn std::error::Error>> {
+        let root = validate_root(&temp_dir("candidate_order")?)?;
+        for dir in ["b_dir", "a_dir", "src-test", "src", "src/nested"] {
             fs::create_dir_all(root.join(dir))?;
             for file_index in 0..10 {
                 fs::write(
@@ -757,18 +826,20 @@ mod tests {
                 )?;
             }
         }
-        let result = collect(&root, &ResolvedOutput::STDOUT)?;
-        let files = result.files;
-        assert_eq!(files.len(), 50);
-        let records: Vec<FileRecord<'_>> = files.iter().collect();
-        for window in records.windows(2) {
-            assert!(
-                cmp_path(window[0].path, window[1].path).is_lt(),
-                "ordering violated: {} >= {}",
-                window[0].path,
-                window[1].path
-            );
-        }
+        fs::write(root.join("B.txt"), "content")?;
+        fs::write(root.join("src.rs"), "content")?;
+
+        let arrived = fold_candidates(&root, None, Vec::new(), |mut paths, candidate| {
+            if let Candidate::File(path, _) = candidate {
+                paths.push(path.as_str().to_string());
+            }
+            Ok(paths)
+        })?;
+
+        let mut expected = arrived.clone();
+        expected.sort_by(|a, b| cmp_path(a, b));
+        assert_eq!(arrived.len(), 52);
+        assert_eq!(arrived, expected);
         Ok(())
     }
 

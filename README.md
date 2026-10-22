@@ -124,7 +124,7 @@ Each limit either skips an entry or ends the run. The values and the enforcement
 | `MAX_FILE_SIZE` | The file is skipped and counted as skipped. |
 | `MAX_PATH_BYTES` | The file is skipped and counted as skipped. |
 | `MAX_PATH_DEPTH` | The run fails. Hidden and noise entries are dropped before this check, so they never fail the run. |
-| `MAX_FILE_COUNT` | The run fails. The error lists the largest directories. Local runs may list different directories from run to run. |
+| `MAX_FILE_COUNT` | The run fails. The error lists the largest directories. |
 | `MAX_OUTPUT_SIZE` | The run fails and no digest is written. The error lists the largest files. |
 | `ARCHIVE_MAX_SECS`, `GITHUB_TIMEOUT_SECS` | The GitHub request times out. Timeouts on response headers are retried. See [sec. 6.5-6.6](docs/security_and_filtering.md#6-github-network-safety). |
 | `MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS` | Transient GitHub failures are retried with backoff. If GitHub asks you to wait longer than the cap, the run fails instead of waiting. See [sec. 6.5](docs/security_and_filtering.md#6-github-network-safety). |

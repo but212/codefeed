@@ -29,8 +29,8 @@ codefeed turns a local directory or a public GitHub repository into one text dig
 
 ### Storage
 
-- `FileStorage` -- Append-only private `path_arena` and `content_arena` plus a `spans` vector. Spans resolve only through `FileStorage` (`path`, `get`, `iter`). Limit: a `FileSpan` has no owner, so a span from another storage is not detected; it can resolve to unrelated bytes if its range fits.
-- `FileSpan` -- 16-byte POD of four `u32` values (offsets and lengths) into the arenas.
+- `FileStorage` -- Append-only private `path_arena` and `content_arena` plus a `spans` vector. Callers read records only through `FileStorage::iter`, which yields `FileRecord` views.
+- `FileSpan` -- 16-byte POD of four `u32` values (offsets and lengths) into the arenas. Private to `storage.rs`, so no span leaves storage and none can be passed to another storage.
 - `FileRecord<'a>` -- Borrowed `path` and `content` views.
 - `SortedFiles` -- `FileStorage` sorted by `cmp_path`. Read-only through `Deref`.
 
@@ -92,15 +92,15 @@ codefeed turns a local directory or a public GitHub repository into one text dig
 - Overflow diagnostics are built only on error paths.
 - `MAX_OUTPUT_SIZE` overflow lists the five largest files, sorted by size and then by path.
 - `MAX_FILE_COUNT` overflow lists the three largest directories, sorted by count and then by name.
-- Local runs can report different diagnostics between runs, because they cover only the candidates admitted before the abort, and admission order depends on worker timing.
+- Local runs report the same diagnostics on every run. The walk is sorted and candidates are settled in walk order, so the candidates admitted before an abort are the same each time.
 
 ### 3.8 Local traversal pipeline
 
-1. Up to `MAX_LOCAL_WORKERS` workers run `WalkBuilder::build_parallel` with `follow_links(false)`. Each worker classifies the path, checks metadata, and reads a bounded body.
-2. Results go through a bounded `sync_channel` of `LOCAL_CHANNEL_CAPACITY` messages to the main thread ([security sec. 8](docs/security_and_filtering.md#8-limit-values)).
-3. The main thread calls `Selector::observe` in arrival order.
-4. An error or a budget overflow sets an `AtomicBool` and drops the receiver. Workers stop. The first fatal error to reach the main thread is reported, so with several failing files the reported path and error kind can vary between runs.
-5. The final order comes from `SortedFiles`, not from arrival order.
+1. A producer thread walks with `WalkBuilder::sort_by_file_name` and `follow_links(false)`. For each entry it classifies the path and sends a job for each regular file. It sends one slot per entry, in walk order.
+2. Up to `MAX_LOCAL_WORKERS` workers take jobs. Each worker checks metadata, reads a bounded body, and replies on its slot. After an abort, workers reply without reading.
+3. The main thread settles slots in walk order and calls `Selector::observe` for each candidate. The first error in walk order stops the run.
+4. The job and slot channels each hold `LOCAL_CHANNEL_CAPACITY` messages ([security sec. 8](docs/security_and_filtering.md#8-limit-values)).
+5. The final order comes from `SortedFiles`. Both the walk order and the settle order are `cmp_path` order.
 
 ### 3.9 Network
 
@@ -138,7 +138,7 @@ Core code is pure. It performs no I/O, reads no clock or environment, and never 
 - `main.rs` (crate root binary) -- Calls `run_cli` and exits with its code.
 - `mod.rs` -- `ingest` (pipeline) and `run_cli` (exit codes and stream choice).
 - `error.rs` -- `IngestError` and `transport_error`, the only place effect errors are built.
-- `local.rs` -- Parallel walk, bounded reads, and the channel to the selector.
+- `local.rs` -- Sorted producer walk, bounded parallel reads, and in-order settlement to the selector.
 - `archive.rs` -- Gzip and tar streaming, PAX SHA extraction, and entry admission (`collect`).
 - `github.rs` -- HTTP client, token resolution, retry loop, and warnings.
 - `atomic.rs` -- `write_atomic`, `AtomicFile`, and `TempFile`: temporary file, sync, and rename.
