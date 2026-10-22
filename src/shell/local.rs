@@ -14,6 +14,7 @@
 
 use std::fs;
 use std::io::{self, Read};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::sync_channel;
@@ -26,8 +27,8 @@ use super::output::ResolvedOutput;
 use crate::core::error::DomainError;
 use crate::core::model::{CollectionResult, repository_name};
 use crate::core::policy::{
-    LOCAL_CHANNEL_CAPACITY, MAX_FILE_SIZE, NormalizedPath, PathStatus, classify_path_segments,
-    is_hidden_segment,
+    LOCAL_CHANNEL_CAPACITY, MAX_FILE_SIZE, MAX_LOCAL_WORKERS, NormalizedPath, PathStatus,
+    classify_path_segments, is_hidden_segment,
 };
 use crate::core::selector::{Selector, exceeds_size_limits};
 
@@ -75,6 +76,7 @@ pub(super) fn collect(
         .require_git(false)
         .parents(false)
         .follow_links(false)
+        .threads(local_worker_count(std::thread::available_parallelism()))
         .build_parallel();
 
     let (tx, rx) = sync_channel::<WorkerMsg>(LOCAL_CHANNEL_CAPACITY);
@@ -213,6 +215,11 @@ fn drain_channel(
     }
     drop(rx);
     result
+}
+
+/// Walker thread count: available cores capped at `MAX_LOCAL_WORKERS`, or 1 when unknown.
+fn local_worker_count(available: io::Result<NonZeroUsize>) -> usize {
+    available.map_or(1, |cores| cores.get().min(MAX_LOCAL_WORKERS))
 }
 
 /// Errors that make one file unavailable without invalidating the walk. Applied at metadata, open,
@@ -798,5 +805,13 @@ mod tests {
         assert_eq!(result.files.iter().next().unwrap().path, "visible.txt");
         assert_eq!(result.skipped, 0);
         Ok(())
+    }
+
+    #[test]
+    fn local_worker_count_caps_and_defaults() {
+        let cores = |n: usize| NonZeroUsize::new(n).unwrap();
+        assert_eq!(local_worker_count(Ok(cores(64))), MAX_LOCAL_WORKERS);
+        assert_eq!(local_worker_count(Ok(cores(4))), 4);
+        assert_eq!(local_worker_count(Err(io::Error::other("unknown"))), 1);
     }
 }

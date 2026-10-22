@@ -18,6 +18,10 @@ Internal refactors and test changes. No consumer action required.
 
 - **Private arenas**: `FileStorage` arenas are private. `FileStorage::path(span)` replaces `path_arena()`, and the tree renderer resolves paths through storage. Spans carry no owner: a span from another storage is not detected. It panics only when out of range and can otherwise resolve to unrelated bytes (`src/core/storage.rs`, `src/core/render/tree.rs`).
 
+#### Shell
+
+- **Local worker cap**: the local walk sets its thread count explicitly to `min(available cores, MAX_LOCAL_WORKERS)` instead of relying on the `ignore` crate default. Behavior is unchanged (`src/shell/local.rs`, `src/core/policy.rs`).
+
 ### Maintainers
 
 Documentation, build, and removals.

@@ -132,7 +132,7 @@ Implemented in `src/shell/local.rs` and `src/shell/output.rs`.
 2. **Output exclusion.** The output path is resolved once at startup (`resolve_output_target`) and excluded from the walk by canonical path. This prevents the digest from ingesting itself.
 3. **Atomic writes.** The digest is written to a temporary file in the destination's parent directory. The file is synced, then renamed to the destination. On Unix, the existing file's permissions are kept and the parent directory is synced after the rename. A failed sync is reported as a warning on stderr, because the rename has already replaced the target. The temporary handle is closed before the file is unlinked on `Drop`, which keeps cleanup reliable on Windows and Unix, including during error and panic unwinding.
 4. **Unavailable versus fatal.** At the metadata, open, and read steps, a per-file `NotFound`, `PermissionDenied`, or Windows sharing (32) or lock (33) violation is recorded as unavailable and counted as skipped. Any other error at those steps fails the run with `IngestError::Io`. An unreadable directory fails the run and names the directory. When several files fail fatally, the first error to reach the main thread is reported, so the path and error kind can vary between runs.
-5. **Bounded concurrency.** Workers and the main thread communicate through a `sync_channel` of `LOCAL_CHANNEL_CAPACITY` messages (sec. 8), so the queue cannot grow without bound during a large scan. A full queue blocks the workers, which bounds read-ahead memory to about that many files plus one per worker. An error or budget overflow sets an `AtomicBool` and drops the receiver, which stops all workers promptly.
+5. **Bounded concurrency.** Workers and the main thread communicate through a `sync_channel` of `LOCAL_CHANNEL_CAPACITY` messages (sec. 8), so the queue cannot grow without bound during a large scan. A full queue blocks the workers. At most `LOCAL_CHANNEL_CAPACITY + MAX_LOCAL_WORKERS + 1` file bodies are held at once: the queued bodies, one per worker that is reading or blocked on send, and the one the main thread is observing. Each body is at most `MAX_FILE_SIZE + 1` bytes (sec. 4). This bounds the bytes read and then discarded when a budget overflow or error stops the run. An error or budget overflow sets an `AtomicBool` and drops the receiver, which stops all workers promptly.
 
 ---
 
@@ -204,6 +204,7 @@ This section is the only place in the documentation that states limit values. Ot
 | `MAX_OUTPUT_SIZE` | 20 MiB | Storage early check and rendering buffer | Run fails; no output; lists five largest files |
 | `ARCHIVE_BUFFER_BYTES` | 64 KiB | Archive read buffer | Not a limit; sets buffering only |
 | `LOCAL_CHANNEL_CAPACITY` | 64 messages | Local worker queue (sec. 5.5) | Not a limit; full queue blocks workers |
+| `MAX_LOCAL_WORKERS` | 12 threads | Local walk threads (sec. 5.5) | Not a limit; fewer cores use fewer threads |
 | `ARCHIVE_MAX_SECS` | 300 seconds | Whole archive transfer (sec. 6.6) | Download fails with a request error |
 | `GITHUB_TIMEOUT_SECS` | 30 seconds | Response headers (sec. 6.6) | Treated as transient; retried (sec. 6.5) |
 | `MAX_ATTEMPTS` | 3 attempts (1 initial, 2 retries) | Retry loop (sec. 6.5) | Transient failures stop retrying; the run fails |

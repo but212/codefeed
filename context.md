@@ -96,7 +96,7 @@ codefeed turns a local directory or a public GitHub repository into one text dig
 
 ### 3.8 Local traversal pipeline
 
-1. Workers run `WalkBuilder::build_parallel` with `follow_links(false)`. Each worker classifies the path, checks metadata, and reads a bounded body.
+1. Up to `MAX_LOCAL_WORKERS` workers run `WalkBuilder::build_parallel` with `follow_links(false)`. Each worker classifies the path, checks metadata, and reads a bounded body.
 2. Results go through a bounded `sync_channel` of `LOCAL_CHANNEL_CAPACITY` messages to the main thread ([security sec. 8](docs/security_and_filtering.md#8-limit-values)).
 3. The main thread calls `Selector::observe` in arrival order.
 4. An error or a budget overflow sets an `AtomicBool` and drops the receiver. Workers stop. The first fatal error to reach the main thread is reported, so with several failing files the reported path and error kind can vary between runs.
