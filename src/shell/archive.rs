@@ -67,7 +67,7 @@ fn process_tar_entry<R: Read>(
     let path_bytes = entry.path_bytes();
     let status = normalize_tar_entry_path(&path_bytes)?;
 
-    let size_hint = entry.header().size().ok();
+    let size_hint = Some(entry.size());
 
     // 3. Pre-I/O candidate admission: the body is read only if the candidate is admitted
     selector.observe(status, size_hint, move || {
@@ -155,6 +155,46 @@ mod tests {
 
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files.iter().next().unwrap().path, "small.txt");
+        assert_eq!(result.skipped, 1);
+    }
+
+    #[test]
+    fn skips_too_large_files_with_pax_size_override() {
+        use crate::core::policy::MAX_FILE_SIZE;
+
+        let mock_data = gzip_archive(|tar| {
+            let mut pax_header = tar::Header::new_gnu();
+            pax_header.set_entry_type(EntryType::XHeader);
+            let pax_data = format!("16 size={}\n", MAX_FILE_SIZE + 10);
+            pax_header.set_size(pax_data.len() as u64);
+            pax_header.set_mode(0o644);
+            pax_header.set_cksum();
+            tar.append_data(
+                &mut pax_header,
+                "repo-root/PaxHeaders/pax_large.txt",
+                pax_data.as_bytes(),
+            )
+            .unwrap();
+
+            let mut file_header = tar::Header::new_gnu();
+            file_header.set_entry_type(EntryType::Regular);
+            let name = b"repo-root/pax_large.txt";
+            file_header.as_mut_bytes()[..name.len()].copy_from_slice(name);
+            file_header.set_size(0);
+            file_header.set_mode(0o644);
+            file_header.set_cksum();
+            let large_payload = vec![b'a'; (MAX_FILE_SIZE + 10) as usize];
+            tar.append(&file_header, large_payload.as_slice()).unwrap();
+        });
+
+        let result = collect(
+            mock_data.as_slice(),
+            "https://github.com/owner/repo",
+            Some("main"),
+        )
+        .expect("collection should succeed");
+
+        assert_eq!(result.files.len(), 0);
         assert_eq!(result.skipped, 1);
     }
 

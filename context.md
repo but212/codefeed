@@ -12,7 +12,8 @@ codefeed turns a local directory or a public GitHub repository into one text dig
 
 ### Inputs and configuration
 
-- `Source` -- `Local(PathBuf)` or `Github { owner, repo, reference }`. Built only through `Source::github` or `Source::parse`, which validate owner and repository names. The `Github` variant is `#[non_exhaustive]`.
+- `Source` -- `Local(PathBuf)` or `Github { owner, repo, reference }`. Built only through `Source::github` or `Source::parse`, which validate owner and repository names into `GithubName`. The `Github` variant is `#[non_exhaustive]`.
+- `GithubName` -- Validated GitHub owner or repository name. Rejects empty strings, `.`, `..`, and invalid characters. Derefs to `str`.
 - `GitRef` -- Validated, trimmed, non-empty revision (branch, tag, or commit SHA). Rejects `.` and `..`. Derefs to `str`.
 - `OutputTarget` -- `File(PathBuf)` or `Stdout`. Stdout is a variant, never a sentinel path.
 - `ResolvedOutput` -- `OutputTarget` resolved against the filesystem. Shell-private. Only `resolve_output_target` constructs it.
@@ -49,7 +50,7 @@ codefeed turns a local directory or a public GitHub repository into one text dig
 
 ### 3.1 Inputs are parsed once
 
-- CLI arguments and URLs become value objects at the boundary (`cli::parse`, `Source::parse`, `GitRef::new`). Core code after that point assumes validity and does not re-validate.
+- CLI arguments and URLs become value objects at the boundary (`cli::parse`, `Source::parse`, `GitRef::new`, `GithubName::new`). Core code after that point assumes validity and does not re-validate.
 - `--ref` is rejected for local sources.
 - A GitHub URL must be exactly `https://github.com/{owner}/{repo}`, with an optional trailing `.git`. Other schemes and hosts are rejected. Userinfo (`user@`) is rejected, and the port must be empty or `443`.
 
@@ -123,7 +124,7 @@ Core code is pure. It performs no I/O, reads no clock or environment, and never 
 
 - `cli.rs` -- Argument parsing (`parse`, folded through `Parsed`), help text, `CliAction`, and `completion_message`.
 - `policy.rs` -- Limits, noise and sensitive lists, and path classification (`classify_path_segments`, `is_hidden_segment`, `is_ignored_filename`, `PathStatus`).
-- `model.rs` -- `Source`, `GitRef`, `RunConfig`, `OutputTarget`, `DigestFormat`, `CollectionResult`, `IngestReport`, and `repository_name`.
+- `model.rs` -- `Source`, `GitRef`, `GithubName`, `RunConfig`, `OutputTarget`, `DigestFormat`, `CollectionResult`, `IngestReport`, and `repository_name`.
 - `selector.rs` -- `Selector::observe` and `finish`, `CandidateBudget`, and `exceeds_size_limits`.
 - `storage.rs` -- `FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, and `largest_files`.
 - `error.rs` -- `DomainError` and `CandidateLimitExceededError`.
@@ -140,11 +141,11 @@ Core code is pure. It performs no I/O, reads no clock or environment, and never 
 - `error.rs` -- `IngestError` and `transport_error`, the only place effect errors are built.
 - `local/` -- `mod.rs` (`collect`, root validation, label, and candidate observation), `walk.rs` (sorted walker and path classification), `read.rs` (one file's metadata, size gate, and bounded body), and `pipeline.rs` (producer, read workers, and in-order settlement to the selector).
 - `archive.rs` -- Gzip and tar streaming, PAX SHA extraction, and entry admission (`collect`).
-- `github.rs` -- HTTP client, token resolution, retry loop, and warnings.
+- `github/` -- `mod.rs` (orchestration and `collect`), `client.rs` (HTTP client, TLS, and token resolution), and `stream.rs` (tarball streaming, warnings, and retry loop).
 - `atomic.rs` -- `write_atomic`, `AtomicFile`, and `TempFile`: temporary file, sync, and rename.
 - `output.rs` -- `resolve_output_target`, `deliver`, and the stdout/stderr line writers.
-- `testing.rs` -- Test-only fixtures: `temp_dir` and tarball builders.
+- `testing.rs` -- Test-only fixtures: `temp_dir`, tarball builders, and `MockServer`.
 
 ### Public API (`src/lib.rs`)
 
-`ingest`, `run_cli`, `RunConfig`, `Source`, `GitRef`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, and `CandidateLimitExceededError`. Everything else is `pub(crate)`.
+`ingest`, `run_cli`, `RunConfig`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, and `CandidateLimitExceededError`. Everything else is `pub(crate)`.

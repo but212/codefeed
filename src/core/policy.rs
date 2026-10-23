@@ -71,7 +71,7 @@ const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "pfx", "c
 const SENSITIVE_PREFIXES: &[&str] = &["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "credentials"];
 
 /// Non-empty, normalized slash-separated relative UTF-8 path.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[repr(transparent)]
 pub(crate) struct NormalizedPath(String);
 

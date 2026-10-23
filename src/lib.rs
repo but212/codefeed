@@ -33,5 +33,7 @@ pub(crate) mod core;
 pub(crate) mod shell;
 
 pub use core::error::{CandidateLimitExceededError, DomainError};
-pub use core::model::{DigestFormat, GitRef, IngestReport, OutputTarget, RunConfig, Source};
+pub use core::model::{
+    DigestFormat, GitRef, GithubName, IngestReport, OutputTarget, RunConfig, Source,
+};
 pub use shell::{IngestError, ingest, run_cli};

@@ -14,9 +14,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 Observable behavior. **Action** = code or config change required.
 
+#### Breaking
+
+- **`Source::Github` owner and repo typed `GithubName`**: `Source::Github { owner, repo, reference }` fields `owner` and `repo` are now `GithubName` newtypes rather than `String`. `GithubName` derefs to `str`, rejects invalid characters, `.`, and `..`, and is re-exported from the crate root. `Source::github` and `Source::parse` continue to accept `impl Into<String>` (`src/core/model.rs`, `src/lib.rs`).
+  - **Action:** update code matching or binding `owner` and `repo` from `Source::Github` if expecting owned `String` instead of `&str`.
+
 #### Changed
 
 - **Deterministic local errors**: For local directories, the reported diagnostics no longer vary between runs. `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` errors list the same directories and files on every run. When several files fail with a fatal I/O error, the first one in walk order is reported. Before, the first to arrive was reported (`src/shell/local/pipeline.rs`).
+
+#### Fixed
+
+- **PAX archive entry size overrides**: In tar archives, `process_tar_entry` uses `entry.size()` rather than `entry.header().size()`. A file with a PAX extended header `size=` override is correctly evaluated against `MAX_FILE_SIZE` before reading (`src/shell/archive.rs`).
 
 ### Contributors
 
@@ -24,6 +33,7 @@ Internal refactors and test changes. No consumer action required.
 
 #### Core
 
+- **Path ordering cleanup**: Removed unused and conflicting `PartialOrd, Ord, Hash` derives on `NormalizedPath`, keeping component-wise `cmp_path` as the exclusive path-ordering rule (`src/core/policy.rs`).
 - **Test fixture and parser consolidation**: Unified XML and text rendering test fixtures with a generic `render_digest` helper in `src/core/render/formats.rs`, and consolidated repetitive CLI valid invocation assertions with `parse_run` in `src/core/cli.rs` (`src/core/render/formats.rs`, `src/core/cli.rs`).
 - **Test suite diet**: Pruned redundant subprocess CLI parsing tests in `tests/cli.rs`, decoupled `FileStorage` unit tests from internal arena fields in `src/core/storage.rs`, and removed test-only helper panic tests in `src/core/policy.rs` (`tests/cli.rs`, `src/core/storage.rs`, `src/core/policy.rs`).
 - **Private storage spans**: `FileSpan` is private to `src/core/storage.rs`. Callers read records only through `FileStorage::iter`, and the tree renderer works on paths from that iterator. A span can no longer be passed to another storage (`src/core/storage.rs`, `src/core/render/tree.rs`).

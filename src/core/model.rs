@@ -35,6 +35,38 @@ impl std::ops::Deref for GitRef {
     }
 }
 
+/// Validated GitHub owner or repository name.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct GithubName(String);
+
+impl GithubName {
+    /// Creates a new `GithubName`, rejecting empty strings, `.`, `..`, and invalid characters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::InvalidSource`] if `value` is empty, `.`, `..`, or contains
+    /// characters other than ASCII alphanumerics, `-`, `.`, and `_`.
+    pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
+        let string = value.into();
+        if !crate::core::github::valid_github_name(&string) {
+            return Err(DomainError::invalid_source(
+                "owner and repository names contain invalid characters",
+            ));
+        }
+        Ok(Self(string))
+    }
+}
+
+impl std::ops::Deref for GithubName {
+    type Target = str;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// Ingestion source location.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -44,9 +76,9 @@ pub enum Source {
     #[non_exhaustive]
     Github {
         /// Repository owner (user or organization).
-        owner: String,
+        owner: GithubName,
         /// Repository name.
-        repo: String,
+        repo: GithubName,
         /// Optional GitHub branch, tag, or commit SHA.
         reference: Option<GitRef>,
     },
@@ -64,18 +96,9 @@ impl Source {
         repo: impl Into<String>,
         reference: Option<GitRef>,
     ) -> Result<Self, DomainError> {
-        let owner = owner.into();
-        let repo = repo.into();
-        if !crate::core::github::valid_github_name(&owner)
-            || !crate::core::github::valid_github_name(&repo)
-        {
-            return Err(DomainError::invalid_source(
-                "owner and repository names contain invalid characters",
-            ));
-        }
         Ok(Self::Github {
-            owner,
-            repo,
+            owner: GithubName::new(owner)?,
+            repo: GithubName::new(repo)?,
             reference,
         })
     }
@@ -240,31 +263,31 @@ mod tests {
     }
 
     #[test]
+    fn github_name_validates_and_provides_slice_access() {
+        let name = GithubName::new("rust-lang").unwrap();
+        assert_eq!(&*name, "rust-lang");
+
+        let repo = GithubName::new("codefeed-2.0").unwrap();
+        assert_eq!(&*repo, "codefeed-2.0");
+
+        assert!(GithubName::new("").is_err());
+        assert!(GithubName::new(".").is_err());
+        assert!(GithubName::new("..").is_err());
+        assert!(GithubName::new("bad name").is_err());
+        assert!(GithubName::new("bad/name").is_err());
+    }
+
+    #[test]
     fn source_with_reference_validates_and_updates_reference() {
-        let gh = Source::Github {
-            owner: "rust-lang".into(),
-            repo: "rust".into(),
-            reference: None,
-        };
+        let gh = Source::github("rust-lang", "rust", None).unwrap();
         let updated = gh.clone().with_reference(Some("main")).unwrap();
         assert_eq!(
             updated,
-            Source::Github {
-                owner: "rust-lang".into(),
-                repo: "rust".into(),
-                reference: Some(GitRef::new("main").unwrap()),
-            }
+            Source::github("rust-lang", "rust", Some(GitRef::new("main").unwrap())).unwrap()
         );
 
         let cleared: Source = updated.with_reference(None::<&str>).unwrap();
-        assert_eq!(
-            cleared,
-            Source::Github {
-                owner: "rust-lang".into(),
-                repo: "rust".into(),
-                reference: None,
-            }
-        );
+        assert_eq!(cleared, Source::github("rust-lang", "rust", None).unwrap());
 
         let local = Source::Local(PathBuf::from("."));
         let local_ok: Source = local.clone().with_reference(None::<&str>).unwrap();
@@ -288,20 +311,12 @@ mod tests {
 
     #[test]
     fn parses_public_github_repository() -> Result<(), Box<dyn std::error::Error>> {
-        let expected = Source::Github {
-            owner: "rust-lang".into(),
-            repo: "cargo".into(),
-            reference: None,
-        };
+        let expected = Source::github("rust-lang", "cargo", None).unwrap();
         assert_eq!(
             Source::parse("https://github.com/rust-lang/cargo.git")?,
             expected
         );
-        let expected_repo = Source::Github {
-            owner: "owner".into(),
-            repo: "repo".into(),
-            reference: None,
-        };
+        let expected_repo = Source::github("owner", "repo", None).unwrap();
         assert_eq!(
             Source::parse("https://github.com:443/owner/repo")?,
             expected_repo
@@ -354,8 +369,8 @@ mod tests {
         assert_eq!(
             valid,
             Source::Github {
-                owner: "rust-lang".into(),
-                repo: "cargo".into(),
+                owner: GithubName::new("rust-lang").unwrap(),
+                repo: GithubName::new("cargo").unwrap(),
                 reference: None,
             }
         );
