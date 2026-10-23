@@ -36,4 +36,9 @@ pub use core::error::{CandidateLimitExceededError, DomainError};
 pub use core::model::{
     DigestFormat, GitRef, GithubName, IngestReport, OutputTarget, RunConfig, Source,
 };
-pub use shell::{IngestError, ingest, run_cli};
+pub use shell::{IngestError, ingest};
+
+#[doc(hidden)]
+pub mod cli {
+    pub use crate::shell::cli::run_cli;
+}

@@ -1,74 +1,7 @@
-//! Single source of truth for ingestion policies, limits, and conventions.
+//! Relative path normalization, depth enforcement, and segment classification.
 
-use memchr::memrchr;
-
-/// Maximum individual file size accepted (1 MiB in bytes). Larger files are skipped.
-pub(crate) const MAX_FILE_SIZE: u64 = 1024 * 1024;
-/// Maximum rendered digest size (20 MiB in bytes). Overflows return [`DomainError::OutputTooLarge`](crate::core::error::DomainError::OutputTooLarge).
-pub(crate) const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
-/// Maximum candidate files evaluated before candidate budget overflows (10,000 files).
-pub(crate) const MAX_FILE_COUNT: usize = 10_000;
-/// Maximum directory nesting depth permitted for archive entry paths (256 levels).
-pub(crate) const MAX_PATH_DEPTH: usize = 256;
-/// Maximum allowable path length in bytes (4,096 bytes). Paths exceeding this limit are skipped.
-pub(crate) const MAX_PATH_BYTES: u64 = 4096;
-/// Capacity in bytes for buffering incoming archive decompression streams (64 KiB).
-pub(crate) const ARCHIVE_BUFFER_BYTES: usize = 64 * 1024;
-/// Capacity in messages of each local pipeline channel (jobs and slots). A full channel blocks its
-/// sender, which bounds the file bodies held at once to this value plus two (security §5.5, §8).
-pub(crate) const LOCAL_CHANNEL_CAPACITY: usize = 64;
-/// Maximum local read workers. Fewer available cores use fewer workers (security §5.5, §8).
-pub(crate) const MAX_LOCAL_WORKERS: usize = 12;
-
-/// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
-pub(crate) const ARCHIVE_MAX_SECS: u64 = 300;
-/// Maximum total HTTP request attempts (1 initial + up to 2 retries).
-pub(crate) const MAX_ATTEMPTS: usize = 3;
-/// Fast byte-level token heuristic constant for English text and source code.
-pub(crate) const ASCII_BYTES_PER_TOKEN: u64 = 4;
-/// Base initial delay in milliseconds for exponential backoff.
-pub(crate) const RETRY_INITIAL_DELAY_MS: u64 = 250;
-/// Maximum delay cap in milliseconds for exponential backoff.
-pub(crate) const RETRY_MAX_DELAY_MS: u64 = 5_000;
-/// HTTP response headers timeout in seconds for GitHub API requests (30 seconds).
-pub(crate) const GITHUB_TIMEOUT_SECS: u64 = 30;
-
-const _: () = {
-    assert!(MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX as u64);
-    assert!(MAX_FILE_SIZE <= MAX_OUTPUT_SIZE);
-    assert!(MAX_PATH_BYTES <= MAX_FILE_SIZE);
-    assert!(MAX_FILE_COUNT > 0);
-    assert!(MAX_PATH_DEPTH > 0);
-    assert!(ASCII_BYTES_PER_TOKEN > 0);
-    assert!(GITHUB_TIMEOUT_SECS <= ARCHIVE_MAX_SECS);
-    assert!(ARCHIVE_BUFFER_BYTES > 0);
-    assert!(LOCAL_CHANNEL_CAPACITY > 0);
-    assert!(MAX_LOCAL_WORKERS > 0);
-};
-
-/// Conventional lockfiles excluded before candidate budget accounting.
-const NOISE: &[&str] = &[
-    "Cargo.lock",
-    "package-lock.json",
-    "yarn.lock",
-    "pnpm-lock.yaml",
-    "bun.lock",
-    "bun.lockb",
-    "go.sum",
-    "poetry.lock",
-    "Pipfile.lock",
-    "composer.lock",
-    "Gemfile.lock",
-];
-
-/// Known sensitive file extensions (case-insensitive) excluded prior to reading or download.
-///
-/// Note: `credentials` is matched as an extension here (`*.credentials`, e.g., `aws.credentials`),
-/// and is also matched as a filename prefix in [`SENSITIVE_PREFIXES`] (`credentials*`, e.g., `credentials.json`).
-const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "pfx", "credentials"];
-
-/// Known sensitive filename prefixes (case-insensitive) excluded prior to reading or download.
-const SENSITIVE_PREFIXES: &[&str] = &["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "credentials"];
+use super::exclusions::{is_hidden_segment, is_ignored_filename};
+use super::limits::MAX_PATH_DEPTH;
 
 /// Non-empty, normalized slash-separated relative UTF-8 path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,41 +50,6 @@ pub(crate) enum PathStatus {
     Ignored,
     /// Non-UTF-8 path that is not hidden and must be counted against candidate budget as skipped.
     NonUtf8Candidate(String),
-}
-
-fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
-    value
-        .get(..prefix.len())
-        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
-}
-
-/// Returns `true` if `file_name` indicates a sensitive credentials file.
-fn is_sensitive_file(file_name: &str) -> bool {
-    if SENSITIVE_PREFIXES
-        .iter()
-        .any(|&prefix| starts_with_ignore_ascii_case(file_name, prefix))
-    {
-        return true;
-    }
-    let Some(dot_idx) = memrchr(b'.', file_name.as_bytes()) else {
-        return false;
-    };
-    let extension = &file_name[dot_idx + 1..];
-    SENSITIVE_EXTENSIONS
-        .iter()
-        .any(|&s| s.eq_ignore_ascii_case(extension))
-}
-
-/// Returns `true` if raw path segment bytes start with a dot (`.`), marking a hidden file or directory.
-#[must_use]
-pub(crate) const fn is_hidden_segment(segment: &[u8]) -> bool {
-    matches!(segment, [b'.', ..])
-}
-
-/// Returns `true` if `file_name` matches a known noise file or a sensitive credentials pattern.
-#[must_use]
-pub(crate) fn is_ignored_filename(file_name: &str) -> bool {
-    NOISE.contains(&file_name) || is_sensitive_file(file_name)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,17 +130,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_hidden_segment() {
-        assert!(is_hidden_segment(b".git"));
-        assert!(is_hidden_segment(b".env"));
-        assert!(is_hidden_segment(b"."));
-        assert!(is_hidden_segment(b".."));
-        assert!(!is_hidden_segment(b"src"));
-        assert!(!is_hidden_segment(b""));
-        assert!(!is_hidden_segment(b"file.txt"));
-    }
-
-    #[test]
     fn test_classify_path_segments_non_utf8_with_ignored_filename() {
         // non-UTF-8 directory segment with ignored filename (id_rsa) -> Ignored
         let segments: &[&[u8]] = &[b"\xff\xfe", b"id_rsa"];
@@ -321,53 +208,6 @@ mod tests {
             .chain(std::iter::once(b"Cargo.lock".as_slice()))
             .collect();
         assert_eq!(classify_path_segments(deep_noise), Ok(PathStatus::Ignored));
-    }
-
-    #[test]
-    fn test_is_ignored_filename() {
-        let ignored = [
-            "Cargo.lock",
-            "package-lock.json",
-            "yarn.lock",
-            "pnpm-lock.yaml",
-            "go.sum",
-            "poetry.lock",
-            "Pipfile.lock",
-            "composer.lock",
-            "Gemfile.lock",
-            "bun.lock",
-            "bun.lockb",
-            "server.key",
-            "cert.pem",
-            "client.p12",
-            "cert.pkcs12",
-            "identity.pfx",
-            "credentials.json",
-            "aws.credentials",
-            "credentials",
-            "id_rsa",
-            "id_rsa.pub",
-            "id_ed25519",
-            "id_ed25519.pub",
-            "id_ecdsa",
-            "id_ecdsa.pub",
-            "id_dsa",
-            "id_dsa.pub",
-        ];
-        for filename in ignored {
-            assert!(
-                is_ignored_filename(filename),
-                "expected {filename} to be ignored"
-            );
-        }
-
-        let kept = ["Cargo.toml", "main.rs", "Makefile", "environment.rs"];
-        for filename in kept {
-            assert!(
-                !is_ignored_filename(filename),
-                "expected {filename} not to be ignored"
-            );
-        }
     }
 
     #[test]

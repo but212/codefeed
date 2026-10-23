@@ -86,7 +86,7 @@ codefeed turns a local directory or a public GitHub repository into one text dig
 - File writes are atomic: temp file, sync, rename, then sync the parent directory on Unix. A failed run leaves the previous file in place. A failed parent-directory sync after the rename is a warning, not a failure, because the new file is already in place.
 - Stdout targets buffer the whole digest and write it only on success.
 - A broken pipe on stdout is not an error.
-- The completion summary goes to stdout for file targets and to stderr for stdout targets. It is built by `completion_message` in `core/cli.rs`. `run_cli` in `shell/mod.rs` chooses the stream.
+- The completion summary goes to stdout for file targets and to stderr for stdout targets. It is built by `completion_message` in `core/cli.rs`. `run_cli` in `shell/cli.rs` chooses the stream.
 
 ### 3.7 Diagnostics
 
@@ -112,9 +112,9 @@ codefeed turns a local directory or a public GitHub repository into one text dig
 
 ## 4. Limits and tunables
 
-All limits and exclusion lists are defined in `src/core/policy.rs`. Code reads them from there and never copies their values. Limit values are stated only in [security sec. 8](docs/security_and_filtering.md#8-limit-values).
+All limits and exclusion lists are defined in `src/core/policy/`. Code reads them from there and never copies their values. Limit values are stated only in [security sec. 8](docs/security_and_filtering.md#8-limit-values).
 
-Compile-time assertions in `policy.rs` and `github/retry.rs` check relations between limits.
+Compile-time assertions in `policy/limits.rs` and `github/retry.rs` check relations between limits.
 
 ## 5. Functional core and imperative shell
 
@@ -123,7 +123,7 @@ Core code is pure. It performs no I/O, reads no clock or environment, and never 
 ### Core (`src/core/`)
 
 - `cli.rs` -- Argument parsing (`parse`, folded through `Parsed`), help text, `CliAction`, and `completion_message`.
-- `policy.rs` -- Limits, noise and sensitive lists, and path classification (`classify_path_segments`, `is_hidden_segment`, `is_ignored_filename`, `PathStatus`).
+- `policy/` -- `mod.rs` (re-exports), `limits.rs` (numeric limits and compile-time assertions), `exclusions.rs` (noise and sensitive lists), and `classify.rs` (`classify_path_segments`, `is_hidden_segment`, `is_ignored_filename`, `NormalizedPath`, `PathStatus`).
 - `model.rs` -- `Source`, `GitRef`, `GithubName`, `RunConfig`, `OutputTarget`, `DigestFormat`, `CollectionResult`, `IngestReport`, and `repository_name`.
 - `selector.rs` -- `Selector::observe` and `finish`, `CandidateBudget`, and `exceeds_size_limits`.
 - `storage.rs` -- `FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, and `largest_files`.
@@ -137,7 +137,8 @@ Core code is pure. It performs no I/O, reads no clock or environment, and never 
 ### Shell (`src/shell/`)
 
 - `main.rs` (crate root binary) -- Calls `run_cli` and exits with its code.
-- `mod.rs` -- `ingest` (pipeline) and `run_cli` (exit codes and stream choice).
+- `mod.rs` -- `ingest` (pipeline).
+- `cli.rs` -- `run_cli` (argument handling, exit codes, and stream choice).
 - `error.rs` -- `IngestError` and `transport_error`, the only place effect errors are built.
 - `local/` -- `mod.rs` (`collect`, root validation, label, and candidate observation), `walk.rs` (sorted walker and path classification), `read.rs` (one file's metadata, size gate, and bounded body), and `pipeline.rs` (producer, read workers, and in-order settlement to the selector).
 - `archive.rs` -- Gzip and tar streaming, PAX SHA extraction, and entry admission (`collect`).
@@ -148,4 +149,4 @@ Core code is pure. It performs no I/O, reads no clock or environment, and never 
 
 ### Public API (`src/lib.rs`)
 
-`ingest`, `run_cli`, `RunConfig`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, and `CandidateLimitExceededError`. Everything else is `pub(crate)`.
+`ingest`, `RunConfig`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, and `CandidateLimitExceededError`. `run_cli` is internal under `codefeed::cli`. Everything else is `pub(crate)`.
