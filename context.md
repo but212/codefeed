@@ -12,7 +12,7 @@ codefeed turns a local directory or a public GitHub repository into one text dig
 
 ### Inputs and configuration
 
-- `Source` -- `Local(PathBuf)` or `Github { owner, repo, reference }`. Built only through `Source::github` or `Source::parse`, which validate owner and repository names into `GithubName`. The `Github` variant is `#[non_exhaustive]`.
+- `Source` -- `Local(PathBuf)` or `Github { owner, repo, reference }`. Built publicly through `Source::github` or parsed from CLI arguments via `Source::parse_os` / `Source::parse`, validating owner and repository names into `GithubName`. The `Github` variant is `#[non_exhaustive]`.
 - `GithubName` -- Validated GitHub owner or repository name. Rejects empty strings, `.`, `..`, and invalid characters. Derefs to `str`.
 - `GitRef` -- Validated, trimmed, non-empty revision (branch, tag, or commit SHA). Rejects `.` and `..`. Derefs to `str`.
 - `OutputTarget` -- `File(PathBuf)` or `Stdout`. Stdout is a variant, never a sentinel path.
@@ -71,7 +71,7 @@ codefeed turns a local directory or a public GitHub repository into one text dig
 
 - `FileStorage::push` rejects a candidate before storing it when the raw arena bytes would exceed `MAX_OUTPUT_SIZE`. Rendered output is never smaller than the raw arena bytes, so this early check never rejects a digest that would fit.
 - `SortedFiles::new` sorts spans by `cmp_path`, which compares path components. The result is byte-identical regardless of worker timing.
-- Arena offsets and lengths are `u32`. A compile-time assertion in `policy.rs` keeps `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES` within `u32::MAX`.
+- Arena offsets and lengths are `u32`. A compile-time assertion in `policy/limits.rs` keeps `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES` within `u32::MAX`.
 
 ### 3.5 Rendering
 

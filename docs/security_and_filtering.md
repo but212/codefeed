@@ -2,7 +2,7 @@
 
 **Audience:** security reviewers, and anyone changing filters, limits, filesystem code, or network code.
 
-**Authority:** `src/core/policy.rs` is the single source of truth for every list and limit value. The values and lists in this document mirror it. A change to `policy.rs` must update this document in the same commit.
+**Authority:** `src/core/policy/` is the single source of truth for every list and limit value. The values and lists in this document mirror it. A change to `src/core/policy/` must update this document in the same commit.
 
 ---
 
@@ -10,8 +10,8 @@
 
 | # | Threat | Mitigation | Where |
 | :--- | :--- | :--- | :--- |
-| T1 | Secret disclosure into prompts or output | Hidden-entry, noise, and sensitive-name exclusion (sec. 3). Content is not scanned (non-goal, sec. 1.2). | `policy.rs`, `selector.rs` |
-| T2 | Resource exhaustion | Size, count, depth, and path-length limits; output cap; bounded reads and channels; archive timeout (sec. 5, sec. 6). | `policy.rs`, `local/`, `github/` |
+| T1 | Secret disclosure into prompts or output | Hidden-entry, noise, and sensitive-name exclusion (sec. 3). Content is not scanned (non-goal, sec. 1.2). | `policy/exclusions.rs`, `policy/classify.rs` |
+| T2 | Resource exhaustion | Size, count, depth, and path-length limits; output cap; bounded reads and channels; archive timeout (sec. 5, sec. 6). | `policy/limits.rs`, `local/`, `github/` |
 | T3 | Credential forwarding to other origins | Exact-origin gate; redirects never carry authorization (sec. 6). | `core/github/url.rs`, `shell/github/` |
 | T4 | Output injection into terminals, XML, or LLM context boundaries | Format-specific escaping (sec. 7). | `core/render/escape.rs` |
 | T5 | Reading files outside the source root | Symlinks are never followed; metadata is checked before open (sec. 5). | `shell/local/` |
@@ -193,7 +193,7 @@ Escaping is applied in one pass by `write_escaped`, with rules chosen per contex
 
 ## 8. Limit Values
 
-This section is the only place in the documentation that states limit values. Other documents link here. `src/core/policy.rs` is authoritative: code reads each constant from there and never copies its value.
+This section is the only place in the documentation that states limit values. Other documents link here. `src/core/policy/limits.rs` is authoritative: code reads each constant from there and never copies its value.
 
 | Constant | Value | Enforced by | On overflow |
 | :--- | :--- | :--- | :--- |

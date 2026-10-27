@@ -130,7 +130,9 @@ impl AtomicFile {
         #[cfg(unix)]
         match fs::metadata(target) {
             Ok(metadata) => {
-                temp_file.set_permissions(metadata.permissions())?;
+                temp_file
+                    .set_permissions(metadata.permissions())
+                    .map_err(|error| io_error_at(&temp_file.path, error))?;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(io_error_at(target, error)),
