@@ -128,7 +128,7 @@ impl FileStorage {
                 self.iter().chain(once(candidate)),
             )));
         }
-        // Accepted total is at most `MAX_OUTPUT_SIZE`, which `policy.rs` asserts is `<= u32::MAX`,
+        // Accepted total is at most `MAX_OUTPUT_SIZE`, which `policy/limits.rs` asserts is `<= u32::MAX`,
         // so every arena offset and length below fits in `u32`.
         let path_offset = self.path_arena.len() as u32;
         let path_len = path.len() as u32;

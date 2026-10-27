@@ -1,7 +1,5 @@
 # Changelog
 
-**Audience:** library consumers and CLI users (what to change or expect), contributors (internal code), maintainers (docs, build, releases). Unreleased entries are grouped by audience; released versions keep their original categories.
-
 All notable changes are listed here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -16,18 +14,19 @@ Observable behavior. **Action** = code or config change required.
 
 #### Breaking
 
-- **`run_cli` moved from crate root to internal `codefeed::cli` module**: `codefeed::run_cli` is no longer exported directly at the crate root of `codefeed`. The command-line entrypoint is encapsulated in `codefeed::cli::run_cli` (`#[doc(hidden)]`) for `src/main.rs`. Library consumers integrate directly through `codefeed::ingest` (`src/lib.rs`, `src/shell/cli.rs`).
-  - **Action:** Any external library consumers calling `codefeed::run_cli` should use `codefeed::cli::run_cli` or migrate to `codefeed::ingest`.
-- **`Source::Github` owner and repo typed `GithubName`**: `Source::Github { owner, repo, reference }` fields `owner` and `repo` are now `GithubName` newtypes rather than `String`. `GithubName` derefs to `str`, rejects invalid characters, `.`, and `..`, and is re-exported from the crate root. `Source::github` and `Source::parse` continue to accept `impl Into<String>` (`src/core/model.rs`, `src/lib.rs`).
-  - **Action:** update code matching or binding `owner` and `repo` from `Source::Github` if expecting owned `String` instead of `&str`.
+- **`run_cli` moved from crate root to internal `codefeed::cli` module**: Crate root no longer exports `codefeed::run_cli`. Entry point encapsulated in `codefeed::cli::run_cli` (`#[doc(hidden)]`) for `src/main.rs`; consumers integrate via `codefeed::ingest` (`src/lib.rs`, `src/shell/cli.rs`).
+  - **Action:** Call `codefeed::cli::run_cli` or migrate to `codefeed::ingest`.
+- **`Source::Github` owner and repo typed `GithubName`**: `owner` and `repo` in `Source::Github { owner, repo, reference }` are `GithubName` newtypes rather than `String`. `GithubName` derefs to `str`, rejects invalid characters, `.`, and `..`, and is re-exported from crate root. `Source::github` accepts `impl Into<String>` and validates via `GithubName::new` (`src/core/model.rs`, `src/lib.rs`).
+  - **Action:** Update pattern matches or bindings expecting owned `String` instead of `&str`.
 
 #### Changed
 
-- **Deterministic local errors**: For local directories, the reported diagnostics no longer vary between runs. `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` errors list the same directories and files on every run. When several files fail with a fatal I/O error, the first one in walk order is reported. Before, the first to arrive was reported (`src/shell/local/pipeline.rs`).
+- **Deterministic local errors**: Diagnostics for local directories no longer vary between runs. `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` errors list files and directories in deterministic order. Multiple fatal I/O errors report the first in walk order rather than the first to arrive (`src/shell/local/pipeline.rs`).
 
 #### Fixed
 
-- **PAX archive entry size overrides**: In tar archives, `process_tar_entry` uses `entry.size()` rather than `entry.header().size()`. A file with a PAX extended header `size=` override is correctly evaluated against `MAX_FILE_SIZE` before reading (`src/shell/archive.rs`).
+- **Atomic file permission propagation path context**: Mapped Unix `io::Error` when setting permissions during atomic output creation so diagnostics include the temporary file path (`src/shell/atomic.rs`).
+- **PAX archive entry size overrides**: Tar `process_tar_entry` uses `entry.size()` instead of `entry.header().size()`, correctly evaluating PAX extended header `size=` overrides against `MAX_FILE_SIZE` before reading (`src/shell/archive.rs`).
 
 ### Contributors
 
@@ -35,19 +34,19 @@ Internal refactors and test changes. No consumer action required.
 
 #### Core
 
-- **Policy module split**: `src/core/policy.rs` is now `src/core/policy/`, with `limits.rs`, `exclusions.rs`, and `classify.rs` submodules. Unit tests were co-located with their respective submodules; behavior, constants, and re-exported paths are unchanged (`src/core/policy/`).
-- **Path ordering cleanup**: Removed unused and conflicting `PartialOrd, Ord, Hash` derives on `NormalizedPath`, keeping component-wise `cmp_path` as the exclusive path-ordering rule (`src/core/policy/classify.rs`).
-- **Test fixture and parser consolidation**: Unified XML and text rendering test fixtures with a generic `render_digest` helper in `src/core/render/formats.rs`, and consolidated repetitive CLI valid invocation assertions with `parse_run` in `src/core/cli.rs` (`src/core/render/formats.rs`, `src/core/cli.rs`).
-- **Test suite diet**: Pruned redundant subprocess CLI parsing tests in `tests/cli.rs`, decoupled `FileStorage` unit tests from internal arena fields in `src/core/storage.rs`, and removed test-only helper panic tests in `src/core/policy.rs` (`tests/cli.rs`, `src/core/storage.rs`, `src/core/policy.rs`).
-- **Private storage spans**: `FileSpan` is private to `src/core/storage.rs`. Callers read records only through `FileStorage::iter`, and the tree renderer works on paths from that iterator. A span can no longer be passed to another storage (`src/core/storage.rs`, `src/core/render/tree.rs`).
-- **Argument classification**: `cli::parse` classifies each argument with `classify_arg` (separator, help, flag, unknown option, or positional) before it folds the value. Behavior is unchanged (`src/core/cli.rs`).
+- **Policy module split**: Split `src/core/policy.rs` into `src/core/policy/` (`limits.rs`, `exclusions.rs`, `classify.rs`) with co-located unit tests. Behavior, constants, and re-exported paths unchanged (`src/core/policy/`).
+- **Path ordering cleanup**: Removed unused, conflicting `PartialOrd`, `Ord`, and `Hash` derives on `NormalizedPath`, leaving component-wise `cmp_path` as exclusive ordering rule (`src/core/policy/classify.rs`).
+- **Test fixture and parser consolidation**: Unified XML and text rendering test fixtures with generic `render_digest` helper; consolidated repetitive CLI valid-invocation assertions with `parse_run` (`src/core/render/formats.rs`, `src/core/cli.rs`).
+- **Test suite diet**: Pruned redundant subprocess CLI parsing tests in `tests/cli.rs`, decoupled `FileStorage` unit tests from arena internals in `src/core/storage.rs`, and removed test-only helper panic tests in `src/core/policy/classify.rs` (`tests/cli.rs`, `src/core/storage.rs`, `src/core/policy/classify.rs`).
+- **Private storage spans**: Made `FileSpan` private to `src/core/storage.rs`. Callers and tree renderer read records exclusively via `FileStorage::iter`, preventing cross-storage span use (`src/core/storage.rs`, `src/core/render/tree.rs`).
+- **Argument classification**: `cli::parse` classifies arguments via `classify_arg` (separator, help, flag, unknown option, or positional) before folding values. Behavior unchanged (`src/core/cli.rs`).
 
 #### Shell
 
-- **CLI entry point separation**: `run_cli`, `report_error`, and CLI unit tests were extracted from `src/shell/mod.rs` into a dedicated `src/shell/cli.rs` module. `src/shell/mod.rs` now solely orchestrates the `ingest` pipeline, improving functional and sequential cohesion (`src/shell/cli.rs`, `src/shell/mod.rs`).
-- **GitHub module split**: `src/shell/github.rs` is now `src/shell/github/`, with `client` and `stream` submodules. `MockServer` is promoted to `src/shell/testing.rs` as a reusable shell test fixture. Tests moved to their respective submodules; behavior and test names are unchanged (`src/shell/github/`, `src/shell/testing.rs`).
-- **Local pipeline**: the local walk runs sorted on a producer thread (`ignore::WalkBuilder::sort_by_file_name`), workers read bodies concurrently, and the main thread settles them in walk order. Bodies held at once are bounded by `LOCAL_CHANNEL_CAPACITY + 2`, independent of the worker count. Measured with hyperfine on a release build (Windows, 30 runs each): a 9,000-file synthetic tree 333.5 ms → 335.4 ms (+0.6%); this repository 18.4 ms → 18.0 ms (−2.0%) (`src/shell/local/pipeline.rs`, `src/core/policy.rs`).
-- **Local module split**: `src/shell/local.rs` is now `src/shell/local/`, with `walk`, `read`, and `pipeline` submodules. No behavior change. The local tests moved with the functions they exercise; the set of test names is unchanged. `run_cli` reports errors through one helper (`src/shell/mod.rs`).
+- **CLI entry point separation**: Extracted `run_cli`, `report_error`, and CLI unit tests from `src/shell/mod.rs` into `src/shell/cli.rs`. `src/shell/mod.rs` solely orchestrates the `ingest` pipeline (`src/shell/cli.rs`, `src/shell/mod.rs`).
+- **GitHub module split**: Split `src/shell/github.rs` into `src/shell/github/` (`client` and `stream` submodules). Promoted `MockServer` to `src/shell/testing.rs` as a reusable fixture. Submodule tests, test names, and behavior unchanged (`src/shell/github/`, `src/shell/testing.rs`).
+- **Local pipeline**: Producer thread sorts local walk (`ignore::WalkBuilder::sort_by_file_name`), workers read bodies concurrently, and main thread settles in walk order. In-flight bodies bounded by `LOCAL_CHANNEL_CAPACITY + 2`. Hyperfine release benchmarks (Windows, 30 runs): 9,000-file synthetic tree 333.5 ms → 335.4 ms (+0.6%); repository 18.4 ms → 18.0 ms (−2.0%) (`src/shell/local/pipeline.rs`, `src/core/policy/limits.rs`).
+- **Local module split**: Split `src/shell/local.rs` into `src/shell/local/` (`walk`, `read`, `pipeline`). Co-located tests; test names and behavior unchanged. `run_cli` reports errors through one helper (`src/shell/mod.rs`).
 
 ### Maintainers
 
@@ -55,8 +54,8 @@ Documentation, build, and removals.
 
 #### Build
 
-- **Release profile**: `lto = "thin"` replaces whole-program LTO. `codegen-units = 1` and `panic = "unwind"` are unchanged (`Cargo.toml`).
-  - Clean `cargo build --release` on Windows, measured in the same session: fat LTO 58 s, 3,664,896 bytes; thin LTO 33 s, 3,838,464 bytes (about 4.7% larger). Runtime was not measured.
+- **Release profile**: Replaced whole-program LTO with `lto = "thin"`; kept `codegen-units = 1` and `panic = "unwind"` (`Cargo.toml`).
+  - Clean `cargo build --release` on Windows: fat LTO 58 s (3,664,896 bytes) vs thin LTO 33 s (3,838,464 bytes, +4.7%). Runtime unmeasured.
 
 ---
 

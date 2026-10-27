@@ -112,11 +112,6 @@ impl Source {
     }
 
     /// Parses a string slice into either a [`Source::Local`] or [`Source::Github`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DomainError::UnsupportedSource`] if given an unsupported protocol
-    /// (such as SSH) or [`DomainError::InvalidSource`] if the GitHub URL is malformed.
     fn parse(value: &str) -> Result<Self, DomainError> {
         if value.starts_with("http://") || value.starts_with("https://") {
             let (owner, repo) = crate::core::github::parse_github_url(value)?;
