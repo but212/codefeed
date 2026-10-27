@@ -2,13 +2,13 @@
 
 ## 1. Precedence and Scope
 
-- **Precedence:** System instructions > Explicit user intent > Repository `AGENTS.md` > Repository documentation > General conventions.
-- **Ambiguity:** Clarify before modifying files only when ambiguity yields divergent behavioral outcomes or execution is blocked; proceed on reasonable default assumptions otherwise.
-- **Destructive Command Guard:** Do not stage, commit, push, reset, discard, or clean changes. Never run `git push`, `git reset --hard`, `git clean -f`, or `rm -rf` without explicit user instruction.
-- **Safeguards:** Safeguards, security boundaries, and existing regression tests must never be weakened.
+- **Precedence:** System > Explicit User Intent > Repository `AGENTS.md` > Docs > General conventions.
+- **Ambiguity:** Clarify before editing only if behavior diverges or execution is blocked; proceed on reasonable defaults otherwise.
+- **Destructive Commands:** Never run `git push`, `git reset --hard`, `git clean -f`, `rm -rf`, or stage/commit/reset/clean without explicit user instruction.
+- **Safeguards:** Never weaken safeguards, security boundaries, or regression tests.
 - **Minimal Blast Radius:**
-  - Read-only analysis must not alter files, schemas, tests, or documentation.
-  - Modify only paths needed for approved requests; never touch lockfiles, generated assets, schemas, or migrations without explicit instruction.
+  - Read-only analysis alters no files, schemas, tests, or documentation.
+  - Modify only paths needed for approved requests; never edit lockfiles, generated assets, schemas, or migrations without instruction.
   - Multi-step tasks track execution via an agent plan artifact (single-session) or dated plan file (`.plans/YYYY-MM-DD/[task-name].md`, cross-session; requires explicit user approval before execution).
   - Fix root causes at domain boundaries. Remove only symbols rendered unused by the current edit; never prune pre-existing dead code.
 
@@ -24,23 +24,23 @@ Before changing code, read these documents:
 ## 3. Modeling and Contracts
 
 - **Baseline First:** Model minimal algebraic domain representations satisfying core functional invariants before applying non-functional constraints (caching, concurrency, optimizations).
-- **Impossible States:** Eliminate impossible states at the type/schema level. Avoid defensive branching in internal domain logic; strictly validate and parse untrusted inputs at external boundaries.
-- **Speculative Abstractions:** Dissolve speculative abstractions and single-impl interfaces unless repository patterns or test mocks explicitly warrant them.
+- **Impossible States:** Eliminate invalid states at the type/schema level. Avoid defensive branching in internal domain logic; validate untrusted inputs at external boundaries.
+- **Speculative Abstractions:** Dissolve single-impl abstractions unless repository patterns or test mocks explicitly warrant them.
 - **Assumptions:** Classify external assumptions into Environment, Requirement, or Design. Ground every constraint in observable evidence.
 - **SKILL.md Frontmatter:** Emit only single-line scalar strings or inline JSON arrays; never use multiline block scalars (`|`, `>`) or indented list items.
 
 ## 4. Hard Rules
 
-- **Core purity and `#[must_use]`:** Follow [coding convention sec. 3](docs/coding_convention.md#3-architecture-functional-core-imperative-shell).
-- **Limits and lists:** Defined only in `src/core/policy/`. Code reads constants directly; never copy values. Limit values are stated only in [security sec. 8](docs/security_and_filtering.md#8-limit-values). When updating `src/core/policy/`, update [security sec. 3-4 and sec. 8](docs/security_and_filtering.md#3-exclusion-lists) in the same change.
-- **Filesystem and network rules:** Mandatory per [coding convention sec. 5](docs/coding_convention.md#5-os-and-network-rules-at-the-code-level) and [security sec. 5-6](docs/security_and_filtering.md).
+- **Core Purity & `#[must_use]`:** Follow [coding convention sec. 3](docs/coding_convention.md#3-architecture-functional-core-imperative-shell).
+- **Limits and Lists:** Defined only in `src/core/policy/`. Code reads constants directly; never copy values. Limit values exist only in [security sec. 8](docs/security_and_filtering.md#8-limit-values). Synchronize `src/core/policy/` edits with [security sec. 3-4 and sec. 8](docs/security_and_filtering.md#3-exclusion-lists).
+- **Filesystem & Network:** Mandatory per [coding convention sec. 5](docs/coding_convention.md#5-os-and-network-rules-at-the-code-level) and [security sec. 5-6](docs/security_and_filtering.md).
 - **Changelog:** Log all behavior changes under `## [Unreleased]` in `CHANGELOG.md`.
 
 ## 5. Verification and TDD
 
 - **TDD:** Write failing test -> minimal implementation -> verify pass. Refactor only with passing tests before and after.
 - **Deterministic Tests:** Isolate time, randomness, and concurrency. Test observable contracts, transitions, and boundary failures rather than private details.
-- **Empirical Proof:** Never assert or report verification for unrun commands, unexecuted branches, or unverified failure paths. If blocked by missing toolchains or network barriers, explicitly report checks as Unverified with blocker details.
+- **Empirical Proof:** Never claim verification for unrun commands, unexecuted branches, or unverified failure paths. If blocked by missing toolchains or network barriers, report checks as Unverified with blocker details.
 - **Execution Order:** Run all four checks in this exact order before reporting completion:
   1. `cargo clippy --all-targets -- -D warnings`
   2. `cargo fmt --check`

@@ -1,150 +1,145 @@
 # Domain Context -- codefeed
 
-This file defines domain terms, invariants that must always hold, and the functional-core / imperative-shell boundary. Rules that already have a home are linked, not restated: filtering and accounting in [security sec. 2-4](docs/security_and_filtering.md), escaping in [security sec. 7](docs/security_and_filtering.md), and network safety in [security sec. 6](docs/security_and_filtering.md).
+Defines domain terms, core invariants, and the functional-core / imperative-shell boundary. Filtering and accounting rules live in [security sec. 2-4](docs/security_and_filtering.md), escaping in [security sec. 7](docs/security_and_filtering.md), and network safety in [security sec. 6](docs/security_and_filtering.md).
 
 ## 1. Purpose
 
-codefeed turns a local directory or a public GitHub repository into one text digest for an LLM. Every run either produces a complete digest or fails. It never emits a partial digest.
+`codefeed` converts a local directory or public GitHub repository into a single text digest for LLMs. Every run either produces a complete digest or fails atomically; partial digests are never emitted.
 
 ## 2. Glossary
 
 ### Inputs and configuration
 
-- `Source` -- `Local(PathBuf)` or `Github { owner, repo, reference }`. Built publicly through `Source::github` or parsed from CLI arguments via `Source::parse_os` / `Source::parse`, validating owner and repository names into `GithubName`. The `Github` variant is `#[non_exhaustive]`.
-- `GithubName` -- Validated GitHub owner or repository name. Rejects empty strings, `.`, `..`, and invalid characters. Derefs to `str`.
-- `GitRef` -- Validated, trimmed, non-empty revision (branch, tag, or commit SHA). Rejects `.` and `..`. Derefs to `str`.
-- `OutputTarget` -- `File(PathBuf)` or `Stdout`. Stdout is a variant, never a sentinel path.
-- `ResolvedOutput` -- `OutputTarget` resolved against the filesystem. Shell-private. Only `resolve_output_target` constructs it.
-- `DigestFormat` -- `Text` or `Xml`.
-- `RunConfig` -- `source`, `output`, and `format` together.
+- `Source`: `Local(PathBuf)` or `Github { owner, repo, reference }` (`#[non_exhaustive]`). Constructed via `Source::github` or parsed at the boundary via `Source::parse_os` / `Source::parse`.
+- `GithubName`: Validated GitHub owner/repo name. Rejects empty strings, `.`, `..`, and invalid characters. Implements `Deref<Target = str>`.
+- `GitRef`: Validated, trimmed, non-empty revision (branch, tag, commit SHA). Rejects `.` and `..`. Implements `Deref<Target = str>`.
+- `OutputTarget`: `File(PathBuf)` or `Stdout`.
+- `ResolvedOutput`: Filesystem-resolved target (`shell`-private, constructed solely by `resolve_output_target`).
+- `DigestFormat`: `Text` or `Xml`.
+- `RunConfig`: Tuple of `source`, `output`, and `format`.
 
 ### Candidate collection
 
-- `PathStatus` -- Result of path classification: `Valid(NormalizedPath)`, `Ignored`, or `NonUtf8Candidate(prefix)`.
-- `NormalizedPath` -- Non-empty, slash-separated, UTF-8 relative path. Empty and `.` segments are removed before it is built.
-- `Selector` -- Linear state holding storage, candidate budget, and skipped count. `observe` settles one candidate. `finish` produces a `CollectionResult`.
-- `CandidateBudget` -- Candidate counter plus per-directory counts. Private to `selector.rs`.
-- `CollectionResult` -- `label`, optional `revision`, `files: SortedFiles`, and `skipped`.
+- `PathStatus`: Result of path classification: `Valid(NormalizedPath)`, `Ignored`, or `NonUtf8Candidate(prefix)`.
+- `NormalizedPath`: Non-empty, slash-separated, UTF-8 relative path without empty or `.` segments.
+- `Selector`: Linear state managing arena storage, `CandidateBudget`, and skipped tally. Settles candidates via `observe` and completes via `finish`.
+- `CandidateBudget`: Candidate counter and per-directory tallies (`selector.rs` private).
+- `CollectionResult`: Struct containing `label`, optional `revision`, `files: SortedFiles`, and `skipped`.
 
 ### Storage
 
-- `FileStorage` -- Append-only private `path_arena` and `content_arena` plus a `spans` vector. Callers read records only through `FileStorage::iter`, which yields `FileRecord` views.
-- `FileSpan` -- 16-byte POD of four `u32` values (offsets and lengths) into the arenas. Private to `storage.rs`, so no span leaves storage and none can be passed to another storage.
-- `FileRecord<'a>` -- Borrowed `path` and `content` views.
-- `SortedFiles` -- `FileStorage` sorted by `cmp_path`. Read-only through `Deref`.
+- `FileStorage`: Append-only `path_arena` and `content_arena` indexed by a `spans` vector. Read via `FileStorage::iter` yielding `FileRecord`.
+- `FileSpan`: 16-byte POD of four `u32` arena offsets and lengths (`storage.rs` private).
+- `FileRecord<'a>`: Borrowed `path` and `content` view.
+- `SortedFiles`: `FileStorage` sorted by `cmp_path`. Implements `Deref<Target = FileStorage>`.
 
 ### Rendering and results
 
-- `BoundedBuffer` -- In-memory output that fails once it would exceed `MAX_OUTPUT_SIZE`.
-- `RenderedDigest` -- `bytes`, `estimated_tokens`, `included_files`, and `skipped_files`.
-- `IngestReport` -- `output`, `included_files`, `skipped_files`, and `estimated_tokens`. `#[non_exhaustive]`.
+- `BoundedBuffer`: In-memory writer aborting when output would exceed `MAX_OUTPUT_SIZE`.
+- `RenderedDigest`: Struct of `bytes`, `estimated_tokens`, `included_files`, and `skipped_files`.
+- `IngestReport`: Struct of `output`, `included_files`, `skipped_files`, and `estimated_tokens` (`#[non_exhaustive]`).
 
 ### Errors
 
-- `DomainError` -- Core rule failures, re-exported from the crate root: `Usage`, `CandidateLimitExceeded`, `InvalidSource`, `UnsupportedSource`, `InvalidMetadata`, `OutputTooLarge`.
-- `IngestError` -- Shell error that wraps `DomainError` and adds `Io`, `Http`, and `Api`. Re-exported from the crate root.
+- `DomainError`: Core failures re-exported from crate root (`Usage`, `CandidateLimitExceeded`, `InvalidSource`, `UnsupportedSource`, `InvalidMetadata`, `OutputTooLarge`).
+- `IngestError`: Shell error re-exported from crate root wrapping `DomainError`, `Io`, `Http`, and `Api`.
 
 ## 3. Invariants
 
-### 3.1 Inputs are parsed once
+### 3.1 Input Parsing
 
-- CLI arguments and URLs become value objects at the boundary (`cli::parse`, `Source::parse`, `GitRef::new`, `GithubName::new`). Core code after that point assumes validity and does not re-validate.
+- CLI arguments and URLs parse into value types at the boundary (`cli::parse`, `Source::parse`, `GitRef::new`, `GithubName::new`). Core logic assumes validity without re-validation.
 - `--ref` is rejected for local sources.
-- A GitHub URL must be exactly `https://github.com/{owner}/{repo}`, with an optional trailing `.git`. Other schemes and hosts are rejected. Userinfo (`user@`) is rejected, and the port must be empty or `443`.
+- GitHub URLs must match `https://github.com/{owner}/{repo}` (optional `.git`). Port must be empty or `443`; user credentials (`user@`) are rejected.
 
-### 3.2 Path classification
+### 3.2 Path Classification
 
-- Classification order and rules are in [security sec. 2](docs/security_and_filtering.md#2-evaluation-order). Local and archive entries share one function, `classify_path_segments`.
-- An `Ignored` entry consumes no candidate slot and is never counted as skipped.
-- A depth failure is the only path rule that fails the whole run. Hidden and noise entries are classified first, so they never fail the run.
-- A non-UTF-8 entry carries a prefix: the valid segments before its first invalid segment, each followed by `/` (`a/b/`), or `""` when the first segment is invalid. The budget charges the entry to the first segment of the prefix (`a/`), or to `<root>/` for an empty prefix.
+- Order: hidden/noise/sensitive entries -> depth check -> non-UTF-8 prefixing -> valid path ([security sec. 2](docs/security_and_filtering.md#2-evaluation-order)). Shared by local walk and tar stream via `classify_path_segments`.
+- `Ignored` entries consume no candidate slot and are omitted from skipped counts.
+- Depth limit violation is the only path check aborting the entire run. Hidden and noise entries are dropped before depth evaluation.
+- Non-UTF-8 candidates record their valid prefix (`"a/b/"` or `""`), charged to the budget under the first segment (`"a/"`) or root (`"<root>/"`).
 
 ### 3.3 Accounting
 
-- Which outcomes consume a slot and which count as skipped is in [security sec. 4](docs/security_and_filtering.md#4-candidate-and-skipped-accounting).
-- `Selector::observe` charges a slot before it looks at content. The body is read only after admission.
-- The timing of the read differs by source. GitHub entries are admitted before their body is read. Local workers read a bounded body before the main thread calls `observe`, so a local read can happen before the budget check.
+- Slot allocation and skipped rules are detailed in [security sec. 4](docs/security_and_filtering.md#4-candidate-and-skipped-accounting).
+- `Selector::observe` charges a candidate slot prior to inspecting content.
+- Read timing: GitHub streams admit candidates before reading bodies. Local workers read bounded bodies concurrently before main thread settlement.
 
-### 3.4 Storage and ordering
+### 3.4 Storage and Ordering
 
-- `FileStorage::push` rejects a candidate before storing it when the raw arena bytes would exceed `MAX_OUTPUT_SIZE`. Rendered output is never smaller than the raw arena bytes, so this early check never rejects a digest that would fit.
-- `SortedFiles::new` sorts spans by `cmp_path`, which compares path components. The result is byte-identical regardless of worker timing.
-- Arena offsets and lengths are `u32`. A compile-time assertion in `policy/limits.rs` keeps `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES` within `u32::MAX`.
+- `FileStorage::push` rejects candidates before allocation if raw arena bytes would exceed `MAX_OUTPUT_SIZE`.
+- `SortedFiles::new` sorts spans via `cmp_path` (component-by-component comparison), guaranteeing deterministic output regardless of concurrency timing.
+- Arena indices are `u32`. Compile-time assertions in `policy/limits.rs` ensure `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX`.
 
 ### 3.5 Rendering
 
-- **Escaping** is defined in [security sec. 7](docs/security_and_filtering.md#7-output-sanitization). The renderers are `formats.rs` (text and XML), `tree.rs`, and `escape.rs`.
-- **Tree**: A text tree, with branch prefixes defined in `tree.rs`, is built from the sorted storage in one pass. It is format-neutral.
-- **Header**: Local digests use the root directory name (`root` for a filesystem root). GitHub digests use the canonical URL `https://github.com/{owner}/{repo}` (`repository_url`).
-- **Token estimate** (`estimate_tokens_from_bytes`): ASCII bytes divided by `ASCII_BYTES_PER_TOKEN`, plus one for each non-ASCII character (counted by UTF-8 lead bytes), with a minimum of 1 for non-empty output and 0 for empty output. This is a heuristic, not a tokenizer count.
+- **Escaping:** Single-pass via `write_escaped` per [security sec. 7](docs/security_and_filtering.md#7-output-sanitization).
+- **Tree:** Deterministic text tree generated from `SortedFiles` in one pass (`tree.rs`).
+- **Header:** Local sources use root directory name (`root` for filesystem root); GitHub sources use canonical `https://github.com/{owner}/{repo}`.
+- **Token Estimate:** ASCII bytes divided by `ASCII_BYTES_PER_TOKEN` plus non-ASCII character count (minimum 1 for non-empty digests, 0 for empty).
 
-### 3.6 Output delivery
+### 3.6 Output Delivery
 
-- File targets are resolved once at startup. The parent directory must exist, and a directory target is rejected. The canonical output path is excluded from the walk, so the digest never ingests itself.
-- File writes are atomic: temp file, sync, rename, then sync the parent directory on Unix. A failed run leaves the previous file in place. A failed parent-directory sync after the rename is a warning, not a failure, because the new file is already in place.
-- Stdout targets buffer the whole digest and write it only on success.
-- A broken pipe on stdout is not an error.
-- The completion summary goes to stdout for file targets and to stderr for stdout targets. It is built by `completion_message` in `core/cli.rs`. `run_cli` in `shell/cli.rs` chooses the stream.
+- File destinations resolve at startup; directory targets are rejected; canonical destination is excluded from traversal to prevent self-ingest.
+- Writes are atomic: temporary file -> sync -> rename -> parent directory sync (Unix). Prior output remains untouched on failure. Parent sync failure logs a warning without failing.
+- Stdout buffers the complete digest in memory, emitting only on success. Broken pipe on stdout exits with code `0`.
+- Completion summary emits to stdout for file targets, stderr for stdout targets.
 
 ### 3.7 Diagnostics
 
-- Overflow diagnostics are built only on error paths.
-- `MAX_OUTPUT_SIZE` overflow lists the five largest files, sorted by size and then by path.
-- `MAX_FILE_COUNT` overflow lists the three largest directories, sorted by count and then by name.
-- Local runs report the same diagnostics on every run. The walk is sorted and candidates are settled in walk order, so the candidates admitted before an abort are the same each time.
+- Overflow diagnostics generate only on error paths.
+- `MAX_OUTPUT_SIZE` overflow lists the 5 largest files (sorted by size descending, then path).
+- `MAX_FILE_COUNT` overflow lists the 3 largest directories (sorted by candidate count descending, then name).
+- Local runs produce identical diagnostics deterministically.
 
-### 3.8 Local traversal pipeline
+### 3.8 Local Traversal Pipeline
 
-1. A producer thread walks with `WalkBuilder::sort_by_file_name` and `follow_links(false)`. For each entry it classifies the path and sends a job for each regular file. It sends one slot per entry, in walk order.
-2. Up to `MAX_LOCAL_WORKERS` workers take jobs. Each worker checks metadata, reads a bounded body, and replies on its slot. After an abort, workers reply without reading.
-3. The main thread settles slots in walk order and calls `Selector::observe` for each candidate. The first error in walk order stops the run.
-4. The job and slot channels each hold `LOCAL_CHANNEL_CAPACITY` messages ([security sec. 8](docs/security_and_filtering.md#8-limit-values)).
-5. The final order comes from `SortedFiles`. Both the walk order and the settle order are `cmp_path` order.
+1. Producer walks via `WalkBuilder::sort_by_file_name` and `follow_links(false)`, classifying paths and dispatching jobs for regular files in walk order.
+2. Up to `MAX_LOCAL_WORKERS` workers check metadata, read bounded bodies, and reply on bounded slots.
+3. Main thread settles slots in walk order into `Selector::observe`. The first error halts traversal.
+4. Channel capacities are bounded by `LOCAL_CHANNEL_CAPACITY` ([security sec. 8](docs/security_and_filtering.md#8-limit-values)).
+5. Final digest order is established by `SortedFiles::new`.
 
 ### 3.9 Network
 
-- Request shape, retry classes, and time limits are in [security sec. 6](docs/security_and_filtering.md#6-github-network-safety).
-- Entries are streamed through `Selector::observe` and never written to disk.
-- The revision is the commit SHA from the PAX global header. If the header is missing, the requested ref is used.
-- Stream, gzip, and tar read errors during the body read map to `IngestError::Http`, not `Io`.
+- Request parameters, retry classes, and timeouts follow [security sec. 6](docs/security_and_filtering.md#6-github-network-safety).
+- Archive entries stream through `Selector::observe` without disk writes.
+- Revision SHA extracts from PAX global header, falling back to the requested ref.
+- Stream/gzip/tar read failures map to `IngestError::Http`.
 
-## 4. Limits and tunables
+## 4. Limits and Tunables
 
-All limits and exclusion lists are defined in `src/core/policy/`. Code reads them from there and never copies their values. Limit values are stated only in [security sec. 8](docs/security_and_filtering.md#8-limit-values).
+All limits and exclusion lists are defined in `src/core/policy/`. Code reads constants directly. Limit values are stated exclusively in [security sec. 8](docs/security_and_filtering.md#8-limit-values). Invariant relations are enforced by compile-time assertions in `policy/limits.rs` and `github/retry.rs`.
 
-Compile-time assertions in `policy/limits.rs` and `github/retry.rs` check relations between limits.
+## 5. Functional Core and Imperative Shell
 
-## 5. Functional core and imperative shell
-
-Core code is pure. It performs no I/O, reads no clock or environment, and never depends on the shell. The shell depends on the core in one direction only. The coding rules that enforce this are in [`docs/coding_convention.md`](docs/coding_convention.md) sec. 3.
+Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends on Core in one direction only ([coding convention sec. 3](docs/coding_convention.md#3-architecture-functional-core-imperative-shell)).
 
 ### Core (`src/core/`)
 
-- `cli.rs` -- Argument parsing (`parse`, folded through `Parsed`), help text, `CliAction`, and `completion_message`.
-- `policy/` -- `mod.rs` (re-exports), `limits.rs` (numeric limits and compile-time assertions), `exclusions.rs` (noise and sensitive lists), and `classify.rs` (`classify_path_segments`, `is_hidden_segment`, `is_ignored_filename`, `NormalizedPath`, `PathStatus`).
-- `model.rs` -- `Source`, `GitRef`, `GithubName`, `RunConfig`, `OutputTarget`, `DigestFormat`, `CollectionResult`, `IngestReport`, and `repository_name`.
-- `selector.rs` -- `Selector::observe` and `finish`, `CandidateBudget`, and `exceeds_size_limits`.
-- `storage.rs` -- `FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, and `largest_files`.
-- `error.rs` -- `DomainError` and `CandidateLimitExceededError`.
-- `archive.rs` -- PAX comment parsing and tar entry path normalization (`normalize_tar_entry_path`).
-- `github/url.rs` -- Name validation, URL parsing, tarball URL construction, `is_github_api_origin`, and `repository_url`.
-- `github/retry.rs` -- Rate-limit header parsing (`RateLimitHeaders`), retry delay (`retry_delay`), and the attempt state machine (`AttemptState::step`).
-- `github/mod.rs` -- API and retry message text, and `sanitize_error_detail`.
-- `render/` -- `mod.rs` (format dispatch), `formats.rs` (text and XML), `tree.rs`, `escape.rs` (`write_escaped`), and `budget.rs` (`BoundedBuffer`, `RenderedDigest`, token estimate).
+- `cli.rs`: CLI argument parsing (`parse`, `Parsed`), help text, `CliAction`, `completion_message`.
+- `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `classify.rs` (`classify_path_segments`, `NormalizedPath`, `PathStatus`).
+- `model.rs`: `Source`, `GitRef`, `GithubName`, `RunConfig`, `OutputTarget`, `DigestFormat`, `CollectionResult`, `IngestReport`.
+- `selector.rs`: `Selector`, `CandidateBudget`, `exceeds_size_limits`.
+- `storage.rs`: `FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, `largest_files`.
+- `error.rs`: `DomainError`, `CandidateLimitExceededError`.
+- `archive.rs`: PAX parsing, tar path normalization (`normalize_tar_entry_path`).
+- `github/`: `url.rs` (URL parsing, origin check), `retry.rs` (header parsing, delay calculation, attempt state machine), `mod.rs` (error formatting, `sanitize_error_detail`).
+- `render/`: `formats.rs` (text/XML formats), `tree.rs`, `escape.rs`, `budget.rs` (`BoundedBuffer`, `RenderedDigest`, token estimate).
 
 ### Shell (`src/shell/`)
 
-- `main.rs` (crate root binary) -- Calls `run_cli` and exits with its code.
-- `mod.rs` -- `ingest` (pipeline).
-- `cli.rs` -- `run_cli` (argument handling, exit codes, and stream choice).
-- `error.rs` -- `IngestError` and `transport_error`, the only place effect errors are built.
-- `local/` -- `mod.rs` (`collect`, root validation, label, and candidate observation), `walk.rs` (sorted walker and path classification), `read.rs` (one file's metadata, size gate, and bounded body), and `pipeline.rs` (producer, read workers, and in-order settlement to the selector).
-- `archive.rs` -- Gzip and tar streaming, PAX SHA extraction, and entry admission (`collect`).
-- `github/` -- `mod.rs` (orchestration and `collect`), `client.rs` (HTTP client, TLS, and token resolution), and `stream.rs` (tarball streaming, warnings, and retry loop).
-- `atomic.rs` -- `write_atomic`, `AtomicFile`, and `TempFile`: temporary file, sync, and rename.
-- `output.rs` -- `resolve_output_target`, `deliver`, and the stdout/stderr line writers.
-- `testing.rs` -- Test-only fixtures: `temp_dir`, tarball builders, and `MockServer`.
+- `main.rs`: Entry point invoking `run_cli`.
+- `mod.rs`: `ingest` pipeline.
+- `cli.rs`: `run_cli` (CLI orchestration, stream selection, exit codes).
+- `error.rs`: `IngestError`, `transport_error`.
+- `local/`: `mod.rs` (`collect`), `walk.rs`, `read.rs` (metadata/body read), `pipeline.rs` (producer/worker pipeline).
+- `archive.rs`: Tarball/gzip streaming and admission.
+- `github/`: `mod.rs` (`collect`), `client.rs` (HTTP/TLS client, token handling), `stream.rs` (archive streaming, retries).
+- `atomic.rs`: `write_atomic`, `AtomicFile`, `TempFile`.
+- `output.rs`: `resolve_output_target`, `deliver`, stdout/stderr line writers.
+- `testing.rs`: Test helpers (`temp_dir`, tarball builder, `MockServer`).
 
 ### Public API (`src/lib.rs`)
 
-`ingest`, `RunConfig`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, and `CandidateLimitExceededError`. `run_cli` is internal under `codefeed::cli`. Everything else is `pub(crate)`.
+Exports: `ingest`, `RunConfig`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, and `CandidateLimitExceededError`. All other items are `pub(crate)`.
