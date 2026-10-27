@@ -132,7 +132,7 @@ impl Selector {
         }
     }
 
-    fn skip(mut self) -> Self {
+    const fn skip(mut self) -> Self {
         self.skipped = self.skipped.saturating_add(1);
         self
     }
