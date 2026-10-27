@@ -1,38 +1,56 @@
 # AGENTS.md
 
-**Audience:** coding agents working in this repository.
+**Audience:** Coding agents working in this repository.
 
-This file holds workflow rules only. Each rule points to the document that explains it.
+## 1. Precedence and Scope
 
-## 1. Read First
+- **Precedence:** System instructions > Explicit user intent > Repository `AGENTS.md` > Repository documentation > General conventions.
+- **Ambiguity:** Clarify before modifying files only when ambiguity yields divergent behavioral outcomes or execution is blocked; proceed on reasonable default assumptions otherwise.
+- **Destructive Command Guard:** Do not stage, commit, push, reset, discard, or clean changes. Never run `git push`, `git reset --hard`, `git clean -f`, or `rm -rf` without explicit user instruction.
+- **Safeguards:** Safeguards, security boundaries, and existing regression tests must never be weakened.
+- **Minimal Blast Radius:**
+  - Read-only analysis must not alter files, schemas, tests, or documentation.
+  - Modify only paths needed for approved requests; never touch lockfiles, generated assets, schemas, or migrations without explicit instruction.
+  - Multi-step tasks track execution via an agent plan artifact (single-session) or dated plan file (`.plans/YYYY-MM-DD/[task-name].md`, cross-session; requires explicit user approval before execution).
+  - Fix root causes at domain boundaries. Remove only symbols rendered unused by the current edit; never prune pre-existing dead code.
 
-Before changing code, read these four documents:
+## 2. Read First
 
-1. [`context.md`](context.md): domain terms, invariants, and the functional-core / imperative-shell boundary.
-2. [`README.md`](README.md): the user-visible CLI and output contract.
+Before changing code, read these documents:
+
+1. [`context.md`](context.md): Domain terms, invariants, and functional-core / imperative-shell boundary.
+2. [`README.md`](README.md): CLI and output contracts.
 3. [`docs/coding_convention.md`](docs/coding_convention.md): Rust rules.
-4. [`docs/security_and_filtering.md`](docs/security_and_filtering.md): exclusion rules and filesystem and network safety.
+4. [`docs/security_and_filtering.md`](docs/security_and_filtering.md): Exclusion rules, filesystem, and network safety.
 
-## 2. Verify
+## 3. Modeling and Contracts
 
-Run all four before reporting a code change as done. Run them in this order:
+- **Baseline First:** Model minimal algebraic domain representations satisfying core functional invariants before applying non-functional constraints (caching, concurrency, optimizations).
+- **Impossible States:** Eliminate impossible states at the type/schema level. Avoid defensive branching in internal domain logic; strictly validate and parse untrusted inputs at external boundaries.
+- **Speculative Abstractions:** Dissolve speculative abstractions and single-impl interfaces unless repository patterns or test mocks explicitly warrant them.
+- **Assumptions:** Classify external assumptions into Environment, Requirement, or Design. Ground every constraint in observable evidence.
+- **SKILL.md Frontmatter:** Emit only single-line scalar strings or inline JSON arrays; never use multiline block scalars (`|`, `>`) or indented list items.
 
-- `cargo clippy --all-targets -- -D warnings`
-- `cargo fmt --check`
-- `cargo doc --no-deps`
-- `cargo test` (or `cargo test <name>`)
+## 4. Hard Rules
 
-Report failures with their output. Do not report a step as passing if it was not run.
+- **Core purity and `#[must_use]`:** Follow [coding convention sec. 3](docs/coding_convention.md#3-architecture-functional-core-imperative-shell).
+- **Limits and lists:** Defined only in `src/core/policy/`. Code reads constants directly; never copy values. Limit values are stated only in [security sec. 8](docs/security_and_filtering.md#8-limit-values). When updating `src/core/policy/`, update [security sec. 3-4 and sec. 8](docs/security_and_filtering.md#3-exclusion-lists) in the same change.
+- **Filesystem and network rules:** Mandatory per [coding convention sec. 5](docs/coding_convention.md#5-os-and-network-rules-at-the-code-level) and [security sec. 5-6](docs/security_and_filtering.md).
+- **Changelog:** Log all behavior changes under `## [Unreleased]` in `CHANGELOG.md`.
 
-## 3. Hard Rules
+## 5. Verification and TDD
 
-- **Core purity and the `#[must_use]` rule** follow [coding convention sec. 3](docs/coding_convention.md#3-architecture-functional-core-imperative-shell).
-- **Limits and lists** are defined only in `src/core/policy/`. Code reads the constant and never copies its value. Limit values are stated only in [security sec. 8](docs/security_and_filtering.md#8-limit-values); other documents link there. When a value changes, update `policy/` and sec. 8 in the same change.
-- **Filesystem and network rules** are in [coding convention sec. 5](docs/coding_convention.md#5-os-and-network-rules-at-the-code-level) and [security sec. 5-6](docs/security_and_filtering.md). They are not optional.
-- **Filters and limits move together.** A change to `policy/` updates [security sec. 3-4 and sec. 8](docs/security_and_filtering.md#3-exclusion-lists) in the same change.
-- **Behavior changes are logged** under `## [Unreleased]` in `CHANGELOG.md`.
+- **TDD:** Write failing test -> minimal implementation -> verify pass. Refactor only with passing tests before and after.
+- **Deterministic Tests:** Isolate time, randomness, and concurrency. Test observable contracts, transitions, and boundary failures rather than private details.
+- **Empirical Proof:** Never assert or report verification for unrun commands, unexecuted branches, or unverified failure paths. If blocked by missing toolchains or network barriers, explicitly report checks as Unverified with blocker details.
+- **Execution Order:** Run all four checks in this exact order before reporting completion:
+  1. `cargo clippy --all-targets -- -D warnings`
+  2. `cargo fmt --check`
+  3. `cargo doc --no-deps`
+  4. `cargo test` (or narrowest target first: `cargo test <name>`)
+- Report failures with exact command output. Never claim unrun or failed steps passed.
 
-## 4. Where Changes Go
+## 6. Where Changes Go
 
 | Change | Update |
 | :--- | :--- |
@@ -44,3 +62,15 @@ Report failures with their output. Do not report a step as passing if it was not
 | Security, filesystem, or network behavior | `docs/security_and_filtering.md` |
 | Rust coding rule | `docs/coding_convention.md` |
 | Any behavior change | `CHANGELOG.md` under `## [Unreleased]` |
+
+## 7. Adversarial Review and Handoff
+
+- **Review Scope:** Active only during explicit review tasks or final diff audits; do not apply during implementation.
+- **Admissible Defects:** Requires a constructible counterexample or deterministic static evidence:
+  - `[P1]`: Broken invariant, security breach, or data corruption.
+  - `[P2]`: Unsound contract, unhandled state transition, or unverified branch.
+  - `[P3]`: Dead symbol (report for awareness; do not delete pre-existing dead code), unneeded complexity, or structural redundancy.
+- **Handoff:**
+  - Lead with decisions and outcomes directly; omit conversational filler and restatements.
+  - Resolve integration conflicts by preserving behavior, schema contracts, and unrelated work.
+  - Audit the final diff before handoff to guarantee absence of untracked assets, debug noise, secret leakage, or incidental whitespace churn.
