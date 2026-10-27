@@ -29,7 +29,6 @@ impl FileSpan {
     /// # Panics
     ///
     /// Panics if the span's range is out of bounds for `arena`.
-    #[inline(always)]
     fn path<'a>(&self, arena: &'a str) -> &'a str {
         let start = self.path_offset as usize;
         let end = start + self.path_len as usize;
@@ -41,7 +40,6 @@ impl FileSpan {
     /// # Panics
     ///
     /// Panics if the span's range is out of bounds for `arena`.
-    #[inline(always)]
     fn content<'a>(&self, arena: &'a str) -> &'a str {
         let start = self.content_offset as usize;
         let end = start + self.content_len as usize;
@@ -181,7 +179,7 @@ pub(crate) fn cmp_path(a: &str, b: &str) -> Ordering {
 /// Diagnostic ranking for digest size: selects up to five largest files.
 ///
 /// Called only on output limit exceeded error paths to format error diagnostics.
-/// Sorts by descending file size, tie-breaking by hierarchical path order (cmp_path).
+/// Sorts by descending file size, tie-breaking by hierarchical path order (`cmp_path`).
 pub(crate) fn largest_files<'a>(
     files: impl IntoIterator<Item = FileRecord<'a>>,
 ) -> Vec<(String, usize)> {

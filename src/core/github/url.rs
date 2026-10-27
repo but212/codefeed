@@ -18,11 +18,10 @@ const GITHUB_NAME_CHAR_TABLE: [bool; 256] = {
     let mut i = 0;
     while i < 256 {
         let b = i as u8;
-        table[i] = (b.wrapping_sub(b'0') < 10)
-            | ((b | 32).wrapping_sub(b'a') < 26)
-            | (b == b'-')
-            | (b == b'.')
-            | (b == b'_');
+        table[i] = (b.wrapping_sub(b'0') < 10) | ((b | 32).wrapping_sub(b'a') < 26)
+            || (b == b'-')
+            || (b == b'.')
+            || (b == b'_');
         i += 1;
     }
     table
@@ -124,18 +123,16 @@ const UNRESERVED_TABLE: [bool; 256] = {
     let mut i = 0;
     while i < 256 {
         let b = i as u8;
-        table[i] = ((b | 32).wrapping_sub(b'a') < 26)
-            | (b.wrapping_sub(b'0') < 10)
-            | (b == b'-')
-            | (b == b'.')
-            | (b == b'_')
-            | (b == b'~');
+        table[i] = ((b | 32).wrapping_sub(b'a') < 26) | (b.wrapping_sub(b'0') < 10)
+            || (b == b'-')
+            || (b == b'.')
+            || (b == b'_')
+            || (b == b'~');
         i += 1;
     }
     table
 };
 
-#[inline(always)]
 const fn is_unreserved(b: u8) -> bool {
     UNRESERVED_TABLE[b as usize]
 }

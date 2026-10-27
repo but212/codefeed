@@ -24,7 +24,7 @@ pub(super) fn sorted_walker(root: &Path) -> ignore::Walk {
         .require_git(false)
         .parents(false)
         .follow_links(false)
-        .sort_by_file_name(|a, b| a.cmp(b))
+        .sort_by_file_name(std::cmp::Ord::cmp)
         .build()
 }
 

@@ -2,7 +2,6 @@
 
 use super::budget::{BoundedBuffer, OutputLimitExceeded};
 
-#[inline(always)]
 pub(crate) const fn escape_header(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     match bytes[i] {
         b'\\' => Some((1, "\\\\")),
@@ -13,7 +12,6 @@ pub(crate) const fn escape_header(bytes: &[u8], i: usize) -> Option<(usize, &'st
     }
 }
 
-#[inline(always)]
 pub(crate) const fn escape_xml_body(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     match bytes[i] {
         0..=8 | 11 | 12 | 14..=31 => Some((1, "\u{FFFD}")),
@@ -32,7 +30,6 @@ pub(crate) const fn escape_xml_body(bytes: &[u8], i: usize) -> Option<(usize, &'
     }
 }
 
-#[inline(always)]
 pub(crate) const fn escape_xml_single_line(
     bytes: &[u8],
     i: usize,

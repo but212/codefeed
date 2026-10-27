@@ -16,8 +16,7 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 fn current_epoch_nanos() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_nanos())
 }
 
 /// Parent directory of `path`, or `.` when the path is a bare filename.

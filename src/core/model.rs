@@ -29,7 +29,6 @@ impl GitRef {
 impl std::ops::Deref for GitRef {
     type Target = str;
 
-    #[inline]
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -61,7 +60,6 @@ impl GithubName {
 impl std::ops::Deref for GithubName {
     type Target = str;
 
-    #[inline]
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -187,6 +185,7 @@ pub struct RunConfig {
 
 impl RunConfig {
     /// Creates a new `RunConfig` with the given source, output target, and format.
+    #[must_use]
     pub const fn new(source: Source, output: OutputTarget, format: DigestFormat) -> Self {
         Self {
             source,

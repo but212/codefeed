@@ -39,7 +39,7 @@ where
         let start = i;
         i += 1;
         if is_dir {
-            let dir_prefix = &paths[start][offset..offset + name.len() + 1];
+            let dir_prefix = &paths[start][offset..=(offset + name.len())];
             while paths
                 .get(i)
                 .and_then(|path| path.get(offset..))

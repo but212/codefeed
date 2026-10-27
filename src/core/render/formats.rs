@@ -103,7 +103,7 @@ impl FormatRenderer for TextRenderer {
         content: &str,
     ) -> Result<BoundedBuffer, OutputLimitExceeded> {
         const TAIL: [&[u8]; 2] = [b"\n", b"\n\n"];
-        let needs_extra_nl = (!content.ends_with('\n')) as usize;
+        let needs_extra_nl = usize::from(!content.ends_with('\n'));
         buf = buf.push_bytes(FILE_BLOCK_PREFIX.as_bytes())?;
         buf = write_escaped(buf, path, escape_header)?;
         buf = buf.push_bytes(FILE_BLOCK_SUFFIX.as_bytes())?;
@@ -168,7 +168,7 @@ impl FormatRenderer for XmlRenderer {
         buf = write_escaped(buf, path, escape_xml_single_line)?;
         buf = buf.push_bytes(XML_TAG_CLOSE.as_bytes())?;
         buf = write_escaped(buf, content, escape_xml_body)?;
-        let needs_nl = (!content.ends_with('\n')) as usize;
+        let needs_nl = usize::from(!content.ends_with('\n'));
         buf = buf.push_bytes(FILE_TAILS[needs_nl])?;
         Ok(buf)
     }
