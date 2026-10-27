@@ -1,7 +1,5 @@
 # Security and Filtering Specification
 
-**Audience:** security reviewers, and anyone changing filters, limits, filesystem code, or network code.
-
 **Authority:** `src/core/policy/` is the single source of truth for every list and limit value. The values and lists in this document mirror it. A change to `src/core/policy/` must update this document in the same commit.
 
 ---

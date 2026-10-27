@@ -1,7 +1,5 @@
 # Coding Conventions
 
-**Audience:** contributors writing Rust in this repository.
-
 **Scope:** Rust API Guidelines plus this project's architecture, memory, and safety rules. Domain behavior is in [`context.md`](../context.md). Filter and safety rules are in [`security_and_filtering.md`](security_and_filtering.md). Verification commands are in [`AGENTS.md`](../AGENTS.md) sec. 2.
 
 ---

@@ -1,7 +1,5 @@
 # Domain Context -- codefeed
 
-**Audience:** maintainers and coding agents who change what a digest contains, how candidates are counted, or where logic lives.
-
 This file defines domain terms, invariants that must always hold, and the functional-core / imperative-shell boundary. Rules that already have a home are linked, not restated: filtering and accounting in [security sec. 2-4](docs/security_and_filtering.md), escaping in [security sec. 7](docs/security_and_filtering.md), and network safety in [security sec. 6](docs/security_and_filtering.md).
 
 ## 1. Purpose

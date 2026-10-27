@@ -1,7 +1,5 @@
 # AGENTS.md
 
-**Audience:** Coding agents working in this repository.
-
 ## 1. Precedence and Scope
 
 - **Precedence:** System instructions > Explicit user intent > Repository `AGENTS.md` > Repository documentation > General conventions.
