@@ -14,9 +14,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 Observable behavior. **Action** = code or config change required.
 
+#### Breaking
+
+- **`run_cli` moved from crate root to internal `codefeed::cli` module**: `codefeed::run_cli` is no longer exported directly at the crate root of `codefeed`. The command-line entrypoint is encapsulated in `codefeed::cli::run_cli` (`#[doc(hidden)]`) for `src/main.rs`. Library consumers integrate directly through `codefeed::ingest` (`src/lib.rs`, `src/shell/cli.rs`).
+  - **Action:** Any external library consumers calling `codefeed::run_cli` should use `codefeed::cli::run_cli` or migrate to `codefeed::ingest`.
+- **`Source::Github` owner and repo typed `GithubName`**: `Source::Github { owner, repo, reference }` fields `owner` and `repo` are now `GithubName` newtypes rather than `String`. `GithubName` derefs to `str`, rejects invalid characters, `.`, and `..`, and is re-exported from the crate root. `Source::github` and `Source::parse` continue to accept `impl Into<String>` (`src/core/model.rs`, `src/lib.rs`).
+  - **Action:** update code matching or binding `owner` and `repo` from `Source::Github` if expecting owned `String` instead of `&str`.
+
 #### Changed
 
 - **Deterministic local errors**: For local directories, the reported diagnostics no longer vary between runs. `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` errors list the same directories and files on every run. When several files fail with a fatal I/O error, the first one in walk order is reported. Before, the first to arrive was reported (`src/shell/local/pipeline.rs`).
+
+#### Fixed
+
+- **PAX archive entry size overrides**: In tar archives, `process_tar_entry` uses `entry.size()` rather than `entry.header().size()`. A file with a PAX extended header `size=` override is correctly evaluated against `MAX_FILE_SIZE` before reading (`src/shell/archive.rs`).
 
 ### Contributors
 
@@ -24,6 +35,8 @@ Internal refactors and test changes. No consumer action required.
 
 #### Core
 
+- **Policy module split**: `src/core/policy.rs` is now `src/core/policy/`, with `limits.rs`, `exclusions.rs`, and `classify.rs` submodules. Unit tests were co-located with their respective submodules; behavior, constants, and re-exported paths are unchanged (`src/core/policy/`).
+- **Path ordering cleanup**: Removed unused and conflicting `PartialOrd, Ord, Hash` derives on `NormalizedPath`, keeping component-wise `cmp_path` as the exclusive path-ordering rule (`src/core/policy/classify.rs`).
 - **Test fixture and parser consolidation**: Unified XML and text rendering test fixtures with a generic `render_digest` helper in `src/core/render/formats.rs`, and consolidated repetitive CLI valid invocation assertions with `parse_run` in `src/core/cli.rs` (`src/core/render/formats.rs`, `src/core/cli.rs`).
 - **Test suite diet**: Pruned redundant subprocess CLI parsing tests in `tests/cli.rs`, decoupled `FileStorage` unit tests from internal arena fields in `src/core/storage.rs`, and removed test-only helper panic tests in `src/core/policy.rs` (`tests/cli.rs`, `src/core/storage.rs`, `src/core/policy.rs`).
 - **Private storage spans**: `FileSpan` is private to `src/core/storage.rs`. Callers read records only through `FileStorage::iter`, and the tree renderer works on paths from that iterator. A span can no longer be passed to another storage (`src/core/storage.rs`, `src/core/render/tree.rs`).
@@ -31,6 +44,7 @@ Internal refactors and test changes. No consumer action required.
 
 #### Shell
 
+- **CLI entry point separation**: `run_cli`, `report_error`, and CLI unit tests were extracted from `src/shell/mod.rs` into a dedicated `src/shell/cli.rs` module. `src/shell/mod.rs` now solely orchestrates the `ingest` pipeline, improving functional and sequential cohesion (`src/shell/cli.rs`, `src/shell/mod.rs`).
 - **GitHub module split**: `src/shell/github.rs` is now `src/shell/github/`, with `client` and `stream` submodules. `MockServer` is promoted to `src/shell/testing.rs` as a reusable shell test fixture. Tests moved to their respective submodules; behavior and test names are unchanged (`src/shell/github/`, `src/shell/testing.rs`).
 - **Local pipeline**: the local walk runs sorted on a producer thread (`ignore::WalkBuilder::sort_by_file_name`), workers read bodies concurrently, and the main thread settles them in walk order. Bodies held at once are bounded by `LOCAL_CHANNEL_CAPACITY + 2`, independent of the worker count. Measured with hyperfine on a release build (Windows, 30 runs each): a 9,000-file synthetic tree 333.5 ms → 335.4 ms (+0.6%); this repository 18.4 ms → 18.0 ms (−2.0%) (`src/shell/local/pipeline.rs`, `src/core/policy.rs`).
 - **Local module split**: `src/shell/local.rs` is now `src/shell/local/`, with `walk`, `read`, and `pipeline` submodules. No behavior change. The local tests moved with the functions they exercise; the set of test names is unchanged. `run_cli` reports errors through one helper (`src/shell/mod.rs`).

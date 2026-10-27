@@ -4,5 +4,5 @@ use std::env::args_os;
 use std::process;
 
 fn main() {
-    process::exit(codefeed::run_cli(args_os()));
+    process::exit(codefeed::cli::run_cli(args_os()));
 }

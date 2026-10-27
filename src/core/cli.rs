@@ -328,11 +328,7 @@ mod tests {
         ]);
         assert_eq!(
             config.source,
-            Source::Github {
-                owner: "rust-lang".into(),
-                repo: "cargo".into(),
-                reference: Some(GitRef::new("main").unwrap()),
-            }
+            Source::github("rust-lang", "cargo", Some(GitRef::new("main").unwrap())).unwrap()
         );
     }
 

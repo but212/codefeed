@@ -144,5 +144,5 @@ The reasoning and threat model are in [`security_and_filtering.md`](security_and
 - **Table-driven fixtures.** Prefer one test over a slice of `(input, expected)` rows, such as `let cases = [...]`, over a test function per case.
 - **In-memory limits.** Test `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` through `Selector` and `CandidateBudget`. Do not write millions of files to disk.
 - **Filesystem tests.** Inside `src/shell/`, use `crate::shell::testing::temp_dir("label")`, which returns a `TempDirGuard`. Integration tests in `tests/` use a local `TempDir` helper, as `tests/cli.rs` does. Core code is pure, so core unit tests do not touch the filesystem.
-- **Network tests.** Mock HTTP with a local `TcpListener` bound to `127.0.0.1:0`, using the `MockServer` test helper in `src/shell/github.rs`. Tests never reach external endpoints.
+- **Network tests.** Mock HTTP with a local `TcpListener` bound to `127.0.0.1:0`, using the `MockServer` test helper in `src/shell/testing.rs`. Tests never reach external endpoints.
 - **Compile-time limits.** Relations between limits are checked by `const _` assertions, not by runtime tests.

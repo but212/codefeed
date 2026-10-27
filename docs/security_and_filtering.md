@@ -11,8 +11,8 @@
 | # | Threat | Mitigation | Where |
 | :--- | :--- | :--- | :--- |
 | T1 | Secret disclosure into prompts or output | Hidden-entry, noise, and sensitive-name exclusion (sec. 3). Content is not scanned (non-goal, sec. 1.2). | `policy.rs`, `selector.rs` |
-| T2 | Resource exhaustion | Size, count, depth, and path-length limits; output cap; bounded reads and channels; archive timeout (sec. 5, sec. 6). | `policy.rs`, `local/`, `github.rs` |
-| T3 | Credential forwarding to other origins | Exact-origin gate; redirects never carry authorization (sec. 6). | `core/github/url.rs`, `shell/github.rs` |
+| T2 | Resource exhaustion | Size, count, depth, and path-length limits; output cap; bounded reads and channels; archive timeout (sec. 5, sec. 6). | `policy.rs`, `local/`, `github/` |
+| T3 | Credential forwarding to other origins | Exact-origin gate; redirects never carry authorization (sec. 6). | `core/github/url.rs`, `shell/github/` |
 | T4 | Output injection into terminals, XML, or LLM context boundaries | Format-specific escaping (sec. 7). | `core/render/escape.rs` |
 | T5 | Reading files outside the source root | Symlinks are never followed; metadata is checked before open (sec. 5). | `shell/local/` |
 
@@ -138,7 +138,7 @@ Implemented in `src/shell/local/` and `src/shell/output.rs`.
 
 ## 6. GitHub Network Safety
 
-Implemented in `src/shell/github.rs`, with pure rules in `src/core/github/`.
+Implemented in `src/shell/github/`, with pure rules in `src/core/github/`.
 
 ### 6.1 Origin-Gated Authentication
 
