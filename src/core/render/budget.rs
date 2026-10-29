@@ -5,7 +5,7 @@ use crate::core::policy::{ASCII_BYTES_PER_TOKEN, MAX_OUTPUT_SIZE};
 
 /// Token estimation heuristic calculating ASCII bytes and non-ASCII character counts.
 #[must_use]
-pub(crate) const fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
+pub(super) const fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
     if bytes.is_empty() {
         return 0;
     }
@@ -23,7 +23,7 @@ pub(crate) const fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
         i += 1;
     }
 
-    let ascii_tokens = ascii_bytes / ASCII_BYTES_PER_TOKEN as usize;
+    let ascii_tokens = ascii_bytes / ASCII_BYTES_PER_TOKEN;
     let total = ascii_tokens + non_ascii_chars;
     if total > 1 { total } else { 1 }
 }
@@ -117,11 +117,12 @@ impl BoundedBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::policy::MAX_OUTPUT_SIZE_USIZE;
 
     #[test]
     fn bounded_buffer_enforces_output_limit() {
         let buf = BoundedBuffer::default();
-        let large = vec![b'x'; (MAX_OUTPUT_SIZE + 1) as usize];
+        let large = vec![b'x'; MAX_OUTPUT_SIZE_USIZE + 1];
         assert_eq!(buf.push_bytes(&large), Err(OutputLimitExceeded));
     }
 

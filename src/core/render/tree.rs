@@ -9,7 +9,7 @@ const TREE_VERT: &str = "│   ";
 const TREE_SPACE: &str = "    ";
 
 /// Renders an ASCII tree representation of the provided pre-sorted [`SortedFiles`].
-pub(crate) fn render_tree<F>(
+pub(super) fn render_tree<F>(
     buf: BoundedBuffer,
     files: &SortedFiles,
     format_name: F,
@@ -80,10 +80,9 @@ pub(super) fn component_at_offset(path: &str, offset: usize) -> Option<(&str, bo
     if remainder.is_empty() {
         return None;
     }
-    match memchr(b'/', remainder.as_bytes()) {
-        Some(idx) => Some((&remainder[..idx], true)),
-        None => Some((remainder, false)),
-    }
+    memchr(b'/', remainder.as_bytes()).map_or(Some((remainder, false)), |idx| {
+        Some((&remainder[..idx], true))
+    })
 }
 
 #[cfg(test)]
@@ -102,7 +101,7 @@ mod tests {
             .push(&crate::core::policy::NormalizedPath::from("src/lib.rs"), "")?;
         let files = SortedFiles::new(storage);
 
-        let buf = render_tree(BoundedBuffer::default(), &files, |b, s| b.push_str(s))?;
+        let buf = render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str)?;
         let digest = buf.finish();
         let tree_str = std::str::from_utf8(&digest.bytes)?;
         let expected = "\
@@ -142,7 +141,7 @@ mod tests {
             .push(&crate::core::policy::NormalizedPath::from("b/z.txt"), "")?;
         let files = SortedFiles::new(storage);
 
-        let buf = render_tree(BoundedBuffer::default(), &files, |b, s| b.push_str(s))?;
+        let buf = render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str)?;
         let digest = buf.finish();
         let tree_str = std::str::from_utf8(&digest.bytes)?;
         let expected = "\
@@ -188,7 +187,7 @@ mod tests {
             .push(&crate::core::policy::NormalizedPath::from("root.txt"), "")?;
         let files = SortedFiles::new(storage);
 
-        let buf = render_tree(BoundedBuffer::default(), &files, |b, s| b.push_str(s))?;
+        let buf = render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str)?;
         let digest = buf.finish();
         let tree_str = std::str::from_utf8(&digest.bytes)?;
         let expected = "\

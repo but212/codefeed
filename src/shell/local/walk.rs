@@ -147,7 +147,7 @@ mod tests {
         };
         let res = format_ignore_error(&depth_loop);
         assert_eq!(res.kind(), io::ErrorKind::Other);
-        assert!(!res.to_string().is_empty());
+        assert_ne!(res.to_string(), "");
 
         // 4. WithPath wrapping non-Io error (Some(p), _)
         let with_path_loop = ignore::Error::WithPath {

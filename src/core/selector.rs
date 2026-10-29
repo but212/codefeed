@@ -56,10 +56,7 @@ impl CandidateBudget {
 }
 
 fn extract_dir_slice(path: &str) -> &str {
-    match memchr(b'/', path.as_bytes()) {
-        Some(index) => &path[..=index],
-        None => "<root>/",
-    }
+    memchr(b'/', path.as_bytes()).map_or("<root>/", |index| &path[..=index])
 }
 
 fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String, usize)> {
@@ -151,7 +148,7 @@ impl Selector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::policy::MAX_FILE_SIZE;
+    use crate::core::policy::{MAX_FILE_SIZE_USIZE, MAX_PATH_BYTES_USIZE};
 
     #[test]
     fn candidate_budget_enforces_limit() {
@@ -226,7 +223,7 @@ mod tests {
     #[test]
     fn output_overflow_includes_largest_files_diagnostic() -> Result<(), Box<dyn std::error::Error>>
     {
-        let chunk = vec![b'x'; MAX_FILE_SIZE as usize];
+        let chunk = vec![b'x'; MAX_FILE_SIZE_USIZE];
         let mut selector = Selector::new();
         for i in 0..19 {
             selector = selector.observe(
@@ -277,13 +274,8 @@ mod tests {
             ("a.txt", Some(b"hello".to_vec()), 1, 0),
             ("bin.bin", Some(vec![0, 1]), 0, 1),
             ("bad_utf8", Some(vec![0xff]), 0, 1),
-            ("exact.txt", Some(vec![b'x'; MAX_FILE_SIZE as usize]), 1, 0),
-            (
-                "over.txt",
-                Some(vec![b'x'; MAX_FILE_SIZE as usize + 1]),
-                0,
-                1,
-            ),
+            ("exact.txt", Some(vec![b'x'; MAX_FILE_SIZE_USIZE]), 1, 0),
+            ("over.txt", Some(vec![b'x'; MAX_FILE_SIZE_USIZE + 1]), 0, 1),
             ("gone.txt", None, 0, 1),
         ];
         for (path, content, included, skipped) in cases {
@@ -299,11 +291,11 @@ mod tests {
 
     #[test]
     fn observe_does_not_read_settled_candidates() -> Result<(), Box<dyn std::error::Error>> {
-        let overlong = format!("{}/file.rs", "a".repeat(MAX_PATH_BYTES as usize));
+        let overlong = format!("{}/file.rs", "a".repeat(MAX_PATH_BYTES_USIZE));
         // (status, size_hint, candidates counted, skipped)
         let cases: [(PathStatus, Option<u64>, usize, usize); 5] = [
             (PathStatus::Ignored, None, 0, 0),
-            (PathStatus::NonUtf8Candidate("".into()), None, 1, 1),
+            (PathStatus::NonUtf8Candidate(String::new()), None, 1, 1),
             (PathStatus::NonUtf8Candidate("dir/sub/".into()), None, 1, 1),
             (
                 PathStatus::Valid("big.bin".into()),

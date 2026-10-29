@@ -139,6 +139,10 @@ fn settle<T>(
 
 /// Walks and dispatches on its own thread, sending slots in walk order. Stops at the first walk or
 /// classification error, or when the settling side hangs up.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "dropping the senders when the producer exits disconnects both channels"
+)]
 fn produce_slots(
     walker: ignore::Walk,
     root: &Path,
@@ -158,6 +162,10 @@ fn produce_slots(
 }
 
 /// Settles slots in the order they arrive. The first failure in walk order stops the fold.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "dropping the receiver on early error disconnects the slot channel and unblocks the producer"
+)]
 fn settle_slots<T>(
     slots: Receiver<Slot>,
     init: T,
@@ -183,7 +191,8 @@ mod tests {
 
     #[test]
     fn candidates_arrive_in_path_order() -> Result<(), Box<dyn std::error::Error>> {
-        let root = validate_root(&temp_dir("candidate_order")?)?;
+        let temp = temp_dir("candidate_order")?;
+        let root = validate_root(&temp)?;
         for dir in ["b_dir", "a_dir", "src-test", "src", "src/nested"] {
             fs::create_dir_all(root.join(dir))?;
             for file_index in 0..10 {
@@ -207,6 +216,24 @@ mod tests {
         expected.sort_by(|a, b| cmp_path(a, b));
         assert_eq!(arrived.len(), 52);
         assert_eq!(arrived, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn early_abort_disconnects_and_joins_when_queue_overflows()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = temp_dir("early_abort")?;
+        let root = validate_root(&temp)?;
+        for file_index in 0..(LOCAL_CHANNEL_CAPACITY + 10) {
+            fs::write(root.join(format!("file_{file_index:03}.txt")), "content")?;
+        }
+
+        let err = fold_candidates(&root, None, 0, |_acc, _candidate| {
+            Err(IngestError::Io(io::Error::other(
+                "abort on first candidate",
+            )))
+        });
+        assert!(err.is_err());
         Ok(())
     }
 

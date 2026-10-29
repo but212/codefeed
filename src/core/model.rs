@@ -103,10 +103,9 @@ impl Source {
 
     /// Parses an OS-native string argument into a [`Source`].
     pub(super) fn parse_os(value: &std::ffi::OsStr) -> Result<Self, DomainError> {
-        match value.to_str() {
-            Some(value) => Self::parse(value),
-            None => Ok(Self::Local(PathBuf::from(value))),
-        }
+        value
+            .to_str()
+            .map_or_else(|| Ok(Self::Local(PathBuf::from(value))), Self::parse)
     }
 
     /// Parses a string slice into either a [`Source::Local`] or [`Source::Github`].

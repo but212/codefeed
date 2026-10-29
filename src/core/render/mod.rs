@@ -57,7 +57,9 @@ impl CollectionResult {
     ///
     /// Returns [`DomainError::OutputTooLarge`] if output exceeds the maximum size limit.
     pub(crate) fn render(self, format: DigestFormat) -> Result<RenderedDigest, DomainError> {
-        let capacity = (self.files.total_bytes() as usize).saturating_add(4096);
+        let capacity = usize::try_from(self.files.total_bytes())
+            .unwrap_or(usize::MAX)
+            .saturating_add(4096);
         let buf = BoundedBuffer::with_capacity(capacity);
         let included = self.files.len();
         let skipped = self.skipped;
@@ -76,7 +78,7 @@ impl CollectionResult {
 mod tests {
     use super::*;
     use crate::core::error::DomainError;
-    use crate::core::policy::MAX_OUTPUT_SIZE;
+    use crate::core::policy::MAX_OUTPUT_SIZE_USIZE;
     use crate::core::storage::{FileRecord, FileStorage, SortedFiles};
 
     #[test]
@@ -114,7 +116,8 @@ mod tests {
                 )
                 .expect("test fixture fits the output limit")
             });
-            let raw_bytes = storage.total_bytes() as usize;
+            let raw_bytes =
+                usize::try_from(storage.total_bytes()).expect("storage total bytes fits in usize");
 
             let collection = CollectionResult {
                 label: label.to_string(),
@@ -139,7 +142,7 @@ mod tests {
     fn render_enforces_output_size_cap() -> Result<(), DomainError> {
         // Raw bytes fill the storage cap exactly, so `push` accepts them and render framing exceeds it.
         let path = "large.txt";
-        let content = "x".repeat(MAX_OUTPUT_SIZE as usize - path.len());
+        let content = "x".repeat(MAX_OUTPUT_SIZE_USIZE - path.len());
         let storage =
             FileStorage::new().push(&crate::core::policy::NormalizedPath::from(path), &content)?;
         let collection = CollectionResult {
@@ -184,7 +187,7 @@ mod tests {
         let xml_digest = collection.render(DigestFormat::Xml)?;
         let xml_str = std::str::from_utf8(&xml_digest.bytes)?;
         assert!(
-            !xml_str.contains("\x1b"),
+            !xml_str.contains('\x1b'),
             "XML format must not emit raw ASCII ESC"
         );
         assert!(

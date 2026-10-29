@@ -113,6 +113,10 @@ const MIB: f64 = 1024.0 * 1024.0;
 // 1023.95 * 1024 = 1_048_524.8, so values >= 1_048_525 must be formatted as MiB.
 const MIB_ROUNDING_THRESHOLD: usize = 1_048_525;
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "diagnostic byte sizes in error messages are well below f64 53-bit mantissa limit"
+)]
 fn format_size(bytes: usize) -> String {
     match bytes {
         b @ MIB_ROUNDING_THRESHOLD.. => format!("{:.1} MiB", b as f64 / MIB),

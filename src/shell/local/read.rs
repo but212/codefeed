@@ -37,7 +37,7 @@ pub(super) fn read_candidate(entry_path: &Path, path: NormalizedPath) -> WorkerM
         Err(err) if is_unavailable_file(&err) => {
             return Ok(Some(Candidate::File(path, Body::Unavailable)));
         }
-        Err(err) => return Err(io_error_at(entry_path, err)),
+        Err(err) => return Err(io_error_at(entry_path, &err)),
     };
 
     if meta.is_symlink() || !meta.is_file() {
@@ -48,10 +48,7 @@ pub(super) fn read_candidate(entry_path: &Path, path: NormalizedPath) -> WorkerM
     if exceeds_size_limits(path.len(), Some(file_len)) {
         return Ok(Some(Candidate::File(path, Body::OverLimit(file_len))));
     }
-    let body = match read_bounded(entry_path, file_len)? {
-        Some(bytes) => Body::Read(bytes),
-        None => Body::Unavailable,
-    };
+    let body = read_bounded(entry_path, file_len)?.map_or(Body::Unavailable, Body::Read);
     Ok(Some(Candidate::File(path, body)))
 }
 
@@ -76,13 +73,13 @@ fn read_bounded(path: &Path, file_len: u64) -> Result<Option<Vec<u8>>, IngestErr
     let file = match fs::File::open(path) {
         Ok(f) => f,
         Err(err) if is_unavailable_file(&err) => return Ok(None),
-        Err(err) => return Err(io_error_at(path, err)),
+        Err(err) => return Err(io_error_at(path, &err)),
     };
     let mut buf = Vec::with_capacity(file_len.min(MAX_FILE_SIZE + 1) as usize);
     match file.take(MAX_FILE_SIZE + 1).read_to_end(&mut buf) {
         Ok(_) => Ok(Some(buf)),
         Err(err) if is_unavailable_file(&err) => Ok(None),
-        Err(err) => Err(io_error_at(path, err)),
+        Err(err) => Err(io_error_at(path, &err)),
     }
 }
 
@@ -90,6 +87,7 @@ fn read_bounded(path: &Path, file_len: u64) -> Result<Option<Vec<u8>>, IngestErr
 mod tests {
     use super::super::observe_candidate;
     use super::*;
+    use crate::core::policy::MAX_FILE_SIZE_USIZE;
     use crate::core::selector::Selector;
     use crate::shell::testing::temp_dir;
 
@@ -101,21 +99,21 @@ mod tests {
         let kib = root.join("kib.txt");
         let missing = root.join("missing.txt");
         let kib_payload = vec![b'y'; 64 * 1024];
-        fs::write(&exact, vec![b'x'; MAX_FILE_SIZE as usize])?;
-        fs::write(&over, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
+        fs::write(&exact, vec![b'x'; MAX_FILE_SIZE_USIZE])?;
+        fs::write(&over, vec![b'x'; MAX_FILE_SIZE_USIZE + 1])?;
         fs::write(&kib, &kib_payload)?;
 
         let cases = [
             (
                 &exact,
                 MAX_FILE_SIZE,
-                Some(MAX_FILE_SIZE as usize),
+                Some(MAX_FILE_SIZE_USIZE),
                 "exact limit",
             ),
             (
                 &over,
                 MAX_FILE_SIZE + 1,
-                Some(MAX_FILE_SIZE as usize + 1),
+                Some(MAX_FILE_SIZE_USIZE + 1),
                 "one byte over",
             ),
             (
@@ -162,7 +160,7 @@ mod tests {
     fn oversized_file_carries_size_hint() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("oversized_size_hint")?;
         let file = root.join("large.txt");
-        fs::write(&file, vec![b'x'; MAX_FILE_SIZE as usize + 1])?;
+        fs::write(&file, vec![b'x'; MAX_FILE_SIZE_USIZE + 1])?;
 
         let candidate = read_candidate(&file, NormalizedPath::from("large.txt"))?
             .ok_or("oversized file must reach the selector as a candidate")?;

@@ -363,8 +363,8 @@ hello\n\
             content: "content\n",
         }];
         let text_rendered = render_text_digest("repo", None, &files, 0)?;
-        assert!(!text_rendered.contains("\x1b"));
-        assert!(!text_rendered.contains("\x07"));
+        assert!(!text_rendered.contains('\x1b'));
+        assert!(!text_rendered.contains('\x07'));
         assert!(text_rendered.contains("x\u{FFFD}]0;title\u{FFFD}.md"));
         Ok(())
     }

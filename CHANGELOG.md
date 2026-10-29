@@ -25,6 +25,7 @@ Observable behavior. **Action** = code or config change required.
 
 #### Fixed
 
+- **Local pipeline early-abort deadlock**: Producer (`produce_slots`) and consumer (`settle_slots`) retain channel endpoint ownership so early return on error drops the receiver, disconnects the channel, and breaks producer loops without deadlocking when the slot queue capacity is exceeded (`src/shell/local/pipeline.rs`).
 - **Atomic file permission propagation path context**: Mapped Unix `io::Error` when setting permissions during atomic output creation so diagnostics include the temporary file path (`src/shell/atomic.rs`).
 - **PAX archive entry size overrides**: Tar `process_tar_entry` uses `entry.size()` instead of `entry.header().size()`, correctly evaluating PAX extended header `size=` overrides against `MAX_FILE_SIZE` before reading (`src/shell/archive.rs`).
 
@@ -34,6 +35,7 @@ Internal refactors and test changes. No consumer action required.
 
 #### Core
 
+- **Pedantic lint compliance & token heuristic typing**: Added `#[must_use]` attributes across pure domain, parsing, and rendering queries to satisfy `clippy::pedantic`. Re-typed `ASCII_BYTES_PER_TOKEN` directly as `usize = 4`, eliminating the redundant `ASCII_BYTES_PER_TOKEN_USIZE` companion and narrowing test-only companions under `#[cfg(test)]` (`src/core/`, `src/core/policy/limits.rs`, `src/core/render/budget.rs`).
 - **Policy module split**: Split `src/core/policy.rs` into `src/core/policy/` (`limits.rs`, `exclusions.rs`, `classify.rs`) with co-located unit tests. Behavior, constants, and re-exported paths unchanged (`src/core/policy/`).
 - **Path ordering cleanup**: Removed unused, conflicting `PartialOrd`, `Ord`, and `Hash` derives on `NormalizedPath`, leaving component-wise `cmp_path` as exclusive ordering rule (`src/core/policy/classify.rs`).
 - **Test fixture and parser consolidation**: Unified XML and text rendering test fixtures with generic `render_digest` helper; consolidated repetitive CLI valid-invocation assertions with `parse_run` (`src/core/render/formats.rs`, `src/core/cli.rs`).
@@ -43,6 +45,7 @@ Internal refactors and test changes. No consumer action required.
 
 #### Shell
 
+- **Shell error references & pedantic cleanup**: Updated internal shell error helpers (including `io_error_at`) to borrow `&io::Error`, resolving `clippy::needless_pass_by_value` across shell modules without redundant allocations (`src/shell/error.rs`, `src/shell/atomic.rs`, `src/shell/archive.rs`, `src/shell/output.rs`).
 - **CLI entry point separation**: Extracted `run_cli`, `report_error`, and CLI unit tests from `src/shell/mod.rs` into `src/shell/cli.rs`. `src/shell/mod.rs` solely orchestrates the `ingest` pipeline (`src/shell/cli.rs`, `src/shell/mod.rs`).
 - **GitHub module split**: Split `src/shell/github.rs` into `src/shell/github/` (`client` and `stream` submodules). Promoted `MockServer` to `src/shell/testing.rs` as a reusable fixture. Submodule tests, test names, and behavior unchanged (`src/shell/github/`, `src/shell/testing.rs`).
 - **Local pipeline**: Producer thread sorts local walk (`ignore::WalkBuilder::sort_by_file_name`), workers read bodies concurrently, and main thread settles in walk order. In-flight bodies bounded by `LOCAL_CHANNEL_CAPACITY + 2`. Hyperfine release benchmarks (Windows, 30 runs): 9,000-file synthetic tree 333.5 ms → 335.4 ms (+0.6%); repository 18.4 ms → 18.0 ms (−2.0%) (`src/shell/local/pipeline.rs`, `src/core/policy/limits.rs`).

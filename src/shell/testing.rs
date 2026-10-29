@@ -28,7 +28,7 @@ impl TempDirGuard {
                 std::env::temp_dir().join(format!("local_ingest_{label}_{pid}_{counter}"));
             match fs::create_dir(&candidate) {
                 Ok(()) => break candidate,
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(err) => return Err(Box::new(err)),
             }
         };
@@ -103,9 +103,8 @@ impl MockServer {
             let mut count = 0;
 
             for index in 0..expected_connections {
-                let (mut stream, _) = match listener.accept() {
-                    Ok(res) => res,
-                    Err(_) => break,
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
                 };
                 count += 1;
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
@@ -113,7 +112,7 @@ impl MockServer {
                 let mut req_buf = Vec::new();
                 let mut temp = [0u8; 512];
                 loop {
-                    if req_buf.windows(4).any(|w| w == b"\r\n\r\n") || req_buf.len() >= 8192 {
+                    if req_buf.windows(4).any(|w| w == b"\r\n\r\n") || req_buf.len() > (8192 - 1) {
                         break;
                     }
                     match stream.read(&mut temp) {

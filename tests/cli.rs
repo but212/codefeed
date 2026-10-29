@@ -20,8 +20,11 @@ impl TempDir {
                 std::env::temp_dir().join(format!("codefeed_cli_{label}_{pid}_{counter}"));
             match std::fs::create_dir(&candidate) {
                 Ok(()) => break candidate,
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(err) => panic!("failed to create temporary directory {candidate:?}: {err}"),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(err) => panic!(
+                    "failed to create temporary directory {}: {err}",
+                    candidate.display()
+                ),
             }
         };
         Self { path }
@@ -233,7 +236,7 @@ fn text_and_xml_stdout_bytes_are_stable() -> Result<(), Box<dyn std::error::Erro
     std::fs::write(root.join("Cargo.lock"), "[lockfile]\n")?;
     let root = root.to_str().expect("UTF-8 temp path");
 
-    let expected_text = r#"Repository: fixture
+    let expected_text = r"Repository: fixture
 Files: 3
 Skipped: 1
 
@@ -265,7 +268,7 @@ FILE: src/nested/deep/mod.rs
 
 pub mod deep;
 
-"#;
+";
     let text = run(&[root, "-o", "-", "-f", "text"]);
     assert!(text.status.success(), "output: {text:?}");
     assert_eq!(text.stdout, expected_text.as_bytes());
