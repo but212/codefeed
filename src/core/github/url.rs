@@ -4,7 +4,7 @@ use memchr::{memchr, memchr2};
 
 use crate::core::error::DomainError;
 
-pub(crate) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
+pub(super) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 
 /// Exact-origin match: returns `true` if `url == GITHUB_API_BASE_URL` or starts with `GITHUB_API_BASE_URL + "/"`.
 #[must_use]
@@ -15,15 +15,16 @@ pub(crate) fn is_github_api_origin(url: &str) -> bool {
 
 const GITHUB_NAME_CHAR_TABLE: [bool; 256] = {
     let mut table = [false; 256];
-    let mut i = 0;
-    while i < 256 {
-        let b = i as u8;
-        table[i] = (b.wrapping_sub(b'0') < 10)
-            | ((b | 32).wrapping_sub(b'a') < 26)
-            | (b == b'-')
-            | (b == b'.')
-            | (b == b'_');
-        i += 1;
+    let mut b = 0u8;
+    loop {
+        table[b as usize] = (b.wrapping_sub(b'0') < 10) | ((b | 32).wrapping_sub(b'a') < 26)
+            || (b == b'-')
+            || (b == b'.')
+            || (b == b'_');
+        if b == 255 {
+            break;
+        }
+        b += 1;
     }
     table
 };
@@ -56,10 +57,9 @@ pub(crate) fn parse_github_url(value: &str) -> Result<(String, String), DomainEr
     let remainder = value.strip_prefix("https://").ok_or_else(|| {
         DomainError::unsupported_source("only https://github.com/{owner}/{repo} is supported")
     })?;
-    let (authority, path) = match memchr(b'/', remainder.as_bytes()) {
-        Some(index) => (&remainder[..index], &remainder[index..]),
-        None => (remainder, ""),
-    };
+    let (authority, path) = memchr(b'/', remainder.as_bytes()).map_or((remainder, ""), |index| {
+        (&remainder[..index], &remainder[index..])
+    });
     if authority.is_empty() {
         return Err(DomainError::invalid_source(value));
     }
@@ -121,21 +121,21 @@ pub(crate) fn tarball_url(owner: &str, repo: &str, reference: Option<&str>) -> S
 
 const UNRESERVED_TABLE: [bool; 256] = {
     let mut table = [false; 256];
-    let mut i = 0;
-    while i < 256 {
-        let b = i as u8;
-        table[i] = ((b | 32).wrapping_sub(b'a') < 26)
-            | (b.wrapping_sub(b'0') < 10)
-            | (b == b'-')
-            | (b == b'.')
-            | (b == b'_')
-            | (b == b'~');
-        i += 1;
+    let mut b = 0u8;
+    loop {
+        table[b as usize] = ((b | 32).wrapping_sub(b'a') < 26) | (b.wrapping_sub(b'0') < 10)
+            || (b == b'-')
+            || (b == b'.')
+            || (b == b'_')
+            || (b == b'~');
+        if b == 255 {
+            break;
+        }
+        b += 1;
     }
     table
 };
 
-#[inline(always)]
 const fn is_unreserved(b: u8) -> bool {
     UNRESERVED_TABLE[b as usize]
 }

@@ -29,7 +29,6 @@ impl FileSpan {
     /// # Panics
     ///
     /// Panics if the span's range is out of bounds for `arena`.
-    #[inline(always)]
     fn path<'a>(&self, arena: &'a str) -> &'a str {
         let start = self.path_offset as usize;
         let end = start + self.path_len as usize;
@@ -41,7 +40,6 @@ impl FileSpan {
     /// # Panics
     ///
     /// Panics if the span's range is out of bounds for `arena`.
-    #[inline(always)]
     fn content<'a>(&self, arena: &'a str) -> &'a str {
         let start = self.content_offset as usize;
         let end = start + self.content_len as usize;
@@ -130,12 +128,16 @@ impl FileStorage {
         }
         // Accepted total is at most `MAX_OUTPUT_SIZE`, which `policy/limits.rs` asserts is `<= u32::MAX`,
         // so every arena offset and length below fits in `u32`.
-        let path_offset = self.path_arena.len() as u32;
-        let path_len = path.len() as u32;
+        let path_offset = u32::try_from(self.path_arena.len())
+            .expect("invariant: arena bounded by MAX_OUTPUT_SIZE");
+        let path_len =
+            u32::try_from(path.len()).expect("invariant: arena bounded by MAX_OUTPUT_SIZE");
         self.path_arena.push_str(path);
 
-        let content_offset = self.content_arena.len() as u32;
-        let content_len = content.len() as u32;
+        let content_offset = u32::try_from(self.content_arena.len())
+            .expect("invariant: arena bounded by MAX_OUTPUT_SIZE");
+        let content_len =
+            u32::try_from(content.len()).expect("invariant: arena bounded by MAX_OUTPUT_SIZE");
         self.content_arena.push_str(content);
 
         let span = FileSpan {
@@ -181,7 +183,7 @@ pub(crate) fn cmp_path(a: &str, b: &str) -> Ordering {
 /// Diagnostic ranking for digest size: selects up to five largest files.
 ///
 /// Called only on output limit exceeded error paths to format error diagnostics.
-/// Sorts by descending file size, tie-breaking by hierarchical path order (cmp_path).
+/// Sorts by descending file size, tie-breaking by hierarchical path order (`cmp_path`).
 pub(crate) fn largest_files<'a>(
     files: impl IntoIterator<Item = FileRecord<'a>>,
 ) -> Vec<(String, usize)> {
@@ -197,6 +199,7 @@ pub(crate) fn largest_files<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::policy::MAX_OUTPUT_SIZE_USIZE;
 
     #[test]
     fn largest_files_selects_top_five_with_stability() {
@@ -329,7 +332,7 @@ mod tests {
     #[test]
     fn push_enforces_output_limit_at_boundary() {
         let path = NormalizedPath::from("big.txt");
-        let fill = MAX_OUTPUT_SIZE as usize - path.len();
+        let fill = MAX_OUTPUT_SIZE_USIZE - path.len();
         // (content length, expected to fit)
         let cases = [(fill, true), (fill + 1, false)];
         for (content_len, fits) in cases {

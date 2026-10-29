@@ -10,7 +10,6 @@ pub(crate) struct NormalizedPath(String);
 
 impl NormalizedPath {
     /// Borrows the normalized path as a string slice.
-    #[inline(always)]
     pub(crate) const fn as_str(&self) -> &str {
         self.0.as_str()
     }
@@ -19,7 +18,6 @@ impl NormalizedPath {
 impl std::ops::Deref for NormalizedPath {
     type Target = str;
 
-    #[inline(always)]
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -87,20 +85,19 @@ where
         last_segment = Some(segment);
 
         match state {
-            PathClassifierState::ValidUtf8 => match std::str::from_utf8(segment) {
-                Ok(s) => {
+            PathClassifierState::ValidUtf8 => {
+                if let Ok(s) = std::str::from_utf8(segment) {
                     if !scratch.is_empty() {
                         scratch.push('/');
                     }
                     scratch.push_str(s);
-                }
-                Err(_) => {
+                } else {
                     state = PathClassifierState::NonUtf8Prefix;
                     if !scratch.is_empty() {
                         scratch.push('/');
                     }
                 }
-            },
+            }
             PathClassifierState::NonUtf8Prefix => {}
         }
     }

@@ -48,7 +48,7 @@ impl From<io::Error> for IngestError {
 }
 
 /// I/O failure on `path`. Keeps the error kind and names the path, which a bare `io::Error` drops.
-pub(crate) fn io_error_at(path: &Path, err: io::Error) -> IngestError {
+pub(super) fn io_error_at(path: &Path, err: &io::Error) -> IngestError {
     IngestError::Io(io::Error::new(
         err.kind(),
         format!("{}: {err}", path.display()),
@@ -56,7 +56,7 @@ pub(crate) fn io_error_at(path: &Path, err: io::Error) -> IngestError {
 }
 
 /// Error for a transport failure. `error_text` is the transport error's `Display`.
-pub(crate) fn transport_error(error_text: &str) -> IngestError {
+pub(super) fn transport_error(error_text: &str) -> IngestError {
     IngestError::Http(sanitize_error_detail(error_text))
 }
 

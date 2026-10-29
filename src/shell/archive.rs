@@ -26,19 +26,21 @@ pub(super) fn collect<R: Read>(
         ARCHIVE_BUFFER_BYTES,
         reader,
     )));
-    let entries = archive.entries().map_err(stream_error)?;
+    let entries = archive
+        .entries()
+        .map_err(|err: std::io::Error| stream_error(&err))?;
     let mut parsed_revision = None;
     let mut selector = Selector::new();
     let mut content_scratch = Vec::with_capacity(32 * 1024);
 
     for entry_res in entries {
-        let mut entry = entry_res.map_err(stream_error)?;
+        let mut entry = entry_res.map_err(|err: std::io::Error| stream_error(&err))?;
         if entry.header().entry_type() == EntryType::XGlobalHeader {
             content_scratch.clear();
             entry
                 .take(1024)
                 .read_to_end(&mut content_scratch)
-                .map_err(stream_error)?;
+                .map_err(|err: std::io::Error| stream_error(&err))?;
             parsed_revision = parsed_revision.or_else(|| parse_pax_comment(&content_scratch));
             continue;
         }
@@ -74,14 +76,14 @@ fn process_tar_entry<R: Read>(
         entry
             .take(MAX_FILE_SIZE + 1)
             .read_to_end(content_scratch)
-            .map_err(stream_error)?;
+            .map_err(|err: std::io::Error| stream_error(&err))?;
         Ok(Some(content_scratch))
     })
 }
 
 /// Maps any failure while streaming the archive to a request error. Every `io::Error` here comes from the
 /// network body, gzip, or tar decoding, so it never surfaces as a filesystem error.
-fn stream_error(err: std::io::Error) -> IngestError {
+fn stream_error(err: &std::io::Error) -> IngestError {
     transport_error(&err.to_string())
 }
 
@@ -135,13 +137,13 @@ mod tests {
 
     #[test]
     fn skips_too_large_files() {
-        use crate::core::policy::MAX_FILE_SIZE;
+        use crate::core::policy::MAX_FILE_SIZE_USIZE;
 
         let mock_data = gzip_tarball(&[
             ("repo-root/small.txt", b"small", EntryType::Regular),
             (
                 "repo-root/large.txt",
-                &vec![b'x'; (MAX_FILE_SIZE + 10) as usize],
+                &vec![b'x'; MAX_FILE_SIZE_USIZE + 10],
                 EntryType::Regular,
             ),
         ]);
@@ -160,7 +162,7 @@ mod tests {
 
     #[test]
     fn skips_too_large_files_with_pax_size_override() {
-        use crate::core::policy::MAX_FILE_SIZE;
+        use crate::core::policy::{MAX_FILE_SIZE, MAX_FILE_SIZE_USIZE};
 
         let mock_data = gzip_archive(|tar| {
             let mut pax_header = tar::Header::new_gnu();
@@ -183,7 +185,7 @@ mod tests {
             file_header.set_size(0);
             file_header.set_mode(0o644);
             file_header.set_cksum();
-            let large_payload = vec![b'a'; (MAX_FILE_SIZE + 10) as usize];
+            let large_payload = vec![b'a'; MAX_FILE_SIZE_USIZE + 10];
             tar.append(&file_header, large_payload.as_slice()).unwrap();
         });
 

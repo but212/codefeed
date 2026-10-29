@@ -72,18 +72,15 @@ fn local_label(root: &Path) -> String {
 mod tests {
     use super::*;
     use crate::core::model::{DigestFormat, OutputTarget, RunConfig, Source};
-    use crate::core::policy::MAX_FILE_SIZE;
+    use crate::core::policy::MAX_FILE_SIZE_USIZE;
     use crate::ingest;
     use crate::shell::testing::temp_dir;
 
     #[test]
     fn read_local_file_enforces_size_boundaries() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("size_boundaries")?;
-        fs::write(root.join("exact.txt"), vec![b'x'; MAX_FILE_SIZE as usize])?;
-        fs::write(
-            root.join("large.txt"),
-            vec![b'x'; MAX_FILE_SIZE as usize + 1],
-        )?;
+        fs::write(root.join("exact.txt"), vec![b'x'; MAX_FILE_SIZE_USIZE])?;
+        fs::write(root.join("large.txt"), vec![b'x'; MAX_FILE_SIZE_USIZE + 1])?;
 
         let res = collect(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(res.files.len(), 1, "exact-size file is included");

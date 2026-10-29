@@ -16,8 +16,7 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 fn current_epoch_nanos() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_nanos())
 }
 
 /// Parent directory of `path`, or `.` when the path is a bare filename.
@@ -57,8 +56,10 @@ impl TempFile {
                         state: TempState::Writing(file),
                     });
                 }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(io_error_at(&path, error)),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    // Try again with a new counter.
+                }
+                Err(error) => return Err(io_error_at(&path, &error)),
             }
         }
     }
@@ -89,10 +90,10 @@ impl TempFile {
         };
         // A failure below leaves `Closed` in place, so `Drop` still unlinks the temporary file.
         file.sync_all()
-            .map_err(|err| io_error_at(&self.path, err))?;
+            .map_err(|err| io_error_at(&self.path, &err))?;
         drop(file);
 
-        fs::rename(&self.path, target).map_err(|err| io_error_at(target, err))?;
+        fs::rename(&self.path, target).map_err(|err| io_error_at(target, &err))?;
         self.state = TempState::Committed;
         Ok(())
     }
@@ -132,10 +133,10 @@ impl AtomicFile {
             Ok(metadata) => {
                 temp_file
                     .set_permissions(metadata.permissions())
-                    .map_err(|error| io_error_at(&temp_file.path, error))?;
+                    .map_err(|error| io_error_at(&temp_file.path, &error))?;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(io_error_at(target, error)),
+            Err(error) => return Err(io_error_at(target, &error)),
         }
 
         Ok(Self {
@@ -148,9 +149,9 @@ impl AtomicFile {
         let file = self
             .temp_file
             .file_mut()
-            .map_err(|err| io_error_at(&self.target, err))?;
+            .map_err(|err| io_error_at(&self.target, &err))?;
         file.write_all(bytes)
-            .map_err(|err| io_error_at(&self.target, err))
+            .map_err(|err| io_error_at(&self.target, &err))
     }
 
     /// Commits the atomic file write by syncing content, renaming to the target path,
@@ -245,7 +246,7 @@ mod tests {
         });
         assert!(panic_result.is_err(), "operation should have panicked");
         let temp_count_after_panic = fs::read_dir(&root)?
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .filter(|e| e.file_name().to_string_lossy().starts_with(".digest.txt."))
             .count();
         assert_eq!(
@@ -280,7 +281,7 @@ mod tests {
         );
 
         let temp_count = fs::read_dir(&root)?
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .filter(|e| {
                 e.file_name()
                     .to_string_lossy()
@@ -314,9 +315,8 @@ mod tests {
         let root = temp_dir("error_names_path")?;
         let output = root.join("missing").join("out.txt");
 
-        let err = match write_atomic(&output, b"new") {
-            Err(err) => err,
-            Ok(()) => return Err("write into a missing directory must fail".into()),
+        let Err(err) = write_atomic(&output, b"new") else {
+            return Err("write into a missing directory must fail".into());
         };
         assert!(
             err.to_string().contains("missing"),
@@ -396,7 +396,7 @@ mod tests {
         );
 
         let temp_count = fs::read_dir(&root)?
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .filter(|e| e.file_name().to_string_lossy().starts_with(".loop_a."))
             .count();
         assert_eq!(

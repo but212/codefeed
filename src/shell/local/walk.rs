@@ -24,7 +24,7 @@ pub(super) fn sorted_walker(root: &Path) -> ignore::Walk {
         .require_git(false)
         .parents(false)
         .follow_links(false)
-        .sort_by_file_name(|a, b| a.cmp(b))
+        .sort_by_file_name(std::cmp::Ord::cmp)
         .build()
 }
 
@@ -147,7 +147,7 @@ mod tests {
         };
         let res = format_ignore_error(&depth_loop);
         assert_eq!(res.kind(), io::ErrorKind::Other);
-        assert!(!res.to_string().is_empty());
+        assert_ne!(res.to_string(), "");
 
         // 4. WithPath wrapping non-Io error (Some(p), _)
         let with_path_loop = ignore::Error::WithPath {

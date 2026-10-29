@@ -64,7 +64,7 @@ pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
         };
         payload
             .strip_prefix("comment=")
-            .map(|s| s.trim_ascii())
+            .map(str::trim_ascii)
             .filter(|sha| is_valid_commit_sha(sha))
             .map(ToOwned::to_owned)
     })
