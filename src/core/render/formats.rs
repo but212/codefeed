@@ -184,6 +184,7 @@ impl FormatRenderer for XmlRenderer {
 mod tests {
     use super::*;
     use crate::core::model::CollectionResult;
+    use crate::core::policy::NormalizedPath;
     use crate::core::render::render_with;
     use crate::core::storage::{FileRecord, FileStorage, SortedFiles};
 
@@ -324,11 +325,8 @@ hello\n\
         let storage = files.into_iter().filter(|f| f.path != "excluded.txt").fold(
             FileStorage::new(),
             |s, f| {
-                s.push(
-                    &crate::core::policy::NormalizedPath::from(f.path),
-                    f.content,
-                )
-                .expect("test fixture fits the output limit")
+                s.push(&NormalizedPath::from(f.path), f.content)
+                    .expect("test fixture fits the output limit")
             },
         );
         let collection = CollectionResult {

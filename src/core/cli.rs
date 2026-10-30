@@ -3,9 +3,9 @@ use std::path::PathBuf;
 
 use crate::core::error::DomainError;
 use crate::core::model::{DigestFormat, IngestReport, OutputTarget, RunConfig, Source};
+use crate::core::policy::ExcludePatterns;
 
-pub(crate) const HELP: &str =
-    "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]";
+pub(crate) const HELP: &str = "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>] [--exclude <PATTERN>]...";
 
 /// One-line summary of a finished run, naming where the digest went.
 #[must_use]
@@ -29,8 +29,8 @@ pub(crate) fn completion_message(report: &IngestReport) -> String {
 pub(crate) enum CliAction {
     /// Print help text and exit successfully.
     Help,
-    /// Execute ingestion using the resolved [`RunConfig`].
-    Run(RunConfig),
+    /// Execute ingestion using the resolved [`RunConfig`]. Boxed so that `Help` does not pay for the config's size.
+    Run(Box<RunConfig>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +38,7 @@ enum Flag {
     Output,
     Reference,
     Format,
+    Exclude,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,13 +48,15 @@ enum ParseState {
     PositionalOnly,
 }
 
-/// Option values folded in argument order. A repeated flag keeps its last value.
+/// Option values folded in argument order. A repeated flag keeps its last value, except `--exclude`,
+/// whose patterns accumulate in the order given.
 #[derive(Debug, Default)]
 struct Parsed {
     source: Option<OsString>,
     output: Option<OsString>,
     reference: Option<String>,
     format: DigestFormat,
+    exclude: Vec<String>,
 }
 
 impl Parsed {
@@ -68,6 +71,12 @@ impl Parsed {
                 self.reference = Some(val_str);
             }
             Flag::Format => self.format = parse_format(&val.to_string_lossy())?,
+            Flag::Exclude => {
+                let pattern = val
+                    .into_string()
+                    .map_err(|_| DomainError::usage("exclude pattern must be valid utf-8"))?;
+                self.exclude.push(pattern);
+            }
         }
         Ok(self)
     }
@@ -93,6 +102,8 @@ fn match_flag(s: &str) -> Option<(Flag, &'static str, Option<&str>)> {
         (Flag::Reference, "--ref"),
         (Flag::Format, "-f"),
         (Flag::Format, "--format"),
+        (Flag::Exclude, "-x"),
+        (Flag::Exclude, "--exclude"),
     ] {
         if s == flag_str {
             return Some((flag, flag_str, None));
@@ -196,6 +207,7 @@ where
         output,
         reference,
         format,
+        exclude,
     } = parsed;
     let source_os = source.ok_or_else(|| {
         DomainError::usage("the following required arguments were not provided:\n  <SOURCE>")
@@ -208,11 +220,12 @@ where
     };
 
     let resolved_source = Source::parse_os(&source_os)?.with_reference(reference)?;
-    Ok(CliAction::Run(RunConfig::new(
-        resolved_source,
-        output_target,
+    Ok(CliAction::Run(Box::new(RunConfig {
+        source: resolved_source,
+        output: output_target,
         format,
-    )))
+        exclude: ExcludePatterns::new(exclude)?,
+    })))
 }
 
 /// Rejects a separate-argument flag value that starts with `-`, so `-o -x` cannot
@@ -250,10 +263,11 @@ fn parse_format(val: &str) -> Result<DigestFormat, DomainError> {
 mod tests {
     use super::*;
     use crate::core::model::{GitRef, Source};
+    use crate::core::policy::ExcludePatterns;
 
     fn parse_run<'a>(args: impl IntoIterator<Item = &'a str>) -> RunConfig {
         match parse(args).expect("expected parse to succeed") {
-            CliAction::Run(config) => config,
+            CliAction::Run(config) => *config,
             CliAction::Help => panic!("expected Run action, got Help"),
         }
     }
@@ -473,5 +487,98 @@ mod tests {
             github_ref.to_string().contains("--ref cannot be empty"),
             "unexpected error: {github_ref}"
         );
+    }
+
+    #[test]
+    fn cli_exclude_patterns_accumulate_in_argument_order() {
+        let config = parse_run([
+            "codefeed",
+            ".",
+            "-x",
+            "build/",
+            "--exclude",
+            "*.log",
+            "--exclude=*.tmp",
+            "-x=target",
+        ]);
+        assert_eq!(
+            config.exclude,
+            ExcludePatterns::new(["build/", "*.log", "*.tmp", "target"]).unwrap()
+        );
+
+        // Only the exclusion flag accumulates: a repeated `--format` keeps its last value.
+        let config = parse_run(["codefeed", ".", "-f", "xml", "-f", "text"]);
+        assert_eq!(config.format, DigestFormat::Text);
+        assert_eq!(config.exclude, ExcludePatterns::default());
+    }
+
+    #[test]
+    fn cli_exclude_value_may_start_with_dash_only_inline() {
+        let config = parse_run(["codefeed", ".", "--exclude=-foo"]);
+        assert_eq!(config.exclude, ExcludePatterns::new(["-foo"]).unwrap());
+
+        for args in [
+            &["codefeed", ".", "-x", "-foo"][..],
+            &["codefeed", ".", "--exclude", "-"][..],
+        ] {
+            let err = parse(args.iter().copied()).unwrap_err();
+            assert!(
+                err.to_string().contains("a value is required for '")
+                    && err.to_string().contains("' but none was supplied"),
+                "{args:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_exclude_rejects_invalid_patterns_and_missing_values() {
+        let cases: [(&[&str], &str); 3] = [
+            (
+                &["codefeed", ".", "-x", "["][..],
+                "invalid value '[' for '--exclude <PATTERN>'",
+            ),
+            (
+                &["codefeed", ".", "--exclude", "#note"][..],
+                "invalid value '#note' for '--exclude <PATTERN>'",
+            ),
+            (
+                &["codefeed", ".", "-x"][..],
+                "a value is required for '-x' but none was supplied",
+            ),
+        ];
+        for (args, expected) in cases {
+            let err = parse(args.iter().copied()).unwrap_err();
+            assert!(err.to_string().contains(expected), "{args:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn cli_exclude_non_utf8_value_is_a_usage_error() {
+        #[cfg(unix)]
+        let raw_val = {
+            use std::os::unix::ffi::OsStringExt;
+            std::ffi::OsString::from_vec(vec![0xff])
+        };
+        #[cfg(windows)]
+        let raw_val = {
+            use std::os::windows::ffi::OsStringExt;
+            std::ffi::OsString::from_wide(&[0xD800])
+        };
+
+        #[cfg(any(unix, windows))]
+        {
+            let args = [
+                std::ffi::OsString::from("codefeed"),
+                std::ffi::OsString::from("."),
+                std::ffi::OsString::from("-x"),
+                raw_val,
+            ];
+            let err = parse(args.iter()).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("exclude pattern must be valid utf-8"),
+                "unexpected error: {err}"
+            );
+        }
     }
 }

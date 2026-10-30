@@ -36,6 +36,7 @@ pub use core::error::{CandidateLimitExceededError, DomainError};
 pub use core::model::{
     DigestFormat, GitRef, GithubName, IngestReport, OutputTarget, RunConfig, Source,
 };
+pub use core::policy::ExcludePatterns;
 pub use shell::{IngestError, ingest};
 
 #[doc(hidden)]

@@ -8,6 +8,7 @@ use super::IngestError;
 use super::atomic::{parent_dir, write_atomic};
 use crate::core::error::DomainError;
 use crate::core::model::OutputTarget;
+use crate::shell::error::sanitized_io_error;
 
 fn ignore_broken_pipe(result: io::Result<()>) -> io::Result<()> {
     match result {
@@ -62,7 +63,7 @@ pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<ResolvedOut
                 .ok_or_else(|| DomainError::usage("output path has no filename"))?;
             let parent = parent_dir(path);
             let canonical_parent = fs::canonicalize(parent).map_err(|e| {
-                IngestError::Io(crate::shell::error::sanitized_io_error(
+                IngestError::Io(sanitized_io_error(
                     e.kind(),
                     &format!(
                         "failed to resolve output directory '{}': {e}",
@@ -71,7 +72,7 @@ pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<ResolvedOut
                 ))
             })?;
             if !canonical_parent.is_dir() {
-                return Err(IngestError::Io(crate::shell::error::sanitized_io_error(
+                return Err(IngestError::Io(sanitized_io_error(
                     io::ErrorKind::NotADirectory,
                     &format!("output directory '{}' is not a directory", parent.display()),
                 )));

@@ -21,7 +21,9 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use super::read::{Candidate, WorkerMsg, read_candidate};
 use super::walk::{RegularFile, Walk, classify_entry};
-use crate::core::policy::{LOCAL_CHANNEL_CAPACITY, MAX_LOCAL_WORKERS, NormalizedPath, PathStatus};
+use crate::core::policy::{
+    ExcludePatterns, LOCAL_CHANNEL_CAPACITY, MAX_LOCAL_WORKERS, NormalizedPath, PathStatus,
+};
 use crate::shell::IngestError;
 
 /// One regular file queued for a worker. The worker answers once on `reply`.
@@ -41,10 +43,11 @@ enum Slot {
 pub(super) fn fold_candidates<T>(
     root: &Path,
     output: Option<&Path>,
+    exclude: &ExcludePatterns,
     init: T,
     step: impl FnMut(T, Candidate) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
-    let walker = Walk::new(root)?;
+    let walker = Walk::new(root, exclude)?;
 
     let aborted = AtomicBool::new(false);
     let (job_tx, job_rx) = sync_channel::<Job>(LOCAL_CHANNEL_CAPACITY);
@@ -55,7 +58,7 @@ pub(super) fn fold_candidates<T>(
             s.spawn(|| run_worker(&jobs, &aborted));
         }
         // Senders move into the producer, so they drop before the workers are joined.
-        s.spawn(move || produce_slots(walker, root, output, job_tx, slot_tx));
+        s.spawn(move || produce_slots(walker, root, output, exclude, job_tx, slot_tx));
 
         let result = settle_slots(slot_rx, init, step);
         if result.is_err() {
@@ -71,13 +74,14 @@ fn dispatch(
     entry: Result<RegularFile, IngestError>,
     root: &Path,
     output: Option<&Path>,
+    exclude: &ExcludePatterns,
     jobs: &SyncSender<Job>,
 ) -> Option<Slot> {
     let file = match entry {
         Ok(file) => file,
         Err(err) => return Some(Slot::Ready(Err(err))),
     };
-    let path = match classify_entry(root, output, file.as_path()) {
+    let path = match classify_entry(root, output, exclude, file.as_path()) {
         Ok(PathStatus::Ignored) => return None,
         Ok(PathStatus::NonUtf8Candidate(prefix)) => {
             return Some(Slot::Ready(Ok(Some(Candidate::NonUtf8(prefix)))));
@@ -144,14 +148,15 @@ fn settle<T>(
     reason = "dropping the senders when the producer exits disconnects both channels"
 )]
 fn produce_slots(
-    walker: Walk,
+    walker: Walk<'_>,
     root: &Path,
     output: Option<&Path>,
+    exclude: &ExcludePatterns,
     jobs: SyncSender<Job>,
     slots: SyncSender<Slot>,
 ) {
     for entry in walker {
-        let Some(slot) = dispatch(entry, root, output, &jobs) else {
+        let Some(slot) = dispatch(entry, root, output, exclude, &jobs) else {
             continue;
         };
         let fatal = matches!(slot, Slot::Ready(Err(_)));
@@ -205,12 +210,18 @@ mod tests {
         fs::write(root.join("B.txt"), "content")?;
         fs::write(root.join("src.rs"), "content")?;
 
-        let arrived = fold_candidates(&root, None, Vec::new(), |mut paths, candidate| {
-            if let Candidate::File(path, _) = candidate {
-                paths.push(path.as_str().to_string());
-            }
-            Ok(paths)
-        })?;
+        let arrived = fold_candidates(
+            &root,
+            None,
+            &ExcludePatterns::default(),
+            Vec::new(),
+            |mut paths, candidate| {
+                if let Candidate::File(path, _) = candidate {
+                    paths.push(path.as_str().to_string());
+                }
+                Ok(paths)
+            },
+        )?;
 
         let mut expected = arrived.clone();
         expected.sort_by(|a, b| cmp_path(a, b));
@@ -228,11 +239,17 @@ mod tests {
             fs::write(root.join(format!("file_{file_index:03}.txt")), "content")?;
         }
 
-        let err = fold_candidates(&root, None, 0, |_acc, _candidate| {
-            Err(IngestError::Io(io::Error::other(
-                "abort on first candidate",
-            )))
-        });
+        let err = fold_candidates(
+            &root,
+            None,
+            &ExcludePatterns::default(),
+            0,
+            |_acc, _candidate| {
+                Err(IngestError::Io(io::Error::other(
+                    "abort on first candidate",
+                )))
+            },
+        );
         assert!(err.is_err());
         Ok(())
     }

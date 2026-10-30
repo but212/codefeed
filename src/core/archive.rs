@@ -1,15 +1,20 @@
 use crate::core::error::DomainError;
-use crate::core::policy::{PathStatus, classify_path_segments};
+use crate::core::policy::{ExcludePatterns, PathStatus, classify_path_segments};
 use memchr::{memchr, memmem};
 
 /// Normalizes a raw tar entry path, stripping the root directory prefix,
 /// collapsing multiple slashes, removing `.` segments, and classifying against policy.
 ///
+/// User exclusions match the path after the root directory is stripped, so their patterns are relative to the source root.
+///
 /// Returns `Err(DomainError)` if the path contains directory traversal, invalid root prefixes, or NUL bytes.
-/// Returns `Ok(PathStatus::Ignored)` if the entry is the root directory itself, empty, hidden, noise, or sensitive.
+/// Returns `Ok(PathStatus::Ignored)` if the entry is the root directory itself, empty, hidden, excluded, noise, or sensitive.
 /// Returns `Ok(PathStatus::NonUtf8Candidate(prefix))` if the entry path contains non-UTF-8 bytes and is not hidden.
 /// Returns `Ok(PathStatus::Valid(path))` on success.
-pub(crate) fn normalize_tar_entry_path(raw_bytes: &[u8]) -> Result<PathStatus, DomainError> {
+pub(crate) fn normalize_tar_entry_path(
+    raw_bytes: &[u8],
+    exclude: &ExcludePatterns,
+) -> Result<PathStatus, DomainError> {
     if memchr(0, raw_bytes).is_some() {
         return Err(DomainError::invalid_metadata(
             "Tar entry path contains NUL byte",
@@ -45,7 +50,7 @@ pub(crate) fn normalize_tar_entry_path(raw_bytes: &[u8]) -> Result<PathStatus, D
 
     let rel = &trimmed[slash_index + 1..];
 
-    classify_path_segments(rel.split(|&b| b == b'/')).map_err(|_| {
+    classify_path_segments(rel.split(|&b| b == b'/'), exclude).map_err(|_| {
         DomainError::invalid_metadata("Tar entry path exceeds maximum directory depth")
     })
 }
@@ -78,6 +83,35 @@ fn is_valid_commit_sha(sha: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn normalize(raw: &[u8]) -> Result<PathStatus, DomainError> {
+        normalize_tar_entry_path(raw, &ExcludePatterns::default())
+    }
+
+    #[test]
+    fn user_exclusions_are_relative_to_the_archive_root() {
+        let exclude = ExcludePatterns::new(["build/", "/src/", "repo-root"]).unwrap();
+        let cases: [(&[u8], PathStatus); 4] = [
+            (b"repo-root/build/x.txt", PathStatus::Ignored),
+            (b"repo-root/src/main.rs", PathStatus::Ignored),
+            (
+                b"repo-root/lib/src/x.rs",
+                PathStatus::Valid("lib/src/x.rs".into()),
+            ),
+            // The root directory itself is never matched, so the `repo-root` pattern keeps nothing out.
+            (
+                b"repo-root/lib/main.rs",
+                PathStatus::Valid("lib/main.rs".into()),
+            ),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(
+                normalize_tar_entry_path(raw, &exclude).unwrap(),
+                expected,
+                "{raw:?}"
+            );
+        }
+    }
 
     #[test]
     fn normalizes_archive_entry_path_correctly() {
@@ -115,12 +149,12 @@ mod tests {
             ),
         ];
         for (raw, expected) in ok_cases {
-            assert_eq!(normalize_tar_entry_path(raw).unwrap(), expected, "{raw:?}");
+            assert_eq!(normalize(raw).unwrap(), expected, "{raw:?}");
         }
 
         // Sensitive name with an invalid-UTF-8 final segment is ignored, not counted as skipped.
         assert_eq!(
-            normalize_tar_entry_path(b"repo-root/id_rsa\xff.key").unwrap(),
+            normalize(b"repo-root/id_rsa\xff.key").unwrap(),
             PathStatus::Ignored
         );
 
@@ -135,10 +169,10 @@ mod tests {
             b"repo-root\0/src/main.rs",
         ];
         for raw in err_cases {
-            assert!(normalize_tar_entry_path(raw).is_err(), "{raw:?}");
+            assert!(normalize(raw).is_err(), "{raw:?}");
         }
 
-        let dot_root_err = normalize_tar_entry_path(b"./etc/passwd").unwrap_err();
+        let dot_root_err = normalize(b"./etc/passwd").unwrap_err();
         assert_eq!(
             dot_root_err.to_string(),
             "invalid repository metadata: Tar entry root segment cannot be '.'"
@@ -150,17 +184,17 @@ mod tests {
         // 256 directory levels permitted, 257 rejected
         let normal_depth_path = format!("repo-root/{}/file.txt", vec!["d"; 256].join("/"));
         assert_eq!(
-            normalize_tar_entry_path(normal_depth_path.as_bytes()).unwrap(),
+            normalize(normal_depth_path.as_bytes()).unwrap(),
             PathStatus::Valid(format!("{}/file.txt", vec!["d"; 256].join("/")).into())
         );
 
         let excessive_depth_path = format!("repo-root/{}/file.txt", vec!["d"; 257].join("/"));
-        assert!(normalize_tar_entry_path(excessive_depth_path.as_bytes()).is_err());
+        assert!(normalize(excessive_depth_path.as_bytes()).is_err());
 
         // Deeply nested hidden path is ignored without triggering depth error
         let deep_hidden_path = format!("repo-root/.hidden/{}/file.txt", vec!["d"; 300].join("/"));
         assert_eq!(
-            normalize_tar_entry_path(deep_hidden_path.as_bytes()).unwrap(),
+            normalize(deep_hidden_path.as_bytes()).unwrap(),
             PathStatus::Ignored
         );
     }

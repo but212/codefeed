@@ -35,7 +35,8 @@ Entry (local walk or tar stream)
  +-- Directory (local walk only)
  |     +-- Entered: `.gitignore` read once; the same bytes validate and compile its rules.
  |     |     `-- Symlink, larger than `MAX_FILE_SIZE`, unreadable, or not valid UTF-8 -> Run fails (Io). Sec. 3.5.
- |     `-- Hidden or ignored by a `.gitignore` -> Pruned, not entered; its `.gitignore` is never read.
+ |     +-- Hidden or ignored by a `.gitignore` -> Pruned, not entered; its `.gitignore` is never read.
+ |     `-- Matched by a user exclusion (sec. 3.6) -> Pruned, not entered; its `.gitignore` is never read.
  |
  +-- Non-regular file (symlink, FIFO, socket, device, non-file tar header)
  |     `-- Dropped silently. Omitted from count.
@@ -46,7 +47,11 @@ Entry (local walk or tar stream)
  |     `-- Strips the first path segment (repository root directory).
  |
  +-- Path classification (policy::classify_path_segments)
- |     +-- Hidden segment, noise lockfile, or sensitive pattern
+ |     +-- Hidden segment
+ |     |     `-- Ignored. Dropped silently. Omitted from count.
+ |     +-- Matched by a user exclusion (sec. 3.6)
+ |     |     `-- Ignored. Dropped silently. Omitted from count.
+ |     +-- Noise lockfile or sensitive pattern
  |     |     `-- Ignored. Dropped silently. Omitted from count.
  |     +-- Depth > MAX_PATH_DEPTH
  |     |     `-- Run fails (InvalidMetadata).
@@ -108,6 +113,15 @@ Exact matches against the final path segment:
 - `.ignore`, global gitignore, `.git/info/exclude`, and parent-directory `.gitignore` files are ignored.
 - The local walk reads a directory's `.gitignore` once, when it enters that directory. The bytes that validate the file are the bytes that compile its rules, so no later read can change them.
 - A `.gitignore` that is a symlink, exceeds `MAX_FILE_SIZE`, is unreadable, or is not valid UTF-8 fails the run (`IngestError::Io`, path named). The symlink is not followed. A rule set that fails to compile fails the run too. Invalid glob lines are skipped, as before.
+
+### 3.6 User Exclusions (`--exclude`)
+
+- Patterns use `.gitignore` syntax and are relative to the source root. Matching is case-sensitive, as in git. Each pattern must yield exactly one rule. A blank line, a comment, a bare `!`, or an invalid glob fails at parse time with `DomainError::Usage`. An unclosed `[` is an error here, though a `.gitignore` file accepts it.
+- The rule applies to local and GitHub sources in the same way. It is independent of `.gitignore` (sec. 3.5): a path is dropped when either one drops it. A `!` pattern re-includes only paths that other user patterns exclude.
+- A path is excluded when it or any ancestor directory matches. Ancestors are tested as directories, from the top down. A `!` pattern cannot re-include a file under an excluded directory.
+- Excluded local directories are pruned, so their `.gitignore` is never read. Excluded entries are not candidates and are omitted from the skipped count.
+- Matching tests the first `MAX_PATH_DEPTH + 1` segments of a path, whatever its byte length, so a match on a path longer than `MAX_PATH_BYTES` still excludes it. The matching cost is at most that many tests, each linear in its prefix. This bounds the matching work for attacker-controlled archive paths (threat T2, sec. 1).
+- A match beyond the first `MAX_PATH_DEPTH + 1` segments is not seen. Such an entry is not excluded and fails its depth limit (sec. 4), as any other deep entry does.
 
 ---
 

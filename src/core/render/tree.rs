@@ -88,7 +88,7 @@ pub(super) fn component_at_offset(path: &str, offset: usize) -> Option<(&str, bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::storage::FileStorage;
+    use crate::core::{policy::NormalizedPath, storage::FileStorage};
 
     #[test]
     fn renders_ascii_tree_correctly() {
@@ -140,11 +140,11 @@ mod tests {
     #[test]
     fn renders_nested_siblings_in_alphabetical_order() {
         let storage = FileStorage::new()
-            .push(&crate::core::policy::NormalizedPath::from("a/x.txt"), "")
+            .push(&NormalizedPath::from("a/x.txt"), "")
             .unwrap()
-            .push(&crate::core::policy::NormalizedPath::from("a/y.txt"), "")
+            .push(&NormalizedPath::from("a/y.txt"), "")
             .unwrap()
-            .push(&crate::core::policy::NormalizedPath::from("b/z.txt"), "")
+            .push(&NormalizedPath::from("b/z.txt"), "")
             .unwrap();
         let files = SortedFiles::new(storage);
 
@@ -181,19 +181,13 @@ mod tests {
     #[test]
     fn renders_deep_multi_level_tree_correctly() {
         let storage = FileStorage::new()
-            .push(
-                &crate::core::policy::NormalizedPath::from("a/b/c/d/e.txt"),
-                "",
-            )
+            .push(&NormalizedPath::from("a/b/c/d/e.txt"), "")
             .unwrap()
-            .push(
-                &crate::core::policy::NormalizedPath::from("a/b/c/f.txt"),
-                "",
-            )
+            .push(&NormalizedPath::from("a/b/c/f.txt"), "")
             .unwrap()
-            .push(&crate::core::policy::NormalizedPath::from("a/b/g.txt"), "")
+            .push(&NormalizedPath::from("a/b/g.txt"), "")
             .unwrap()
-            .push(&crate::core::policy::NormalizedPath::from("root.txt"), "")
+            .push(&NormalizedPath::from("root.txt"), "")
             .unwrap();
         let files = SortedFiles::new(storage);
 

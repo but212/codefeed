@@ -57,7 +57,7 @@ fn help_exits_successfully_without_ingesting() {
         assert_eq!(stdout.matches("Usage:").count(), 1, "args: {args:?}");
         assert_eq!(
             stdout.trim(),
-            "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]",
+            "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>] [--exclude <PATTERN>]...",
             "args: {args:?}"
         );
         assert!(output.stderr.is_empty(), "args: {args:?}");
@@ -150,6 +150,44 @@ fn reports_estimated_tokens_in_file_summary() -> Result<(), Box<dyn std::error::
 }
 
 #[test]
+fn exclude_flag_drops_matching_paths_from_the_digest() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TempDir::new("exclude");
+    std::fs::create_dir(root.path.join("build"))?;
+    std::fs::write(root.path.join("build").join("out.txt"), "generated")?;
+    std::fs::write(root.path.join("app.log"), "log line")?;
+    std::fs::write(root.path.join("visible.txt"), "visible")?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+        .current_dir(&root.path)
+        .arg(".")
+        .args(["-x", "build/", "--exclude=*.log", "-o", "-"])
+        .output()?;
+
+    assert!(output.status.success(), "output: {output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("FILE: visible.txt"), "stdout: {stdout}");
+    assert!(!stdout.contains("generated"), "stdout: {stdout}");
+    assert!(!stdout.contains("log line"), "stdout: {stdout}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Wrote to stdout (1 files, 0 skipped, ~"),
+        "stderr: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn exclude_invalid_pattern_is_a_usage_error() {
+    let output = run(&[".", "-x", "["]);
+    assert_eq!(output.status.code(), Some(1), "output: {output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("error: invalid value '[' for '--exclude <PATTERN>'"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
 fn outputs_xml_when_format_xml_specified() -> Result<(), Box<dyn std::error::Error>> {
     let root = TempDir::new("xml");
     std::fs::write(root.path.join("file.rs"), "fn main() { let x = 1 < 2; }")?;
@@ -192,7 +230,7 @@ fn help_after_non_utf8_source_exits_successfully() {
     assert!(output.status.success(), "output: {output:?}");
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]"
+        "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>] [--exclude <PATTERN>]..."
     );
     assert!(output.stderr.is_empty(), "output: {output:?}");
 }

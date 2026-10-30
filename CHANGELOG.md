@@ -12,8 +12,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 Observable behavior. **Action** = code or config change required.
 
+#### Added
+
+- **`--exclude <PATTERN>` (`-x`)**: Drops paths matching a `.gitignore`-style pattern, relative to the source root. Repeatable; patterns apply in the order given. Works for local and GitHub sources. Excluded entries are omitted from the digest and the skipped count, whatever their path length, and an excluded local directory is not entered. Matching looks only at the first 257 path segments (`MAX_PATH_DEPTH + 1`); a deeper entry is not excluded by a match beyond that point and fails the depth limit as before. An invalid pattern, or one that matches nothing, is a usage error (`src/core/policy/exclude.rs`, `src/core/cli.rs`, `src/shell/local/walk.rs`, `src/core/policy/classify.rs`). Help text and `docs/security_and_filtering.md` sec. 3.6 describe the rules.
+
 #### Breaking
 
+- **`RunConfig` has an `exclude` field**: `RunConfig` gains `exclude: ExcludePatterns`, so a struct literal `RunConfig { source, output, format }` no longer compiles. `RunConfig::new` keeps its three arguments, sets no exclusions, and is no longer `const`. `ExcludePatterns` is re-exported from the crate root (`src/core/model.rs`, `src/lib.rs`).
+  - **Action:** Build with `RunConfig::new`, or add `exclude: ExcludePatterns::default()` to each struct literal.
 - **`run_cli` moved from crate root to internal `codefeed::cli` module**: Crate root no longer exports `codefeed::run_cli`. Entry point encapsulated in `codefeed::cli::run_cli` (`#[doc(hidden)]`) for `src/main.rs`; consumers integrate via `codefeed::ingest` (`src/lib.rs`, `src/shell/cli.rs`).
   - **Action:** Call `codefeed::cli::run_cli` or migrate to `codefeed::ingest`.
 - **`Source::Github` owner and repo typed `GithubName`**: `owner` and `repo` in `Source::Github { owner, repo, reference }` are `GithubName` newtypes rather than `String`. `GithubName` derefs to `str`, rejects invalid characters, `.`, and `..`, and is re-exported from crate root. `Source::github` accepts `impl Into<String>` and validates via `GithubName::new` (`src/core/model.rs`, `src/lib.rs`).
