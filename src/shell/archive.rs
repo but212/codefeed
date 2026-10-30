@@ -90,6 +90,7 @@ fn stream_error(err: &std::io::Error) -> IngestError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::error::DomainError;
     use crate::shell::testing::{gzip_archive, gzip_tarball};
 
     #[test]
@@ -286,6 +287,84 @@ mod tests {
             Some("c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950")
         );
         assert_eq!(result.files.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_paths_across_repo_roots_fail_the_run() {
+        let mock_data = gzip_tarball(&[
+            ("r1/a.txt", b"first", EntryType::Regular),
+            ("r2/a.txt", b"second", EntryType::Regular),
+        ]);
+
+        let err = collect(mock_data.as_slice(), "https://github.com/owner/repo", None).unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
+            "expected InvalidMetadata, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_paths_after_normalization_fail_the_run() {
+        let mock_data = gzip_tarball(&[
+            ("repo/a//b.txt", b"first", EntryType::Regular),
+            ("repo/a/b.txt", b"second", EntryType::Regular),
+        ]);
+
+        let err = collect(mock_data.as_slice(), "https://github.com/owner/repo", None).unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
+            "expected InvalidMetadata, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_skipped_candidate_fails_the_run() {
+        // The oversized second entry is skipped for size, but its path still collides with the stored first entry.
+        let oversized = vec![b'x'; crate::core::policy::MAX_FILE_SIZE_USIZE + 1];
+        let mock_data = gzip_archive(|tar| {
+            for body in [&b"first"[..], oversized.as_slice()] {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(EntryType::Regular);
+                header.set_size(body.len() as u64);
+                header.set_mode(0o644);
+                let name = b"repo/a.txt";
+                header.as_mut_bytes()[..name.len()].copy_from_slice(name);
+                header.set_cksum();
+                tar.append(&header, body).unwrap();
+            }
+        });
+
+        let err = collect(mock_data.as_slice(), "https://github.com/owner/repo", None).unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
+            "expected InvalidMetadata, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn non_regular_entries_are_dropped_before_path_normalization() {
+        // Pins the documented order: entry type filtering runs before tar path normalization, so
+        // a non-regular entry with a traversal path is ignored rather than rejected.
+        let mock_data = gzip_archive(|tar| {
+            for (kind, name) in [
+                (EntryType::Directory, &b"repo-root/../x/"[..]),
+                (EntryType::Symlink, &b"repo-root/../y"[..]),
+            ] {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(kind);
+                header.set_size(0);
+                header.set_mode(0o755);
+                header.as_mut_bytes()[..name.len()].copy_from_slice(name);
+                header.set_cksum();
+                tar.append(&header, &b""[..]).unwrap();
+            }
+        });
+
+        let result = collect(mock_data.as_slice(), "https://github.com/owner/repo", None)
+            .expect("collection should succeed");
+
+        assert_eq!(result.files.len(), 0);
+        assert_eq!(result.skipped, 0);
     }
 
     #[test]

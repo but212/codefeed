@@ -96,7 +96,7 @@ Excluded entries are dropped silently and omitted from the skipped count:
 - Symlinks and non-regular files (local and archive).
 - Lockfiles: `Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`, `go.sum`, `poetry.lock`, `Pipfile.lock`, `composer.lock`, `Gemfile.lock`.
 - Credential files matching prefixes (`id_rsa*`, `credentials*`) or extensions (`*.pem`, `*.key`, `*.pfx`, `*.p12`, `*.pkcs12`).
-- Files matched by in-tree `.gitignore`.
+- Files matched by in-tree `.gitignore`. A local `.gitignore` that is a symlink, exceeds `MAX_FILE_SIZE`, is unreadable, or is not valid UTF-8 fails the run instead.
 
 Skipped entries are counted in the summary:
 

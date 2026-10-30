@@ -12,7 +12,7 @@ categories = ["command-line-utilities", "development-tools"]
 exclude = [".github/", "context.md"]
 
 [dependencies]
-ignore = "0.4" # Fast .gitignore parsing and deterministic directory traversal without invoking git
+ignore = "0.4" # .gitignore rule matching without invoking git
 ureq = { version = "3", default-features = false, features = ["rustls", "rustls-webpki-roots"] } # Minimal synchronous HTTP client for GitHub tarball streams
 flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] } # Gzip decompression for GitHub archive streams
 tar = "0.4" # Tarball entry streaming without temporary disk extraction
@@ -29,7 +29,7 @@ name = "codefeed"
 bench = false
 
 # Thin LTO and one codegen unit for release builds. `panic` stays `unwind` on
-# purpose: `TempFile` and `Zeroizing` rely on Drop during unwinding for cleanup.
+# purpose: `TempPath` and `Zeroizing` rely on Drop during unwinding for cleanup.
 [profile.release]
 lto = "thin"
 codegen-units = 1

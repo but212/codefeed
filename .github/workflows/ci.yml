@@ -41,6 +41,32 @@ jobs:
       - name: Run tests
         run: cargo test --lib --bins --tests --locked
 
+      - name: Run doc tests
+        run: cargo test --doc --locked
+
+  lint:
+    name: Lint (fmt and docs)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Build docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --locked
+
   msrv:
     name: MSRV (1.88)
     runs-on: ubuntu-latest

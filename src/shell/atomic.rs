@@ -2,13 +2,11 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::IngestError;
 use super::error::io_error_at;
-use crate::core::error::DomainError;
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -26,36 +24,20 @@ pub(super) fn parent_dir(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
-/// Lifecycle of a [`TempFile`]. Only `Writing` holds an open handle, so writes are
-/// unrepresentable once the file is closed or committed.
-enum TempState {
-    Writing(fs::File),
-    Closed,
-    Committed,
-}
+/// Path of a temporary file, unlinked on drop unless persisted. It holds no handle. The file it was
+/// created with is declared after this guard, so it drops, and closes, first.
+struct TempPath(Option<PathBuf>);
 
-/// RAII guard managing a temporary file that cleans up on drop unless committed.
-///
-/// The handle is closed before the file is unlinked, which keeps deletion Windows-safe
-/// (unlinking an open file fails there).
-struct TempFile {
-    path: PathBuf,
-    state: TempState,
-}
-
-impl TempFile {
-    fn create(parent: &Path, file_name: &str) -> Result<Self, IngestError> {
+impl TempPath {
+    /// Creates `.codefeed.{nanos}.{counter}.tmp` in `parent`. The name does not depend on the target,
+    /// so its length stays within the filename limit for any output name.
+    fn create(parent: &Path) -> Result<(Self, fs::File), IngestError> {
         let timestamp = current_epoch_nanos();
         loop {
             let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let path = parent.join(format!(".{file_name}.{timestamp}.{counter}.tmp"));
+            let path = parent.join(format!(".codefeed.{timestamp}.{counter}.tmp"));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(file) => {
-                    return Ok(Self {
-                        path,
-                        state: TempState::Writing(file),
-                    });
-                }
+                Ok(file) => return Ok((Self(Some(path)), file)),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                     // Try again with a new counter.
                 }
@@ -64,117 +46,23 @@ impl TempFile {
         }
     }
 
-    #[cfg(test)]
     fn path(&self) -> &Path {
-        &self.path
+        self.0.as_deref().expect("path is present until persist")
     }
 
-    fn file_mut(&mut self) -> io::Result<&mut fs::File> {
-        match &mut self.state {
-            TempState::Writing(file) => Ok(file),
-            TempState::Closed | TempState::Committed => Err(closed_error()),
-        }
-    }
-
-    #[cfg(unix)]
-    fn set_permissions(&self, permissions: fs::Permissions) -> io::Result<()> {
-        match &self.state {
-            TempState::Writing(file) => file.set_permissions(permissions),
-            TempState::Closed | TempState::Committed => Err(closed_error()),
-        }
-    }
-
-    fn commit(mut self, target: &Path) -> Result<(), IngestError> {
-        let TempState::Writing(file) = mem::replace(&mut self.state, TempState::Closed) else {
-            return Err(IngestError::Io(closed_error()));
-        };
-        // A failure below leaves `Closed` in place, so `Drop` still unlinks the temporary file.
-        file.sync_all()
-            .map_err(|err| io_error_at(&self.path, &err))?;
-        drop(file);
-
-        fs::rename(&self.path, target).map_err(|err| io_error_at(target, &err))?;
-        self.state = TempState::Committed;
+    /// Renames the file over `target`. If the rename fails, the file stays and is unlinked on drop.
+    fn persist(mut self, target: &Path) -> Result<(), IngestError> {
+        fs::rename(self.path(), target).map_err(|err| io_error_at(target, &err))?;
+        self.0 = None;
         Ok(())
     }
 }
 
-fn closed_error() -> io::Error {
-    io::Error::other("temporary file is closed")
-}
-
-impl Drop for TempFile {
+impl Drop for TempPath {
     fn drop(&mut self) {
-        let committed = matches!(self.state, TempState::Committed);
-        // Assigning drops the previous state, closing any open handle before the unlink below.
-        self.state = TempState::Closed;
-        if !committed {
-            let _ = fs::remove_file(&self.path);
+        if let Some(path) = &self.0 {
+            let _ = fs::remove_file(path);
         }
-    }
-}
-
-/// Manages atomic output writing via a temporary file that is synced and renamed on commit.
-struct AtomicFile {
-    temp_file: TempFile,
-    target: PathBuf,
-}
-
-impl AtomicFile {
-    fn create(target: &Path) -> Result<Self, IngestError> {
-        let file_name = target
-            .file_name()
-            .ok_or_else(|| DomainError::usage("output path has no filename"))?;
-        let file_name = file_name.to_string_lossy();
-        let temp_file = TempFile::create(parent_dir(target), &file_name)?;
-
-        #[cfg(unix)]
-        match fs::metadata(target) {
-            Ok(metadata) => {
-                temp_file
-                    .set_permissions(metadata.permissions())
-                    .map_err(|error| io_error_at(&temp_file.path, &error))?;
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(io_error_at(target, &error)),
-        }
-
-        Ok(Self {
-            temp_file,
-            target: target.to_path_buf(),
-        })
-    }
-
-    fn write_all(&mut self, bytes: &[u8]) -> Result<(), IngestError> {
-        let file = self
-            .temp_file
-            .file_mut()
-            .map_err(|err| io_error_at(&self.target, &err))?;
-        file.write_all(bytes)
-            .map_err(|err| io_error_at(&self.target, &err))
-    }
-
-    /// Commits the atomic file write by syncing content, renaming to the target path,
-    /// and syncing the parent directory on Unix.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`IngestError::Io`] if flushing or renaming fails. A parent-directory sync failure
-    /// after the rename is a warning on stderr, not an error, because the target already holds the
-    /// new digest and the run has succeeded.
-    fn commit(self) -> Result<(), IngestError> {
-        self.temp_file.commit(&self.target)?;
-
-        #[cfg(unix)]
-        {
-            let parent = parent_dir(&self.target);
-            let synced = fs::File::open(parent).and_then(|dir| dir.sync_all());
-            if let Some(warning) = sync_warning(parent, synced) {
-                super::output::write_stderr_line(&warning);
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -187,10 +75,41 @@ fn sync_warning(parent: &Path, synced: io::Result<()>) -> Option<String> {
 }
 
 /// Replaces `output` with `bytes`, so a failed write leaves the previous file in place.
+///
+/// # Errors
+///
+/// Returns [`IngestError::Io`] if creating, writing, syncing, or renaming fails. A parent-directory
+/// sync failure after the rename is a warning on stderr, not an error, because the target already holds
+/// the new digest and the run has succeeded.
 pub(super) fn write_atomic(output: &Path, bytes: &[u8]) -> Result<(), IngestError> {
-    let mut file = AtomicFile::create(output)?;
-    file.write_all(bytes)?;
-    file.commit()?;
+    let parent = parent_dir(output);
+    let (temp, mut file) = TempPath::create(parent)?;
+
+    #[cfg(unix)]
+    match fs::metadata(output) {
+        Ok(metadata) => {
+            file.set_permissions(metadata.permissions())
+                .map_err(|error| io_error_at(temp.path(), &error))?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(io_error_at(output, &error)),
+    }
+
+    file.write_all(bytes)
+        .map_err(|err| io_error_at(output, &err))?;
+    file.sync_all()
+        .map_err(|err| io_error_at(temp.path(), &err))?;
+    drop(file);
+    temp.persist(output)?;
+
+    #[cfg(unix)]
+    {
+        let synced = fs::File::open(parent).and_then(|dir| dir.sync_all());
+        if let Some(warning) = sync_warning(parent, synced) {
+            super::output::write_stderr_line(&warning);
+        }
+    }
+
     Ok(())
 }
 
@@ -203,13 +122,22 @@ mod tests {
     fn atomic_write_ignores_stale_temporary_file() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("atomic")?;
         let output = root.join("digest.txt");
-        fs::write(root.join(".digest.txt.123.tmp"), "stale")?;
+        fs::write(root.join(".codefeed.123.0.tmp"), "stale")?;
         write_atomic(&output, b"new")?;
         assert_eq!(fs::read(&output)?, b"new");
         assert_eq!(
-            fs::read_to_string(root.join(".digest.txt.123.tmp"))?,
+            fs::read_to_string(root.join(".codefeed.123.0.tmp"))?,
             "stale"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn write_atomic_accepts_long_file_name() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("long_file_name")?;
+        let output = root.join("a".repeat(244));
+        write_atomic(&output, b"new")?;
+        assert_eq!(fs::read(&output)?, b"new");
         Ok(())
     }
 
@@ -223,48 +151,40 @@ mod tests {
     }
 
     #[test]
-    fn atomic_write_cleans_up_temporary_file_on_error_and_panic()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("atomic_cleanup")?;
-        let output = root.join("digest.txt");
-
-        // 1. Cleanup on atomic file drop before commit
-        let file = AtomicFile::create(&output)?;
-        let temp_path = file.temp_file.path().to_path_buf();
-        assert!(temp_path.exists());
-        drop(file);
+    fn temp_path_cleans_up_with_open_handle_on_scope_exit() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = temp_dir("temp_path_scope")?;
+        let temp_path = {
+            let (temp, _file) = TempPath::create(&root)?;
+            assert!(temp.path().exists());
+            temp.path().to_path_buf()
+        };
         assert!(
             !temp_path.exists(),
-            "temporary file should be cleaned up on drop"
+            "temporary file must be removed when its guard is dropped"
         );
+        Ok(())
+    }
 
-        // 2. Cleanup on panic
+    #[test]
+    fn atomic_write_cleans_up_temporary_file_on_panic() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("atomic_cleanup")?;
+
         let panic_result = std::panic::catch_unwind(|| {
-            let mut file = AtomicFile::create(&output).unwrap();
+            let (_temp, mut file) = TempPath::create(&root).unwrap();
             let _ = file.write_all(b"partial");
             panic!("intentional panic during atomic write");
         });
         assert!(panic_result.is_err(), "operation should have panicked");
         let temp_count_after_panic = fs::read_dir(&root)?
             .filter_map(Result::ok)
-            .filter(|e| e.file_name().to_string_lossy().starts_with(".digest.txt."))
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".codefeed."))
             .count();
         assert_eq!(
             temp_count_after_panic, 0,
             "temporary file should be cleaned up on panic unwinding"
         );
         Ok(())
-    }
-
-    #[test]
-    fn missing_output_filename_returns_usage_error() {
-        let result = write_atomic(Path::new("."), b"");
-        match result {
-            Err(IngestError::Domain(DomainError::Usage(msg))) => {
-                assert!(msg.contains("output path has no filename"));
-            }
-            other => panic!("expected DomainError::Usage, got {other:?}"),
-        }
     }
 
     #[test]
@@ -282,31 +202,12 @@ mod tests {
 
         let temp_count = fs::read_dir(&root)?
             .filter_map(Result::ok)
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with(".existing_subdir.")
-            })
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".codefeed."))
             .count();
         assert_eq!(
             temp_count, 0,
             "temporary file must be unlinked on write_atomic failure"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn temp_file_closed_state_returns_closed_error() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("atomic_closed_test")?;
-        let mut temp = TempFile {
-            path: root.join("fake_temp.tmp"),
-            state: TempState::Closed,
-        };
-        let file_err = temp.file_mut().unwrap_err();
-        assert_eq!(file_err.to_string(), "temporary file is closed");
-
-        let commit_err = temp.commit(&root.join("target.txt")).unwrap_err();
-        assert!(matches!(commit_err, IngestError::Io(err) if err.to_string().contains("closed")));
         Ok(())
     }
 
@@ -363,24 +264,10 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn temp_file_drop_cleans_up_on_scope_exit() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("temp_file_cleanup")?;
-        let temp = TempFile::create(&root, "sample.txt")?;
-        let temp_path = temp.path().to_path_buf();
-        assert!(temp_path.exists());
-        drop(temp);
-        assert!(
-            !temp_path.exists(),
-            "temporary file must be removed when TempFile is dropped"
-        );
-        Ok(())
-    }
-
     #[cfg(unix)]
     #[test]
-    fn atomic_file_create_cleans_up_temp_file_on_metadata_error()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn write_atomic_cleans_up_temp_file_on_metadata_error() -> Result<(), Box<dyn std::error::Error>>
+    {
         use std::os::unix::fs::symlink;
 
         let root = temp_dir("create_metadata_error")?;
@@ -389,19 +276,16 @@ mod tests {
         symlink(&loop_b, &loop_a)?;
         symlink(&loop_a, &loop_b)?;
 
-        let result = AtomicFile::create(&loop_a);
-        assert!(
-            result.is_err(),
-            "AtomicFile::create on symlink loop must fail"
-        );
+        let result = write_atomic(&loop_a, b"");
+        assert!(result.is_err(), "write_atomic on symlink loop must fail");
 
         let temp_count = fs::read_dir(&root)?
             .filter_map(Result::ok)
-            .filter(|e| e.file_name().to_string_lossy().starts_with(".loop_a."))
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".codefeed."))
             .count();
         assert_eq!(
             temp_count, 0,
-            "temporary file must be unlinked when AtomicFile::create fails during metadata check"
+            "temporary file must be unlinked when write_atomic fails during metadata check"
         );
         Ok(())
     }

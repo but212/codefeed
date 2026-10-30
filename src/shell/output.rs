@@ -145,34 +145,6 @@ mod tests {
     }
 
     #[test]
-    fn stdout_overflow_writes_nothing_to_stream() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::core::model::{CollectionResult, DigestFormat};
-        use crate::core::policy::{MAX_OUTPUT_SIZE_USIZE, NormalizedPath};
-        use crate::core::storage::FileStorage;
-
-        let large_content = "x".repeat(MAX_OUTPUT_SIZE_USIZE - 16);
-        let storage = FileStorage::new()
-            .push(&NormalizedPath::from("a.txt"), "hello\n")?
-            .push(&NormalizedPath::from("b.txt"), &large_content)?;
-
-        let collection = CollectionResult {
-            label: "overflow-repo".into(),
-            revision: None,
-            files: crate::core::storage::SortedFiles::new(storage),
-            skipped: 0,
-        };
-
-        let mut sink = Vec::new();
-        let rendered_res = collection.render(DigestFormat::Text);
-        assert!(matches!(rendered_res, Err(DomainError::OutputTooLarge(_))));
-        if let Ok(rendered) = rendered_res {
-            let _ = render_stdout_to(&mut sink, &rendered.bytes);
-        }
-        assert!(sink.is_empty(), "stdout sink must remain empty on overflow");
-        Ok(())
-    }
-
-    #[test]
     fn resolve_output_target_rejects_non_existent_parent() -> Result<(), Box<dyn std::error::Error>>
     {
         let root = temp_dir("non_existent_parent")?;

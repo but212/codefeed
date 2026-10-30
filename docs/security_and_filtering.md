@@ -32,13 +32,18 @@
 ```
 Entry (local walk or tar stream)
  |
- +-- Tar stream entry normalization (archive::normalize_tar_entry_path)
- |     +-- Embedded NUL byte, traversal `..`, or `.` root segment
- |     |     `-- Run fails (InvalidMetadata).
- |     `-- Strips single repo root directory prefix.
+ +-- Directory (local walk only)
+ |     +-- Entered: `.gitignore` read once; the same bytes validate and compile its rules.
+ |     |     `-- Symlink, larger than `MAX_FILE_SIZE`, unreadable, or not valid UTF-8 -> Run fails (Io). Sec. 3.5.
+ |     `-- Hidden or ignored by a `.gitignore` -> Pruned, not entered; its `.gitignore` is never read.
  |
  +-- Non-regular file (symlink, FIFO, socket, device, non-file tar header)
  |     `-- Dropped silently. Omitted from count.
+ |
+ +-- Tar stream entry normalization (archive::normalize_tar_entry_path)
+ |     +-- Embedded NUL byte, traversal `..`, or `.` root segment
+ |     |     `-- Run fails (InvalidMetadata).
+ |     `-- Strips the first path segment (repository root directory).
  |
  +-- Path classification (policy::classify_path_segments)
  |     +-- Hidden segment, noise lockfile, or sensitive pattern
@@ -52,6 +57,7 @@ Entry (local walk or tar stream)
  |
  `-- Candidate (Selector::observe)
        +-- Charges candidate slot. Overflowing MAX_FILE_COUNT fails the run.
+       +-- Path <= MAX_PATH_BYTES equal to an earlier candidate's path (skipped ones included) -> Run fails (InvalidMetadata).
        +-- Exceeds MAX_PATH_BYTES or declared MAX_FILE_SIZE: skipped; body not read.
        +-- Body read (bounded by worker or archive stream).
        `-- Content check passes -> Included. Otherwise skipped.
@@ -94,11 +100,14 @@ Exact matches against the final path segment:
 | :--- | :--- |
 | Depth > `MAX_PATH_DEPTH` | Run fails with `InvalidMetadata`. Hidden/noise items dropped prior to check. |
 | Path > `MAX_PATH_BYTES` | Consumes candidate slot; counted as skipped; body not read. |
+| Path <= `MAX_PATH_BYTES` equal to another candidate's path | Run fails with `InvalidMetadata`. Applies to skipped candidates too. Longer duplicates are skipped and not compared. |
 
 ### 3.5 Ignore Files (Local Only)
 
 - Applies `.gitignore` files within source tree (Git binary not required).
 - `.ignore`, global gitignore, `.git/info/exclude`, and parent-directory `.gitignore` files are ignored.
+- The local walk reads a directory's `.gitignore` once, when it enters that directory. The bytes that validate the file are the bytes that compile its rules, so no later read can change them.
+- A `.gitignore` that is a symlink, exceeds `MAX_FILE_SIZE`, is unreadable, or is not valid UTF-8 fails the run (`IngestError::Io`, path named). The symlink is not followed. A rule set that fails to compile fails the run too. Invalid glob lines are skipped, as before.
 
 ---
 
@@ -123,8 +132,8 @@ Candidate budget overflow aborts the run without emitting partial output.
 
 - **No Symlinks:** Walker uses `follow_links(false)`. Workers call `fs::symlink_metadata` before open, rejecting symlinks to files, directories, or special devices.
 - **Output Exclusion:** Canonical destination is resolved upfront (`resolve_output_target`) and excluded from traversal to prevent self-ingest.
-- **Atomic Writes:** Destination written via temporary file in target directory, flushed, and renamed. Unix preserves permissions and syncs parent directory. Parent sync failure logs a warning without aborting. `AtomicFile` handles close prior to unlinking on `Drop`.
-- **Unavailable vs. Fatal:** `NotFound`, `PermissionDenied`, or Windows sharing (32) / locking (33) errors mark files unavailable (skipped). Other I/O errors or unreadable directories abort the run. First error in walk order is deterministically reported.
+- **Atomic Writes:** Destination written via temporary file `.codefeed.{nanos}.{counter}.tmp` in target directory, flushed, and renamed. The name does not depend on the target name. Unix preserves permissions and syncs parent directory. Parent sync failure logs a warning without aborting. `write_atomic` drops the file handle before `TempPath` unlinks the temporary file on `Drop`.
+- **Unavailable vs. Fatal:** `NotFound`, `PermissionDenied`, or Windows sharing (32) / locking (33) errors mark files unavailable (skipped). Other I/O errors or unreadable directories abort the run. A directory's `.gitignore` is not a file candidate: any read failure, symlink, oversize file, or non-UTF-8 content aborts the run (sec. 3.5). First error in walk order is deterministically reported.
 - **Bounded Concurrency:** Producer and workers communicate across bounded `sync_channel` queues (`LOCAL_CHANNEL_CAPACITY`). Memory holds at most `LOCAL_CHANNEL_CAPACITY + 2` concurrent file bodies, each bounded to `MAX_FILE_SIZE + 1`. Abort signals set an `AtomicBool` halting worker reads.
 
 ---
@@ -157,6 +166,7 @@ Candidate budget overflow aborts the run without emitting partial output.
 
 ### 6.6 Time Limits
 
+- DNS resolution and connection, including the TLS handshake, must complete within `GITHUB_TIMEOUT_SECS`.
 - Response headers must arrive within `GITHUB_TIMEOUT_SECS`.
 - Archive download must complete within `ARCHIVE_MAX_SECS`.
 
@@ -185,7 +195,7 @@ Single documentation source for numerical limits (mirrors `src/core/policy/limit
 
 | Constant | Value | Enforced By | On Overflow |
 | :--- | :--- | :--- | :--- |
-| `MAX_FILE_SIZE` | 1 MiB | Declared size and bounded read | Skipped, counted in summary |
+| `MAX_FILE_SIZE` | 1 MiB | Declared size, bounded read, and `.gitignore` read | Skipped, counted in summary; `.gitignore`: run fails |
 | `MAX_PATH_BYTES` | 4,096 B | Path classification | Skipped, counted in summary |
 | `MAX_PATH_DEPTH` | 256 levels | Path classification | Run fails (`InvalidMetadata`) |
 | `MAX_FILE_COUNT` | 10,000 files | Candidate budget | Run fails; lists 3 largest dirs |
@@ -194,7 +204,7 @@ Single documentation source for numerical limits (mirrors `src/core/policy/limit
 | `LOCAL_CHANNEL_CAPACITY` | 64 messages | Channel bounds | Blocks sender (no overflow) |
 | `MAX_LOCAL_WORKERS` | 12 threads | Thread pool sizing | Worker concurrency limit |
 | `ARCHIVE_MAX_SECS` | 300 s | Archive stream timer | Fails with request error |
-| `GITHUB_TIMEOUT_SECS` | 30 s | Header timeout | Retried per sec. 6.5 |
+| `GITHUB_TIMEOUT_SECS` | 30 s | Resolve, connect, header timeouts | Retried per sec. 6.5 |
 | `MAX_ATTEMPTS` | 3 attempts | Retry loop | Halts retries; run fails |
 | `RETRY_INITIAL_DELAY_MS` | 250 ms | Backoff initial delay | Initial retry sleep |
 | `RETRY_MAX_DELAY_MS` | 5,000 ms | Backoff cap & wait limit | Longer server wait fails run |

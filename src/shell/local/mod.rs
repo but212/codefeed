@@ -232,6 +232,128 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn non_utf8_gitignore_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("non_utf8_gitignore")?;
+        fs::write(root.join(".gitignore"), b"# caf\xe9\nsecret.txt\n")?;
+        fs::write(root.join("secret.txt"), "secret")?;
+
+        let err = collect(&root, &ResolvedOutput::STDOUT).unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Io(io_err) if io_err.kind() == std::io::ErrorKind::InvalidData),
+            "expected IngestError::Io with ErrorKind::InvalidData, got: {err:?}"
+        );
+        assert!(err.to_string().contains(".gitignore"), "got: {err}");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_gitignore_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("unreadable_gitignore")?;
+        let gitignore = root.join(".gitignore");
+        fs::write(&gitignore, "secret.txt\n")?;
+        fs::set_permissions(&gitignore, fs::Permissions::from_mode(0o0000))?;
+
+        if fs::File::open(&gitignore).is_ok() {
+            let _ = fs::set_permissions(&gitignore, fs::Permissions::from_mode(0o0644));
+            return Ok(());
+        }
+
+        let res = collect(&root, &ResolvedOutput::STDOUT);
+        let _ = fs::set_permissions(&gitignore, fs::Permissions::from_mode(0o0644));
+
+        let err = res.unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Io(io_err) if io_err.kind() == std::io::ErrorKind::PermissionDenied),
+            "expected IngestError::Io with ErrorKind::PermissionDenied, got: {err:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_gitignore_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("oversized_gitignore")?;
+        fs::write(root.join(".gitignore"), vec![b'#'; MAX_FILE_SIZE_USIZE + 1])?;
+        fs::write(root.join("a.txt"), "a")?;
+
+        let err = collect(&root, &ResolvedOutput::STDOUT).unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Io(io_err) if io_err.kind() == std::io::ErrorKind::FileTooLarge),
+            "expected IngestError::Io with ErrorKind::FileTooLarge, got: {err:?}"
+        );
+        assert!(err.to_string().contains(".gitignore"), "got: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn gitignore_at_size_limit_is_read_in_full() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("gitignore_at_limit")?;
+        // The rule sits on the last line, so it applies only if the whole file is parsed.
+        let mut content = vec![b'#'; MAX_FILE_SIZE_USIZE - b"\nsecret.txt".len()];
+        content.extend_from_slice(b"\nsecret.txt");
+        fs::write(root.join(".gitignore"), content)?;
+        fs::write(root.join("secret.txt"), "secret")?;
+        fs::write(root.join("a.txt"), "a")?;
+
+        let res = collect(&root, &ResolvedOutput::STDOUT)?;
+        assert_eq!(
+            res.files.len(),
+            1,
+            "secret.txt is excluded by the last line"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_gitignore_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("symlinked_gitignore")?;
+        let rules = root.join("rules.txt");
+        fs::write(&rules, "secret.txt\n")?;
+        symlink(&rules, root.join(".gitignore"))?;
+        fs::write(root.join("secret.txt"), "secret")?;
+
+        let err = collect(&root, &ResolvedOutput::STDOUT).unwrap_err();
+        assert!(matches!(err, IngestError::Io(_)), "got: {err:?}");
+        assert!(err.to_string().contains(".gitignore"), "got: {err}");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn symlinked_gitignore_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::symlink_file;
+
+        let root = temp_dir("win_symlinked_gitignore")?;
+        let rules = root.join("rules.txt");
+        fs::write(&rules, "secret.txt\n")?;
+        fs::write(root.join("secret.txt"), "secret")?;
+
+        if symlink_file(&rules, root.join(".gitignore")).is_ok() {
+            let err = collect(&root, &ResolvedOutput::STDOUT).unwrap_err();
+            assert!(matches!(err, IngestError::Io(_)), "got: {err:?}");
+            assert!(err.to_string().contains(".gitignore"), "got: {err}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn gitignore_directory_is_not_read_as_rules() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("gitignore_directory")?;
+        fs::create_dir(root.join(".gitignore"))?;
+        fs::write(root.join("a.txt"), "a")?;
+
+        let res = collect(&root, &ResolvedOutput::STDOUT)?;
+        assert_eq!(res.files.len(), 1);
+        assert_eq!(res.skipped, 0);
+        Ok(())
+    }
+
     #[cfg(windows)]
     #[test]
     fn locked_file_is_counted_as_skipped() -> Result<(), Box<dyn std::error::Error>> {
