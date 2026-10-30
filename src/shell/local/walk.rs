@@ -57,16 +57,15 @@ impl Walk {
         }
         let path = entry.path();
         let kind = entry.file_type().map_err(|err| io_error_at(&path, &err))?;
-        if is_ignored(&self.frames, &path, kind.is_dir()) {
+        let is_dir = kind.is_dir();
+        if (!is_dir && !kind.is_file()) || is_ignored(&self.frames, &path, is_dir) {
             return Ok(None);
         }
-        if kind.is_dir() {
+        if is_dir {
             self.frames.push(Frame::enter(&path)?);
             Ok(None)
-        } else if kind.is_file() {
-            Ok(Some(RegularFile(path)))
         } else {
-            Ok(None)
+            Ok(Some(RegularFile(path)))
         }
     }
 }

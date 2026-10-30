@@ -15,11 +15,8 @@ pub(super) const fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
 
     while i < bytes.len() {
         let b = bytes[i];
-        if b < 0x80 {
-            ascii_bytes += 1;
-        } else if b >= 0xC0 {
-            non_ascii_chars += 1;
-        }
+        ascii_bytes += (b < 0x80) as usize;
+        non_ascii_chars += (b >= 0xC0) as usize;
         i += 1;
     }
 
