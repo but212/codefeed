@@ -29,7 +29,7 @@ name = "codefeed"
 bench = false
 
 # Thin LTO and one codegen unit for release builds. `panic` stays `unwind` on
-# purpose: `TempFile` and `Zeroizing` rely on Drop during unwinding for cleanup.
+# purpose: `TempPath` and `Zeroizing` rely on Drop during unwinding for cleanup.
 [profile.release]
 lto = "thin"
 codegen-units = 1

@@ -274,6 +274,75 @@ mod tests {
     }
 
     #[test]
+    fn oversized_gitignore_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("oversized_gitignore")?;
+        fs::write(root.join(".gitignore"), vec![b'#'; MAX_FILE_SIZE_USIZE + 1])?;
+        fs::write(root.join("a.txt"), "a")?;
+
+        let err = collect(&root, &ResolvedOutput::STDOUT).unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Io(io_err) if io_err.kind() == std::io::ErrorKind::FileTooLarge),
+            "expected IngestError::Io with ErrorKind::FileTooLarge, got: {err:?}"
+        );
+        assert!(err.to_string().contains(".gitignore"), "got: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn gitignore_at_size_limit_is_read_in_full() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("gitignore_at_limit")?;
+        // The rule sits on the last line, so it applies only if the whole file is parsed.
+        let mut content = vec![b'#'; MAX_FILE_SIZE_USIZE - b"\nsecret.txt".len()];
+        content.extend_from_slice(b"\nsecret.txt");
+        fs::write(root.join(".gitignore"), content)?;
+        fs::write(root.join("secret.txt"), "secret")?;
+        fs::write(root.join("a.txt"), "a")?;
+
+        let res = collect(&root, &ResolvedOutput::STDOUT)?;
+        assert_eq!(
+            res.files.len(),
+            1,
+            "secret.txt is excluded by the last line"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_gitignore_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("symlinked_gitignore")?;
+        let rules = root.join("rules.txt");
+        fs::write(&rules, "secret.txt\n")?;
+        symlink(&rules, root.join(".gitignore"))?;
+        fs::write(root.join("secret.txt"), "secret")?;
+
+        let err = collect(&root, &ResolvedOutput::STDOUT).unwrap_err();
+        assert!(matches!(err, IngestError::Io(_)), "got: {err:?}");
+        assert!(err.to_string().contains(".gitignore"), "got: {err}");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn symlinked_gitignore_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::symlink_file;
+
+        let root = temp_dir("win_symlinked_gitignore")?;
+        let rules = root.join("rules.txt");
+        fs::write(&rules, "secret.txt\n")?;
+        fs::write(root.join("secret.txt"), "secret")?;
+
+        if symlink_file(&rules, root.join(".gitignore")).is_ok() {
+            let err = collect(&root, &ResolvedOutput::STDOUT).unwrap_err();
+            assert!(matches!(err, IngestError::Io(_)), "got: {err:?}");
+            assert!(err.to_string().contains(".gitignore"), "got: {err}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn gitignore_directory_is_not_read_as_rules() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("gitignore_directory")?;
         fs::create_dir(root.join(".gitignore"))?;

@@ -87,7 +87,7 @@
 
 - Verify candidate files with `fs::symlink_metadata` before `fs::File::open`. Never follow symlinks.
 - Thread channels must be bounded (`sync_channel`).
-- Atomic writes: write exclusively via `AtomicFile`; ensure handles close prior to unlinking on `Drop`.
+- Atomic writes: write exclusively via `write_atomic`; the file handle closes before `TempPath` unlinks on `Drop`.
 - HTTP redirects enforce `RedirectAuthHeaders::Never`. Transmit `Authorization` headers strictly when `is_github_api_origin(url)` holds.
 
 ---

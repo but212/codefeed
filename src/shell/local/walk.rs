@@ -4,14 +4,14 @@
 //! and the same bytes both validate the file and compile its rules. No later step reads it again.
 
 use std::fs;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::vec;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::core::error::DomainError;
-use crate::core::policy::{PathStatus, classify_path_segments, is_hidden_segment};
+use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path_segments, is_hidden_segment};
 use crate::shell::IngestError;
 use crate::shell::error::io_error_at;
 
@@ -114,17 +114,32 @@ fn is_ignored(frames: &[Frame], path: &Path, is_dir: bool) -> bool {
         .is_some_and(|found| found.is_ignore())
 }
 
-/// Reads `dir`'s `.gitignore`. A missing file, or one that is not a regular file, contributes no rules.
+/// Reads `dir`'s `.gitignore`. A missing file, or a directory, contributes no rules. A symlink, a file
+/// over `MAX_FILE_SIZE`, or content that fails to parse fails the run, so no rule is skipped silently.
 fn read_rules(dir: &Path) -> Result<Gitignore, IngestError> {
     let gitignore = dir.join(".gitignore");
-    match fs::metadata(&gitignore) {
-        Ok(meta) if meta.is_file() => {}
-        Ok(_) => return Ok(Gitignore::empty()),
+    let meta = match fs::symlink_metadata(&gitignore) {
+        Ok(meta) => meta,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Gitignore::empty()),
         Err(err) => return Err(io_error_at(&gitignore, &err)),
+    };
+    if meta.is_symlink() {
+        let err = io::Error::new(io::ErrorKind::InvalidInput, "symbolic link is not followed");
+        return Err(io_error_at(&gitignore, &err));
+    }
+    if !meta.is_file() {
+        return Ok(Gitignore::empty());
     }
     let file = fs::File::open(&gitignore).map_err(|err| io_error_at(&gitignore, &err))?;
-    parse_rules(dir, BufReader::new(file)).map_err(|err| io_error_at(&gitignore, &err))
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_SIZE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| io_error_at(&gitignore, &err))?;
+    if bytes.len() as u64 > MAX_FILE_SIZE {
+        let err = io::Error::new(io::ErrorKind::FileTooLarge, "file exceeds the size limit");
+        return Err(io_error_at(&gitignore, &err));
+    }
+    parse_rules(dir, bytes.as_slice()).map_err(|err| io_error_at(&gitignore, &err))
 }
 
 /// Compiles `reader` as the `.gitignore` rules of `dir`. Like `ignore`, it strips a leading BOM and

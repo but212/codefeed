@@ -24,6 +24,8 @@ impl GithubClient {
         let config = Agent::config_builder()
             .user_agent(GITHUB_USER_AGENT)
             .redirect_auth_headers(RedirectAuthHeaders::Never)
+            .timeout_resolve(Some(Duration::from_secs(GITHUB_TIMEOUT_SECS)))
+            .timeout_connect(Some(Duration::from_secs(GITHUB_TIMEOUT_SECS)))
             .timeout_recv_response(Some(Duration::from_secs(GITHUB_TIMEOUT_SECS)))
             .timeout_recv_body(Some(Duration::from_secs(ARCHIVE_MAX_SECS)))
             .http_status_as_error(false)
@@ -111,6 +113,19 @@ mod tests {
 
         let env = HashMap::new();
         assert_eq!(resolve_token_with(mock_env(env)), None);
+    }
+
+    #[test]
+    fn client_bounds_every_pre_response_phase() {
+        let timeouts = GithubClient::new().agent.config().timeouts();
+        let bounded = Some(Duration::from_secs(GITHUB_TIMEOUT_SECS));
+        assert_eq!(timeouts.resolve, bounded);
+        assert_eq!(timeouts.connect, bounded);
+        assert_eq!(timeouts.recv_response, bounded);
+        assert_eq!(
+            timeouts.recv_body,
+            Some(Duration::from_secs(ARCHIVE_MAX_SECS))
+        );
     }
 
     #[test]

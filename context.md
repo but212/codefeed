@@ -10,7 +10,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 ### Inputs and configuration
 
-- `Source`: `Local(PathBuf)` or `Github { owner, repo, reference }` (`#[non_exhaustive]`). Constructed via `Source::github` or parsed at the boundary via `Source::parse_os` / `Source::parse`.
+- `Source`: `Local(PathBuf)` or `Github { owner, repo, reference }` (`Github` variant is `#[non_exhaustive]`). Constructed via `Source::github` or parsed at the boundary via `Source::parse_os` / `Source::parse`.
 - `GithubName`: Validated GitHub owner/repo name. Rejects empty strings, `.`, `..`, and invalid characters. Implements `Deref<Target = str>`.
 - `GitRef`: Validated, trimmed, non-empty revision (branch, tag, commit SHA). Rejects `.` and `..`. Implements `Deref<Target = str>`.
 - `OutputTarget`: `File(PathBuf)` or `Stdout`.
@@ -95,7 +95,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 ### 3.8 Local Traversal Pipeline
 
-1. Producer walks depth-first in file-name order without following links (`Walk`, `walk.rs`). Entering a directory reads its `.gitignore` once and compiles its rules from those bytes (unreadable or non-UTF-8 fails the run, [security sec. 3.5](docs/security_and_filtering.md#35-ignore-files-local-only)). Rules match through `ignore::gitignore`. Jobs go out for regular files in walk order.
+1. Producer walks depth-first in file-name order without following links (`Walk`, `walk.rs`). Entering a directory reads its `.gitignore` once and compiles its rules from those bytes (a symlink, an oversized, unreadable, or non-UTF-8 file fails the run, [security sec. 3.5](docs/security_and_filtering.md#35-ignore-files-local-only)). Rules match through `ignore::gitignore`. Jobs go out for regular files in walk order.
 2. Up to `MAX_LOCAL_WORKERS` workers check metadata, read bounded bodies, and reply on bounded slots.
 3. Main thread settles slots in walk order into `Selector::observe`. The first error halts traversal.
 4. Channel capacities are bounded by `LOCAL_CHANNEL_CAPACITY` ([security sec. 8](docs/security_and_filtering.md#8-limit-values)).
@@ -137,7 +137,7 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 - `local/`: `mod.rs` (`collect`), `walk.rs`, `read.rs` (metadata/body read), `pipeline.rs` (producer/worker pipeline).
 - `archive.rs`: Tarball/gzip streaming and admission.
 - `github/`: `mod.rs` (`collect`), `client.rs` (HTTP/TLS client, token handling), `stream.rs` (archive streaming, retries).
-- `atomic.rs`: `write_atomic`, `AtomicFile`, `TempFile`.
+- `atomic.rs`: `write_atomic`, `TempPath`.
 - `output.rs`: `resolve_output_target`, `deliver`, stdout/stderr line writers.
 - `testing.rs`: Test helpers (`temp_dir`, tarball builder, `MockServer`).
 
