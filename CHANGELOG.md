@@ -39,7 +39,7 @@ Observable behavior. **Action** = code or config change required.
 - **Local `.gitignore` rules come from the validating read**: The `ignore` crate read each `.gitignore` before a separate validation read, so a file changed between reads could silently drop its rules. Each file is now read once and compiled from those bytes. An unreadable or non-UTF-8 file fails with an `Io` error naming its path (`src/shell/local/walk.rs`).
 - **Tar entry evaluation order documentation**: `docs/security_and_filtering.md` and `context.md` placed the non-regular entry check after tar path normalization. The code drops non-regular entries first; the docs now match. No runtime change.
 - **Local filesystem error sanitization**: Control characters (`\t`, `\r`, `\n`, Unicode control codes) in paths in I/O errors (`io_error_at`, `resolve_output_target`, `validate_root`, `sync_warning`) are sanitized via `sanitize_error_detail` against terminal injection and log forging (`src/shell/error.rs`, `src/shell/local/walk.rs`, `src/shell/local/mod.rs`, `src/shell/output.rs`, `src/shell/atomic.rs`).
-- **Tar root segment error wording**: `"Tar entry root segment is '.'; expected a single repository root directory"` → `"Tar entry root segment cannot be '.'"` (`src/core/archive.rs`).
+- **Tar root segment error wording**: `"Tar entry root segment is '.'; expected a single repository root directory"` -> `"Tar entry root segment cannot be '.'"` (`src/core/archive.rs`).
 - **Local pipeline early-abort deadlock**: Producer (`produce_slots`) and consumer (`settle_slots`) keep channel endpoint ownership. An early error drops the receiver, disconnects the channel, and ends the producer loop without deadlock when the slot queue overflows (`src/shell/local/pipeline.rs`).
 - **Atomic permission error context**: Unix permission errors during atomic output creation include the temp file path (`src/shell/atomic.rs`).
 - **PAX archive size overrides**: Tar `process_tar_entry` uses `entry.size()` instead of `entry.header().size()`, so PAX `size=` overrides are checked against `MAX_FILE_SIZE` before reading (`src/shell/archive.rs`).
@@ -58,7 +58,7 @@ Internal refactors and test changes. No consumer action required.
 - **Dead derives and impls**: Removed unused `Default` on `RateLimitHeaders`, `AttemptState`, `SortedFiles`, `FileStorage`. Removed test-only `Display` and `std::error::Error` on `OutputLimitExceeded`; render tests unwrap directly (`src/core/github/retry.rs`, `src/core/storage.rs`, `src/core/render/budget.rs`, `src/core/render/formats.rs`, `src/core/render/tree.rs`).
 
 - **Pedantic lints, token heuristic**: `#[must_use]` on pure domain, parsing, and rendering queries for `clippy::pedantic`. `ASCII_BYTES_PER_TOKEN` is typed `usize`; the `_USIZE` companion is removed; test-only companions sit under `#[cfg(test)]` (`src/core/`, `src/core/policy/limits.rs`, `src/core/render/budget.rs`).
-- **Policy split**: `src/core/policy.rs` → `src/core/policy/` (`limits.rs`, `exclusions.rs`, `classify.rs`), with co-located tests. Behavior, constants, and re-exports unchanged (`src/core/policy/`).
+- **Policy split**: `src/core/policy.rs` -> `src/core/policy/` (`limits.rs`, `exclusions.rs`, `classify.rs`), with co-located tests. Behavior, constants, and re-exports unchanged (`src/core/policy/`).
 - **Path ordering**: Removed conflicting `PartialOrd`, `Ord`, `Hash` on `NormalizedPath`; `cmp_path` is the sole ordering (`src/core/policy/classify.rs`).
 - **Test fixtures**: XML and text fixtures share generic `render_digest`; CLI valid-invocation assertions use `parse_run` (`src/core/render/formats.rs`, `src/core/cli.rs`).
 - **Test diet**: Pruned redundant subprocess CLI tests (`tests/cli.rs`); `FileStorage` tests decoupled from arena internals (`src/core/storage.rs`); test-only helper panic tests removed (`src/core/policy/classify.rs`).
@@ -71,9 +71,9 @@ Internal refactors and test changes. No consumer action required.
 - **Atomic write guard**: `TempState`, `AtomicFile`, `TempFile` replaced by `TempPath` (unlinks on drop unless persisted) and `write_atomic`. Drop order (handle before unlink) follows declaration order. Removed unreachable `Closed` and `Committed` branches (`src/shell/atomic.rs`).
 - **Shell error references**: Shell error helpers (incl. `io_error_at`) borrow `&io::Error`, resolving `clippy::needless_pass_by_value` without extra allocation (`src/shell/error.rs`, `src/shell/atomic.rs`, `src/shell/archive.rs`, `src/shell/output.rs`).
 - **CLI entry split**: `run_cli`, `report_error`, and CLI tests moved from `src/shell/mod.rs` to `src/shell/cli.rs`; `mod.rs` only orchestrates `ingest` (`src/shell/cli.rs`, `src/shell/mod.rs`).
-- **GitHub module split**: `src/shell/github.rs` → `src/shell/github/` (`client`, `stream`). `MockServer` moved to `src/shell/testing.rs`. Tests and behavior unchanged (`src/shell/github/`, `src/shell/testing.rs`).
+- **GitHub module split**: `src/shell/github.rs` -> `src/shell/github/` (`client`, `stream`). `MockServer` moved to `src/shell/testing.rs`. Tests and behavior unchanged (`src/shell/github/`, `src/shell/testing.rs`).
 - **Local pipeline**: Producer sorts the walk (`ignore::WalkBuilder::sort_by_file_name`); workers read bodies concurrently; main thread settles in walk order. In-flight bodies bounded by queue capacity (`LOCAL_CHANNEL_CAPACITY`). Hyperfine release on Windows: large synthetic tree and this repository both within about 2% of before (`src/shell/local/pipeline.rs`, `src/core/policy/limits.rs`).
-- **Local module split**: `src/shell/local.rs` → `src/shell/local/` (`walk`, `read`, `pipeline`). Tests and behavior unchanged. `run_cli` reports errors via one helper (`src/shell/mod.rs`).
+- **Local module split**: `src/shell/local.rs` -> `src/shell/local/` (`walk`, `read`, `pipeline`). Tests and behavior unchanged. `run_cli` reports errors via one helper (`src/shell/mod.rs`).
 
 ### Maintainers
 
