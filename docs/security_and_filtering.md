@@ -205,7 +205,7 @@ Sanitization runs in a single pass via `write_escaped`:
 
 ## 8. Limit Values
 
-Single documentation source for numerical limits (mirrors `src/core/policy/limits.rs`):
+Sole documentation mirror for numerical limits (authoritative definitions reside in `src/core/policy/limits.rs`):
 
 | Constant | Value | Enforced By | On Overflow |
 | :--- | :--- | :--- | :--- |

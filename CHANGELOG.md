@@ -6,6 +6,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Contributors
+
+Internal refactors and test changes. No consumer action required.
+
+#### Added
+
+- **Limit values documentation sync test**: Added a compile-time test in `src/core/policy/limits.rs` validating that every limit constant matches the mirror table in `docs/security_and_filtering.md` §8.
+
+#### Changed
+
+- **Specification clarity on limit authority**: Clarified in `AGENTS.md` and `docs/security_and_filtering.md` that `src/core/policy/` is the sole authority for limit values, while `docs/security_and_filtering.md` §8 serves as the sole documentation mirror.
+
+---
+
 ## [0.5.0]
 
 ### Library consumers and CLI users

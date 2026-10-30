@@ -32,7 +32,7 @@ Before changing code, read these documents:
 ## 4. Hard Rules
 
 - **Core Purity & `#[must_use]`:** Follow [coding convention sec. 3](docs/coding_convention.md#3-architecture-functional-core-imperative-shell).
-- **Limits and Lists:** Defined only in `src/core/policy/`. Code reads constants directly; never copy values. Limit values exist only in [security sec. 8](docs/security_and_filtering.md#8-limit-values). Synchronize `src/core/policy/` edits with [security sec. 3-4 and sec. 8](docs/security_and_filtering.md#3-exclusion-lists).
+- **Limits and Lists:** Defined only in `src/core/policy/` (authority). Code reads constants directly; never copy values. In documentation, numerical limit values appear exclusively in [security sec. 8](docs/security_and_filtering.md#8-limit-values) as a mirror; never copy limit values across other markdown documents. Synchronize `src/core/policy/` edits with [security sec. 3-4 and sec. 8](docs/security_and_filtering.md#3-exclusion-lists).
 - **Filesystem & Network:** Mandatory per [coding convention sec. 5](docs/coding_convention.md#5-os-and-network-rules-at-the-code-level) and [security sec. 5-6](docs/security_and_filtering.md).
 - **Changelog:** Log all behavior changes under `## [Unreleased]` in `CHANGELOG.md`.
 
