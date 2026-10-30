@@ -4,13 +4,8 @@ use std::path::PathBuf;
 use crate::core::error::DomainError;
 use crate::core::model::{DigestFormat, IngestReport, OutputTarget, RunConfig, Source};
 
-const HELP: &str =
+pub(crate) const HELP: &str =
     "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]";
-
-/// Returns the static command-line help message.
-pub(crate) const fn help_text() -> &'static str {
-    HELP
-}
 
 /// One-line summary of a finished run, naming where the digest went.
 #[must_use]

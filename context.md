@@ -56,7 +56,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 - Order: hidden/noise/sensitive entries -> depth check -> non-UTF-8 prefixing -> valid path ([security sec. 2](docs/security_and_filtering.md#2-evaluation-order)). Shared by local walk and tar stream via `classify_path_segments`.
 - `Ignored` entries consume no candidate slot and are omitted from skipped counts.
-- Depth limit violation is the only path check aborting the entire run. Hidden and noise entries are dropped before depth evaluation.
+- Depth limit violation is the only path check aborting the entire run during classification. Hidden and noise entries are dropped before depth evaluation. For GitHub tar archives, `normalize_tar_entry_path` also aborts the run with `DomainError::InvalidMetadata` upon encountering embedded NUL bytes, traversal segments (`..`), or a `.` root segment.
 - Non-UTF-8 candidates record their valid prefix (`"a/b/"` or `""`), charged to the budget under the first segment (`"a/"`) or root (`"<root>/"`).
 
 ### 3.3 Accounting
@@ -117,14 +117,14 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 
 ### Core (`src/core/`)
 
-- `cli.rs`: CLI argument parsing (`parse`, `Parsed`), help text, `CliAction`, `completion_message`.
+- `cli.rs`: CLI argument parsing (`parse`, `Parsed`), `HELP` constant, `CliAction`, `completion_message`.
 - `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `classify.rs` (`classify_path_segments`, `NormalizedPath`, `PathStatus`).
 - `model.rs`: `Source`, `GitRef`, `GithubName`, `RunConfig`, `OutputTarget`, `DigestFormat`, `CollectionResult`, `IngestReport`.
 - `selector.rs`: `Selector`, `CandidateBudget`, `exceeds_size_limits`.
 - `storage.rs`: `FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, `largest_files`.
-- `error.rs`: `DomainError`, `CandidateLimitExceededError`.
+- `error.rs`: `DomainError`, `CandidateLimitExceededError`, `sanitize_error_detail`.
 - `archive.rs`: PAX parsing, tar path normalization (`normalize_tar_entry_path`).
-- `github/`: `url.rs` (URL parsing, origin check), `retry.rs` (header parsing, delay calculation, attempt state machine), `mod.rs` (error formatting, `sanitize_error_detail`).
+- `github/`: `url.rs` (URL parsing, origin check), `retry.rs` (header parsing, delay calculation, attempt state machine), `mod.rs` (error formatting).
 - `render/`: `formats.rs` (text/XML formats), `tree.rs`, `escape.rs`, `budget.rs` (`BoundedBuffer`, `RenderedDigest`, token estimate).
 
 ### Shell (`src/shell/`)

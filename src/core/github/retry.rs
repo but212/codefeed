@@ -38,7 +38,7 @@ const _: () = {
 };
 
 /// Rate-limit facts from one response's headers. The shell reads the raw values; this type decides.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RateLimitHeaders {
     retry_after_present: bool,
     retry_after_secs: Option<u64>,
@@ -110,7 +110,7 @@ pub(crate) enum Transition {
 }
 
 /// Finite state machine managing HTTP attempt state and retry transitions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub(crate) struct AttemptState {
     attempt: usize,

@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn text_renders_files_in_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
+    fn text_renders_files_in_deterministic_order() {
         let files = vec![
             FileRecord {
                 path: "z.txt",
@@ -235,34 +235,28 @@ mod tests {
                 content: "a",
             },
         ];
-        let digest = render_text_digest("repo", Some("abc"), &files, 1)?;
-        let first = digest
-            .find("FILE: a.txt")
-            .ok_or_else(|| std::io::Error::other("a.txt is missing"))?;
-        let second = digest
-            .find("FILE: z.txt")
-            .ok_or_else(|| std::io::Error::other("z.txt is missing"))?;
+        let digest = render_text_digest("repo", Some("abc"), &files, 1).unwrap();
+        let first = digest.find("FILE: a.txt").expect("a.txt is missing");
+        let second = digest.find("FILE: z.txt").expect("z.txt is missing");
         assert!(first < second);
         assert!(digest.contains("Revision: abc"));
         assert!(digest.contains("Skipped: 1"));
-        Ok(())
     }
 
     #[test]
-    fn text_escapes_revision_header() -> Result<(), Box<dyn std::error::Error>> {
+    fn text_escapes_revision_header() {
         let revision = "feature\\x\r\nFiles: 9";
-        let rendered = render_text_digest("repo", Some(revision), &[], 0)?;
+        let rendered = render_text_digest("repo", Some(revision), &[], 0).unwrap();
 
         assert_eq!(
             rendered.lines().nth(1),
             Some("Revision: feature\\\\x\\r\\nFiles: 9")
         );
         assert!(!rendered.contains(revision));
-        Ok(())
     }
 
     #[test]
-    fn text_streaming_matches_string_render() -> Result<(), Box<dyn std::error::Error>> {
+    fn text_streaming_matches_string_render() {
         let files = [
             FileRecord {
                 path: "b.txt",
@@ -280,9 +274,9 @@ mod tests {
             files: SortedFiles::new(storage),
             skipped: 2,
         };
-        let buf = render_with(BoundedBuffer::default(), &collection, TextRenderer)?;
+        let buf = render_with(BoundedBuffer::default(), &collection, TextRenderer).unwrap();
         let digest = buf.finish();
-        let streamed_str = std::str::from_utf8(&digest.bytes)?;
+        let streamed_str = std::str::from_utf8(&digest.bytes).unwrap();
 
         let expected = "\
 Repository: my-repo\n\
@@ -309,11 +303,10 @@ FILE: b.txt\n\
 hello\n\
 \n";
         assert_eq!(streamed_str, expected);
-        Ok(())
     }
 
     #[test]
-    fn text_renders_from_arbitrary_iterator() -> Result<(), Box<dyn std::error::Error>> {
+    fn text_renders_from_arbitrary_iterator() {
         let files = [
             FileRecord {
                 path: "b.txt",
@@ -344,33 +337,30 @@ hello\n\
             files: SortedFiles::new(storage),
             skipped: 1,
         };
-        let buf = render_with(BoundedBuffer::default(), &collection, TextRenderer)?;
+        let buf = render_with(BoundedBuffer::default(), &collection, TextRenderer).unwrap();
         let digest = buf.finish();
-        let rendered = std::str::from_utf8(&digest.bytes)?;
+        let rendered = std::str::from_utf8(&digest.bytes).unwrap();
         assert!(rendered.contains("Files: 2"));
         assert!(rendered.contains("FILE: a.txt"));
         assert!(rendered.contains("FILE: b.txt"));
         assert!(!rendered.contains("excluded.txt"));
-        Ok(())
     }
 
     #[test]
-    fn text_escapes_control_characters_in_filename_headers_and_tree()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn text_escapes_control_characters_in_filename_headers_and_tree() {
         let filename = "x\x1b]0;title\x07.md";
         let files = [FileRecord {
             path: filename,
             content: "content\n",
         }];
-        let text_rendered = render_text_digest("repo", None, &files, 0)?;
+        let text_rendered = render_text_digest("repo", None, &files, 0).unwrap();
         assert!(!text_rendered.contains('\x1b'));
         assert!(!text_rendered.contains('\x07'));
         assert!(text_rendered.contains("x\u{FFFD}]0;title\u{FFFD}.md"));
-        Ok(())
     }
 
     #[test]
-    fn xml_renders_in_deterministic_order() -> Result<(), Box<dyn std::error::Error>> {
+    fn xml_renders_in_deterministic_order() {
         let files = [
             FileRecord {
                 path: "z.txt",
@@ -381,7 +371,7 @@ hello\n\
                 content: "a & b",
             },
         ];
-        let xml_str = render_xml_digest("my-repo", Some("v1.0"), &files, 1)?;
+        let xml_str = render_xml_digest("my-repo", Some("v1.0"), &files, 1).unwrap();
         let expected = "\
 <repository name=\"my-repo\" revision=\"v1.0\">
 <directory_structure>
@@ -399,16 +389,15 @@ z &lt; 10
 </repository>
 ";
         assert_eq!(xml_str, expected);
-        Ok(())
     }
 
     #[test]
-    fn xml_attr_escapes_whitespace_and_preserves_body() -> Result<(), Box<dyn std::error::Error>> {
+    fn xml_attr_escapes_whitespace_and_preserves_body() {
         let files = [FileRecord {
             path: "dir\nname\r\t\\back/file.rs",
             content: "fn main() {\n\tprintln!(\"hello\");\r\n}\n",
         }];
-        let xml_str = render_xml_digest("my\trepo\n", Some("rev\r\n1"), &files, 0)?;
+        let xml_str = render_xml_digest("my\trepo\n", Some("rev\r\n1"), &files, 0).unwrap();
 
         assert!(
             xml_str.contains("<repository name=\"my&#9;repo&#10;\" revision=\"rev&#13;&#10;1\">")
@@ -416,6 +405,5 @@ z &lt; 10
         assert!(xml_str.contains("<file path=\"dir&#10;name&#13;&#9;\\back/file.rs\">"));
         assert!(xml_str.contains("dir&#10;name&#13;&#9;\\back/"));
         assert!(xml_str.contains("fn main() {\n\tprintln!(&quot;hello&quot;);\r\n}\n"));
-        Ok(())
     }
 }

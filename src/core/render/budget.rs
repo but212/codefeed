@@ -32,14 +32,6 @@ pub(super) const fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OutputLimitExceeded;
 
-impl std::fmt::Display for OutputLimitExceeded {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "output size limit exceeded")
-    }
-}
-
-impl std::error::Error for OutputLimitExceeded {}
-
 /// Rendered digest containing accumulated bytes, token estimation, and collection metrics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]

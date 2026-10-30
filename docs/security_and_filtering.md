@@ -11,7 +11,7 @@
 | T1 | Secret disclosure in digest | Path/name exclusion (sec. 3). Content is not scanned (sec. 1.2). | `policy/exclusions.rs`, `policy/classify.rs` |
 | T2 | Resource exhaustion | Size, count, depth, and path limits; bounded reads and channels; timeouts (sec. 5, sec. 6). | `policy/limits.rs`, `local/`, `github/` |
 | T3 | Credential forwarding across origins | Origin validation; redirects strip authorization headers (sec. 6). | `core/github/url.rs`, `shell/github/` |
-| T4 | Injection into terminals, XML, or LLM boundaries | Contextual output escaping (sec. 7). | `core/render/escape.rs` |
+| T4 | Injection into terminals, XML, or LLM boundaries | Contextual output escaping (sec. 7). XML format isolates file bodies; text format isolates headers and paths while emitting bodies verbatim. | `core/render/escape.rs`, `core/render/formats.rs` |
 | T5 | Traversal outside source root | Symlinks ignored; metadata checked prior to open (sec. 5). | `shell/local/` |
 
 ### 1.1 Assumptions
@@ -23,6 +23,7 @@
 
 - **No secret/entropy scanning:** Filtering matches paths and extensions only. Hard-coded secrets in source files are not redacted.
 - **In-memory token lifetime:** Tokens held by HTTP client internals, process environment, or error formatters are not zeroized (sec. 6.2).
+- **Text format delimiter and ANSI isolation:** In `--format text`, file bodies are emitted verbatim UTF-8 without delimiter rewriting or ANSI escape stripping. Downstream systems or LLM prompts requiring strict delimiter or boundary isolation must use `--format xml`.
 
 ---
 
@@ -30,6 +31,11 @@
 
 ```
 Entry (local walk or tar stream)
+ |
+ +-- Tar stream entry normalization (archive::normalize_tar_entry_path)
+ |     +-- Embedded NUL byte, traversal `..`, or `.` root segment
+ |     |     `-- Run fails (InvalidMetadata).
+ |     `-- Strips single repo root directory prefix.
  |
  +-- Non-regular file (symlink, FIFO, socket, device, non-file tar header)
  |     `-- Dropped silently. Omitted from count.
@@ -147,7 +153,7 @@ Candidate budget overflow aborts the run without emitting partial output.
 
 - **Retried:** Transport timeouts/errors, HTTP 429, HTTP 5xx, HTTP 403 with `Retry-After` or zero quota.
 - **Not Retried:** Other HTTP 4xx, non-transient transport errors.
-- Attempts capped by `MAX_ATTEMPTS`. Exponential backoff starts at `RETRY_INITIAL_DELAY_MS` up to `RETRY_MAX_DELAY_MS`. Server `Retry-After` (delta-seconds) exceeding `RETRY_MAX_DELAY_MS` aborts the run immediately.
+- Attempts capped by `MAX_ATTEMPTS`. Exponential backoff starts at `RETRY_INITIAL_DELAY_MS` up to `RETRY_MAX_DELAY_MS`. Server wait delay from `Retry-After` (delta-seconds) or `x-ratelimit-reset` (when remaining quota is zero) exceeding `RETRY_MAX_DELAY_MS` aborts the run immediately.
 
 ### 6.6 Time Limits
 
@@ -168,6 +174,8 @@ Sanitization runs in a single pass via `write_escaped`:
    - Attribute whitespace (`\t`, `\n`, `\r`) encoded as character references (`&#9;`, `&#10;`, `&#13;`).
    - Disallowed XML 1.0 control codes map to `\u{FFFD}`.
 3. **Tree Labels:** Escaped for control characters and XML entities to prevent output corruption.
+4. **Error and Warning Diagnostics (`sanitize_error_detail`):**
+   - Single-line diagnostics emitted to stderr (filesystem paths in I/O errors, root validation errors, HTTP status messages, transport error text) convert `\t`, `\r`, `\n` to space `' '` and all other Unicode control characters to `\u{FFFD}` to prevent terminal escape injection or log forgery.
 
 ---
 

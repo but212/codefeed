@@ -84,7 +84,7 @@ pub(super) fn format_ignore_error(err: &ignore::Error) -> io::Error {
         (Some(p), _) => (io::ErrorKind::Other, format!("{}: {current}", p.display())),
         (None, _) => (io::ErrorKind::Other, current.to_string()),
     };
-    io::Error::new(kind, msg)
+    crate::shell::error::sanitized_io_error(kind, &msg)
 }
 
 #[cfg(test)]
@@ -157,5 +157,21 @@ mod tests {
         let res = format_ignore_error(&with_path_loop);
         assert_eq!(res.kind(), io::ErrorKind::Other);
         assert!(res.to_string().contains("dir/file.txt"));
+
+        // 5. Control character sanitization in path
+        let ctrl_path = PathBuf::from("dir\x1b[31m\nname/file\x07.txt");
+        let with_ctrl_path = ignore::Error::WithPath {
+            path: ctrl_path,
+            err: Box::new(ignore::Error::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                "missing",
+            ))),
+        };
+        let res = format_ignore_error(&with_ctrl_path);
+        let s = res.to_string();
+        assert!(!s.contains('\x1b'));
+        assert!(!s.contains('\n'));
+        assert!(!s.contains('\x07'));
+        assert!(s.contains("dir\u{FFFD}[31m name/file\u{FFFD}.txt: missing"));
     }
 }

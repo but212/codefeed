@@ -73,6 +73,23 @@ impl DomainError {
     }
 }
 
+/// Sanitizes control characters in error detail string.
+/// Converts `\t`, `\r`, `\n` to space `' '` for single-line output formatting.
+/// Converts all other Unicode control characters (`c.is_control()`) to `\u{FFFD}`.
+/// Note: Unlike digest header escaping which escapes `\n` and `\r` as `\n` / `\r` literals,
+/// error message formatting converts line breaks to spaces for compact single-line stderr diagnostics.
+#[must_use]
+pub(crate) fn sanitize_error_detail(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| match c {
+            '\t' | '\r' | '\n' => ' ',
+            c if c.is_control() => '\u{FFFD}',
+            c => c,
+        })
+        .collect()
+}
+
 impl Display for DomainError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
@@ -156,5 +173,15 @@ mod tests {
         for (bytes, expected) in cases {
             assert_eq!(format_size(bytes), expected, "failed for {bytes} bytes");
         }
+    }
+
+    #[test]
+    fn sanitize_error_detail_replaces_newlines_and_controls() {
+        let input = "hello\tworld\r\nfoo\x1b[31mbar\x07baz\x7fdel\u{80}c1";
+        let sanitized = sanitize_error_detail(input);
+        assert_eq!(
+            sanitized,
+            "hello world  foo\u{FFFD}[31mbar\u{FFFD}baz\u{FFFD}del\u{FFFD}c1"
+        );
     }
 }

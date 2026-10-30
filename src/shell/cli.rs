@@ -5,7 +5,7 @@
 
 use std::fmt::Display;
 
-use crate::core::cli::{CliAction, completion_message, help_text, parse};
+use crate::core::cli::{CliAction, HELP, completion_message, parse};
 use crate::shell::output;
 use crate::{OutputTarget, ingest};
 
@@ -25,7 +25,7 @@ where
 
     let config = match action {
         CliAction::Help => {
-            output::write_stdout_line(help_text());
+            output::write_stdout_line(HELP);
             return 0;
         }
         CliAction::Run(config) => config,

@@ -8,27 +8,11 @@ use crate::core::policy::MAX_ATTEMPTS;
 mod retry;
 mod url;
 
+pub(crate) use crate::core::error::sanitize_error_detail;
 pub(crate) use retry::{AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind};
 pub(crate) use url::{
     is_github_api_origin, parse_github_url, repository_url, tarball_url, valid_github_name,
 };
-
-/// Sanitizes control characters in error detail string.
-/// Converts `\t`, `\r`, `\n` to space `' '` for single-line output formatting.
-/// Converts all other Unicode control characters (`c.is_control()`) to `\u{FFFD}`.
-/// Note: Unlike digest header escaping which escapes `\n` and `\r` as `\n` / `\r` literals,
-/// error message formatting converts line breaks to spaces for compact single-line stderr diagnostics.
-#[must_use]
-pub(crate) fn sanitize_error_detail(input: &str) -> String {
-    input
-        .chars()
-        .map(|c| match c {
-            '\t' | '\r' | '\n' => ' ',
-            c if c.is_control() => '\u{FFFD}',
-            c => c,
-        })
-        .collect()
-}
 
 /// Message for a non-success response, without the error-kind prefix. `status_text` is the status
 /// as `Display` renders it (`429 Too Many Requests`), so the message keeps the reason phrase.

@@ -181,9 +181,9 @@ impl AtomicFile {
 /// Warning text for a failed parent-directory sync, or `None` when the sync succeeded.
 #[cfg(unix)]
 fn sync_warning(parent: &Path, synced: io::Result<()>) -> Option<String> {
-    synced
-        .err()
-        .map(|err| format!("warning: {}: {err}", parent.display()))
+    synced.err().map(|err| {
+        crate::core::error::sanitize_error_detail(&format!("warning: {}: {err}", parent.display()))
+    })
 }
 
 /// Replaces `output` with `bytes`, so a failed write leaves the previous file in place.

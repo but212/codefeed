@@ -4,8 +4,7 @@ use std::fmt::{Display, Formatter, Result};
 use std::io;
 use std::path::Path;
 
-use crate::core::error::DomainError;
-use crate::core::github::sanitize_error_detail;
+use crate::core::error::{DomainError, sanitize_error_detail};
 
 /// Error returned by ingestion. Domain rule failures stay in [`DomainError`]; effect failures
 /// (filesystem, network) are added here by the shell, so core never constructs them.
@@ -47,11 +46,16 @@ impl From<io::Error> for IngestError {
     }
 }
 
+/// Creates an `io::Error` with message sanitized of control characters.
+pub(super) fn sanitized_io_error(kind: io::ErrorKind, message: &str) -> io::Error {
+    io::Error::new(kind, sanitize_error_detail(message))
+}
+
 /// I/O failure on `path`. Keeps the error kind and names the path, which a bare `io::Error` drops.
 pub(super) fn io_error_at(path: &Path, err: &io::Error) -> IngestError {
-    IngestError::Io(io::Error::new(
+    IngestError::Io(sanitized_io_error(
         err.kind(),
-        format!("{}: {err}", path.display()),
+        &format!("{}: {err}", path.display()),
     ))
 }
 
@@ -128,5 +132,17 @@ mod tests {
             transport_error("bad\nhost").to_string(),
             IngestError::Http("bad host".into()).to_string()
         );
+    }
+
+    #[test]
+    fn io_error_at_sanitizes_path_with_control_characters() {
+        let path = Path::new("test\x1b[31m\nfile\x07.rs");
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "not found");
+        let err = io_error_at(path, &io_err);
+        let msg = err.to_string();
+        assert!(!msg.contains('\x1b'));
+        assert!(!msg.contains('\n'));
+        assert!(!msg.contains('\x07'));
+        assert!(msg.contains("test\u{FFFD}[31m file\u{FFFD}.rs: not found"));
     }
 }

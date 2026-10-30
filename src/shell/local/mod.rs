@@ -53,13 +53,16 @@ fn observe_candidate(selector: Selector, candidate: Candidate) -> Result<Selecto
 
 fn validate_root(root: &Path) -> Result<PathBuf, DomainError> {
     let root_display = root.display();
-    let canonical = fs::canonicalize(root)
-        .map_err(|error| DomainError::invalid_source(format!("{root_display} ({error})")))?;
+    let canonical = fs::canonicalize(root).map_err(|error| {
+        DomainError::invalid_source(crate::core::error::sanitize_error_detail(&format!(
+            "{root_display} ({error})"
+        )))
+    })?;
     if !canonical.is_dir() {
         let display = canonical.display();
-        return Err(DomainError::invalid_source(format!(
-            "{display} is not a directory"
-        )));
+        return Err(DomainError::invalid_source(
+            crate::core::error::sanitize_error_detail(&format!("{display} is not a directory")),
+        ));
     }
     Ok(canonical)
 }

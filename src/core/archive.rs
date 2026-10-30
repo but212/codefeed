@@ -39,7 +39,7 @@ pub(crate) fn normalize_tar_entry_path(raw_bytes: &[u8]) -> Result<PathStatus, D
 
     if trimmed[..slash_index] == *b"." {
         return Err(DomainError::invalid_metadata(
-            "Tar entry root segment is '.'; expected a single repository root directory",
+            "Tar entry root segment cannot be '.'",
         ));
     }
 
@@ -137,6 +137,12 @@ mod tests {
         for raw in err_cases {
             assert!(normalize_tar_entry_path(raw).is_err(), "{raw:?}");
         }
+
+        let dot_root_err = normalize_tar_entry_path(b"./etc/passwd").unwrap_err();
+        assert_eq!(
+            dot_root_err.to_string(),
+            "invalid repository metadata: Tar entry root segment cannot be '.'"
+        );
     }
 
     #[test]

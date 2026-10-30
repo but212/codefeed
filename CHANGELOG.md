@@ -25,6 +25,8 @@ Observable behavior. **Action** = code or config change required.
 
 #### Fixed
 
+- **Local filesystem error sanitization**: Control characters (`\t`, `\r`, `\n`, and Unicode control codes) in paths formatted into filesystem I/O errors (`io_error_at`, `format_ignore_error`, `resolve_output_target`, `validate_root`, `sync_warning`) are sanitized via `sanitize_error_detail` to prevent terminal injection and log forging (`src/shell/error.rs`, `src/shell/local/walk.rs`, `src/shell/local/mod.rs`, `src/shell/output.rs`, `src/shell/atomic.rs`).
+- **Tar entry root segment rejection error wording**: Refined archive root rejection error from `"Tar entry root segment is '.'; expected a single repository root directory"` to `"Tar entry root segment cannot be '.'"` to reflect stateless entry normalization (`src/core/archive.rs`).
 - **Local pipeline early-abort deadlock**: Producer (`produce_slots`) and consumer (`settle_slots`) retain channel endpoint ownership so early return on error drops the receiver, disconnects the channel, and breaks producer loops without deadlocking when the slot queue capacity is exceeded (`src/shell/local/pipeline.rs`).
 - **Atomic file permission propagation path context**: Mapped Unix `io::Error` when setting permissions during atomic output creation so diagnostics include the temporary file path (`src/shell/atomic.rs`).
 - **PAX archive entry size overrides**: Tar `process_tar_entry` uses `entry.size()` instead of `entry.header().size()`, correctly evaluating PAX extended header `size=` overrides against `MAX_FILE_SIZE` before reading (`src/shell/archive.rs`).
@@ -34,6 +36,10 @@ Observable behavior. **Action** = code or config change required.
 Internal refactors and test changes. No consumer action required.
 
 #### Core
+
+- **Core error sanitization**: Moved `sanitize_error_detail` from `src/core/github/mod.rs` to `src/core/error.rs` as a domain utility for error string sanitization (`src/core/error.rs`, `src/core/github/mod.rs`).
+- **CLI help constant**: Inlined `help_text()` into `pub(crate) const HELP: &str`, eliminating single-caller function indirection (`src/core/cli.rs`, `src/shell/cli.rs`).
+- **Dead derives and trait implementations pruned**: Removed unused `Default` derives on `RateLimitHeaders`, `AttemptState`, `SortedFiles`, and `FileStorage`. Removed test-only `Display` and `std::error::Error` implementations on `OutputLimitExceeded`, simplifying render unit tests to unwrap directly (`src/core/github/retry.rs`, `src/core/storage.rs`, `src/core/render/budget.rs`, `src/core/render/formats.rs`, `src/core/render/tree.rs`).
 
 - **Pedantic lint compliance & token heuristic typing**: Added `#[must_use]` attributes across pure domain, parsing, and rendering queries to satisfy `clippy::pedantic`. Re-typed `ASCII_BYTES_PER_TOKEN` directly as `usize = 4`, eliminating the redundant `ASCII_BYTES_PER_TOKEN_USIZE` companion and narrowing test-only companions under `#[cfg(test)]` (`src/core/`, `src/core/policy/limits.rs`, `src/core/render/budget.rs`).
 - **Policy module split**: Split `src/core/policy.rs` into `src/core/policy/` (`limits.rs`, `exclusions.rs`, `classify.rs`) with co-located unit tests. Behavior, constants, and re-exported paths unchanged (`src/core/policy/`).

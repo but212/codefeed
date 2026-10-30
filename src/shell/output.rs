@@ -62,18 +62,18 @@ pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<ResolvedOut
                 .ok_or_else(|| DomainError::usage("output path has no filename"))?;
             let parent = parent_dir(path);
             let canonical_parent = fs::canonicalize(parent).map_err(|e| {
-                IngestError::Io(io::Error::new(
+                IngestError::Io(crate::shell::error::sanitized_io_error(
                     e.kind(),
-                    format!(
+                    &format!(
                         "failed to resolve output directory '{}': {e}",
                         parent.display()
                     ),
                 ))
             })?;
             if !canonical_parent.is_dir() {
-                return Err(IngestError::Io(io::Error::new(
+                return Err(IngestError::Io(crate::shell::error::sanitized_io_error(
                     io::ErrorKind::NotADirectory,
-                    format!("output directory '{}' is not a directory", parent.display()),
+                    &format!("output directory '{}' is not a directory", parent.display()),
                 )));
             }
             let mut resolved = canonical_parent.join(file_name);

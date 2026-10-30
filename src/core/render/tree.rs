@@ -91,19 +91,22 @@ mod tests {
     use crate::core::storage::FileStorage;
 
     #[test]
-    fn renders_ascii_tree_correctly() -> Result<(), Box<dyn std::error::Error>> {
+    fn renders_ascii_tree_correctly() {
         let storage = FileStorage::new()
-            .push(&crate::core::policy::NormalizedPath::from("Cargo.toml"), "")?
+            .push(&crate::core::policy::NormalizedPath::from("Cargo.toml"), "")
+            .unwrap()
             .push(
                 &crate::core::policy::NormalizedPath::from("src/core/a.rs"),
                 "",
-            )?
-            .push(&crate::core::policy::NormalizedPath::from("src/lib.rs"), "")?;
+            )
+            .unwrap()
+            .push(&crate::core::policy::NormalizedPath::from("src/lib.rs"), "")
+            .unwrap();
         let files = SortedFiles::new(storage);
 
-        let buf = render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str)?;
+        let buf = render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str).unwrap();
         let digest = buf.finish();
-        let tree_str = std::str::from_utf8(&digest.bytes)?;
+        let tree_str = std::str::from_utf8(&digest.bytes).unwrap();
         let expected = "\
 ├── Cargo.toml
 └── src/
@@ -112,38 +115,42 @@ mod tests {
     └── lib.rs
 ";
         assert_eq!(tree_str, expected);
-        Ok(())
     }
 
     #[test]
-    fn formats_tree_nodes_custom_formatter() -> Result<(), Box<dyn std::error::Error>> {
-        let storage = FileStorage::new().push(
-            &crate::core::policy::NormalizedPath::from("dir_name/file_name.txt"),
-            "",
-        )?;
+    fn formats_tree_nodes_custom_formatter() {
+        let storage = FileStorage::new()
+            .push(
+                &crate::core::policy::NormalizedPath::from("dir_name/file_name.txt"),
+                "",
+            )
+            .unwrap();
         let files = SortedFiles::new(storage);
 
         let buf = render_tree(BoundedBuffer::default(), &files, |b, name| {
             b.push_str(&name.to_uppercase())
-        })?;
+        })
+        .unwrap();
         let digest = buf.finish();
         let s = String::from_utf8_lossy(&digest.bytes);
         assert!(s.contains("DIR_NAME/"));
         assert!(s.contains("FILE_NAME.TXT"));
-        Ok(())
     }
 
     #[test]
-    fn renders_nested_siblings_in_alphabetical_order() -> Result<(), Box<dyn std::error::Error>> {
+    fn renders_nested_siblings_in_alphabetical_order() {
         let storage = FileStorage::new()
-            .push(&crate::core::policy::NormalizedPath::from("a/x.txt"), "")?
-            .push(&crate::core::policy::NormalizedPath::from("a/y.txt"), "")?
-            .push(&crate::core::policy::NormalizedPath::from("b/z.txt"), "")?;
+            .push(&crate::core::policy::NormalizedPath::from("a/x.txt"), "")
+            .unwrap()
+            .push(&crate::core::policy::NormalizedPath::from("a/y.txt"), "")
+            .unwrap()
+            .push(&crate::core::policy::NormalizedPath::from("b/z.txt"), "")
+            .unwrap();
         let files = SortedFiles::new(storage);
 
-        let buf = render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str)?;
+        let buf = render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str).unwrap();
         let digest = buf.finish();
-        let tree_str = std::str::from_utf8(&digest.bytes)?;
+        let tree_str = std::str::from_utf8(&digest.bytes).unwrap();
         let expected = "\
 ├── a/
 │   ├── x.txt
@@ -152,7 +159,6 @@ mod tests {
     └── z.txt
 ";
         assert_eq!(tree_str, expected);
-        Ok(())
     }
 
     #[test]
@@ -173,23 +179,27 @@ mod tests {
     }
 
     #[test]
-    fn renders_deep_multi_level_tree_correctly() -> Result<(), Box<dyn std::error::Error>> {
+    fn renders_deep_multi_level_tree_correctly() {
         let storage = FileStorage::new()
             .push(
                 &crate::core::policy::NormalizedPath::from("a/b/c/d/e.txt"),
                 "",
-            )?
+            )
+            .unwrap()
             .push(
                 &crate::core::policy::NormalizedPath::from("a/b/c/f.txt"),
                 "",
-            )?
-            .push(&crate::core::policy::NormalizedPath::from("a/b/g.txt"), "")?
-            .push(&crate::core::policy::NormalizedPath::from("root.txt"), "")?;
+            )
+            .unwrap()
+            .push(&crate::core::policy::NormalizedPath::from("a/b/g.txt"), "")
+            .unwrap()
+            .push(&crate::core::policy::NormalizedPath::from("root.txt"), "")
+            .unwrap();
         let files = SortedFiles::new(storage);
 
-        let buf = render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str)?;
+        let buf = render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str).unwrap();
         let digest = buf.finish();
-        let tree_str = std::str::from_utf8(&digest.bytes)?;
+        let tree_str = std::str::from_utf8(&digest.bytes).unwrap();
         let expected = "\
 ├── a/
 │   └── b/
@@ -201,6 +211,5 @@ mod tests {
 └── root.txt
 ";
         assert_eq!(tree_str, expected);
-        Ok(())
     }
 }
