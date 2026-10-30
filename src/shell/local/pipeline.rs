@@ -261,4 +261,62 @@ mod tests {
         assert_eq!(local_worker_count(Ok(cores(4))), 4);
         assert_eq!(local_worker_count(Err(io::Error::other("unknown"))), 1);
     }
+
+    #[test]
+    fn dispatch_and_settle_handle_errors_and_disconnections() {
+        let (job_tx, job_rx) = sync_channel(1);
+        drop(job_rx); // Disconnect worker side
+
+        // 1. dispatch when walk entry is Err
+        let walk_err = IngestError::Io(io::Error::other("walk failed"));
+        let slot = dispatch(
+            Err(walk_err),
+            Path::new("."),
+            None,
+            &ExcludePatterns::default(),
+            &job_tx,
+        );
+        assert!(matches!(slot, Some(Slot::Ready(Err(_)))));
+
+        // settle with Slot::Ready(Err)
+        let res = settle(slot.unwrap(), 0, &mut |_acc, _c| Ok(1));
+        assert!(res.is_err());
+
+        // 2. dispatch when job_tx is disconnected
+        let temp = temp_dir("dispatch_disconnect").unwrap();
+        let file = temp.join("test.txt");
+        fs::write(&file, "data").unwrap();
+        let regular = RegularFile::from_path(file);
+        let slot = dispatch(
+            Ok(regular),
+            &temp,
+            None,
+            &ExcludePatterns::default(),
+            &job_tx,
+        );
+        // jobs.send fails, returning Slot::Ready(Err(worker_stopped()))
+        assert!(matches!(slot, Some(Slot::Ready(Err(_)))));
+        let res = settle(slot.unwrap(), 0, &mut |_acc, _c| Ok(1));
+        assert!(res.is_err());
+
+        // 3. settle with Slot::Pending where reply sender is dropped
+        let (reply_tx, reply_rx) = sync_channel(1);
+        drop(reply_tx);
+        let res = settle(Slot::Pending(reply_rx), 0, &mut |_acc, _c| Ok(1));
+        assert!(res.is_err());
+
+        // 4. settle with Slot::Pending where candidate is None
+        let (reply_tx, reply_rx) = sync_channel(1);
+        reply_tx.send(Ok(None)).unwrap();
+        let res = settle(Slot::Pending(reply_rx), 42, &mut |_acc, _c| Ok(1)).unwrap();
+        assert_eq!(res, 42);
+
+        // 5. settle with Slot::Pending where candidate is Some
+        let (reply_tx, reply_rx) = sync_channel(1);
+        reply_tx
+            .send(Ok(Some(Candidate::NonUtf8("bad".into()))))
+            .unwrap();
+        let res = settle(Slot::Pending(reply_rx), 42, &mut |acc, _c| Ok(acc + 1)).unwrap();
+        assert_eq!(res, 43);
+    }
 }

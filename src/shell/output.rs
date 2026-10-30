@@ -326,4 +326,34 @@ mod tests {
         }
         Ok(())
     }
+
+    struct FailingWriter;
+    impl io::Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        }
+    }
+
+    struct BrokenPipeWriter;
+    impl io::Write for BrokenPipeWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+    }
+
+    #[test]
+    fn write_line_to_handles_broken_pipe_and_propagates_other_errors() {
+        let mut broken = BrokenPipeWriter;
+        assert!(write_line_to(&mut broken, "test").is_ok());
+
+        let mut failing = FailingWriter;
+        let err = write_line_to(&mut failing, "test").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+    }
 }

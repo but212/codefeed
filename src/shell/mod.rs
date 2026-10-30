@@ -44,3 +44,38 @@ pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
 
     Ok(rendered.into_report(config.output.clone()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::OutputTarget;
+    use crate::core::model::{DigestFormat, GitRef};
+    use crate::shell::testing::{MockServer, gzip_tarball, with_test_github_url};
+    use tar::EntryType;
+
+    #[test]
+    fn ingest_github_source_succeeds() {
+        let gz = gzip_tarball(&[("repo-root/main.rs", b"fn main() {}", EntryType::Regular)]);
+        let server = MockServer::spawn(1, move |_index, _req, _port| {
+            let mut resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/x-gzip\r\nConnection: close\r\nContent-Length: "
+                .to_vec();
+            resp.extend_from_slice(gz.len().to_string().as_bytes());
+            resp.extend_from_slice(b"\r\n\r\n");
+            resp.extend_from_slice(&gz);
+            resp
+        });
+
+        let source = Source::github("owner", "repo", Some(GitRef::new("v1.0.0").unwrap())).unwrap();
+
+        let config = RunConfig::new(source, OutputTarget::Stdout, DigestFormat::Text);
+
+        let report = with_test_github_url(server.url(""), || ingest(&config))
+            .expect("ingest should succeed for github source");
+
+        assert_eq!(report.included_files, 1);
+        assert_eq!(report.skipped_files, 0);
+
+        let (_, count) = server.join();
+        assert_eq!(count, 1);
+    }
+}

@@ -31,6 +31,11 @@ impl RegularFile {
     pub(super) fn into_path(self) -> PathBuf {
         self.0
     }
+
+    #[cfg(test)]
+    pub(super) fn from_path(path: PathBuf) -> Self {
+        Self(path)
+    }
 }
 
 /// Depth-first walk in file-name order. The frames are the directories on the current path, innermost last.
@@ -489,6 +494,23 @@ mod tests {
         // the walk must keep the rules it already holds, so two.txt stays excluded and the walk ends.
         fs::write(root.join("sub").join(".gitignore"), b"\xff\n")?;
         assert!(walk.next().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn walk_propagates_error_from_invalid_nested_gitignore()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = temp_dir("walk_error_nested_gitignore")?;
+        let root = validate_root(&temp)?;
+        fs::create_dir(root.join("sub"))?;
+        fs::write(root.join("sub").join(".gitignore"), b"\xff\n")?;
+        fs::write(root.join("sub").join("file.txt"), "hello")?;
+
+        let exclude = ExcludePatterns::default();
+        let mut walk = Walk::new(&root, &exclude)?;
+        let item = walk.next();
+        assert!(item.is_some());
+        assert!(item.unwrap().is_err());
         Ok(())
     }
 }

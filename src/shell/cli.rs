@@ -70,4 +70,24 @@ mod tests {
         let exit_code = run_cli(["codefeed", non_existent.to_str().unwrap()]);
         assert_eq!(exit_code, 1);
     }
+
+    #[test]
+    fn run_cli_succeeds_with_file_and_stdout_output() {
+        let temp_dir = testing::temp_dir("cli_success").unwrap();
+        let file_path = temp_dir.join("sample.txt");
+        std::fs::write(&file_path, "hello world").unwrap();
+
+        let out_path = temp_dir.join("out.xml");
+        let exit_code = run_cli([
+            "codefeed",
+            temp_dir.to_str().unwrap(),
+            "-o",
+            out_path.to_str().unwrap(),
+        ]);
+        assert_eq!(exit_code, 0);
+        assert!(out_path.exists());
+
+        let exit_code = run_cli(["codefeed", temp_dir.to_str().unwrap(), "-o", "-"]);
+        assert_eq!(exit_code, 0);
+    }
 }

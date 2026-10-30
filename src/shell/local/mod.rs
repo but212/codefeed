@@ -590,4 +590,25 @@ mod tests {
         assert_eq!(result.skipped, 0);
         Ok(())
     }
+
+    #[test]
+    fn validate_root_rejects_regular_file() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("root_not_dir")?;
+        let file = root.join("file.txt");
+        fs::write(&file, "hello")?;
+        let err = validate_root(&file).unwrap_err();
+        assert!(err.to_string().contains("is not a directory"));
+        Ok(())
+    }
+
+    #[test]
+    fn observe_candidate_handles_non_utf8() -> Result<(), Box<dyn std::error::Error>> {
+        let selector = Selector::new();
+        let candidate = Candidate::NonUtf8("invalid/utf8".to_string());
+        let updated = observe_candidate(selector, candidate)?;
+        let result = updated.finish("repo".to_string(), None);
+        assert_eq!(result.skipped, 1);
+        assert_eq!(result.files.len(), 0);
+        Ok(())
+    }
 }
