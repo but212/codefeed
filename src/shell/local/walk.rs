@@ -11,7 +11,9 @@ use std::vec;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::core::error::DomainError;
-use crate::core::policy::{MAX_FILE_SIZE, PathStatus, classify_path_segments, is_hidden_segment};
+use crate::core::policy::{
+    ExcludePatterns, MAX_FILE_SIZE, PathStatus, classify_path_segments, is_hidden_segment,
+};
 use crate::shell::IngestError;
 use crate::shell::error::io_error_at;
 
@@ -32,7 +34,10 @@ impl RegularFile {
 }
 
 /// Depth-first walk in file-name order. The frames are the directories on the current path, innermost last.
-pub(super) struct Walk {
+/// Excluded directories are pruned here, so neither their children nor their `.gitignore` is ever read.
+pub(super) struct Walk<'a> {
+    root: &'a Path,
+    exclude: &'a ExcludePatterns,
     frames: Vec<Frame>,
 }
 
@@ -42,10 +47,12 @@ struct Frame {
     rules: Gitignore,
 }
 
-impl Walk {
+impl<'a> Walk<'a> {
     /// Enters `root`. Its `.gitignore` and listing are read here, so a failure ends the run before any candidate.
-    pub(super) fn new(root: &Path) -> Result<Self, IngestError> {
+    pub(super) fn new(root: &'a Path, exclude: &'a ExcludePatterns) -> Result<Self, IngestError> {
         Ok(Self {
+            root,
+            exclude,
             frames: vec![Frame::enter(root)?],
         })
     }
@@ -62,15 +69,29 @@ impl Walk {
             return Ok(None);
         }
         if is_dir {
-            self.frames.push(Frame::enter(&path)?);
+            if !self.is_user_excluded(&path)? {
+                self.frames.push(Frame::enter(&path)?);
+            }
             Ok(None)
         } else {
             Ok(Some(RegularFile(path)))
         }
     }
+
+    /// Whether the user exclusions drop the directory at `path`, which lies under the root.
+    fn is_user_excluded(&self, path: &Path) -> Result<bool, IngestError> {
+        let relative = path
+            .strip_prefix(self.root)
+            .map_err(|err| DomainError::invalid_metadata(err.to_string()))?;
+        let segments: Vec<&[u8]> = relative
+            .components()
+            .map(|c| c.as_os_str().as_encoded_bytes())
+            .collect();
+        Ok(self.exclude.excludes(&segments, true))
+    }
 }
 
-impl Iterator for Walk {
+impl Iterator for Walk<'_> {
     type Item = Result<RegularFile, IngestError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -166,6 +187,7 @@ fn parse_rules<R: BufRead>(dir: &Path, reader: R) -> io::Result<Gitignore> {
 pub(super) fn classify_entry(
     root: &Path,
     output: Option<&Path>,
+    exclude: &ExcludePatterns,
     path: &Path,
 ) -> Result<PathStatus, IngestError> {
     if output.is_some_and(|target| path == target) {
@@ -174,14 +196,17 @@ pub(super) fn classify_entry(
     let relative = path
         .strip_prefix(root)
         .map_err(|err| DomainError::invalid_metadata(err.to_string()))?;
-    classify_local_path(relative).map_err(IngestError::from)
+    classify_local_path(relative, exclude).map_err(IngestError::from)
 }
 
-fn classify_local_path(relative: &Path) -> Result<PathStatus, DomainError> {
+fn classify_local_path(
+    relative: &Path,
+    exclude: &ExcludePatterns,
+) -> Result<PathStatus, DomainError> {
     let segments = relative
         .components()
         .map(|c| c.as_os_str().as_encoded_bytes());
-    classify_path_segments(segments)
+    classify_path_segments(segments, exclude)
         .map_err(|_| DomainError::invalid_metadata("local path exceeds maximum directory depth"))
 }
 
@@ -201,7 +226,8 @@ mod tests {
             excessive.push("d");
         }
         excessive.push("file.txt");
-        let result = classify_local_path(&excessive);
+        let exclude = ExcludePatterns::default();
+        let result = classify_local_path(&excessive, &exclude);
         assert!(result.is_err());
 
         let mut normal = PathBuf::new();
@@ -209,7 +235,7 @@ mod tests {
             normal.push("d");
         }
         normal.push("file.txt");
-        let result = classify_local_path(&normal);
+        let result = classify_local_path(&normal, &exclude);
         assert!(result.is_ok());
     }
 
@@ -253,8 +279,8 @@ mod tests {
             .collect()
     }
 
-    fn walk_files(root: &Path) -> Vec<String> {
-        Walk::new(root)
+    fn walk_files(root: &Path, exclude: &ExcludePatterns) -> Vec<String> {
+        Walk::new(root, exclude)
             .expect("walk opens the root")
             .map(|file| relative_string(root, &file.expect("walk yields files").into_path()))
             .collect()
@@ -328,7 +354,7 @@ mod tests {
         let root = validate_root(&temp)?;
         write_reference_fixture(&root)?;
 
-        let ours = walk_files(&root);
+        let ours = walk_files(&root, &ExcludePatterns::default());
         assert_eq!(ours, reference_files(&root));
 
         // Equality alone would also hold if both sides were empty, so pin the rules themselves.
@@ -370,6 +396,22 @@ mod tests {
     }
 
     #[test]
+    fn user_excluded_directory_is_pruned_without_reading_its_gitignore()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = temp_dir("excluded_dir_prune")?;
+        let root = validate_root(&temp)?;
+        fs::create_dir(root.join("build"))?;
+        // Non-UTF-8 rules fail the run if the walk ever reads them.
+        fs::write(root.join("build").join(".gitignore"), b"\xff\n")?;
+        fs::write(root.join("build").join("out.txt"), "out")?;
+        fs::write(root.join("keep.txt"), "keep")?;
+        let exclude = ExcludePatterns::new(["build/"])?;
+
+        assert_eq!(walk_files(&root, &exclude), vec!["keep.txt"]);
+        Ok(())
+    }
+
+    #[test]
     fn gitignore_is_read_once_per_directory() -> Result<(), Box<dyn std::error::Error>> {
         let temp = temp_dir("gitignore_read_once")?;
         let root = validate_root(&temp)?;
@@ -378,7 +420,8 @@ mod tests {
         fs::write(root.join("sub").join("one.txt"), "one")?;
         fs::write(root.join("sub").join("two.txt"), "two")?;
 
-        let mut walk = Walk::new(&root)?;
+        let binding = ExcludePatterns::default();
+        let mut walk = Walk::new(&root, &binding)?;
         let first = walk.next().expect("one.txt is yielded")?;
         assert_eq!(first.into_path(), root.join("sub").join("one.txt"));
 

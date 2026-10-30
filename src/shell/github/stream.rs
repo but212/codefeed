@@ -146,7 +146,9 @@ fn unix_now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ExcludePatterns;
     use crate::core::policy::MAX_ATTEMPTS;
+    use crate::shell::archive;
     use crate::shell::testing::{MockServer, gzip_tarball};
     use std::io::Read;
     use tar::EntryType;
@@ -314,7 +316,7 @@ mod tests {
         let client = GithubClient::new();
         let url = server.url("/archive");
         let reader = client.stream_url(&url).expect("200 headers are accepted");
-        let Err(err) = crate::shell::archive::collect(reader, "x", None) else {
+        let Err(err) = archive::collect(reader, "x", None, &ExcludePatterns::default()) else {
             panic!("expected error");
         };
         assert!(matches!(err, IngestError::Http(_)), "{err}");

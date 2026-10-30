@@ -9,18 +9,19 @@ use super::IngestError;
 use super::error::transport_error;
 use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::model::CollectionResult;
-use crate::core::policy::{ARCHIVE_BUFFER_BYTES, MAX_FILE_SIZE};
+use crate::core::policy::{ARCHIVE_BUFFER_BYTES, ExcludePatterns, MAX_FILE_SIZE};
 use crate::core::selector::Selector;
 
 /// Collects files from a tarball reader directly into a [`CollectionResult`].
 ///
 /// Decompresses and streams entries through a tuned [`ARCHIVE_BUFFER_BYTES`] buffer,
 /// extracts commit revision from PAX global headers if present (falling back to `default_reference`),
-/// filters non-regular or sensitive entries via core policies, and feeds valid candidates to [`Selector`].
+/// filters non-regular, user-excluded, or sensitive entries via core policies, and feeds valid candidates to [`Selector`].
 pub(super) fn collect<R: Read>(
     reader: R,
     label: &str,
     default_reference: Option<&str>,
+    exclude: &ExcludePatterns,
 ) -> Result<CollectionResult, IngestError> {
     let mut archive = Archive::new(GzDecoder::new(BufReader::with_capacity(
         ARCHIVE_BUFFER_BYTES,
@@ -45,7 +46,7 @@ pub(super) fn collect<R: Read>(
             continue;
         }
         content_scratch.clear();
-        selector = process_tar_entry(&mut entry, selector, &mut content_scratch)?;
+        selector = process_tar_entry(&mut entry, selector, &mut content_scratch, exclude)?;
     }
 
     let revision = parsed_revision.or_else(|| default_reference.map(str::to_string));
@@ -56,6 +57,7 @@ fn process_tar_entry<R: Read>(
     entry: &mut tar::Entry<R>,
     selector: Selector,
     content_scratch: &mut Vec<u8>,
+    exclude: &ExcludePatterns,
 ) -> Result<Selector, IngestError> {
     // 1. Skip directories, symlinks, and special entries before path decoding
     if !matches!(
@@ -67,7 +69,7 @@ fn process_tar_entry<R: Read>(
 
     // 2. Path decoding, root stripping, normalization & policy classification
     let path_bytes = entry.path_bytes();
-    let status = normalize_tar_entry_path(&path_bytes)?;
+    let status = normalize_tar_entry_path(&path_bytes, exclude)?;
 
     let size_hint = Some(entry.size());
 
@@ -91,7 +93,68 @@ fn stream_error(err: &std::io::Error) -> IngestError {
 mod tests {
     use super::*;
     use crate::core::error::DomainError;
+    use crate::core::policy::MAX_FILE_SIZE_USIZE;
     use crate::shell::testing::{gzip_archive, gzip_tarball};
+
+    fn collect_default(
+        reader: &[u8],
+        label: &str,
+        default_reference: Option<&str>,
+    ) -> Result<CollectionResult, IngestError> {
+        collect(
+            reader,
+            label,
+            default_reference,
+            &ExcludePatterns::default(),
+        )
+    }
+
+    #[test]
+    fn user_excluded_entries_are_not_counted_as_skipped() {
+        // The binary body would count as skipped if the entry were admitted as a candidate.
+        let mock_data = gzip_tarball(&[
+            ("repo-root/build/out.bin", b"\0\x01\x02", EntryType::Regular),
+            ("repo-root/src/main.rs", b"fn main() {}", EntryType::Regular),
+        ]);
+        let exclude = ExcludePatterns::new(["build/"]).unwrap();
+
+        let result = collect(
+            mock_data.as_slice(),
+            "https://github.com/owner/repo",
+            None,
+            &exclude,
+        )
+        .expect("collection should succeed");
+
+        let paths: Vec<&str> = result.files.iter().map(|f| f.path).collect();
+        assert_eq!(paths, vec!["src/main.rs"]);
+        assert_eq!(result.skipped, 0);
+    }
+
+    #[test]
+    fn user_exclusion_beyond_max_path_bytes_is_not_counted_as_skipped() {
+        // Twenty-one bytes per directory: the excluded entry is over `MAX_PATH_BYTES`, so without the
+        // exclusion it would take a candidate slot and count as skipped.
+        let dir = "d".repeat(20);
+        let deep = format!("repo-root/{}/x.log", vec![dir.as_str(); 220].join("/"));
+        let mock_data = gzip_tarball(&[
+            (deep.as_str(), b"log line", EntryType::Regular),
+            ("repo-root/src/main.rs", b"fn main() {}", EntryType::Regular),
+        ]);
+        let exclude = ExcludePatterns::new(["*.log"]).unwrap();
+
+        let result = collect(
+            mock_data.as_slice(),
+            "https://github.com/owner/repo",
+            None,
+            &exclude,
+        )
+        .expect("collection should succeed");
+
+        let paths: Vec<&str> = result.files.iter().map(|f| f.path).collect();
+        assert_eq!(paths, vec!["src/main.rs"]);
+        assert_eq!(result.skipped, 0);
+    }
 
     #[test]
     fn collects_files_and_extracts_pax_sha() {
@@ -115,7 +178,7 @@ mod tests {
             ),
         ]);
 
-        let result = collect(
+        let result = collect_default(
             mock_data.as_slice(),
             "https://github.com/but212/codefeed",
             None,
@@ -149,7 +212,7 @@ mod tests {
             ),
         ]);
 
-        let result = collect(
+        let result = collect_default(
             mock_data.as_slice(),
             "https://github.com/owner/repo",
             Some("main"),
@@ -190,7 +253,7 @@ mod tests {
             tar.append(&file_header, large_payload.as_slice()).unwrap();
         });
 
-        let result = collect(
+        let result = collect_default(
             mock_data.as_slice(),
             "https://github.com/owner/repo",
             Some("main"),
@@ -209,7 +272,7 @@ mod tests {
             EntryType::Regular,
         )]);
 
-        let result = collect(mock_data.as_slice(), "https://github.com/owner/repo", None)
+        let result = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
             .expect("collection should succeed");
 
         assert_eq!(result.files.len(), 1);
@@ -241,7 +304,7 @@ mod tests {
             tar.append(&header2, &b""[..]).unwrap();
         });
 
-        let result = collect(mock_data.as_slice(), "https://github.com/owner/repo", None)
+        let result = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
             .expect("collection should succeed");
 
         assert_eq!(result.files.len(), 0);
@@ -261,7 +324,7 @@ mod tests {
             tar.append(&header, &b"dummy"[..]).unwrap();
         });
 
-        let result = collect(mock_data.as_slice(), "https://github.com/owner/repo", None)
+        let result = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
             .expect("collection should succeed");
 
         assert_eq!(result.files.len(), 0);
@@ -279,7 +342,7 @@ mod tests {
             ("pax_global_header", pax_comment, EntryType::XGlobalHeader),
         ]);
 
-        let result = collect(mock_data.as_slice(), "https://github.com/owner/repo", None)
+        let result = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
             .expect("collection should succeed");
 
         assert_eq!(
@@ -296,7 +359,8 @@ mod tests {
             ("r2/a.txt", b"second", EntryType::Regular),
         ]);
 
-        let err = collect(mock_data.as_slice(), "https://github.com/owner/repo", None).unwrap_err();
+        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+            .unwrap_err();
         assert!(
             matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
             "expected InvalidMetadata, got: {err:?}"
@@ -310,7 +374,8 @@ mod tests {
             ("repo/a/b.txt", b"second", EntryType::Regular),
         ]);
 
-        let err = collect(mock_data.as_slice(), "https://github.com/owner/repo", None).unwrap_err();
+        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+            .unwrap_err();
         assert!(
             matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
             "expected InvalidMetadata, got: {err:?}"
@@ -320,7 +385,7 @@ mod tests {
     #[test]
     fn duplicate_skipped_candidate_fails_the_run() {
         // The oversized second entry is skipped for size, but its path still collides with the stored first entry.
-        let oversized = vec![b'x'; crate::core::policy::MAX_FILE_SIZE_USIZE + 1];
+        let oversized = vec![b'x'; MAX_FILE_SIZE_USIZE + 1];
         let mock_data = gzip_archive(|tar| {
             for body in [&b"first"[..], oversized.as_slice()] {
                 let mut header = tar::Header::new_gnu();
@@ -334,7 +399,8 @@ mod tests {
             }
         });
 
-        let err = collect(mock_data.as_slice(), "https://github.com/owner/repo", None).unwrap_err();
+        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+            .unwrap_err();
         assert!(
             matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
             "expected InvalidMetadata, got: {err:?}"
@@ -360,7 +426,7 @@ mod tests {
             }
         });
 
-        let result = collect(mock_data.as_slice(), "https://github.com/owner/repo", None)
+        let result = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
             .expect("collection should succeed");
 
         assert_eq!(result.files.len(), 0);
@@ -369,7 +435,7 @@ mod tests {
 
     #[test]
     fn stream_decode_failure_is_http() {
-        let Err(err) = collect(&b"not gzip"[..], "x", None) else {
+        let Err(err) = collect_default(&b"not gzip"[..], "x", None) else {
             panic!("expected error");
         };
         assert!(matches!(err, IngestError::Http(_)), "{err}");

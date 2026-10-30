@@ -31,12 +31,12 @@ pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
     let resolved_output = output::resolve_output_target(&config.output)?;
 
     let collection = match &config.source {
-        Source::Local(path) => local::collect(path, &resolved_output)?,
+        Source::Local(path) => local::collect(path, &resolved_output, &config.exclude)?,
         Source::Github {
             owner,
             repo,
             reference,
-        } => github::collect(owner, repo, reference.as_deref())?,
+        } => github::collect(owner, repo, reference.as_deref(), &config.exclude)?,
     };
 
     let rendered = collection.render(config.format)?;

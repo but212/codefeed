@@ -12,7 +12,29 @@ pub(super) const fn escape_header(bytes: &[u8], i: usize) -> Option<(usize, &'st
     }
 }
 
+// Only the `0xEF` arm reads past its own byte, and it matches for the continuation `0xBF 0xBE`.
+// One probe per byte therefore decides whether any continuation can match.
+const XML_BODY_START: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut b = 0u8;
+    loop {
+        table[b as usize] = xml_body_match(&[b, 0xBF, 0xBE], 0).is_some();
+        if b == 255 {
+            break;
+        }
+        b += 1;
+    }
+    table
+};
+
 pub(super) const fn escape_xml_body(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
+    if !XML_BODY_START[bytes[i] as usize] {
+        return None;
+    }
+    xml_body_match(bytes, i)
+}
+
+const fn xml_body_match(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     match bytes[i] {
         0..=8 | 11 | 12 | 14..=31 => Some((1, "\u{FFFD}")),
         b'"' => Some((1, "&quot;")),
@@ -160,5 +182,21 @@ mod tests {
             String::from_utf8(out.finish().bytes).unwrap(),
             "tab&#9;newline&#13;&#10;quote&quot;amp&amp;apos&apos;&lt;tag&gt;"
         );
+    }
+
+    #[test]
+    fn xml_body_start_table_admits_every_byte_that_matches() {
+        for first in 0..=u8::MAX {
+            for second in 0..=u8::MAX {
+                for third in 0..=u8::MAX {
+                    let window = [first, second, third];
+                    let matched = xml_body_match(&window, 0);
+                    assert_eq!(escape_xml_body(&window, 0), matched);
+                    if matched.is_some() {
+                        assert!(XML_BODY_START[usize::from(first)], "window {window:?}");
+                    }
+                }
+            }
+        }
     }
 }

@@ -57,6 +57,7 @@
 - Permitted exceptions:
   1. `std::fmt::Display::fmt(&self, f: &mut Formatter<'_>)`.
   2. Local `let mut` variables and owned value parameters (`mut self`, `mut val`). `&mut` reference parameters are forbidden except in `Display::fmt`.
+  3. Interior mutability inside a dependency that is not observable through its API, such as the matching buffer pool of `ignore::gitignore::Gitignore` used by `policy/exclude.rs`. Crate code must not add any.
 
 ### 3.2 `src/shell/` (Imperative Shell)
 

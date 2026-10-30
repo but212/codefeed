@@ -78,7 +78,7 @@ impl CollectionResult {
 mod tests {
     use super::*;
     use crate::core::error::DomainError;
-    use crate::core::policy::MAX_OUTPUT_SIZE_USIZE;
+    use crate::core::policy::{MAX_OUTPUT_SIZE_USIZE, NormalizedPath};
     use crate::core::storage::{FileRecord, FileStorage, SortedFiles};
 
     #[test]
@@ -110,11 +110,8 @@ mod tests {
 
         for (label, records) in test_cases {
             let storage = records.into_iter().fold(FileStorage::new(), |s, r| {
-                s.push(
-                    &crate::core::policy::NormalizedPath::from(r.path),
-                    r.content,
-                )
-                .expect("test fixture fits the output limit")
+                s.push(&NormalizedPath::from(r.path), r.content)
+                    .expect("test fixture fits the output limit")
             });
             let raw_bytes =
                 usize::try_from(storage.total_bytes()).expect("storage total bytes fits in usize");
@@ -143,8 +140,7 @@ mod tests {
         // Raw bytes fill the storage cap exactly, so `push` accepts them and render framing exceeds it.
         let path = "large.txt";
         let content = "x".repeat(MAX_OUTPUT_SIZE_USIZE - path.len());
-        let storage =
-            FileStorage::new().push(&crate::core::policy::NormalizedPath::from(path), &content)?;
+        let storage = FileStorage::new().push(&NormalizedPath::from(path), &content)?;
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,

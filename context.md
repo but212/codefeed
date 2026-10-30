@@ -16,7 +16,8 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - `OutputTarget`: `File(PathBuf)` or `Stdout`.
 - `ResolvedOutput`: Filesystem-resolved target (`shell`-private, constructed solely by `resolve_output_target`).
 - `DigestFormat`: `Text` or `Xml`.
-- `RunConfig`: Tuple of `source`, `output`, and `format`.
+- `ExcludePatterns`: Validated user `--exclude` patterns in `.gitignore` syntax, relative to the source root and case-sensitive. Each pattern yields exactly one rule. Implements `Default` (no patterns) and `Eq` by pattern text.
+- `RunConfig`: Struct of `source`, `output`, `format`, and `exclude`.
 
 ### Candidate collection
 
@@ -50,11 +51,12 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 - CLI arguments and URLs parse into value types at the boundary (`cli::parse`, `Source::parse`, `GitRef::new`, `GithubName::new`). Core logic assumes validity without re-validation.
 - `--ref` is rejected for local sources.
+- `-x`/`--exclude` values accumulate in argument order and are compiled once by `ExcludePatterns::new`. An invalid pattern is a usage error.
 - GitHub URLs must match `https://github.com/{owner}/{repo}` (optional `.git`). Port must be empty or `443`; user credentials (`user@`) are rejected.
 
 ### 3.2 Path Classification
 
-- Order: hidden/noise/sensitive entries -> depth check -> non-UTF-8 prefixing -> valid path ([security sec. 2](docs/security_and_filtering.md#2-evaluation-order)). Shared by local walk and tar stream via `classify_path_segments`.
+- Order: hidden -> user exclusion -> noise/sensitive entries -> depth check -> non-UTF-8 prefixing -> valid path ([security sec. 2](docs/security_and_filtering.md#2-evaluation-order)). Shared by local walk and tar stream via `classify_path_segments`.
 - `Ignored` entries consume no candidate slot and are omitted from skipped counts.
 - Depth limit violation is the only path check aborting the entire run during classification. Hidden and noise entries are dropped before depth evaluation. For GitHub tar archives, `normalize_tar_entry_path` also aborts the run with `DomainError::InvalidMetadata` upon encountering embedded NUL bytes, traversal segments (`..`), or a `.` root segment, for regular-file entries. Non-regular tar entries are dropped before normalization runs.
 - Non-UTF-8 candidates record their valid prefix (`"a/b/"` or `""`), charged to the budget under the first segment (`"a/"`) or root (`"<root>/"`).
@@ -95,7 +97,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 ### 3.8 Local Traversal Pipeline
 
-1. Producer walks depth-first in file-name order without following links (`Walk`, `walk.rs`). Entering a directory reads its `.gitignore` once and compiles its rules from those bytes (a symlink, an oversized, unreadable, or non-UTF-8 file fails the run, [security sec. 3.5](docs/security_and_filtering.md#35-ignore-files-local-only)). Rules match through `ignore::gitignore`. Jobs go out for regular files in walk order.
+1. Producer walks depth-first in file-name order without following links (`Walk`, `walk.rs`). A directory matched by a user exclusion is pruned before its `.gitignore` is read. Entering any other directory reads its `.gitignore` once and compiles its rules from those bytes (a symlink, an oversized, unreadable, or non-UTF-8 file fails the run, [security sec. 3.5](docs/security_and_filtering.md#35-ignore-files-local-only)). Rules match through `ignore::gitignore`. Jobs go out for regular files in walk order.
 2. Up to `MAX_LOCAL_WORKERS` workers check metadata, read bounded bodies, and reply on bounded slots.
 3. Main thread settles slots in walk order into `Selector::observe`. The first error halts traversal.
 4. Channel capacities are bounded by `LOCAL_CHANNEL_CAPACITY` ([security sec. 8](docs/security_and_filtering.md#8-limit-values)).
@@ -119,7 +121,7 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 ### Core (`src/core/`)
 
 - `cli.rs`: CLI argument parsing (`parse`, `Parsed`), `HELP` constant, `CliAction`, `completion_message`.
-- `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `classify.rs` (`classify_path_segments`, `NormalizedPath`, `PathStatus`).
+- `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `exclude.rs` (`ExcludePatterns`), `classify.rs` (`classify_path_segments`, `NormalizedPath`, `PathStatus`).
 - `model.rs`: `Source`, `GitRef`, `GithubName`, `RunConfig`, `OutputTarget`, `DigestFormat`, `CollectionResult`, `IngestReport`.
 - `selector.rs`: `Selector`, `CandidateBudget`, `exceeds_size_limits`.
 - `storage.rs`: `FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, `largest_files`.
@@ -143,4 +145,4 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 
 ### Public API (`src/lib.rs`)
 
-Exports: `ingest`, `RunConfig`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, and `CandidateLimitExceededError`. All other items are `pub(crate)`.
+Exports: `ingest`, `RunConfig`, `ExcludePatterns`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, and `CandidateLimitExceededError`. All other items are `pub(crate)`.

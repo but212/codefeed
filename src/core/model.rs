@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
+use crate::ExcludePatterns;
 use crate::core::error::DomainError;
+use crate::core::github::{parse_github_url, valid_github_name};
 use crate::core::storage::SortedFiles;
 
 /// Validated non-empty Git revision reference (branch, tag, or commit SHA).
@@ -48,7 +50,7 @@ impl GithubName {
     /// characters other than ASCII alphanumerics, `-`, `.`, and `_`.
     pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
         let string = value.into();
-        if !crate::core::github::valid_github_name(&string) {
+        if !valid_github_name(&string) {
             return Err(DomainError::invalid_source(
                 "owner and repository names contain invalid characters",
             ));
@@ -111,7 +113,7 @@ impl Source {
     /// Parses a string slice into either a [`Source::Local`] or [`Source::Github`].
     fn parse(value: &str) -> Result<Self, DomainError> {
         if value.starts_with("http://") || value.starts_with("https://") {
-            let (owner, repo) = crate::core::github::parse_github_url(value)?;
+            let (owner, repo) = parse_github_url(value)?;
             return Self::github(owner, repo, None);
         }
         if value.starts_with("git@") || value.starts_with("ssh://") {
@@ -171,7 +173,7 @@ pub enum DigestFormat {
     Xml,
 }
 
-/// Execution configuration unifying source, output destination, and format.
+/// Execution configuration unifying source, output destination, format, and user exclusions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunConfig {
     /// Ingestion source location.
@@ -180,16 +182,19 @@ pub struct RunConfig {
     pub output: OutputTarget,
     /// Serialization format for the digest.
     pub format: DigestFormat,
+    /// User exclusion patterns, applied on top of the source's own `.gitignore` rules.
+    pub exclude: ExcludePatterns,
 }
 
 impl RunConfig {
-    /// Creates a new `RunConfig` with the given source, output target, and format.
+    /// Creates a new `RunConfig` with the given source, output target, and format, and no user exclusions.
     #[must_use]
-    pub const fn new(source: Source, output: OutputTarget, format: DigestFormat) -> Self {
+    pub fn new(source: Source, output: OutputTarget, format: DigestFormat) -> Self {
         Self {
             source,
             output,
             format,
+            exclude: ExcludePatterns::default(),
         }
     }
 }

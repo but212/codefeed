@@ -40,7 +40,7 @@ Requires Rust 1.88 or newer.
 ## Usage
 
 ```bash
-codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>]
+codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>] [--exclude <PATTERN>]...
 ```
 
 Options may appear before or after `<SOURCE>`. Short flags accept `=` syntax (`--format=xml`, `-o=output.txt`).
@@ -50,6 +50,7 @@ Options may appear before or after `<SOURCE>`. Short flags accept `=` syntax (`-
 - `-o`, `--output <PATH|->`: Output destination (default: `digest.txt`). `-` streams to stdout.
 - `-r`, `--ref <BRANCH|TAG|COMMIT>`: GitHub revision (default: default branch). Rejects empty, whitespace-only, `.`, and `..`.
 - `-f`, `--format <text|xml>`: Digest format (default: `text`).
+- `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to the source root (e.g. `build/`, `*.log`, `/vendor`). Repeatable; patterns apply in the order given. Works for local and GitHub sources. An invalid pattern, or one that matches nothing (blank, comment, bare `!`), is a usage error. See [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 3.6.
 - `-h`, `--help`: Print usage and exit with 0.
 - `--`: Treat subsequent arguments as positionals (for directories starting with `-`).
 
@@ -97,6 +98,7 @@ Excluded entries are dropped silently and omitted from the skipped count:
 - Lockfiles: `Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`, `go.sum`, `poetry.lock`, `Pipfile.lock`, `composer.lock`, `Gemfile.lock`.
 - Credential files matching prefixes (`id_rsa*`, `credentials*`) or extensions (`*.pem`, `*.key`, `*.pfx`, `*.p12`, `*.pkcs12`).
 - Files matched by in-tree `.gitignore`. A local `.gitignore` that is a symlink, exceeds `MAX_FILE_SIZE`, is unreadable, or is not valid UTF-8 fails the run instead.
+- Paths matched by `--exclude` patterns, including everything under an excluded directory.
 
 Skipped entries are counted in the summary:
 

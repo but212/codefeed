@@ -16,9 +16,9 @@ use self::pipeline::fold_candidates;
 use self::read::{Body, Candidate};
 use super::IngestError;
 use super::output::ResolvedOutput;
-use crate::core::error::DomainError;
+use crate::core::error::{DomainError, sanitize_error_detail};
 use crate::core::model::{CollectionResult, repository_name};
-use crate::core::policy::PathStatus;
+use crate::core::policy::{ExcludePatterns, PathStatus};
 use crate::core::selector::Selector;
 
 /// Collects files from a local directory root, excluding the output file if located inside it.
@@ -28,12 +28,14 @@ use crate::core::selector::Selector;
 pub(super) fn collect(
     root: &Path,
     output: &ResolvedOutput,
+    exclude: &ExcludePatterns,
 ) -> Result<CollectionResult, IngestError> {
     let canonical_root = validate_root(root)?;
     let label = local_label(&canonical_root);
     let selector = fold_candidates(
         &canonical_root,
         output.file(),
+        exclude,
         Selector::new(),
         observe_candidate,
     )?;
@@ -54,15 +56,13 @@ fn observe_candidate(selector: Selector, candidate: Candidate) -> Result<Selecto
 fn validate_root(root: &Path) -> Result<PathBuf, DomainError> {
     let root_display = root.display();
     let canonical = fs::canonicalize(root).map_err(|error| {
-        DomainError::invalid_source(crate::core::error::sanitize_error_detail(&format!(
-            "{root_display} ({error})"
-        )))
+        DomainError::invalid_source(sanitize_error_detail(&format!("{root_display} ({error})")))
     })?;
     if !canonical.is_dir() {
         let display = canonical.display();
-        return Err(DomainError::invalid_source(
-            crate::core::error::sanitize_error_detail(&format!("{display} is not a directory")),
-        ));
+        return Err(DomainError::invalid_source(sanitize_error_detail(
+            &format!("{display} is not a directory"),
+        )));
     }
     Ok(canonical)
 }
@@ -77,7 +77,59 @@ mod tests {
     use crate::core::model::{DigestFormat, OutputTarget, RunConfig, Source};
     use crate::core::policy::MAX_FILE_SIZE_USIZE;
     use crate::ingest;
-    use crate::shell::testing::temp_dir;
+    use crate::shell::archive;
+    use crate::shell::testing::{gzip_tarball, temp_dir};
+    use tar::EntryType;
+
+    fn collect_default(
+        root: &Path,
+        output: &ResolvedOutput,
+    ) -> Result<CollectionResult, IngestError> {
+        collect(root, output, &ExcludePatterns::default())
+    }
+
+    #[test]
+    fn user_exclusions_select_the_same_files_locally_and_from_an_archive()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let entries: [(&str, &[u8]); 7] = [
+            ("src/main.rs", b"fn main() {}"),
+            ("src/app.log", b"log"),
+            ("build/out.txt", b"out"),
+            ("lib/build/x.txt", b"x"),
+            ("top", b"anchored"),
+            ("lib/top", b"nested"),
+            ("data.bin", b"\0\x01"),
+        ];
+        let exclude = ExcludePatterns::new(["build/", "*.log", "/top"])?;
+
+        let root = temp_dir("differential_exclude")?;
+        for (path, body) in entries {
+            let file = root.join(path);
+            fs::create_dir_all(file.parent().ok_or("entry has a parent")?)?;
+            fs::write(file, body)?;
+        }
+        let local = collect(&root, &ResolvedOutput::STDOUT, &exclude)?;
+
+        let names: Vec<String> = entries
+            .iter()
+            .map(|(path, _)| format!("repo-root/{path}"))
+            .collect();
+        let tar_entries: Vec<(&str, &[u8], EntryType)> = names
+            .iter()
+            .zip(entries)
+            .map(|(name, (_, body))| (name.as_str(), body, EntryType::Regular))
+            .collect();
+        let tarball = gzip_tarball(&tar_entries);
+        let remote = archive::collect(tarball.as_slice(), "owner/repo", None, &exclude)?;
+
+        let local_paths: Vec<&str> = local.files.iter().map(|f| f.path).collect();
+        let remote_paths: Vec<&str> = remote.files.iter().map(|f| f.path).collect();
+        assert_eq!(local_paths, vec!["lib/top", "src/main.rs"]);
+        assert_eq!(local_paths, remote_paths);
+        assert_eq!(local.skipped, 1, "data.bin is binary");
+        assert_eq!(local.skipped, remote.skipped);
+        Ok(())
+    }
 
     #[test]
     fn read_local_file_enforces_size_boundaries() -> Result<(), Box<dyn std::error::Error>> {
@@ -85,7 +137,7 @@ mod tests {
         fs::write(root.join("exact.txt"), vec![b'x'; MAX_FILE_SIZE_USIZE])?;
         fs::write(root.join("large.txt"), vec![b'x'; MAX_FILE_SIZE_USIZE + 1])?;
 
-        let res = collect(&root, &ResolvedOutput::STDOUT)?;
+        let res = collect_default(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(res.files.len(), 1, "exact-size file is included");
         assert_eq!(res.skipped, 1, "one byte over the limit is skipped");
         Ok(())
@@ -102,7 +154,7 @@ mod tests {
         fs::write(&target, "content")?;
         symlink(&target, &link)?;
 
-        let res = collect(&root, &ResolvedOutput::STDOUT)?;
+        let res = collect_default(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(res.files.len(), 1, "only the regular target is collected");
         assert_eq!(res.skipped, 0);
         Ok(())
@@ -119,7 +171,7 @@ mod tests {
         fs::write(&target, "content")?;
 
         if symlink_file(&target, &link).is_ok() {
-            let res = collect(&root, &ResolvedOutput::STDOUT)?;
+            let res = collect_default(&root, &ResolvedOutput::STDOUT)?;
             assert_eq!(res.files.len(), 1, "only the regular target is collected");
             assert_eq!(res.skipped, 0);
             let _ = fs::remove_file(&link);
@@ -191,7 +243,7 @@ mod tests {
             return Ok(());
         }
 
-        let res = collect(&root, &ResolvedOutput::STDOUT);
+        let res = collect_default(&root, &ResolvedOutput::STDOUT);
 
         // Restore permissions so TempDirGuard can clean up
         for dir in &locked {
@@ -226,7 +278,7 @@ mod tests {
             return Ok(());
         }
 
-        let res = collect(&root, &ResolvedOutput::STDOUT)?;
+        let res = collect_default(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(res.files.len(), 1);
         assert_eq!(res.skipped, 1);
         Ok(())
@@ -238,7 +290,7 @@ mod tests {
         fs::write(root.join(".gitignore"), b"# caf\xe9\nsecret.txt\n")?;
         fs::write(root.join("secret.txt"), "secret")?;
 
-        let err = collect(&root, &ResolvedOutput::STDOUT).unwrap_err();
+        let err = collect_default(&root, &ResolvedOutput::STDOUT).unwrap_err();
         assert!(
             matches!(&err, IngestError::Io(io_err) if io_err.kind() == std::io::ErrorKind::InvalidData),
             "expected IngestError::Io with ErrorKind::InvalidData, got: {err:?}"
@@ -262,7 +314,7 @@ mod tests {
             return Ok(());
         }
 
-        let res = collect(&root, &ResolvedOutput::STDOUT);
+        let res = collect_default(&root, &ResolvedOutput::STDOUT);
         let _ = fs::set_permissions(&gitignore, fs::Permissions::from_mode(0o0644));
 
         let err = res.unwrap_err();
@@ -279,7 +331,7 @@ mod tests {
         fs::write(root.join(".gitignore"), vec![b'#'; MAX_FILE_SIZE_USIZE + 1])?;
         fs::write(root.join("a.txt"), "a")?;
 
-        let err = collect(&root, &ResolvedOutput::STDOUT).unwrap_err();
+        let err = collect_default(&root, &ResolvedOutput::STDOUT).unwrap_err();
         assert!(
             matches!(&err, IngestError::Io(io_err) if io_err.kind() == std::io::ErrorKind::FileTooLarge),
             "expected IngestError::Io with ErrorKind::FileTooLarge, got: {err:?}"
@@ -298,7 +350,7 @@ mod tests {
         fs::write(root.join("secret.txt"), "secret")?;
         fs::write(root.join("a.txt"), "a")?;
 
-        let res = collect(&root, &ResolvedOutput::STDOUT)?;
+        let res = collect_default(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(
             res.files.len(),
             1,
@@ -318,7 +370,7 @@ mod tests {
         symlink(&rules, root.join(".gitignore"))?;
         fs::write(root.join("secret.txt"), "secret")?;
 
-        let err = collect(&root, &ResolvedOutput::STDOUT).unwrap_err();
+        let err = collect_default(&root, &ResolvedOutput::STDOUT).unwrap_err();
         assert!(matches!(err, IngestError::Io(_)), "got: {err:?}");
         assert!(err.to_string().contains(".gitignore"), "got: {err}");
         Ok(())
@@ -335,7 +387,7 @@ mod tests {
         fs::write(root.join("secret.txt"), "secret")?;
 
         if symlink_file(&rules, root.join(".gitignore")).is_ok() {
-            let err = collect(&root, &ResolvedOutput::STDOUT).unwrap_err();
+            let err = collect_default(&root, &ResolvedOutput::STDOUT).unwrap_err();
             assert!(matches!(err, IngestError::Io(_)), "got: {err:?}");
             assert!(err.to_string().contains(".gitignore"), "got: {err}");
         }
@@ -348,7 +400,7 @@ mod tests {
         fs::create_dir(root.join(".gitignore"))?;
         fs::write(root.join("a.txt"), "a")?;
 
-        let res = collect(&root, &ResolvedOutput::STDOUT)?;
+        let res = collect_default(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(res.files.len(), 1);
         assert_eq!(res.skipped, 0);
         Ok(())
@@ -368,7 +420,7 @@ mod tests {
             .share_mode(0)
             .open(&locked)?;
 
-        let res = collect(&root, &ResolvedOutput::STDOUT)?;
+        let res = collect_default(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(res.files.len(), 1);
         assert_eq!(res.skipped, 1);
         Ok(())
@@ -388,7 +440,7 @@ mod tests {
         symlink(&target, &link)?;
 
         // Symlink is filtered out before candidate reservation and should not increase skipped
-        let res = collect(&root, &ResolvedOutput::STDOUT)?;
+        let res = collect_default(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(res.files.len(), 1);
         assert_eq!(res.skipped, 0);
 
@@ -532,7 +584,7 @@ mod tests {
         fs::write(root.join(".dotfile"), "secret")?;
         fs::write(root.join("visible.txt"), "visible")?;
 
-        let result = collect(&root, &ResolvedOutput::STDOUT)?;
+        let result = collect_default(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(result.files.len(), 1);
         assert_eq!(result.files.iter().next().unwrap().path, "visible.txt");
         assert_eq!(result.skipped, 0);
