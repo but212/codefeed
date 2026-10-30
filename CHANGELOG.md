@@ -14,7 +14,9 @@ Internal refactors and test changes. No consumer action required.
 
 #### Added
 
+- **Walk and ignore differential test cases**: Expanded `write_reference_fixture` in `src/shell/local/walk.rs` to verify parent directory pruning vs child negation, directory trailing-slash semantics, and mixed BOM handling against `ignore::WalkBuilder`.
 - **Limit values documentation sync test**: Added a compile-time test in `src/core/policy/limits.rs` validating that every limit constant matches the mirror table in `docs/security_and_filtering.md` §8.
+- **Offline GitHub and error path test coverage**: Added unit tests covering mock streaming ingestion for GitHub sources, CLI success branches for file and stdout targets, directory and file validation edge cases, pipeline channel error transitions, atomic write temp file collisions, and output pipe error handling across shell modules.
 
 #### Changed
 

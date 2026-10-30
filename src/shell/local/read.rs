@@ -193,4 +193,15 @@ mod tests {
             assert_eq!(is_unavailable_file(&err), expected, "{err:?}");
         }
     }
+
+    #[test]
+    fn read_candidate_skips_directory_entry() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("read_candidate_dir")?;
+        let sub = root.join("subdir");
+        fs::create_dir(&sub)?;
+
+        let result = read_candidate(&sub, NormalizedPath::from("subdir"))?;
+        assert!(result.is_none());
+        Ok(())
+    }
 }

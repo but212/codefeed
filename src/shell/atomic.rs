@@ -32,7 +32,10 @@ impl TempPath {
     /// Creates `.codefeed.{nanos}.{counter}.tmp` in `parent`. The name does not depend on the target,
     /// so its length stays within the filename limit for any output name.
     fn create(parent: &Path) -> Result<(Self, fs::File), IngestError> {
-        let timestamp = current_epoch_nanos();
+        Self::create_internal(parent, current_epoch_nanos())
+    }
+
+    fn create_internal(parent: &Path, timestamp: u128) -> Result<(Self, fs::File), IngestError> {
         loop {
             let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
             let path = parent.join(format!(".codefeed.{timestamp}.{counter}.tmp"));
@@ -225,6 +228,20 @@ mod tests {
             err.to_string().contains("missing"),
             "unexpected message: {err}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn temp_path_create_retries_on_collision() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = temp_dir("atomic_collision")?;
+        let timestamp = 999_999_999;
+        let counter = TEMP_FILE_COUNTER.load(Ordering::Relaxed);
+        let colliding_path = temp.join(format!(".codefeed.{timestamp}.{counter}.tmp"));
+        fs::write(&colliding_path, "pre-existing")?;
+
+        let (guard, _file) = TempPath::create_internal(&temp, timestamp)?;
+        assert_ne!(guard.path(), colliding_path);
+        assert!(guard.path().exists());
         Ok(())
     }
 

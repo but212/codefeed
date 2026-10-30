@@ -16,6 +16,30 @@ use tar::{Builder, EntryType};
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+static TEST_GITHUB_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static TEST_GITHUB_URL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub(super) fn with_test_github_url<R>(url: String, f: impl FnOnce() -> R) -> R {
+    let _lock = TEST_GITHUB_MUTEX.lock().unwrap();
+    *TEST_GITHUB_URL.lock().unwrap() = Some(url);
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            *TEST_GITHUB_URL.lock().unwrap() = None;
+        }
+    }
+    let _guard = Guard;
+    f()
+}
+
+pub(super) fn get_test_github_url() -> Option<String> {
+    TEST_GITHUB_URL
+        .lock()
+        .unwrap()
+        .clone()
+        .or_else(|| std::env::var("CODEFEED_GITHUB_API_URL").ok())
+}
+
 #[derive(Debug)]
 pub(super) struct TempDirGuard(PathBuf);
 
