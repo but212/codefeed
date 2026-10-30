@@ -298,7 +298,7 @@ mod tests {
     fn write_reference_fixture(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         fs::write(
             root.join(".gitignore"),
-            "*.log\n!keep.log\n/top_only\nbuild/\n",
+            "*.log\n!keep.log\n/top_only\nbuild/\npruned_parent/\n*.level\ntarget_dir_only/\ntarget_either\n",
         )?;
         fs::write(root.join("a.log"), "a")?;
         fs::write(root.join("keep.log"), "keep")?;
@@ -343,6 +343,54 @@ mod tests {
         fs::write(root.join("bad").join("z.dat"), "z")?;
         fs::write(root.join("bad").join("z.txt"), "z")?;
 
+        fs::create_dir_all(root.join("pruned_parent"))?;
+        fs::write(
+            root.join("pruned_parent").join(".gitignore"),
+            "!reinclude.txt\n",
+        )?;
+        fs::write(root.join("pruned_parent").join("reinclude.txt"), "r")?;
+
+        fs::write(root.join("root_dropped.level"), "d")?;
+        fs::create_dir_all(root.join("tier").join("deep"))?;
+        fs::write(root.join("tier").join(".gitignore"), "!keep.level\n")?;
+        fs::write(root.join("tier").join("keep.level"), "k")?;
+        fs::write(root.join("tier").join("other.level"), "o")?;
+        fs::write(
+            root.join("tier").join("deep").join(".gitignore"),
+            "keep.level\n",
+        )?;
+        fs::write(root.join("tier").join("deep").join("keep.level"), "k")?;
+
+        fs::create_dir_all(root.join("sub_slash").join("target_dir_only"))?;
+        fs::write(
+            root.join("sub_slash")
+                .join("target_dir_only")
+                .join("child.txt"),
+            "c",
+        )?;
+        fs::create_dir_all(root.join("sub_slash").join("target_either"))?;
+        fs::write(
+            root.join("sub_slash")
+                .join("target_either")
+                .join("child.txt"),
+            "c",
+        )?;
+        fs::create_dir_all(root.join("sub_file"))?;
+        fs::write(root.join("sub_file").join("target_dir_only"), "file")?;
+        fs::write(root.join("sub_file").join("target_either"), "file")?;
+
+        fs::create_dir_all(root.join("bom_mixed"))?;
+        fs::write(
+            root.join("bom_mixed").join(".gitignore"),
+            "\u{feff}# Comment\n\n*.bomdrop\n",
+        )?;
+        fs::write(root.join("bom_mixed").join("drop.bomdrop"), "d")?;
+        fs::write(root.join("bom_mixed").join("keep.txt"), "k")?;
+        fs::write(
+            root.join("bom_mixed").join("bom_content.txt"),
+            "\u{feff}bom body",
+        )?;
+
         #[cfg(unix)]
         std::os::unix::fs::symlink(root.join("b.txt"), root.join("link.txt"))?;
         Ok(())
@@ -366,6 +414,10 @@ mod tests {
             "sub/deeper/secret.txt",
             "bom/y.txt",
             "bad/z.txt",
+            "tier/keep.level",
+            "sub_file/target_dir_only",
+            "bom_mixed/keep.txt",
+            "bom_mixed/bom_content.txt",
         ];
         let dropped = [
             "a.log",
@@ -379,6 +431,14 @@ mod tests {
             "bad/z.dat",
             ".hidden.txt",
             ".h/x.txt",
+            "pruned_parent/reinclude.txt",
+            "root_dropped.level",
+            "tier/other.level",
+            "tier/deep/keep.level",
+            "sub_slash/target_dir_only/child.txt",
+            "sub_slash/target_either/child.txt",
+            "sub_file/target_either",
+            "bom_mixed/drop.bomdrop",
         ];
         for path in kept {
             assert!(
