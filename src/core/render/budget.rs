@@ -33,7 +33,7 @@ pub(super) const fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
 pub(crate) struct OutputLimitExceeded;
 
 /// Rendered digest containing accumulated bytes, token estimation, and collection metrics.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 #[must_use]
 pub(crate) struct RenderedDigest {
     pub(crate) bytes: Vec<u8>,
@@ -55,7 +55,8 @@ impl RenderedDigest {
 }
 
 /// In-memory buffer strictly bounded by [`MAX_OUTPUT_SIZE`] with value-passing operations.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Default, PartialEq, Eq))]
 #[repr(transparent)]
 #[must_use]
 pub(crate) struct BoundedBuffer {

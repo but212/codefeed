@@ -232,6 +232,59 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn non_utf8_gitignore_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("non_utf8_gitignore")?;
+        fs::write(root.join(".gitignore"), b"# caf\xe9\nsecret.txt\n")?;
+        fs::write(root.join("secret.txt"), "secret")?;
+
+        let err = collect(&root, &ResolvedOutput::STDOUT).unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Io(io_err) if io_err.kind() == std::io::ErrorKind::InvalidData),
+            "expected IngestError::Io with ErrorKind::InvalidData, got: {err:?}"
+        );
+        assert!(err.to_string().contains(".gitignore"), "got: {err}");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_gitignore_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("unreadable_gitignore")?;
+        let gitignore = root.join(".gitignore");
+        fs::write(&gitignore, "secret.txt\n")?;
+        fs::set_permissions(&gitignore, fs::Permissions::from_mode(0o0000))?;
+
+        if fs::File::open(&gitignore).is_ok() {
+            let _ = fs::set_permissions(&gitignore, fs::Permissions::from_mode(0o0644));
+            return Ok(());
+        }
+
+        let res = collect(&root, &ResolvedOutput::STDOUT);
+        let _ = fs::set_permissions(&gitignore, fs::Permissions::from_mode(0o0644));
+
+        let err = res.unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Io(io_err) if io_err.kind() == std::io::ErrorKind::PermissionDenied),
+            "expected IngestError::Io with ErrorKind::PermissionDenied, got: {err:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn gitignore_directory_is_not_read_as_rules() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("gitignore_directory")?;
+        fs::create_dir(root.join(".gitignore"))?;
+        fs::write(root.join("a.txt"), "a")?;
+
+        let res = collect(&root, &ResolvedOutput::STDOUT)?;
+        assert_eq!(res.files.len(), 1);
+        assert_eq!(res.skipped, 0);
+        Ok(())
+    }
+
     #[cfg(windows)]
     #[test]
     fn locked_file_is_counted_as_skipped() -> Result<(), Box<dyn std::error::Error>> {

@@ -55,7 +55,8 @@ pub(crate) struct FileRecord<'a> {
 }
 
 /// Wrapper guaranteeing that [`FileStorage`] is sorted component-wise lexicographically by path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
 #[must_use]
 pub(crate) struct SortedFiles(FileStorage);
 
@@ -76,7 +77,8 @@ impl Deref for SortedFiles {
 
 /// Continuous arena storage for file paths and contents.
 /// Eliminates per-file heap allocations and preserves cache locality.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone, PartialEq, Eq))]
 pub(crate) struct FileStorage {
     spans: Vec<FileSpan>,
     path_arena: String,

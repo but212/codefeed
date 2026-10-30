@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use super::read::{Candidate, WorkerMsg, read_candidate};
-use super::walk::{classify_entry, format_ignore_error, sorted_walker};
+use super::walk::{RegularFile, Walk, classify_entry};
 use crate::core::policy::{LOCAL_CHANNEL_CAPACITY, MAX_LOCAL_WORKERS, NormalizedPath, PathStatus};
 use crate::shell::IngestError;
 
@@ -44,7 +44,7 @@ pub(super) fn fold_candidates<T>(
     init: T,
     step: impl FnMut(T, Candidate) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
-    let walker = sorted_walker(root);
+    let walker = Walk::new(root)?;
 
     let aborted = AtomicBool::new(false);
     let (job_tx, job_rx) = sync_channel::<Job>(LOCAL_CHANNEL_CAPACITY);
@@ -68,16 +68,16 @@ pub(super) fn fold_candidates<T>(
 /// Routes one walk entry: `None` when it is not a candidate, a ready reply when it is decided on
 /// the producer thread, or a pending reply when a worker reads its body.
 fn dispatch(
-    entry: Result<ignore::DirEntry, ignore::Error>,
+    entry: Result<RegularFile, IngestError>,
     root: &Path,
     output: Option<&Path>,
     jobs: &SyncSender<Job>,
 ) -> Option<Slot> {
-    let entry = match entry {
-        Ok(entry) => entry,
-        Err(err) => return Some(Slot::Ready(Err(IngestError::Io(format_ignore_error(&err))))),
+    let file = match entry {
+        Ok(file) => file,
+        Err(err) => return Some(Slot::Ready(Err(err))),
     };
-    let path = match classify_entry(root, output, &entry) {
+    let path = match classify_entry(root, output, file.as_path()) {
         Ok(PathStatus::Ignored) => return None,
         Ok(PathStatus::NonUtf8Candidate(prefix)) => {
             return Some(Slot::Ready(Ok(Some(Candidate::NonUtf8(prefix)))));
@@ -89,7 +89,7 @@ fn dispatch(
     let (reply, pending) = sync_channel(1);
     let job = Job {
         path,
-        entry_path: entry.into_path(),
+        entry_path: file.into_path(),
         reply,
     };
     if jobs.send(job).is_err() {
@@ -144,7 +144,7 @@ fn settle<T>(
     reason = "dropping the senders when the producer exits disconnects both channels"
 )]
 fn produce_slots(
-    walker: ignore::Walk,
+    walker: Walk,
     root: &Path,
     output: Option<&Path>,
     jobs: SyncSender<Job>,

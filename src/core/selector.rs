@@ -1,10 +1,10 @@
 //! Candidate observation, budget accounting, and storage accumulation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use memchr::memchr;
 
-use crate::core::error::DomainError;
+use crate::core::error::{DomainError, sanitize_error_detail};
 use crate::core::model::CollectionResult;
 use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, PathStatus};
 use crate::core::storage::{FileStorage, SortedFiles};
@@ -24,10 +24,12 @@ pub(crate) fn exceeds_size_limits(path_len: usize, size_hint: Option<u64>) -> bo
 }
 
 /// Candidate-count budget owned by the selector that consumes it.
-#[derive(Default, Debug)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Default))]
 struct CandidateBudget {
     count: usize,
     dir_counts: HashMap<String, usize>,
+    paths: HashSet<String>,
 }
 
 impl CandidateBudget {
@@ -45,6 +47,21 @@ impl CandidateBudget {
             return Err(self.overflow_error());
         }
         Ok(self)
+    }
+
+    /// Adds a valid candidate path. Rejects it when a candidate within `MAX_PATH_BYTES` already holds the same path.
+    ///
+    /// Skipped candidates count: two entries with one path are ambiguous even when one is skipped.
+    /// Longer paths are skipped before output and never reach the digest, so they are not tracked.
+    pub(crate) fn admit_unique(self, path: &str) -> Result<Self, DomainError> {
+        let mut budget = self.add(path)?;
+        if path.len() as u64 <= MAX_PATH_BYTES && !budget.paths.insert(path.to_string()) {
+            return Err(DomainError::invalid_metadata(format!(
+                "duplicate entry path: {}",
+                sanitize_error_detail(path)
+            )));
+        }
+        Ok(budget)
     }
 
     fn overflow_error(&self) -> DomainError {
@@ -84,6 +101,7 @@ impl Selector {
             candidates: CandidateBudget {
                 count: 0,
                 dir_counts: HashMap::with_capacity(32),
+                paths: HashSet::new(),
             },
             skipped: 0,
         }
@@ -93,12 +111,12 @@ impl Selector {
     ///
     /// - [`PathStatus::Ignored`] is dropped without consuming candidate budget.
     /// - [`PathStatus::NonUtf8Candidate`] and paths over the size limits consume candidate budget and are skipped.
-    /// - [`PathStatus::Valid`] within the size limits consumes candidate budget, then `read` runs; its bytes
-    ///   are stored when they are UTF-8 text, and skipped otherwise or when `None` (unavailable file).
+    /// - [`PathStatus::Valid`] consumes candidate budget and must not repeat an earlier valid path within `MAX_PATH_BYTES`,
+    ///   then, within the size limits, `read` runs; its bytes are stored when they are UTF-8 text, and skipped otherwise or when `None` (unavailable file).
     ///
     /// # Errors
     ///
-    /// Returns budget or output-limit errors as `E`, and any error from `read` unchanged.
+    /// Returns budget, duplicate-path, or output-limit errors as `E`, and any error from `read` unchanged.
     pub(crate) fn observe<B: AsRef<[u8]>, E: From<DomainError>>(
         mut self,
         status: PathStatus,
@@ -113,7 +131,7 @@ impl Selector {
             }
             PathStatus::Valid(path) => path,
         };
-        self.candidates = self.candidates.add(&path)?;
+        self.candidates = self.candidates.admit_unique(&path)?;
         if exceeds_size_limits(path.len(), size_hint) {
             return Ok(self.skip());
         }
@@ -340,5 +358,85 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(err, TestError::Read);
+    }
+
+    fn assert_duplicate_path(err: &DomainError, message_path: &str) {
+        let DomainError::InvalidMetadata(message) = err else {
+            panic!("expected InvalidMetadata, got {err}");
+        };
+        assert_eq!(message, &format!("duplicate entry path: {message_path}"));
+    }
+
+    #[test]
+    fn observe_rejects_duplicate_valid_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let selector = Selector::new().observe(PathStatus::Valid("a.txt".into()), None, || {
+            Ok::<_, DomainError>(Some(&b"first"[..]))
+        })?;
+        let err = selector
+            .observe(PathStatus::Valid("a.txt".into()), None, || {
+                Ok::<_, DomainError>(Some(&b"second"[..]))
+            })
+            .unwrap_err();
+        assert_duplicate_path(&err, "a.txt");
+        Ok(())
+    }
+
+    #[test]
+    fn observe_rejects_duplicate_of_skipped_candidate() {
+        let oversized = Some(MAX_FILE_SIZE + 1);
+        // A skipped candidate still names its path, so it collides with a stored one in either order.
+        for (first_hint, second_hint) in [(None, oversized), (oversized, None)] {
+            let selector = Selector::new()
+                .observe(PathStatus::Valid("a.txt".into()), first_hint, || {
+                    Ok::<_, DomainError>(Some(&b"first"[..]))
+                })
+                .expect("first candidate is admitted");
+            let err = selector
+                .observe(PathStatus::Valid("a.txt".into()), second_hint, || {
+                    Ok::<_, DomainError>(Some(&b"second"[..]))
+                })
+                .unwrap_err();
+            assert_duplicate_path(&err, "a.txt");
+        }
+    }
+
+    #[test]
+    fn observe_duplicate_diagnostic_is_sanitized() {
+        let selector = Selector::new()
+            .observe(PathStatus::Valid("a\x07.txt".into()), None, || {
+                Ok::<_, DomainError>(Some(&b"first"[..]))
+            })
+            .expect("first candidate is admitted");
+        let err = selector
+            .observe(PathStatus::Valid("a\x07.txt".into()), None, || {
+                Ok::<_, DomainError>(Some(&b"second"[..]))
+            })
+            .unwrap_err();
+        assert_duplicate_path(&err, "a\u{FFFD}.txt");
+    }
+
+    #[test]
+    fn observe_allows_overlong_duplicate() {
+        // Paths over `MAX_PATH_BYTES` are skipped and never reach the digest, so they are not checked for uniqueness.
+        let overlong = format!("{}/file.rs", "a".repeat(MAX_PATH_BYTES_USIZE));
+        let selector = Selector::new()
+            .observe(
+                PathStatus::Valid(overlong.clone().into()),
+                None,
+                || -> Result<Option<Vec<u8>>, DomainError> {
+                    panic!("read must not run for an overlong candidate")
+                },
+            )
+            .expect("first overlong candidate is skipped");
+        let selector = selector
+            .observe(
+                PathStatus::Valid(overlong.into()),
+                None,
+                || -> Result<Option<Vec<u8>>, DomainError> {
+                    panic!("read must not run for an overlong candidate")
+                },
+            )
+            .expect("duplicate overlong candidate is skipped, not rejected");
+        assert_eq!(selector.skipped, 2);
     }
 }

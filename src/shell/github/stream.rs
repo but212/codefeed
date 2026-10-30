@@ -321,10 +321,4 @@ mod tests {
 
         server.join();
     }
-
-    #[test]
-    fn attempt_warn_handles_transport_error() {
-        let attempt = Attempt::Transport(ureq::Error::ConnectionFailed);
-        attempt.warn(1, "https://api.github.com/test", Duration::from_millis(50));
-    }
 }

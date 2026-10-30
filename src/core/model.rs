@@ -209,7 +209,8 @@ pub struct IngestReport {
 }
 
 /// Raw files and metadata collected by the shell before digest rendering.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
 #[must_use]
 pub(crate) struct CollectionResult {
     pub(crate) label: String,
