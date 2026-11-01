@@ -33,7 +33,7 @@ impl RegularFile {
     }
 
     #[cfg(test)]
-    pub(super) fn from_parts(path: PathBuf, relative: PathBuf) -> Self {
+    pub(super) const fn from_parts(path: PathBuf, relative: PathBuf) -> Self {
         Self { path, relative }
     }
 }
