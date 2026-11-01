@@ -85,13 +85,13 @@ codefeed -- -my-directory
 - **Header**: Local digests start with `Repository: <directory name>`. GitHub digests start with `Repository: https://github.com/{owner}/{repo}`.
 - **Text format** (`text`): Verbatim UTF-8 file contents; binary (NUL) or invalid UTF-8 files are skipped. Header labels and paths are escaped; ANSI sequences are kept.
 - **XML format** (`xml`): Structured `<repository>`, `<directory_structure>`, and `<files>` elements. Entities are escaped; disallowed XML 1.0 characters become `\u{FFFD}`.
-- **Token count**: Heuristic estimate (ASCII bytes / 4 + non-ASCII characters), not an exact tokenizer count.
+- **Token count**: Heuristic estimate (ASCII bytes / `ASCII_BYTES_PER_TOKEN` + non-ASCII characters), not an exact tokenizer count.
 - **Exit status**: `0` on success or help; `1` on usage or ingest error.
 - **Broken pipe**: Exits `0` when the stdout reader closes early.
 
 ## What Is Included
 
-Excluded entries are dropped silently and omitted from the skipped count:
+Excluded entries are dropped silently and omitted from the skipped count. The one exception: a tar header over the header budget fails the run before the entry is classified, so an excluded entry with such a header also fails it:
 
 - Hidden entries: path segments starting with `.` (e.g. `.git`, `.github`, `.env*`), excluding the source root itself.
 - Symlinks and non-regular files (local and archive).
@@ -120,6 +120,7 @@ Limits either skip an entry or abort the run. Limit values and enforcement detai
 | `MAX_PATH_DEPTH` | Run fails. Hidden and noise entries are dropped before this check. |
 | `MAX_FILE_COUNT` | Run fails; error lists largest directories. |
 | `MAX_OUTPUT_SIZE` | Run fails; no digest written; error lists largest files. |
+| `ARCHIVE_MAX_HEADER_BYTES` | Run fails. A tar header (including long-name or PAX extension data) exceeds the budget. |
 | `ARCHIVE_MAX_SECS`, `GITHUB_TIMEOUT_SECS` | Request times out. Header timeouts retry per [sec. 6.5-6.6](docs/security_and_filtering.md#6-github-network-safety). |
 | `MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS` | Transient failures retried with backoff. Waits longer than the cap abort the run. See [sec. 6.5](docs/security_and_filtering.md#6-github-network-safety). |
 

@@ -8,7 +8,7 @@ use std::iter::once;
 use std::ops::Deref;
 
 use crate::core::error::{DomainError, sanitize_error_detail};
-use crate::core::policy::{MAX_OUTPUT_SIZE, NormalizedPath};
+use crate::core::policy::{MAX_OUTPUT_SIZE, NormalizedPath, OVERFLOW_LARGEST_FILES};
 
 /// 16-byte POD indexing a file path and content slice in [`FileStorage`].
 ///
@@ -225,7 +225,7 @@ pub(crate) fn largest_files<'a>(
         .map(|f| (f.path, f.content.len()))
         .collect();
     sized.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| cmp_path(a.0, b.0)));
-    sized.truncate(5);
+    sized.truncate(OVERFLOW_LARGEST_FILES);
     sized.into_iter().map(|(p, s)| (p.to_string(), s)).collect()
 }
 

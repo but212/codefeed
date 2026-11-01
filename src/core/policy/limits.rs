@@ -20,6 +20,10 @@ pub(crate) const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
 pub(crate) const MAX_OUTPUT_SIZE_USIZE: usize = MAX_OUTPUT_SIZE as usize;
 /// Maximum candidate files evaluated before candidate budget overflows (10,000 files).
 pub(crate) const MAX_FILE_COUNT: usize = 10_000;
+/// Largest files listed by the `MAX_OUTPUT_SIZE` overflow diagnostic (5 files).
+pub(crate) const OVERFLOW_LARGEST_FILES: usize = 5;
+/// Largest directories listed by the `MAX_FILE_COUNT` overflow diagnostic (3 directories).
+pub(crate) const OVERFLOW_LARGEST_DIRECTORIES: usize = 3;
 /// Maximum directory nesting depth permitted for archive entry paths (256 levels).
 pub(crate) const MAX_PATH_DEPTH: usize = 256;
 /// Maximum allowable path length in bytes (4,096 bytes). Paths exceeding this limit are skipped.
@@ -33,6 +37,9 @@ pub(crate) const MAX_PATH_BYTES: u64 = 4096;
 pub(crate) const MAX_PATH_BYTES_USIZE: usize = MAX_PATH_BYTES as usize;
 /// Capacity in bytes for buffering incoming archive decompression streams (64 KiB).
 pub(crate) const ARCHIVE_BUFFER_BYTES: usize = 64 * 1024;
+/// Bytes one tar entry-header read may consume from the decompressed archive stream (64 KiB). Covers the
+/// previous entry's padding plus the GNU `L`/`K` and PAX `x` extension bodies and the header itself.
+pub(crate) const ARCHIVE_MAX_HEADER_BYTES: u64 = 64 * 1024;
 /// Capacity in messages of each local pipeline channel (jobs and slots). A full channel blocks its
 /// sender, which bounds the file bodies held at once to this value plus two (security §5.5, §8).
 pub(crate) const LOCAL_CHANNEL_CAPACITY: usize = 64;
@@ -62,9 +69,13 @@ const _: () = {
     assert!(MAX_PATH_BYTES <= MAX_FILE_SIZE);
     assert!(MAX_FILE_COUNT > 0);
     assert!(MAX_PATH_DEPTH > 0);
+    assert!(OVERFLOW_LARGEST_FILES > 0);
+    assert!(OVERFLOW_LARGEST_DIRECTORIES > 0);
     assert!(ASCII_BYTES_PER_TOKEN > 0);
     assert!(GITHUB_TIMEOUT_SECS <= ARCHIVE_MAX_SECS);
     assert!(ARCHIVE_BUFFER_BYTES > 0);
+    // Padding (511) + three extension bodies, each a header block plus a full-length path, + final header.
+    assert!(ARCHIVE_MAX_HEADER_BYTES >= 511 + 3 * (512 + MAX_PATH_BYTES + 1024) + 512);
     assert!(LOCAL_CHANNEL_CAPACITY > 0);
     assert!(MAX_LOCAL_WORKERS > 0);
     assert!(MAX_FILE_SIZE as usize as u64 == MAX_FILE_SIZE);
@@ -158,6 +169,10 @@ mod tests {
                 format!("{} KiB", ARCHIVE_BUFFER_BYTES / 1024),
             ),
             (
+                "ARCHIVE_MAX_HEADER_BYTES",
+                format!("{} KiB", ARCHIVE_MAX_HEADER_BYTES / 1024),
+            ),
+            (
                 "LOCAL_CHANNEL_CAPACITY",
                 format!("{LOCAL_CHANNEL_CAPACITY} messages"),
             ),
@@ -176,6 +191,14 @@ mod tests {
             (
                 "ASCII_BYTES_PER_TOKEN",
                 format!("{ASCII_BYTES_PER_TOKEN} B"),
+            ),
+            (
+                "OVERFLOW_LARGEST_FILES",
+                format!("{OVERFLOW_LARGEST_FILES} files"),
+            ),
+            (
+                "OVERFLOW_LARGEST_DIRECTORIES",
+                format!("{OVERFLOW_LARGEST_DIRECTORIES} directories"),
             ),
         ];
 

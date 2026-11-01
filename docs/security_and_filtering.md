@@ -45,7 +45,10 @@ Entry (local walk or tar stream)
  |     +-- Embedded NUL byte, traversal `..`, or `.` root segment
  |     |     `-- Run fails (InvalidMetadata).
  |     `-- Strips the first path segment (repository root directory).
+ +-- Tar header read (`Entries::next`, GNU `L`/`K` and PAX `x` bodies included). Runs before path classification and applies to every entry type.
+ |     `-- Over `ARCHIVE_MAX_HEADER_BYTES` for one read -> Run fails (InvalidMetadata), even for entries that would be dropped.
  |
+
  +-- Path classification (policy::classify_path_segments)
  |     +-- Hidden segment
  |     |     `-- Ignored. Dropped silently. Omitted from count.
@@ -176,6 +179,7 @@ Candidate budget overflow aborts the run without emitting partial output.
 ### 6.4 Streaming
 
 - Fetches tarball in a single HTTP request (`/repos/{owner}/{repo}/tarball/{ref}`). Streams via gzip/tar directly into `Selector::observe` without disk spooling.
+- Each tar header read is metered against `ARCHIVE_MAX_HEADER_BYTES`, so an extension body cannot allocate past that budget before its path is checked. Entry bodies are not metered.
 
 ### 6.5 Retries
 
@@ -217,9 +221,10 @@ Sole documentation mirror for numerical limits (authoritative definitions reside
 | `MAX_FILE_SIZE` | 1 MiB | Declared size, bounded read, and `.gitignore` read | Skipped, counted in summary; `.gitignore`: run fails |
 | `MAX_PATH_BYTES` | 4,096 B | Path classification | Skipped, counted in summary |
 | `MAX_PATH_DEPTH` | 256 levels | Path classification | Run fails (`InvalidMetadata`) |
-| `MAX_FILE_COUNT` | 10,000 files | Candidate budget | Run fails; lists 3 largest dirs |
-| `MAX_OUTPUT_SIZE` | 20 MiB | Storage check & buffer | Run fails; lists 5 largest files |
+| `MAX_FILE_COUNT` | 10,000 files | Candidate budget | Run fails; lists `OVERFLOW_LARGEST_DIRECTORIES` largest dirs |
+| `MAX_OUTPUT_SIZE` | 20 MiB | Storage check & buffer | Run fails; lists `OVERFLOW_LARGEST_FILES` largest files |
 | `ARCHIVE_BUFFER_BYTES` | 64 KiB | Archive read buffer | Buffering parameter (no overflow) |
+| `ARCHIVE_MAX_HEADER_BYTES` | 64 KiB | Archive header read budget | Run fails (`InvalidMetadata`) |
 | `LOCAL_CHANNEL_CAPACITY` | 64 messages | Channel bounds | Blocks sender (no overflow) |
 | `MAX_LOCAL_WORKERS` | 12 threads | Thread pool sizing | Worker concurrency limit |
 | `ARCHIVE_MAX_SECS` | 300 s | Archive stream timer | Fails with request error |
@@ -228,3 +233,5 @@ Sole documentation mirror for numerical limits (authoritative definitions reside
 | `RETRY_INITIAL_DELAY_MS` | 250 ms | Backoff initial delay | Initial retry sleep |
 | `RETRY_MAX_DELAY_MS` | 5,000 ms | Backoff cap & wait limit | Longer server wait fails run |
 | `ASCII_BYTES_PER_TOKEN` | 4 B | Token heuristic | Token estimate calculation |
+| `OVERFLOW_LARGEST_FILES` | 5 files | Overflow diagnostic | Lists this many largest files (no overflow) |
+| `OVERFLOW_LARGEST_DIRECTORIES` | 3 directories | Overflow diagnostic | Lists this many largest directories (no overflow) |

@@ -24,7 +24,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - `PathStatus`: Result of path classification: `Valid(NormalizedPath)`, `Ignored`, or `NonUtf8Candidate(prefix)`.
 - `NormalizedPath`: Non-empty, slash-separated, UTF-8 relative path without empty or `.` segments.
 - `Selector`: Linear state managing arena storage, `CandidateBudget`, and skipped tally. Settles candidates via `observe` and completes via `finish`.
-- `CandidateBudget`: Candidate counter and per-directory tallies (`selector.rs` private).
+- `CandidateBudget`: Candidate counter, per-directory tallies, and the seen-path set used for uniqueness (`selector.rs` private).
 - `CollectionResult`: Struct containing `label`, optional `revision`, `files: SortedFiles`, and `skipped`.
 
 ### Storage
@@ -58,7 +58,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 - Order: hidden -> user exclusion -> noise/sensitive entries -> depth check -> non-UTF-8 prefixing -> valid path ([security sec. 2](docs/security_and_filtering.md#2-evaluation-order)). Shared by local walk and tar stream via `classify_path_segments`.
 - `Ignored` entries consume no candidate slot and are omitted from skipped counts.
-- Depth limit violation is the only path check aborting the entire run during classification. Hidden and noise entries are dropped before depth evaluation. For GitHub tar archives, `normalize_tar_entry_path` also aborts the run with `DomainError::InvalidMetadata` upon encountering embedded NUL bytes, traversal segments (`..`), or a `.` root segment, for regular-file entries. Non-regular tar entries are dropped before normalization runs.
+- Depth limit violation is the only path check aborting the entire run during classification. Hidden and noise entries are dropped before depth evaluation. For GitHub tar archives, `normalize_tar_entry_path` also aborts the run with `DomainError::InvalidMetadata` upon encountering embedded NUL bytes, traversal segments (`..`), or a `.` root segment, for regular-file entries. Non-regular tar entries are dropped before normalization runs. Oversized tar headers abort the run under I-03 ([sec. 3.9](#39-network)).
 - Non-UTF-8 candidates record their valid prefix (`"a/b/"` or `""`), charged to the budget under the first segment (`"a/"`) or root (`"./"`).
 - **I-02 (`boundary`, `classify_path_segments`):** No classified path or non-UTF-8 prefix has a first segment starting with `.`, since hidden segments are `Ignored` and empty or `.` segments are dropped. The budget therefore keys root-level entries as `"./"`, which no real directory can produce.
 
@@ -93,8 +93,8 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 ### 3.7 Diagnostics
 
 - Overflow diagnostics generate only on error paths.
-- `MAX_OUTPUT_SIZE` overflow lists the 5 largest files (sorted by size descending, then path).
-- `MAX_FILE_COUNT` overflow lists the 3 largest directories (sorted by candidate count descending, then name).
+- `MAX_OUTPUT_SIZE` overflow lists the `OVERFLOW_LARGEST_FILES` largest files (sorted by size descending, then path).
+- `MAX_FILE_COUNT` overflow lists the `OVERFLOW_LARGEST_DIRECTORIES` largest directories (sorted by candidate count descending, then name).
 - Names in both overflow lists are passed through `sanitize_error_detail` by `DomainError`'s `Display`. The stored values stay raw.
 - Local runs produce identical diagnostics deterministically.
 
@@ -112,6 +112,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - Archive entries stream through `Selector::observe` without disk writes.
 - Revision SHA extracts from PAX global header, falling back to the requested ref.
 - Stream/gzip/tar read failures map to `IngestError::Http`.
+- **I-03 (`runtime`, `shell/archive.rs`):** One `Entries::next` call reads at most `ARCHIVE_MAX_HEADER_BYTES` from the decompressed stream, covering the previous entry's padding, GNU `L`/`K` and PAX `x` bodies, GNU sparse extension blocks, and the header. An overrun fails the run with `DomainError::InvalidMetadata`; it is never a skip, because the path is not parsed. The budget runs before path classification, so an entry that classification would drop (hidden, excluded, non-regular) also fails the run when its header is over budget. tar reads extension bodies internally, so no type or boundary can express the bound. A byte budget on the shared reader enforces it, and each entry body is drained before the next call so only headers are metered.
 
 ## 4. Limits and Tunables
 

@@ -21,6 +21,8 @@ Observable behavior. **Action** = code or config change required.
   - **Action:** None expected for ordinary repositories.
 - **Root entries no longer merge with a directory named `<root>`**: The `MAX_FILE_COUNT` overflow list now groups root-level entries under `./` instead of `<root>/`. Before, a top-level directory named `<root>` shared that key, so its count merged with the root files (`src/core/selector.rs`, `context.md` sec. 3.2).
   - **Action:** Library consumers that compare `CandidateLimitExceededError::largest_directories` names to `"<root>/"` must compare to `"./"`.
+- **Oversized archive headers fail the run**: A GitHub tarball whose GNU long-name, GNU long-link, or PAX extension record exceeds the header read budget now fails with `InvalidMetadata`, even when the entry would be dropped by policy (hidden, excluded, or non-regular). Before, tar read the whole record and the entry was then skipped or dropped (`src/shell/archive.rs`, `docs/security_and_filtering.md` sec. 2, 6.4 and 8).
+  - **Action:** None expected for ordinary repositories. Entries whose headers fit the budget and whose paths exceed `MAX_PATH_BYTES` still skip as before.
 
 ### Contributors
 
@@ -29,7 +31,7 @@ Internal refactors and test changes. No consumer action required.
 #### Added
 
 - **Walk and ignore differential test cases**: Expanded `write_reference_fixture` in `src/shell/local/walk.rs` to verify parent directory pruning vs child negation, directory trailing-slash semantics, and mixed BOM handling against `ignore::WalkBuilder`.
-- **Limit values documentation sync test**: Added a compile-time test in `src/core/policy/limits.rs` validating that every limit constant matches the mirror table in `docs/security_and_filtering.md` §8.
+- **Limit values documentation sync test**: Added a unit test in `src/core/policy/limits.rs` validating that every limit constant matches the mirror table in `docs/security_and_filtering.md` §8.
 - **Offline GitHub and error path test coverage**: Added unit tests covering mock streaming ingestion for GitHub sources, CLI success branches for file and stdout targets, directory and file validation edge cases, pipeline channel error transitions, atomic write temp file collisions, and output pipe error handling across shell modules.
 
 #### Changed
@@ -37,11 +39,9 @@ Internal refactors and test changes. No consumer action required.
 - **Single tarball URL builder**: `tarball_url` takes the API base as an argument, and the test-only GitHub URL uses it too, so tests exercise the same path encoding as production (`src/core/github/url.rs`, `src/shell/github/mod.rs`).
 - **Path classifier without state enum**: `classify_path_segments` returns at the first non-UTF-8 segment instead of tracking a `PathClassifierState` (`src/core/policy/classify.rs`).
 - **Duplicate broken-pipe tests removed**: One shared `BrokenPipeWriter` now serves both output tests (`src/shell/output.rs`).
-
-#### Changed
-
 - **Specification clarity on limit authority**: Clarified in `AGENTS.md` and `docs/security_and_filtering.md` that `src/core/policy/` is the sole authority for limit values, while `docs/security_and_filtering.md` §8 serves as the sole documentation mirror.
 - **Unused re-export removed**: `src/core/github/mod.rs` imports `sanitize_error_detail` instead of re-exporting it. No path that consumers or other modules use changes.
+- **Overflow list sizes moved to policy**: `OVERFLOW_LARGEST_FILES` and `OVERFLOW_LARGEST_DIRECTORIES` in `src/core/policy/limits.rs` replace the literal sizes in `src/core/storage.rs` and `src/core/selector.rs`. Values are unchanged; no observable behavior changes.
 
 ---
 

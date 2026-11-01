@@ -6,7 +6,9 @@ use memchr::memchr;
 
 use crate::core::error::{DomainError, sanitize_error_detail};
 use crate::core::model::CollectionResult;
-use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, PathStatus};
+use crate::core::policy::{
+    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, OVERFLOW_LARGEST_DIRECTORIES, PathStatus,
+};
 use crate::core::storage::{FileStorage, SortedFiles};
 
 /// UTF-8 text predicate: NUL-free bytes within size limit, returning string slice.
@@ -81,7 +83,7 @@ fn extract_dir_slice(path: &str) -> &str {
 fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String, usize)> {
     let mut dirs: Vec<(&str, usize)> = dir_counts.iter().map(|(d, &c)| (d.as_str(), c)).collect();
     dirs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-    dirs.truncate(3);
+    dirs.truncate(OVERFLOW_LARGEST_DIRECTORIES);
     dirs.into_iter().map(|(d, c)| (d.to_string(), c)).collect()
 }
 
