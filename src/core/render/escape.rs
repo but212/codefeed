@@ -140,6 +140,10 @@ mod tests {
                 "한글과 이모지 🦀 &amp; 특수문자\n",
             ),
             ("끝이 개행이 아닌 &amp", "끝이 개행이 아닌 &amp;amp"),
+            (
+                "prefix \u{FFFD} & <\u{FEFF}> middle \u{FF01} suffix \u{FFFE} and \u{FFFF}",
+                "prefix \u{FFFD} &amp; &lt;\u{FEFF}&gt; middle \u{FF01} suffix \u{FFFD} and \u{FFFD}",
+            ),
         ];
 
         for &(text, expected_escaped) in cases {
@@ -157,21 +161,6 @@ mod tests {
                 "streamed content mismatch for {text:?}"
             );
         }
-    }
-
-    #[test]
-    fn test_xml_escape_and_streaming_handles_non_escaping_ef_lead_bytes() {
-        let input = "prefix \u{FFFD} & <\u{FEFF}> middle \u{FF01} suffix \u{FFFE} and \u{FFFF}";
-        let escaped = xml_escape(input);
-        assert_eq!(
-            escaped.as_str(),
-            "prefix \u{FFFD} &amp; &lt;\u{FEFF}&gt; middle \u{FF01} suffix \u{FFFD} and \u{FFFD}"
-        );
-        let streamed = write_escaped(BoundedBuffer::default(), input, escape_xml_body).unwrap();
-        assert_eq!(
-            String::from_utf8(streamed.finish().bytes).unwrap(),
-            escaped.as_str()
-        );
     }
 
     #[test]

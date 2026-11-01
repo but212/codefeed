@@ -184,7 +184,6 @@ impl FormatRenderer for XmlRenderer {
 mod tests {
     use super::*;
     use crate::core::model::CollectionResult;
-    use crate::core::policy::NormalizedPath;
     use crate::core::render::render_with;
     use crate::core::storage::{FileRecord, FileStorage, SortedFiles};
 
@@ -222,26 +221,6 @@ mod tests {
         skipped: usize,
     ) -> Result<String, OutputLimitExceeded> {
         render_digest(XmlRenderer, label, revision, files, skipped)
-    }
-
-    #[test]
-    fn text_renders_files_in_deterministic_order() {
-        let files = vec![
-            FileRecord {
-                path: "z.txt",
-                content: "z",
-            },
-            FileRecord {
-                path: "a.txt",
-                content: "a",
-            },
-        ];
-        let digest = render_text_digest("repo", Some("abc"), &files, 1).unwrap();
-        let first = digest.find("FILE: a.txt").expect("a.txt is missing");
-        let second = digest.find("FILE: z.txt").expect("z.txt is missing");
-        assert!(first < second);
-        assert!(digest.contains("Revision: abc"));
-        assert!(digest.contains("Skipped: 1"));
     }
 
     #[test]
@@ -322,13 +301,10 @@ hello\n\
                 content: "content_a\n",
             },
         ];
-        let storage = files.into_iter().filter(|f| f.path != "excluded.txt").fold(
-            FileStorage::new(),
-            |s, f| {
-                s.push(&NormalizedPath::from(f.path), f.content)
-                    .expect("test fixture fits the output limit")
-            },
-        );
+        let storage: FileStorage = files
+            .into_iter()
+            .filter(|f| f.path != "excluded.txt")
+            .collect();
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,

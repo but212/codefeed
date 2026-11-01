@@ -32,12 +32,16 @@ impl TempPath {
     /// Creates `.codefeed.{nanos}.{counter}.tmp` in `parent`. The name does not depend on the target,
     /// so its length stays within the filename limit for any output name.
     fn create(parent: &Path) -> Result<(Self, fs::File), IngestError> {
-        Self::create_internal(parent, current_epoch_nanos())
+        Self::create_internal(parent, current_epoch_nanos(), &TEMP_FILE_COUNTER)
     }
 
-    fn create_internal(parent: &Path, timestamp: u128) -> Result<(Self, fs::File), IngestError> {
+    fn create_internal(
+        parent: &Path,
+        timestamp: u128,
+        next_counter: &AtomicU64,
+    ) -> Result<(Self, fs::File), IngestError> {
         loop {
-            let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let counter = next_counter.fetch_add(1, Ordering::Relaxed);
             let path = parent.join(format!(".codefeed.{timestamp}.{counter}.tmp"));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(file) => return Ok((Self(Some(path)), file)),
@@ -146,12 +150,25 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
     #[test]
     fn preserves_previous_output_on_atomic_failure() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
         let root = temp_dir("atomic_failure")?;
-        let result = write_atomic(&root, b"new");
-        assert!(result.is_err());
-        assert!(root.is_dir());
+        let output = root.join("digest.txt");
+        fs::write(&output, "previous")?;
+        // A read-only directory rejects the temporary file, so the write fails before the rename.
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o500))?;
+
+        let result = write_atomic(&output, b"new");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+
+        assert!(
+            result.is_err(),
+            "write into a read-only directory must fail"
+        );
+        assert_eq!(fs::read_to_string(&output)?, "previous");
         Ok(())
     }
 
@@ -235,13 +252,16 @@ mod tests {
     fn temp_path_create_retries_on_collision() -> Result<(), Box<dyn std::error::Error>> {
         let temp = temp_dir("atomic_collision")?;
         let timestamp = 999_999_999;
-        let counter = TEMP_FILE_COUNTER.load(Ordering::Relaxed);
-        let colliding_path = temp.join(format!(".codefeed.{timestamp}.{counter}.tmp"));
+        let counter = AtomicU64::new(0);
+        let colliding_path = temp.join(format!(".codefeed.{timestamp}.0.tmp"));
         fs::write(&colliding_path, "pre-existing")?;
 
-        let (guard, _file) = TempPath::create_internal(&temp, timestamp)?;
-        assert_ne!(guard.path(), colliding_path);
+        let (guard, _file) = TempPath::create_internal(&temp, timestamp, &counter)?;
+        let expected = temp.join(format!(".codefeed.{timestamp}.1.tmp"));
+        assert_eq!(guard.path(), expected.as_path());
         assert!(guard.path().exists());
+        assert_eq!(fs::read_to_string(&colliding_path)?, "pre-existing");
+        assert_eq!(counter.load(Ordering::Relaxed), 2);
         Ok(())
     }
 

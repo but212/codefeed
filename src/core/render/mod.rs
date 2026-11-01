@@ -39,7 +39,7 @@ pub(crate) fn render_with<R: FormatRenderer>(
 impl CollectionResult {
     /// Renders the collected files into [`RenderedDigest`] using the specified format.
     ///
-    /// Binds output generation to [`MAX_OUTPUT_SIZE`] and calculates the estimated token count.
+    /// Binds output generation to [`MAX_OUTPUT_SIZE`](crate::core::policy::MAX_OUTPUT_SIZE) and calculates the estimated token count.
     /// The digest's report records `output` as its delivery target.
     /// Consumes `self` as part of the linear ingestion pipeline.
     ///
@@ -114,10 +114,7 @@ mod tests {
         ];
 
         for (label, records) in test_cases {
-            let storage = records.into_iter().fold(FileStorage::new(), |s, r| {
-                s.push(&NormalizedPath::from(r.path), r.content)
-                    .expect("test fixture fits the output limit")
-            });
+            let storage: FileStorage = records.into_iter().collect();
             let raw_bytes =
                 usize::try_from(storage.total_bytes()).expect("storage total bytes fits in usize");
 
@@ -158,6 +155,55 @@ mod tests {
             digest.report.estimated_tokens,
             budget::estimate_tokens_from_bytes(&digest.bytes)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn render_fails_at_every_write_position_within_its_limit() -> Result<(), DomainError> {
+        // Every write (framing, header, tree, escaped body) must propagate a limit failure.
+        let storage = [
+            ("src/main.rs", "fn main() {}\r\n"),
+            ("src/a&b/c.txt", "a < b & \"c\" 'd'\u{FFFE}\x0C tail"),
+            ("README.md", "héllo 한글 🦀\n"),
+        ]
+        .into_iter()
+        .try_fold(FileStorage::new(), |storage, (path, content)| {
+            storage.push(&NormalizedPath::from(path), content)
+        })?;
+        let collection = CollectionResult {
+            label: "repo".into(),
+            revision: Some("abc123".into()),
+            files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
+            skipped: 1,
+        };
+
+        for format in [DigestFormat::Text, DigestFormat::Xml] {
+            let render_at = |limit: u64| match format {
+                DigestFormat::Text => render_with(
+                    BoundedBuffer::with_limit(0, limit),
+                    &collection,
+                    TextRenderer,
+                ),
+                DigestFormat::Xml => render_with(
+                    BoundedBuffer::with_limit(0, limit),
+                    &collection,
+                    XmlRenderer,
+                ),
+            };
+            let full = render_at(u64::MAX)
+                .expect("unlimited render succeeds")
+                .finish()
+                .bytes;
+            for limit in 0..full.len() as u64 {
+                assert_eq!(
+                    render_at(limit).err(),
+                    Some(OutputLimitExceeded),
+                    "{format:?} limit {limit}"
+                );
+            }
+            let exact = render_at(full.len() as u64).expect("exact limit succeeds");
+            assert_eq!(exact.finish().bytes, full, "{format:?}");
+        }
         Ok(())
     }
 

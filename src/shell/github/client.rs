@@ -32,8 +32,7 @@ impl GithubClient {
             .tls_config(tls)
             .build();
 
-        let auth_header = resolve_token_from_env()
-            .map(|token| Zeroizing::new(format!("Bearer {}", token.as_str())));
+        let auth_header = resolve_token_from_env().as_ref().map(bearer_header);
 
         Self {
             agent: Agent::new_with_config(config),
@@ -70,6 +69,10 @@ fn resolve_token_from_env() -> Option<Zeroizing<String>> {
     resolve_token_with(|k| std::env::var(k))
 }
 
+fn bearer_header(token: &Zeroizing<String>) -> Zeroizing<String> {
+    Zeroizing::new(format!("Bearer {}", token.as_str()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +81,12 @@ mod tests {
     use std::env::VarError;
     use std::io::Read;
     use ureq::http::StatusCode;
+
+    #[test]
+    fn bearer_header_prefixes_the_token() {
+        let header = bearer_header(&Zeroizing::new("ghp_test".into()));
+        assert_eq!(header.as_str(), "Bearer ghp_test");
+    }
 
     #[test]
     fn resolves_token_with_correct_precedence_and_trimming() {

@@ -278,6 +278,10 @@ mod tests {
     }
 
     #[cfg(any(unix, windows))]
+    #[cfg_attr(
+        windows,
+        ignore = "creating a symlink on Windows requires Developer Mode or elevation"
+    )]
     #[test]
     fn resolve_output_target_preserves_symlink_leaf_and_protects_target()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -287,19 +291,17 @@ mod tests {
         let out_link = root.join("out.txt");
 
         #[cfg(unix)]
-        let created = std::os::unix::fs::symlink(&src_file, &out_link).is_ok();
+        std::os::unix::fs::symlink(&src_file, &out_link)?;
         #[cfg(windows)]
-        let created = std::os::windows::fs::symlink_file(&src_file, &out_link).is_ok();
+        std::os::windows::fs::symlink_file(&src_file, &out_link)?;
 
-        if created {
-            let resolved = resolve_file(out_link.clone())?;
-            let canonical_src = fs::canonicalize(&src_file)?;
-            assert_ne!(
-                resolved, canonical_src,
-                "resolved output must not follow the leaf symlink"
-            );
-            assert_eq!(resolved, out_link);
-        }
+        let resolved = resolve_file(out_link.clone())?;
+        let canonical_src = fs::canonicalize(&src_file)?;
+        assert_ne!(
+            resolved, canonical_src,
+            "resolved output must not follow the leaf symlink"
+        );
+        assert_eq!(resolved, out_link);
         Ok(())
     }
 

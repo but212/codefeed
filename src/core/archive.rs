@@ -83,6 +83,7 @@ fn is_valid_commit_sha(sha: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::policy::MAX_PATH_DEPTH;
 
     fn normalize(raw: &[u8]) -> Result<PathStatus, DomainError> {
         normalize_tar_entry_path(raw, &ExcludePatterns::default())
@@ -181,15 +182,25 @@ mod tests {
 
     #[test]
     fn normalizes_archive_entry_depth_limit() {
-        // 256 directory levels permitted, 257 rejected
-        let normal_depth_path = format!("repo-root/{}/file.txt", vec!["d"; 256].join("/"));
+        // MAX_PATH_DEPTH directory levels permitted, one more rejected
+        let normal_depth_path =
+            format!("repo-root/{}/file.txt", vec!["d"; MAX_PATH_DEPTH].join("/"));
         assert_eq!(
             normalize(normal_depth_path.as_bytes()).unwrap(),
-            PathStatus::Valid(format!("{}/file.txt", vec!["d"; 256].join("/")).into())
+            PathStatus::Valid(format!("{}/file.txt", vec!["d"; MAX_PATH_DEPTH].join("/")).into())
         );
 
-        let excessive_depth_path = format!("repo-root/{}/file.txt", vec!["d"; 257].join("/"));
-        assert!(normalize(excessive_depth_path.as_bytes()).is_err());
+        let excessive_depth_path = format!(
+            "repo-root/{}/file.txt",
+            vec!["d"; MAX_PATH_DEPTH + 1].join("/")
+        );
+        let err = normalize(excessive_depth_path.as_bytes())
+            .expect_err("one level past the limit must be rejected");
+        assert!(
+            err.to_string()
+                .contains("Tar entry path exceeds maximum directory depth"),
+            "unexpected message: {err}"
+        );
 
         // Deeply nested hidden path is ignored without triggering depth error
         let deep_hidden_path = format!("repo-root/.hidden/{}/file.txt", vec!["d"; 300].join("/"));
@@ -215,6 +226,10 @@ mod tests {
 
         let invalid = b"52 comment=not-a-sha\n";
         assert_eq!(parse_pax_comment(invalid), None);
+
+        // A non-UTF-8 PAX record is not a commit SHA, and the parser must not panic.
+        let non_utf8 = b"comment=\xFF\xFEc1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n";
+        assert_eq!(parse_pax_comment(non_utf8), None);
 
         // Only exactly 40 or 64 hex characters are a commit SHA.
         let boundary = [

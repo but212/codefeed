@@ -91,4 +91,31 @@ mod tests {
         let (requests, _) = server.join();
         assert!(requests[0].contains("/repos/test-owner/test-repo/tarball/feature%2Fx"));
     }
+
+    #[test]
+    fn collect_reports_remote_error_status() {
+        let server = MockServer::spawn(1, |_index, _req, _port| {
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found"
+                .to_vec()
+        });
+
+        let Err(err) = with_test_github_url(server.url(""), || {
+            collect("test-owner", "test-repo", None, &ExcludePatterns::default())
+        }) else {
+            panic!("expected 404 to fail collection");
+        };
+        assert!(matches!(err, IngestError::Api(_)), "{err}");
+        server.join();
+    }
+
+    #[test]
+    fn tarball_url_defaults_to_github_api_origin_without_override() {
+        let url = crate::shell::testing::with_default_github_origin(|| {
+            resolve_tarball_url("test-owner", "test-repo", Some("main"))
+        });
+        assert_eq!(
+            url,
+            tarball_url(GITHUB_API_BASE_URL, "test-owner", "test-repo", Some("main"))
+        );
+    }
 }

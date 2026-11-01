@@ -2,7 +2,6 @@
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-use super::limits::MAX_PATH_DEPTH;
 use crate::core::error::DomainError;
 
 /// Validated user exclusion patterns, matched with `.gitignore` semantics.
@@ -58,38 +57,29 @@ impl ExcludePatterns {
         Ok(Self { patterns, rules })
     }
 
-    /// Whether the patterns exclude the path given by `segments`, relative to the source root.
+    /// Whether the patterns exclude `prefix`, a match prefix built by [`push_match_segment`].
     ///
-    /// Segments must be non-empty and must not be `.`. A `\` inside a segment is matched as U+FFFD on
-    /// every platform, so it is never a separator and never matches a `\` in a pattern. Ancestors are
-    /// tested as directories, from the top down, so an excluded directory excludes everything below
-    /// it, and a `!` pattern cannot re-include such an entry. Only the first `MAX_PATH_DEPTH + 1`
-    /// segments are tested, so the cost is at most that many matches, each linear in its prefix. A
-    /// match beyond that window is not seen, and the entry then fails its depth limit as any other
-    /// deep entry does.
+    /// Each prefix is matched on its own. Callers test a directory as it is admitted, so an excluded
+    /// directory excludes everything below it, and a `!` pattern cannot re-include such an entry.
     #[must_use]
-    pub(crate) fn excludes(&self, segments: &[&[u8]], is_dir: bool) -> bool {
-        if self.rules.is_empty() {
-            return false;
-        }
-        let last = segments.len().saturating_sub(1);
-        let mut prefix = String::new();
-        for (index, segment) in segments.iter().take(MAX_PATH_DEPTH + 1).enumerate() {
-            if index > 0 {
-                prefix.push('/');
-            }
-            prefix.extend(
-                String::from_utf8_lossy(segment)
-                    .chars()
-                    .map(|c| if c == '\\' { '\u{FFFD}' } else { c }),
-            );
-            let as_dir = index < last || is_dir;
-            if self.rules.matched(&prefix, as_dir).is_ignore() {
-                return true;
-            }
-        }
-        false
+    pub(crate) fn excludes_prefix(&self, prefix: &str, is_dir: bool) -> bool {
+        !self.rules.is_empty() && self.rules.matched(prefix, is_dir).is_ignore()
     }
+}
+
+/// Appends one path segment to a match prefix, joined with `/` when the prefix is not empty.
+///
+/// A `\` inside a segment is matched as U+FFFD on every platform, so it is never a separator and never
+/// matches a `\` in a pattern. Invalid UTF-8 is matched by its lossy form.
+pub(crate) fn push_match_segment(prefix: &mut String, segment: &[u8]) {
+    if !prefix.is_empty() {
+        prefix.push('/');
+    }
+    prefix.extend(
+        String::from_utf8_lossy(segment)
+            .chars()
+            .map(|c| if c == '\\' { '\u{FFFD}' } else { c }),
+    );
 }
 
 /// Compiles one pattern on its own and requires exactly one rule from it. A pattern whose body is
@@ -142,7 +132,10 @@ fn invalid_pattern(pattern: &str, reason: &str) -> DomainError {
 mod tests {
     use super::*;
     use crate::core::error::sanitize_error_detail;
-    use crate::core::policy::MAX_PATH_BYTES_USIZE;
+    use crate::core::policy::{
+        AdmittedDir, MAX_PATH_BYTES_USIZE, MAX_PATH_DEPTH, PathStatus, admit_dir,
+        classify_path_segments,
+    };
 
     fn patterns(list: &[&str]) -> ExcludePatterns {
         ExcludePatterns::new(list.iter().copied()).expect("patterns are valid")
@@ -151,6 +144,32 @@ mod tests {
     /// Splits a `/`-separated path into the segments that `classify_path_segments` receives.
     fn segs(path: &str) -> Vec<&[u8]> {
         path.split('/').map(str::as_bytes).collect()
+    }
+
+    /// Whether `patterns` reject the path as the walk and the classifier apply it: a directory is
+    /// rejected when admitting it fails, and a file when it classifies as `Ignored`.
+    fn rejected(patterns: &ExcludePatterns, segments: &[&[u8]], is_dir: bool) -> bool {
+        if !is_dir {
+            return classify_path_segments(segments.iter().copied(), patterns)
+                == Ok(PathStatus::Ignored);
+        }
+        let mut dir = AdmittedDir::root();
+        for name in segments {
+            match admit_dir(dir, name, patterns) {
+                Some(admitted) => dir = admitted,
+                None => return true,
+            }
+        }
+        false
+    }
+
+    impl ExcludePatterns {
+        /// Whether the user patterns exclude the path. It must be rejected with these patterns but not
+        /// with none, so hidden and noise names are never reported as user-excluded.
+        fn excludes(&self, segments: &[&[u8]], is_dir: bool) -> bool {
+            rejected(self, segments, is_dir)
+                && !rejected(&ExcludePatterns::default(), segments, is_dir)
+        }
     }
 
     #[test]
@@ -189,8 +208,6 @@ mod tests {
         // with trailing whitespace must therefore be rejected, not compiled to a match-all rule.
         let ex = patterns(&["*.log "]);
         assert!(ex.excludes(&segs("a.log"), false));
-        assert!(ExcludePatterns::new(["*.log", "! "]).is_err());
-        assert!(ExcludePatterns::new(["src/", "!\t"]).is_err());
     }
 
     #[test]
@@ -305,6 +322,14 @@ mod tests {
         assert!(!patterns(&["/docs/secret.md"]).excludes(&segments, false));
         assert!(!patterns(&["docs\\\\secret.md"]).excludes(&segments, false));
         assert!(patterns(&["*.md"]).excludes(&segments, false));
+    }
+
+    #[test]
+    fn excludes_reports_only_user_rules() {
+        let none = ExcludePatterns::default();
+        assert!(!none.excludes(&segs(".git"), true));
+        assert!(!none.excludes(&segs("Cargo.lock"), false));
+        assert!(!patterns(&["*.log"]).excludes(&segs(".git"), true));
     }
 
     #[test]

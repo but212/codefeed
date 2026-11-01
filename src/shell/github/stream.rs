@@ -173,92 +173,77 @@ mod tests {
     }
 
     #[test]
-    fn api_error_omits_retry_hint_with_remaining_quota() {
+    fn server_error_is_retried_until_success() {
         let reset = (epoch_now_secs() + 2400).to_string();
-        let server = MockServer::spawn(1, move |_index, _req, _port| {
-            format!(
-                "HTTP/1.1 404 Not Found\r\nx-ratelimit-remaining: 59\r\nx-ratelimit-reset: {reset}\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found"
-            )
-            .into_bytes()
-        });
+        // (case, first response): each failure is retried once and the second attempt succeeds.
+        let cases = [
+            (
+                "503 with remaining quota",
+                format!(
+                    "HTTP/1.1 503 Service Unavailable\r\nx-ratelimit-remaining: 59\r\nx-ratelimit-reset: {reset}\r\nContent-Length: 11\r\nConnection: close\r\n\r\nunavailable"
+                )
+                .into_bytes(),
+            ),
+            (
+                "500",
+                b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nerror".to_vec(),
+            ),
+        ];
+        for (case, failure) in cases {
+            let server = MockServer::spawn(2, move |index, _req, _port| match index {
+                0 => failure.clone(),
+                _ => b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess"
+                    .to_vec(),
+            });
 
-        let client = GithubClient::new();
-        let url = server.url("/test");
-        let Err(err) = client.stream_url(&url) else {
-            panic!("expected error");
-        };
-        let msg = err.to_string();
-        assert!(msg.contains("404"));
-        assert!(!msg.contains("retry available"), "{msg}");
+            let client = GithubClient::new();
+            let url = server.url("/test");
+            let mut reader = client
+                .stream_url(&url)
+                .unwrap_or_else(|err| panic!("{case}: stream_url should succeed on retry: {err}"));
+            let mut body = String::new();
+            reader.read_to_string(&mut body).expect("read body");
+            assert_eq!(body, "success", "{case}");
 
-        server.join();
+            let (_, connections) = server.join();
+            assert_eq!(connections, 2, "{case}");
+        }
     }
 
     #[test]
-    fn retries_server_error_with_ratelimit_headers() {
+    fn client_error_is_not_retried() {
         let reset = (epoch_now_secs() + 2400).to_string();
-        let server = MockServer::spawn(2, move |index, _req, _port| {
-            match index {
-            0 => format!(
-                "HTTP/1.1 503 Service Unavailable\r\nx-ratelimit-remaining: 59\r\nx-ratelimit-reset: {reset}\r\nContent-Length: 11\r\nConnection: close\r\n\r\nunavailable"
-            )
-            .into_bytes(),
-            _ => b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess".to_vec(),
+        // (case, response): a 404 is terminal, with or without remaining quota.
+        let cases = [
+            (
+                "bare 404",
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found"
+                    .to_vec(),
+            ),
+            (
+                "404 with remaining quota",
+                format!(
+                    "HTTP/1.1 404 Not Found\r\nx-ratelimit-remaining: 59\r\nx-ratelimit-reset: {reset}\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found"
+                )
+                .into_bytes(),
+            ),
+        ];
+        for (case, response) in cases {
+            let server = MockServer::spawn(1, move |_index, _req, _port| response.clone());
+
+            let client = GithubClient::new();
+            let url = server.url("/test");
+            let Err(err) = client.stream_url(&url) else {
+                panic!("{case}: expected error");
+            };
+            assert!(matches!(err, IngestError::Api(_)), "{case}: {err}");
+            let msg = err.to_string();
+            assert!(msg.contains("404"), "{case}: {msg}");
+            assert!(!msg.contains("retry available"), "{case}: {msg}");
+
+            let (_, connections) = server.join();
+            assert_eq!(connections, 1, "{case}");
         }
-        });
-
-        let client = GithubClient::new();
-        let url = server.url("/test");
-        let mut reader = client
-            .stream_url(&url)
-            .expect("503 with remaining quota should be retried");
-        let mut body = String::new();
-        reader.read_to_string(&mut body).expect("read body");
-        assert_eq!(body, "success");
-
-        let (_, connections) = server.join();
-        assert_eq!(connections, 2);
-    }
-
-    #[test]
-    fn retries_on_server_error_and_succeeds() {
-        let server = MockServer::spawn(2, |index, _req, _port| {
-            match index {
-            0 => b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nerror".to_vec(),
-            _ => b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess".to_vec(),
-        }
-        });
-
-        let client = GithubClient::new();
-        let url = server.url("/test");
-        let mut reader = client
-            .stream_url(&url)
-            .expect("stream_url should succeed on retry");
-        let mut body = String::new();
-        reader.read_to_string(&mut body).expect("read body");
-        assert_eq!(body, "success");
-
-        let (_, connections) = server.join();
-        assert_eq!(connections, 2);
-    }
-
-    #[test]
-    fn does_not_retry_on_client_error() {
-        let server = MockServer::spawn(1, |_index, _req, _port| {
-            b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found"
-                .to_vec()
-        });
-
-        let client = GithubClient::new();
-        let url = server.url("/test");
-        let Err(err) = client.stream_url(&url) else {
-            panic!("expected error");
-        };
-        assert!(matches!(err, IngestError::Api(_)), "{err}");
-        assert!(err.to_string().contains("404"));
-
-        let (_, connections) = server.join();
-        assert_eq!(connections, 1);
     }
 
     #[test]
@@ -300,6 +285,29 @@ mod tests {
 
         let (_, connections) = server.join();
         assert_eq!(connections, 1);
+    }
+
+    #[test]
+    fn dropped_connection_is_retried_as_transport_error() {
+        let server = MockServer::spawn(2, |index, _req, _port| match index {
+            // An empty response closes the socket before any status line.
+            0 => Vec::new(),
+            _ => {
+                b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess".to_vec()
+            }
+        });
+
+        let client = GithubClient::new();
+        let url = server.url("/test");
+        let mut reader = client
+            .stream_url(&url)
+            .expect("retry after a dropped connection succeeds");
+        let mut body = String::new();
+        reader.read_to_string(&mut body).expect("read body");
+        assert_eq!(body, "success");
+
+        let (_, connections) = server.join();
+        assert_eq!(connections, 2);
     }
 
     #[test]

@@ -199,13 +199,18 @@ mod tests {
     }
 
     #[test]
-    fn message_constructors_sanitize_control_characters() {
+    fn sanitizes_control_characters_in_every_message_variant() {
         let raw = "a\x1b[2J\nb";
+        // Constructors and directly built variants both render sanitized text through Display.
         let cases = [
             DomainError::usage(raw),
             DomainError::invalid_source(raw),
             DomainError::unsupported_source(raw),
             DomainError::invalid_metadata(raw),
+            DomainError::Usage(raw.to_string()),
+            DomainError::InvalidSource(raw.to_string()),
+            DomainError::UnsupportedSource(raw.to_string()),
+            DomainError::InvalidMetadata(raw.to_string()),
         ];
         for err in cases {
             let rendered = err.to_string();
@@ -215,19 +220,47 @@ mod tests {
         assert_eq!(DomainError::usage(raw).to_string(), "a\u{FFFD}[2J b");
     }
 
+    /// A formatting sink that rejects any write which would exceed `remaining` bytes.
+    struct FailingSink {
+        remaining: usize,
+    }
+
+    impl std::fmt::Write for FailingSink {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.remaining = self.remaining.checked_sub(s.len()).ok_or(std::fmt::Error)?;
+            Ok(())
+        }
+    }
+
     #[test]
-    fn display_sanitizes_variants_built_without_constructors() {
-        let raw = "a\x1b[2J\nb".to_string();
-        let cases = [
-            DomainError::Usage(raw.clone()),
-            DomainError::InvalidSource(raw.clone()),
-            DomainError::UnsupportedSource(raw.clone()),
-            DomainError::InvalidMetadata(raw),
+    fn display_propagates_sink_failure_at_every_write() {
+        use std::fmt::Write as _;
+
+        let errors = [
+            DomainError::candidate_limit_exceeded(
+                MAX_FILE_COUNT,
+                vec![("dir_a".into(), 3), ("dir_b".into(), 2)],
+            ),
+            DomainError::output_too_large(vec![("big.txt".into(), 2_000_000)]),
         ];
-        for err in cases {
-            let rendered = err.to_string();
-            assert!(!rendered.contains('\x1b'), "ESC leaked: {rendered:?}");
-            assert!(!rendered.contains('\n'), "newline leaked: {rendered:?}");
+        for err in errors {
+            let full = err.to_string();
+            // A sink with exactly `full.len()` bytes accepts every write.
+            let mut exact = FailingSink {
+                remaining: full.len(),
+            };
+            write!(exact, "{err}").expect("sink with exact capacity accepts all writes");
+
+            // Any shorter sink must fail, whichever `write!` in `Display` crosses the boundary.
+            for capacity in 0..full.len() {
+                let mut sink = FailingSink {
+                    remaining: capacity,
+                };
+                assert!(
+                    write!(sink, "{err}").is_err(),
+                    "capacity {capacity}: {full:?}"
+                );
+            }
         }
     }
 

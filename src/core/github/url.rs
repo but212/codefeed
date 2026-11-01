@@ -225,6 +225,26 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_https_scheme_and_malformed_authority() {
+        let unsupported = parse_github_url("http://github.com/owner/repo").unwrap_err();
+        assert!(matches!(unsupported, DomainError::UnsupportedSource(_)));
+
+        let empty_authority = parse_github_url("https:///owner/repo").unwrap_err();
+        assert!(matches!(empty_authority, DomainError::InvalidSource(_)));
+    }
+
+    #[test]
+    fn rejects_query_and_fragment_in_repository_url() {
+        for value in [
+            "https://github.com/owner/repo?tab=readme",
+            "https://github.com/owner/repo#readme",
+        ] {
+            let err = parse_github_url(value).unwrap_err();
+            assert!(matches!(err, DomainError::InvalidSource(_)), "{value}");
+        }
+    }
+
+    #[test]
     fn rejected_url_echo_is_sanitized() {
         let err = parse_github_url("https://github.com:99999/o/r\x1b[2J").unwrap_err();
         let rendered = err.to_string();

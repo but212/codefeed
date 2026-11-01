@@ -278,7 +278,7 @@ mod tests {
         let temp = temp_dir("dispatch_disconnect").unwrap();
         let file = temp.join("test.txt");
         fs::write(&file, "data").unwrap();
-        let regular = RegularFile::from_parts(file, PathBuf::from("test.txt"));
+        let regular = RegularFile::from_parts(file, Path::new("test.txt"));
         let slot = dispatch(Ok(regular), None, &ExcludePatterns::default(), &job_tx);
         // jobs.send fails, returning Slot::Ready(Err(worker_stopped()))
         assert!(matches!(slot, Some(Slot::Ready(Err(_)))));

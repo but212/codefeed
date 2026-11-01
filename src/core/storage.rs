@@ -346,26 +346,27 @@ mod tests {
 
     #[test]
     fn file_storage_sorts_by_path_in_place() -> Result<(), DomainError> {
-        let storage = FileStorage::new()
-            .push(&NormalizedPath::from("z/file.rs"), "content_z")?
-            .push(&NormalizedPath::from("a/file.rs"), "content_a")?
-            .push(&NormalizedPath::from("m/file.rs"), "content_m")?
-            .sort_by_path();
+        // (pushed paths, expected order): paths compare by component, so `src/a.rs` precedes `src-test/b.rs`.
+        let cases: [(&[&str], &[&str]); 2] = [
+            (
+                &["z/file.rs", "a/file.rs", "m/file.rs"],
+                &["a/file.rs", "m/file.rs", "z/file.rs"],
+            ),
+            (
+                &["src-test/b.rs", "src/a.rs"],
+                &["src/a.rs", "src-test/b.rs"],
+            ),
+        ];
+        for (pushed, expected) in cases {
+            let mut storage = FileStorage::new();
+            for path in pushed {
+                storage = storage.push(&NormalizedPath::from(*path), "content")?;
+            }
+            let storage = storage.sort_by_path();
 
-        let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
-        assert_eq!(paths, vec!["a/file.rs", "m/file.rs", "z/file.rs"]);
-        Ok(())
-    }
-
-    #[test]
-    fn file_storage_sorts_hierarchically() -> Result<(), DomainError> {
-        let storage = FileStorage::new()
-            .push(&NormalizedPath::from("src-test/b.rs"), "content_b")?
-            .push(&NormalizedPath::from("src/a.rs"), "content_a")?
-            .sort_by_path();
-
-        let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
-        assert_eq!(paths, vec!["src/a.rs", "src-test/b.rs"]);
+            let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
+            assert_eq!(paths, expected);
+        }
         Ok(())
     }
 

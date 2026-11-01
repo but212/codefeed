@@ -79,8 +79,8 @@ fn usage_error_formatting_does_not_prefix_invalid_source() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("unexpected argument '--unknown' found")
-            || stderr.contains("unknown option: --unknown")
+        stderr.contains("error: unknown option: --unknown"),
+        "stderr: {stderr}"
     );
     assert!(!stderr.contains("error: invalid source: unknown option"));
 }
@@ -178,24 +178,22 @@ fn exclude_flag_drops_matching_paths_from_the_digest() -> Result<(), Box<dyn std
 
 #[test]
 fn exclude_invalid_pattern_is_a_usage_error() {
-    let output = run(&[".", "-x", "["]);
-    assert_eq!(output.status.code(), Some(1), "output: {output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("error: invalid value '[' for '--exclude <PATTERN>'"),
-        "stderr: {stderr}"
-    );
-}
-
-#[test]
-fn exclude_bare_bang_with_trailing_space_is_a_usage_error() {
-    let output = run(&[".", "-x", "! "]);
-    assert_eq!(output.status.code(), Some(1), "output: {output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("error: invalid value '! ' for '--exclude <PATTERN>'"),
-        "stderr: {stderr}"
-    );
+    // (pattern, echoed value): a malformed glob and a bare `!` with trailing whitespace are both rejected.
+    for (pattern, echoed) in [("[", "["), ("! ", "! ")] {
+        let output = run(&[".", "-x", pattern]);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{pattern:?}: output: {output:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!(
+                "error: invalid value '{echoed}' for '--exclude <PATTERN>'"
+            )),
+            "{pattern:?}: stderr: {stderr}"
+        );
+    }
 }
 
 #[test]

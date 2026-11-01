@@ -182,15 +182,6 @@ mod tests {
     };
 
     #[test]
-    fn candidate_budget_enforces_limit() {
-        let mut candidates = CandidateBudget::default();
-        for _ in 0..MAX_FILE_COUNT {
-            candidates = candidates.add("").unwrap();
-        }
-        assert!(candidates.add("").is_err());
-    }
-
-    #[test]
     fn candidate_overflow_includes_largest_directories_diagnostic()
     -> Result<(), Box<dyn std::error::Error>> {
         let vendor = MAX_FILE_COUNT * 4 / 5;
@@ -335,6 +326,28 @@ mod tests {
     }
 
     #[test]
+    fn non_utf8_candidate_consumes_budget_and_fails_when_exhausted() -> Result<(), DomainError> {
+        let mut selector = Selector::new();
+        for i in 0..MAX_FILE_COUNT {
+            let path = PathStatus::Valid(format!("file_{i}.txt").into());
+            selector =
+                selector.observe(path, None, || Ok::<_, DomainError>(Some(&b"content"[..])))?;
+        }
+
+        let err = selector
+            .observe(
+                PathStatus::NonUtf8Candidate("dir/".into()),
+                None,
+                || -> Result<Option<Vec<u8>>, DomainError> {
+                    panic!("non-UTF-8 candidates are never read")
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, DomainError::CandidateLimitExceeded(..)));
+        Ok(())
+    }
+
+    #[test]
     fn observe_counts_candidates_by_content_outcome() -> Result<(), Box<dyn std::error::Error>> {
         // (path, content, included, skipped); `None` content means the file was unavailable.
         let cases: [(&str, Option<Vec<u8>>, usize, usize); 6] = [
@@ -417,17 +430,21 @@ mod tests {
     }
 
     #[test]
-    fn observe_rejects_duplicate_valid_paths() -> Result<(), Box<dyn std::error::Error>> {
-        let selector = Selector::new().observe(PathStatus::Valid("a.txt".into()), None, || {
-            Ok::<_, DomainError>(Some(&b"first"[..]))
-        })?;
-        let err = selector
-            .observe(PathStatus::Valid("a.txt".into()), None, || {
-                Ok::<_, DomainError>(Some(&b"second"[..]))
-            })
-            .unwrap_err();
-        assert_duplicate_path(&err, "a.txt");
-        Ok(())
+    fn observe_rejects_duplicate_valid_paths() {
+        // (path, expected diagnostic path): the diagnostic names the sanitized path.
+        for (path, expected) in [("a.txt", "a.txt"), ("a\x07.txt", "a\u{FFFD}.txt")] {
+            let selector = Selector::new()
+                .observe(PathStatus::Valid(path.into()), None, || {
+                    Ok::<_, DomainError>(Some(&b"first"[..]))
+                })
+                .expect("first candidate is admitted");
+            let err = selector
+                .observe(PathStatus::Valid(path.into()), None, || {
+                    Ok::<_, DomainError>(Some(&b"second"[..]))
+                })
+                .unwrap_err();
+            assert_duplicate_path(&err, expected);
+        }
     }
 
     #[test]
@@ -447,21 +464,6 @@ mod tests {
                 .unwrap_err();
             assert_duplicate_path(&err, "a.txt");
         }
-    }
-
-    #[test]
-    fn observe_duplicate_diagnostic_is_sanitized() {
-        let selector = Selector::new()
-            .observe(PathStatus::Valid("a\x07.txt".into()), None, || {
-                Ok::<_, DomainError>(Some(&b"first"[..]))
-            })
-            .expect("first candidate is admitted");
-        let err = selector
-            .observe(PathStatus::Valid("a\x07.txt".into()), None, || {
-                Ok::<_, DomainError>(Some(&b"second"[..]))
-            })
-            .unwrap_err();
-        assert_duplicate_path(&err, "a\u{FFFD}.txt");
     }
 
     #[test]

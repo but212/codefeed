@@ -41,6 +41,10 @@ jobs:
       - name: Run tests
         run: cargo test --lib --bins --tests --locked
 
+      - name: Run ignored Windows symlink tests
+        if: runner.os == 'Windows'
+        run: cargo test --lib --locked -- --ignored
+
       - name: Run doc tests
         run: cargo test --doc --locked
 

@@ -18,16 +18,16 @@ where
     F: Fn(BoundedBuffer, &str) -> Result<BoundedBuffer, OutputLimitExceeded> + Copy,
 {
     let paths: Vec<&str> = files.iter().map(|f| f.path).collect();
-    render_level(buf, &paths, 0, String::new(), format_name).map(|(buf, _)| buf)
+    render_level(buf, &paths, 0, "", format_name)
 }
 
 fn render_level<F>(
     mut buf: BoundedBuffer,
     paths: &[&str],
     offset: usize,
-    mut prefix: String,
+    prefix: &str,
     format_name: F,
-) -> Result<(BoundedBuffer, String), OutputLimitExceeded>
+) -> Result<BoundedBuffer, OutputLimitExceeded>
 where
     F: Fn(BoundedBuffer, &str) -> Result<BoundedBuffer, OutputLimitExceeded> + Copy,
 {
@@ -51,28 +51,26 @@ where
         let end = i;
         let is_last = end == paths.len();
 
-        buf = buf.push_str(&prefix)?;
+        buf = buf.push_str(prefix)?;
         buf = buf.push_str(if is_last { TREE_LAST } else { TREE_BRANCH })?;
         buf = format_name(buf, name)?;
 
         if is_dir {
             buf = buf.push_bytes(b"/\n")?;
-            let prefix_len = prefix.len();
-            prefix.push_str(if is_last { TREE_SPACE } else { TREE_VERT });
-            (buf, prefix) = render_level(
+            let child_prefix = format!("{prefix}{}", if is_last { TREE_SPACE } else { TREE_VERT });
+            buf = render_level(
                 buf,
                 &paths[start..end],
                 offset + name.len() + 1,
-                prefix,
+                &child_prefix,
                 format_name,
             )?;
-            prefix.truncate(prefix_len);
         } else {
             buf = buf.push_bytes(b"\n")?;
         }
     }
 
-    Ok((buf, prefix))
+    Ok(buf)
 }
 
 pub(super) fn component_at_offset(path: &str, offset: usize) -> Option<(&str, bool)> {
