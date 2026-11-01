@@ -3,16 +3,19 @@
 //! The walk owns `.gitignore` loading. Each directory's file is read once, when the walk enters it,
 //! and the same bytes both validate the file and compile its rules. No later step reads it again.
 
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, BufRead, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::vec;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::core::error::DomainError;
 use crate::core::policy::{
-    ExcludePatterns, MAX_FILE_SIZE, PathStatus, classify_path_segments, is_hidden_segment,
+    AdmittedDir, ExcludePatterns, MAX_FILE_SIZE, PathStatus, admit_dir, classify_leaf,
+    is_hidden_segment,
 };
 use crate::shell::IngestError;
 use crate::shell::error::io_error_at;
@@ -21,10 +24,11 @@ use crate::shell::error::io_error_at;
 const UTF8_BOM: &str = "\u{feff}";
 
 /// A regular file found by the walk. The walk yields no other entry kind, so classification never sees one.
-/// `relative` is `path` under the root, built by the walk, so classification never strips the root.
+/// `parent` is the admitted directory that holds the file, so classification checks only the file itself.
 pub(super) struct RegularFile {
     path: PathBuf,
-    relative: PathBuf,
+    parent: Arc<AdmittedDir>,
+    name: OsString,
 }
 
 impl RegularFile {
@@ -32,9 +36,18 @@ impl RegularFile {
         self.path
     }
 
+    /// Test constructor. `relative` must have no parent directories, so the root is its parent.
     #[cfg(test)]
-    pub(super) const fn from_parts(path: PathBuf, relative: PathBuf) -> Self {
-        Self { path, relative }
+    pub(super) fn from_parts(path: PathBuf, relative: PathBuf) -> Self {
+        let name = relative
+            .file_name()
+            .expect("test path has a file name")
+            .to_os_string();
+        Self {
+            path,
+            parent: Arc::new(AdmittedDir::root()),
+            name,
+        }
     }
 }
 
@@ -51,6 +64,7 @@ struct Frame {
     entries: vec::IntoIter<fs::DirEntry>,
     rules: Gitignore,
     relative: PathBuf,
+    admitted: Arc<AdmittedDir>,
 }
 
 impl<'a> Walk<'a> {
@@ -58,17 +72,24 @@ impl<'a> Walk<'a> {
     pub(super) fn new(root: &Path, exclude: &'a ExcludePatterns) -> Result<Self, IngestError> {
         Ok(Self {
             exclude,
-            frames: vec![Frame::enter(root, PathBuf::new())?],
+            frames: vec![Frame::enter(
+                root,
+                PathBuf::new(),
+                Arc::new(AdmittedDir::root()),
+            )?],
         })
     }
 
-    /// Prunes, enters, or yields one child of the innermost directory. `relative` is the child's path under the root.
+    /// Prunes, enters, or yields one child of the innermost directory. `relative` is the child's path
+    /// under the root, and `parent` is the innermost directory's admitted state.
     fn visit(
         &mut self,
         entry: &fs::DirEntry,
         relative: PathBuf,
+        parent: Arc<AdmittedDir>,
     ) -> Result<Option<RegularFile>, IngestError> {
-        if is_hidden_segment(entry.file_name().as_encoded_bytes()) {
+        let name = entry.file_name();
+        if is_hidden_segment(name.as_encoded_bytes()) {
             return Ok(None);
         }
         let path = entry.path();
@@ -78,22 +99,14 @@ impl<'a> Walk<'a> {
             return Ok(None);
         }
         if is_dir {
-            if !self.is_user_excluded(&relative) {
-                self.frames.push(Frame::enter(&path, relative)?);
+            if let Some(admitted) = admit_dir(&parent, name.as_encoded_bytes(), self.exclude) {
+                self.frames
+                    .push(Frame::enter(&path, relative, Arc::new(admitted))?);
             }
             Ok(None)
         } else {
-            Ok(Some(RegularFile { path, relative }))
+            Ok(Some(RegularFile { path, parent, name }))
         }
-    }
-
-    /// Whether the user exclusions drop the directory at `relative`, a path under the root.
-    fn is_user_excluded(&self, relative: &Path) -> bool {
-        let segments: Vec<&[u8]> = relative
-            .components()
-            .map(|c| c.as_os_str().as_encoded_bytes())
-            .collect();
-        self.exclude.excludes(&segments, true)
     }
 }
 
@@ -108,7 +121,8 @@ impl Iterator for Walk<'_> {
                 continue;
             };
             let relative = frame.relative.join(entry.file_name());
-            match self.visit(&entry, relative) {
+            let parent = Arc::clone(&frame.admitted);
+            match self.visit(&entry, relative, parent) {
                 Ok(Some(file)) => return Some(Ok(file)),
                 Ok(None) => {}
                 Err(err) => return Some(Err(err)),
@@ -119,7 +133,11 @@ impl Iterator for Walk<'_> {
 
 impl Frame {
     /// Reads `dir`'s `.gitignore`, then lists `dir` with children in file-name order. `relative` is `dir` under the root.
-    fn enter(dir: &Path, relative: PathBuf) -> Result<Self, IngestError> {
+    fn enter(
+        dir: &Path,
+        relative: PathBuf,
+        admitted: Arc<AdmittedDir>,
+    ) -> Result<Self, IngestError> {
         let rules = read_rules(dir)?;
         let mut entries = fs::read_dir(dir)
             .and_then(Iterator::collect::<io::Result<Vec<_>>>)
@@ -129,6 +147,7 @@ impl Frame {
             entries: entries.into_iter(),
             rules,
             relative,
+            admitted,
         })
     }
 }
@@ -200,17 +219,15 @@ pub(super) fn classify_entry(
     if output.is_some_and(|target| file.path.as_path() == target) {
         return Ok(PathStatus::Ignored);
     }
-    classify_local_path(&file.relative, exclude).map_err(IngestError::from)
+    classify_local_path(&file.parent, &file.name, exclude).map_err(IngestError::from)
 }
 
 fn classify_local_path(
-    relative: &Path,
+    parent: &AdmittedDir,
+    name: &OsStr,
     exclude: &ExcludePatterns,
 ) -> Result<PathStatus, DomainError> {
-    let segments = relative
-        .components()
-        .map(|c| c.as_os_str().as_encoded_bytes());
-    classify_path_segments(segments, exclude)
+    classify_leaf(parent, name.as_encoded_bytes(), exclude)
         .map_err(|_| DomainError::invalid_metadata("local path exceeds maximum directory depth"))
 }
 
@@ -222,22 +239,22 @@ mod tests {
     use crate::shell::testing::temp_dir;
     use ignore::WalkBuilder;
     use std::io::Cursor;
-    use std::path::PathBuf;
 
     #[test]
     fn rejects_excessive_path_depth() {
-        let nested = |directories: usize| {
-            let mut path = PathBuf::new();
-            for _ in 0..directories {
-                path.push("d");
-            }
-            path.push("file.txt");
-            path
-        };
         let exclude = ExcludePatterns::default();
-        assert!(classify_local_path(&nested(MAX_PATH_DEPTH), &exclude).is_ok());
+        // Admits `directories` nested directories, as the walk does before it reaches the file.
+        let nested = |directories: usize| {
+            let mut dir = AdmittedDir::root();
+            for _ in 0..directories {
+                dir = admit_dir(&dir, b"d", &exclude).expect("d is not excluded");
+            }
+            dir
+        };
+        let file = OsStr::new("file.txt");
+        assert!(classify_local_path(&nested(MAX_PATH_DEPTH), file, &exclude).is_ok());
 
-        let err = classify_local_path(&nested(MAX_PATH_DEPTH + 1), &exclude)
+        let err = classify_local_path(&nested(MAX_PATH_DEPTH + 1), file, &exclude)
             .expect_err("one level past the limit must be rejected");
         assert!(
             err.to_string()

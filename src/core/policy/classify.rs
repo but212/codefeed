@@ -1,6 +1,6 @@
 //! Relative path normalization, depth enforcement, and segment classification.
 
-use super::exclude::ExcludePatterns;
+use super::exclude::{ExcludePatterns, push_match_segment};
 use super::exclusions::{is_hidden_segment, is_ignored_filename};
 use super::limits::MAX_PATH_DEPTH;
 
@@ -73,38 +73,136 @@ where
         .into_iter()
         .filter(|seg| !seg.is_empty() && *seg != b".")
         .collect();
-    if segments.iter().any(|seg| is_hidden_segment(seg)) {
-        return Ok(PathStatus::Ignored);
-    }
-    if exclude.excludes(&segments, false) {
-        return Ok(PathStatus::Ignored);
-    }
-
-    let Some(last) = segments.last() else {
+    let Some((leaf, ancestors)) = segments.split_last() else {
         return Ok(PathStatus::Ignored);
     };
+    let mut dir = AdmittedDir::root();
+    for name in ancestors {
+        let Some(admitted) = admit_dir(&dir, name, exclude) else {
+            return Ok(PathStatus::Ignored);
+        };
+        dir = admitted;
+    }
+    classify_leaf(&dir, leaf, exclude)
+}
+
+/// A directory that passed the hidden and user-exclusion checks, with the prefixes a file below it needs.
+///
+/// Built only by [`AdmittedDir::root`] and [`admit_dir`], so holding one means every ancestor was checked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AdmittedDir {
+    depth: usize,
+    match_prefix: String,
+    output: DirPrefix,
+}
+
+/// Output prefix of an admitted directory. `NonUtf8` holds the valid prefix before the first non-UTF-8
+/// segment, which every path below reports as its candidate prefix.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DirPrefix {
+    Utf8(String),
+    NonUtf8(String),
+}
+
+impl AdmittedDir {
+    /// The source root, which has no ancestors to check.
+    pub(crate) fn root() -> Self {
+        Self {
+            depth: 0,
+            match_prefix: String::new(),
+            output: DirPrefix::Utf8(String::new()),
+        }
+    }
+}
+
+/// Admits directory `name` under `parent`. Returns `None` when it is hidden or user-excluded.
+///
+/// Only the new prefix is matched. The prefixes of `parent`'s ancestors were matched when `parent` was
+/// admitted, and a match there would have returned `None` already. Matching stops after the first
+/// `MAX_PATH_DEPTH + 1` segments, so a directory past that window is not matched.
+pub(crate) fn admit_dir(
+    parent: &AdmittedDir,
+    name: &[u8],
+    exclude: &ExcludePatterns,
+) -> Option<AdmittedDir> {
+    if is_hidden_segment(name) {
+        return None;
+    }
+    let mut match_prefix = parent.match_prefix.clone();
+    push_match_segment(&mut match_prefix, name);
+    if parent.depth <= MAX_PATH_DEPTH && exclude.excludes_prefix(&match_prefix, true) {
+        return None;
+    }
+    let output = match &parent.output {
+        DirPrefix::NonUtf8(prefix) => DirPrefix::NonUtf8(prefix.clone()),
+        DirPrefix::Utf8(prefix) => match std::str::from_utf8(name) {
+            Ok(segment) => DirPrefix::Utf8(join_segment(prefix, segment)),
+            Err(_) => DirPrefix::NonUtf8(with_separator(prefix)),
+        },
+    };
+    Some(AdmittedDir {
+        depth: parent.depth + 1,
+        match_prefix,
+        output,
+    })
+}
+
+/// Classifies file `name` directly under `parent`. The checks on `parent`'s ancestors already ran in
+/// [`admit_dir`], so only the file itself is matched here.
+///
+/// Check order: hidden segment, user exclusion, noise or sensitive name, depth, then non-UTF-8 prefixing.
+pub(crate) fn classify_leaf(
+    parent: &AdmittedDir,
+    name: &[u8],
+    exclude: &ExcludePatterns,
+) -> Result<PathStatus, DepthExceededError> {
+    if is_hidden_segment(name) {
+        return Ok(PathStatus::Ignored);
+    }
+    if parent.depth <= MAX_PATH_DEPTH {
+        let mut full = parent.match_prefix.clone();
+        push_match_segment(&mut full, name);
+        if exclude.excludes_prefix(&full, false) {
+            return Ok(PathStatus::Ignored);
+        }
+    }
 
     // Lossy decoding keeps the ASCII name rules exact: invalid bytes become U+FFFD, which never
     // equals a noise name, and prefix and extension matches see the same ASCII bytes.
-    if is_ignored_filename(&String::from_utf8_lossy(last)) {
+    if is_ignored_filename(&String::from_utf8_lossy(name)) {
         return Ok(PathStatus::Ignored);
     }
 
-    if segments.len().saturating_sub(1) > MAX_PATH_DEPTH {
+    if parent.depth > MAX_PATH_DEPTH {
         return Err(DepthExceededError);
     }
 
-    let mut scratch = String::new();
-    for segment in &segments {
-        if !scratch.is_empty() {
-            scratch.push('/');
+    match (&parent.output, std::str::from_utf8(name)) {
+        (DirPrefix::NonUtf8(prefix), _) => Ok(PathStatus::NonUtf8Candidate(prefix.clone())),
+        (DirPrefix::Utf8(prefix), Err(_)) => {
+            Ok(PathStatus::NonUtf8Candidate(with_separator(prefix)))
         }
-        let Ok(s) = std::str::from_utf8(segment) else {
-            return Ok(PathStatus::NonUtf8Candidate(scratch));
-        };
-        scratch.push_str(s);
+        (DirPrefix::Utf8(prefix), Ok(segment)) => Ok(PathStatus::Valid(NormalizedPath(
+            join_segment(prefix, segment),
+        ))),
     }
-    Ok(PathStatus::Valid(NormalizedPath(scratch)))
+}
+
+/// The prefix followed by its `/` separator, or empty when the prefix is empty. This is the output a
+/// non-UTF-8 segment reports, so the trailing separator is part of the contract.
+fn with_separator(prefix: &str) -> String {
+    if prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{prefix}/")
+    }
+}
+
+/// Appends `segment` to a `/`-joined prefix, with no leading separator when the prefix is empty.
+fn join_segment(prefix: &str, segment: &str) -> String {
+    let mut joined = with_separator(prefix);
+    joined.push_str(segment);
+    joined
 }
 
 #[cfg(test)]
@@ -304,6 +402,104 @@ mod tests {
             assert_eq!(
                 classify_path_segments(segments.iter().copied(), &ExcludePatterns::default()),
                 Ok(expected),
+                "segments: {segments:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn admit_dir_checks_only_the_match_window_and_hidden_names() {
+        let exclude = ExcludePatterns::new(["build/"]).unwrap();
+        let root = AdmittedDir::root();
+        assert!(admit_dir(&root, b"build", &exclude).is_none());
+        assert!(admit_dir(&root, b".git", &exclude).is_none());
+        assert!(admit_dir(&root, b"src", &exclude).is_some());
+
+        // A match past the first `MAX_PATH_DEPTH + 1` directories is not seen, as in the file check.
+        let mut deep = AdmittedDir::root();
+        for _ in 0..=MAX_PATH_DEPTH {
+            deep = admit_dir(&deep, b"d", &exclude).expect("d is not excluded");
+        }
+        assert!(admit_dir(&deep, b"build", &exclude).is_some());
+        assert!(
+            admit_dir(&deep, b".git", &exclude).is_none(),
+            "hidden names are checked at every depth"
+        );
+    }
+
+    #[test]
+    fn classification_corpus_is_stable() {
+        // Pins the observable outcome of every check, including check order, the depth window, and the
+        // trailing separator of non-UTF-8 prefixes. Both the archive and the local walk rely on it.
+        fn segs<'a>(parts: &[&'a [u8]]) -> Vec<&'a [u8]> {
+            parts.to_vec()
+        }
+        fn deep(n: usize, tail: &[u8]) -> Vec<&[u8]> {
+            std::iter::repeat_n(b"d".as_slice(), n)
+                .chain(std::iter::once(tail))
+                .collect()
+        }
+        let valid =
+            |p: &str| -> Result<PathStatus, DepthExceededError> { Ok(PathStatus::Valid(p.into())) };
+        let nonutf8 = |p: &str| -> Result<PathStatus, DepthExceededError> {
+            Ok(PathStatus::NonUtf8Candidate(p.into()))
+        };
+        let ignored = || -> Result<PathStatus, DepthExceededError> { Ok(PathStatus::Ignored) };
+        let depth_err = || -> Result<PathStatus, DepthExceededError> { Err(DepthExceededError) };
+
+        let exclude = ExcludePatterns::new(["build/", "*.log", "/top"]).unwrap();
+        let none = ExcludePatterns::default();
+        let max = MAX_PATH_DEPTH;
+
+        let mut build_past_window = deep(max + 1, b"build");
+        build_past_window.push(b"x.txt");
+        let mut hidden_past_window = deep(max + 1, b".h");
+        hidden_past_window.push(b"x");
+        let max_valid = format!("{}file.txt", "d/".repeat(max));
+
+        let cases = vec![
+            (segs(&[b"src", b"main.rs"]), &exclude, valid("src/main.rs")),
+            (segs(&[b".git", b"config"]), &exclude, ignored()),
+            (segs(&[b"src", b".hid", b"x.rs"]), &exclude, ignored()),
+            (segs(&[b"build", b"main.rs"]), &exclude, ignored()),
+            (segs(&[b"src", b"build", b"x.txt"]), &exclude, ignored()),
+            (segs(&[b"src", b"a.log"]), &exclude, ignored()),
+            (segs(&[b"top", b"x.rs"]), &exclude, ignored()),
+            (
+                segs(&[b"sub", b"top", b"x.rs"]),
+                &exclude,
+                valid("sub/top/x.rs"),
+            ),
+            (segs(&[b"src", b"build"]), &exclude, valid("src/build")),
+            (segs(&[b"src", b"Cargo.lock"]), &exclude, ignored()),
+            (
+                segs(&[b"src", b"\xff\xfe", b"main.rs"]),
+                &exclude,
+                nonutf8("src/"),
+            ),
+            (segs(&[b"\xff", b"x.rs"]), &exclude, nonutf8("")),
+            (segs(&[b"src", b"\xff.rs"]), &exclude, nonutf8("src/")),
+            (segs(&[b"\xff", b"build", b"x"]), &exclude, ignored()),
+            (segs(&[b"build", b"\xff"]), &exclude, ignored()),
+            (segs(&[b"\xff", b"a.log"]), &exclude, ignored()),
+            (segs(&[b"\xff.log"]), &exclude, ignored()),
+            (segs(&[b"\xff", b"id_rsa"]), &none, ignored()),
+            (
+                segs(&[b"docs\\secret.md"]),
+                &exclude,
+                valid("docs\\secret.md"),
+            ),
+            (deep(max, b"file.txt"), &none, valid(&max_valid)),
+            (deep(max, b"a.log"), &exclude, ignored()),
+            (deep(max + 1, b"x.rs"), &none, depth_err()),
+            (deep(max + 1, b"a.log"), &exclude, depth_err()),
+            (build_past_window, &exclude, depth_err()),
+            (hidden_past_window, &none, ignored()),
+        ];
+        for (segments, exclude, expected) in cases {
+            assert_eq!(
+                classify_path_segments(segments.iter().copied(), exclude),
+                expected,
                 "segments: {segments:?}"
             );
         }

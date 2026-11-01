@@ -56,11 +56,11 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 ### 3.2 Path Classification
 
-- Order: hidden -> user exclusion -> noise/sensitive entries -> depth check -> non-UTF-8 prefixing -> valid path ([security sec. 2](docs/security_and_filtering.md#2-evaluation-order)). Shared by local walk and tar stream via `classify_path_segments`.
+- Order: hidden -> user exclusion -> noise/sensitive entries -> depth check -> non-UTF-8 prefixing -> valid path ([security sec. 2](docs/security_and_filtering.md#2-evaluation-order)). Tar streams classify each path with `classify_path_segments`. The local walk admits each directory once with `admit_dir` (hidden and user-exclusion checks) and classifies each file with `classify_leaf`, which checks only the file itself.
 - `Ignored` entries consume no candidate slot and are omitted from skipped counts.
 - Depth limit violation is the only path check aborting the entire run during classification. Hidden and noise entries are dropped before depth evaluation. For GitHub tar archives, `normalize_tar_entry_path` also aborts the run with `DomainError::InvalidMetadata` upon encountering embedded NUL bytes, traversal segments (`..`), or a `.` root segment, for regular-file entries. Non-regular tar entries are dropped before normalization runs. Oversized tar headers abort the run under I-03 ([sec. 3.9](#39-network)).
 - Non-UTF-8 candidates record their valid prefix (`"a/b/"` or `""`), charged to the budget under the first segment (`"a/"`) or root (`"./"`).
-- **I-02 (`boundary`, `classify_path_segments`):** No classified path or non-UTF-8 prefix has a first segment starting with `.`, since hidden segments are `Ignored` and empty or `.` segments are dropped. The budget therefore keys root-level entries as `"./"`, which no real directory can produce.
+- **I-02 (`boundary`, `admit_dir`, `classify_leaf`):** No classified path or non-UTF-8 prefix has a first segment starting with `.`, since hidden directories are never admitted, hidden files are `Ignored`, and empty or `.` segments are dropped. The budget therefore keys root-level entries as `"./"`, which no real directory can produce.
 
 ### 3.3 Accounting
 
@@ -126,7 +126,7 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 ### Core (`src/core/`)
 
 - `cli.rs`: CLI argument parsing (`parse`, `Parsed`), `HELP` constant, `CliAction`, `completion_message`.
-- `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `exclude.rs` (`ExcludePatterns`), `classify.rs` (`classify_path_segments`, `NormalizedPath`, `PathStatus`).
+- `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `exclude.rs` (`ExcludePatterns`), `classify.rs` (`classify_path_segments`, `admit_dir`, `classify_leaf`, `AdmittedDir`, `NormalizedPath`, `PathStatus`).
 - `model.rs`: `Source`, `GitRef`, `GithubName`, `RunConfig`, `OutputTarget`, `DigestFormat`, `CollectionResult`, `IngestReport`.
 - `selector.rs`: `Selector`, `CandidateBudget`, `exceeds_size_limits`.
 - `storage.rs`: `FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, `largest_files`.
