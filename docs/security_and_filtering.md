@@ -117,6 +117,7 @@ Exact matches against the final path segment:
 ### 3.6 User Exclusions (`--exclude`)
 
 - Patterns use `.gitignore` syntax and are relative to the source root. Matching is case-sensitive, as in git. Each pattern must yield exactly one rule. A blank line, a comment, a bare `!`, or an invalid glob fails at parse time with `DomainError::Usage`. An unclosed `[` is an error here, though a `.gitignore` file accepts it.
+- A `\` in a path segment is matched as U+FFFD on every platform, so it is never a separator and never matches a `\` in a pattern. On Unix, a pattern that matched a name containing `\` (such as `a\\b` for `a\b`) no longer matches it. Results are the same on Windows and Unix.
 - The rule applies to local and GitHub sources in the same way. It is independent of `.gitignore` (sec. 3.5): a path is dropped when either one drops it. A `!` pattern re-includes only paths that other user patterns exclude.
 - A path is excluded when it or any ancestor directory matches. Ancestors are tested as directories, from the top down. A `!` pattern cannot re-include a file under an excluded directory.
 - Excluded local directories are pruned, so their `.gitignore` is never read. Excluded entries are not candidates and are omitted from the skipped count.
@@ -199,7 +200,7 @@ Sanitization runs in a single pass via `write_escaped`:
    - Disallowed XML 1.0 control codes map to `\u{FFFD}`.
 3. **Tree Labels:** Escaped for control characters and XML entities to prevent output corruption.
 4. **Error and Warning Diagnostics (`sanitize_error_detail`):**
-   - Single-line diagnostics emitted to stderr (filesystem paths in I/O errors, root validation errors, HTTP status messages, transport error text) convert `\t`, `\r`, `\n` to space `' '` and all other Unicode control characters to `\u{FFFD}` to prevent terminal escape injection or log forgery.
+   - Single-line diagnostics emitted to stderr (filesystem paths in I/O errors, root validation errors, HTTP status messages, transport error text, and each path and directory name in the `MAX_OUTPUT_SIZE` and `MAX_FILE_COUNT` overflow lists) convert `\t`, `\r`, `\n` to space `' '` and all other Unicode control characters to `\u{FFFD}` to prevent terminal escape injection or log forgery.
 
 ---
 

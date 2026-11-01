@@ -8,6 +8,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Library consumers and CLI users
+
+Observable behavior. **Action** = code or config change required.
+
+#### Fixed
+
+- **Overflow diagnostics sanitize names**: Each path and directory name in the `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` overflow lists is sanitized like other stderr diagnostics: `\t`, `\r`, and `\n` become spaces, and other control characters become `\u{FFFD}`. Escape sequences in repository names no longer reach the terminal (`src/core/error.rs`).
+- **`--exclude` matches `\` the same on every platform**: A `\` in a path segment is matched as U+FFFD on all platforms. Before, Windows read `\` as `/`, so `--exclude secret.md` also dropped `docs\secret.md` there. On Unix, a pattern that matched a name containing `\` (such as `a\\b` for `a\b`) no longer matches it (`src/core/policy/exclude.rs`, `docs/security_and_filtering.md` sec. 3.6).
+  - **Action:** Rewrite Unix patterns that matched a `\` in a file name so they no longer depend on that `\`.
+
 ### Contributors
 
 Internal refactors and test changes. No consumer action required.
@@ -21,6 +31,7 @@ Internal refactors and test changes. No consumer action required.
 #### Changed
 
 - **Specification clarity on limit authority**: Clarified in `AGENTS.md` and `docs/security_and_filtering.md` that `src/core/policy/` is the sole authority for limit values, while `docs/security_and_filtering.md` §8 serves as the sole documentation mirror.
+- **Unused re-export removed**: `src/core/github/mod.rs` imports `sanitize_error_detail` instead of re-exporting it. No path that consumers or other modules use changes.
 
 ---
 

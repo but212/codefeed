@@ -59,11 +59,13 @@ impl ExcludePatterns {
 
     /// Whether the patterns exclude the path given by `segments`, relative to the source root.
     ///
-    /// Segments must be non-empty and must not be `.`. Ancestors are tested as directories, from the
-    /// top down, so an excluded directory excludes everything below it, and a `!` pattern cannot
-    /// re-include such an entry. Only the first `MAX_PATH_DEPTH + 1` segments are tested, so the
-    /// cost is at most that many matches, each linear in its prefix. A match beyond that window is
-    /// not seen, and the entry then fails its depth limit as any other deep entry does.
+    /// Segments must be non-empty and must not be `.`. A `\` inside a segment is matched as U+FFFD on
+    /// every platform, so it is never a separator and never matches a `\` in a pattern. Ancestors are
+    /// tested as directories, from the top down, so an excluded directory excludes everything below
+    /// it, and a `!` pattern cannot re-include such an entry. Only the first `MAX_PATH_DEPTH + 1`
+    /// segments are tested, so the cost is at most that many matches, each linear in its prefix. A
+    /// match beyond that window is not seen, and the entry then fails its depth limit as any other
+    /// deep entry does.
     #[must_use]
     pub(crate) fn excludes(&self, segments: &[&[u8]], is_dir: bool) -> bool {
         if self.rules.is_empty() {
@@ -75,7 +77,11 @@ impl ExcludePatterns {
             if index > 0 {
                 prefix.push('/');
             }
-            prefix.push_str(&String::from_utf8_lossy(segment));
+            prefix.extend(
+                String::from_utf8_lossy(segment)
+                    .chars()
+                    .map(|c| if c == '\\' { '\u{FFFD}' } else { c }),
+            );
             let as_dir = index < last || is_dir;
             if self.rules.matched(&prefix, as_dir).is_ignore() {
                 return true;
@@ -249,6 +255,17 @@ mod tests {
         let head = "a".repeat(MAX_PATH_BYTES_USIZE + 1);
         let long: [&[u8]; 2] = [head.as_bytes(), b"file.txt"];
         assert!(ex.excludes(&long, false));
+    }
+
+    #[test]
+    fn backslash_in_segment_matches_the_same_on_every_platform() {
+        // A `\` in a segment is not a separator on any platform. The segment is matched with its
+        // `\` replaced by U+FFFD, so no pattern matches it by name or by a `\` escape.
+        let segments: [&[u8]; 1] = [b"docs\\secret.md"];
+        assert!(!patterns(&["secret.md"]).excludes(&segments, false));
+        assert!(!patterns(&["/docs/secret.md"]).excludes(&segments, false));
+        assert!(!patterns(&["docs\\\\secret.md"]).excludes(&segments, false));
+        assert!(patterns(&["*.md"]).excludes(&segments, false));
     }
 
     #[test]

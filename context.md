@@ -16,7 +16,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - `OutputTarget`: `File(PathBuf)` or `Stdout`.
 - `ResolvedOutput`: Filesystem-resolved target (`shell`-private, constructed solely by `resolve_output_target`).
 - `DigestFormat`: `Text` or `Xml`.
-- `ExcludePatterns`: Validated user `--exclude` patterns in `.gitignore` syntax, relative to the source root and case-sensitive. Each pattern yields exactly one rule. Implements `Default` (no patterns) and `Eq` by pattern text.
+- `ExcludePatterns`: Validated user `--exclude` patterns in `.gitignore` syntax, relative to the source root and case-sensitive. Each pattern yields exactly one rule. A `\` in a path segment is matched as U+FFFD on every platform. Implements `Default` (no patterns) and `Eq` by pattern text.
 - `RunConfig`: Struct of `source`, `output`, `format`, and `exclude`.
 
 ### Candidate collection
@@ -93,6 +93,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - Overflow diagnostics generate only on error paths.
 - `MAX_OUTPUT_SIZE` overflow lists the 5 largest files (sorted by size descending, then path).
 - `MAX_FILE_COUNT` overflow lists the 3 largest directories (sorted by candidate count descending, then name).
+- Names in both overflow lists are passed through `sanitize_error_detail` by `DomainError`'s `Display`. The stored values stay raw.
 - Local runs produce identical diagnostics deterministically.
 
 ### 3.8 Local Traversal Pipeline
