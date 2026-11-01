@@ -19,6 +19,8 @@ Observable behavior. **Action** = code or config change required.
   - **Action:** Rewrite Unix patterns that matched a `\` in a file name so they no longer depend on that `\`.
 - **Archive file and directory with the same path fail the run**: A tarball that stores `a` as a file and also has entries under `a/` now fails with `InvalidMetadata`. Before, the digest listed `a` as both a file and a directory. A skipped `a` (binary, oversized, or non-text) does not trigger the failure (`src/core/storage.rs`, `docs/security_and_filtering.md` sec. 2 and 3.4).
   - **Action:** None expected for ordinary repositories.
+- **Root entries no longer merge with a directory named `<root>`**: The `MAX_FILE_COUNT` overflow list now groups root-level entries under `./` instead of `<root>/`. Before, a top-level directory named `<root>` shared that key, so its count merged with the root files (`src/core/selector.rs`, `context.md` sec. 3.2).
+  - **Action:** Library consumers that compare `CandidateLimitExceededError::largest_directories` names to `"<root>/"` must compare to `"./"`.
 
 ### Contributors
 

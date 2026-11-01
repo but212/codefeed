@@ -59,7 +59,8 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - Order: hidden -> user exclusion -> noise/sensitive entries -> depth check -> non-UTF-8 prefixing -> valid path ([security sec. 2](docs/security_and_filtering.md#2-evaluation-order)). Shared by local walk and tar stream via `classify_path_segments`.
 - `Ignored` entries consume no candidate slot and are omitted from skipped counts.
 - Depth limit violation is the only path check aborting the entire run during classification. Hidden and noise entries are dropped before depth evaluation. For GitHub tar archives, `normalize_tar_entry_path` also aborts the run with `DomainError::InvalidMetadata` upon encountering embedded NUL bytes, traversal segments (`..`), or a `.` root segment, for regular-file entries. Non-regular tar entries are dropped before normalization runs.
-- Non-UTF-8 candidates record their valid prefix (`"a/b/"` or `""`), charged to the budget under the first segment (`"a/"`) or root (`"<root>/"`).
+- Non-UTF-8 candidates record their valid prefix (`"a/b/"` or `""`), charged to the budget under the first segment (`"a/"`) or root (`"./"`).
+- **I-02 (`boundary`, `classify_path_segments`):** No classified path or non-UTF-8 prefix has a first segment starting with `.`, since hidden segments are `Ignored` and empty or `.` segments are dropped. The budget therefore keys root-level entries as `"./"`, which no real directory can produce.
 
 ### 3.3 Accounting
 

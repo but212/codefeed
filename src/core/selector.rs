@@ -72,8 +72,10 @@ impl CandidateBudget {
     }
 }
 
+/// Budget key for `path`: its first segment with a trailing `/`, or `./` for root-level entries.
+/// No classified first segment starts with `.` (I-02), so `./` never names a real directory.
 fn extract_dir_slice(path: &str) -> &str {
-    memchr(b'/', path.as_bytes()).map_or("<root>/", |index| &path[..=index])
+    memchr(b'/', path.as_bytes()).map_or("./", |index| &path[..=index])
 }
 
 fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String, usize)> {
@@ -221,9 +223,26 @@ mod tests {
     #[test]
     fn extracts_dir_slice_from_paths() {
         assert_eq!(extract_dir_slice("src/core/decide.rs"), "src/");
-        assert_eq!(extract_dir_slice("root_file.txt"), "<root>/");
-        assert_eq!(extract_dir_slice(""), "<root>/");
+        assert_eq!(extract_dir_slice("root_file.txt"), "./");
+        assert_eq!(extract_dir_slice(""), "./");
         assert_eq!(extract_dir_slice("vendor/"), "vendor/");
+        assert_eq!(extract_dir_slice("<root>/x.rs"), "<root>/");
+    }
+
+    #[test]
+    fn candidate_overflow_separates_root_files_from_directory_named_root()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut budget = CandidateBudget::default();
+        for index in 0..6_000 {
+            budget = budget.add(&format!("<root>/pkg_{index}.rs"))?;
+        }
+        for index in 0..4_000 {
+            budget = budget.add(&format!("f_{index}.rs"))?;
+        }
+        let message = budget.add("extra.rs").unwrap_err().to_string();
+        assert!(message.contains("\n  - <root>/ (6000 files)"), "{message}");
+        assert!(message.contains("\n  - ./ (4001 files)"), "{message}");
+        Ok(())
     }
 
     #[test]
