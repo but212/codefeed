@@ -30,10 +30,10 @@ pub enum DomainError {
 }
 
 impl DomainError {
-    /// Constructs a [`Usage`](Self::Usage) error from a descriptive message.
+    /// Constructs a [`Usage`](Self::Usage) error. The message is sanitized here because it may echo user input.
     #[cold]
     pub fn usage(message: impl Into<String>) -> Self {
-        Self::Usage(message.into())
+        Self::Usage(sanitize_error_detail(&message.into()))
     }
 
     /// Constructs a [`CandidateLimitExceeded`](Self::CandidateLimitExceeded) error with diagnostic directory counts.
@@ -48,22 +48,22 @@ impl DomainError {
         })
     }
 
-    /// Constructs an [`InvalidSource`](Self::InvalidSource) error from a descriptive message.
+    /// Constructs an [`InvalidSource`](Self::InvalidSource) error. The message is sanitized here because it may echo user input.
     #[cold]
     pub(crate) fn invalid_source(message: impl Into<String>) -> Self {
-        Self::InvalidSource(message.into())
+        Self::InvalidSource(sanitize_error_detail(&message.into()))
     }
 
-    /// Constructs an [`UnsupportedSource`](Self::UnsupportedSource) error from a descriptive message.
+    /// Constructs an [`UnsupportedSource`](Self::UnsupportedSource) error. The message is sanitized here because it may echo user input.
     #[cold]
     pub(crate) fn unsupported_source(message: impl Into<String>) -> Self {
-        Self::UnsupportedSource(message.into())
+        Self::UnsupportedSource(sanitize_error_detail(&message.into()))
     }
 
-    /// Constructs an [`InvalidMetadata`](Self::InvalidMetadata) error from a descriptive message.
+    /// Constructs an [`InvalidMetadata`](Self::InvalidMetadata) error. The message is sanitized here because it may echo remote payload.
     #[cold]
     pub(crate) fn invalid_metadata(message: impl Into<String>) -> Self {
-        Self::InvalidMetadata(message.into())
+        Self::InvalidMetadata(sanitize_error_detail(&message.into()))
     }
 
     /// Constructs an [`OutputTooLarge`](Self::OutputTooLarge) error with diagnostic largest file entries.
@@ -93,7 +93,7 @@ pub(crate) fn sanitize_error_detail(input: &str) -> String {
 impl Display for DomainError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
-            Self::Usage(message) => write!(f, "{message}"),
+            Self::Usage(message) => write!(f, "{}", sanitize_error_detail(message)),
             Self::CandidateLimitExceeded(err) => {
                 write!(
                     f,
@@ -105,9 +105,17 @@ impl Display for DomainError {
                 }
                 Ok(())
             }
-            Self::InvalidSource(message) => write!(f, "invalid source: {message}"),
-            Self::UnsupportedSource(message) => write!(f, "unsupported source: {message}"),
-            Self::InvalidMetadata(message) => write!(f, "invalid repository metadata: {message}"),
+            Self::InvalidSource(message) => {
+                write!(f, "invalid source: {}", sanitize_error_detail(message))
+            }
+            Self::UnsupportedSource(message) => {
+                write!(f, "unsupported source: {}", sanitize_error_detail(message))
+            }
+            Self::InvalidMetadata(message) => write!(
+                f,
+                "invalid repository metadata: {}",
+                sanitize_error_detail(message)
+            ),
             Self::OutputTooLarge(largest_files) => {
                 let limit_mib = MAX_OUTPUT_SIZE / (1024 * 1024);
                 write!(f, "digest exceeds the {limit_mib} MiB output limit")?;
@@ -188,6 +196,39 @@ mod tests {
             sanitized,
             "hello world  foo\u{FFFD}[31mbar\u{FFFD}baz\u{FFFD}del\u{FFFD}c1"
         );
+    }
+
+    #[test]
+    fn message_constructors_sanitize_control_characters() {
+        let raw = "a\x1b[2J\nb";
+        let cases = [
+            DomainError::usage(raw),
+            DomainError::invalid_source(raw),
+            DomainError::unsupported_source(raw),
+            DomainError::invalid_metadata(raw),
+        ];
+        for err in cases {
+            let rendered = err.to_string();
+            assert!(!rendered.contains('\x1b'), "ESC leaked: {rendered:?}");
+            assert!(!rendered.contains('\n'), "newline leaked: {rendered:?}");
+        }
+        assert_eq!(DomainError::usage(raw).to_string(), "a\u{FFFD}[2J b");
+    }
+
+    #[test]
+    fn display_sanitizes_variants_built_without_constructors() {
+        let raw = "a\x1b[2J\nb".to_string();
+        let cases = [
+            DomainError::Usage(raw.clone()),
+            DomainError::InvalidSource(raw.clone()),
+            DomainError::UnsupportedSource(raw.clone()),
+            DomainError::InvalidMetadata(raw),
+        ];
+        for err in cases {
+            let rendered = err.to_string();
+            assert!(!rendered.contains('\x1b'), "ESC leaked: {rendered:?}");
+            assert!(!rendered.contains('\n'), "newline leaked: {rendered:?}");
+        }
     }
 
     #[test]

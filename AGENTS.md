@@ -42,10 +42,10 @@ Before changing code, read these documents:
 - **Deterministic Tests:** Isolate time, randomness, and concurrency. Test observable contracts, transitions, and boundary failures rather than private details.
 - **Empirical Proof:** Never claim verification for unrun commands, unexecuted branches, or unverified failure paths. If blocked by missing toolchains or network barriers, report checks as Unverified with blocker details.
 - **Execution Order:** Run all four checks in this exact order before reporting completion:
-  1. `cargo clippy --all-targets -- -D warnings`
-  2. `cargo fmt --check`
-  3. `cargo doc --no-deps`
-  4. `cargo test` (or narrowest target first: `cargo test <name>`)
+  1. `cargo fmt --check`
+  2. `cargo clippy --all-targets --locked -- -D warnings`
+  3. `cargo doc --no-deps --locked`
+  4. `cargo test --locked` (or narrowest target first: `cargo test --locked <name>`)
 - Report failures with exact command output. Never claim unrun or failed steps passed.
 
 ## 6. Where Changes Go

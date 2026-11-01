@@ -72,7 +72,7 @@ struct HeaderBudget {
 }
 
 impl HeaderBudget {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             remaining: Cell::new(u64::MAX),
             exceeded: Cell::new(false),

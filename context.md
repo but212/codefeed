@@ -37,7 +37,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 ### Rendering and results
 
 - `BoundedBuffer`: In-memory writer aborting when output would exceed `MAX_OUTPUT_SIZE`.
-- `RenderedDigest`: Struct of `bytes`, `estimated_tokens`, `included_files`, and `skipped_files`.
+- `RenderedDigest`: Struct of `bytes` and `report` (`IngestReport`).
 - `IngestReport`: Struct of `output`, `included_files`, `skipped_files`, and `estimated_tokens` (`#[non_exhaustive]`).
 
 ### Errors
@@ -113,6 +113,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - Revision SHA extracts from the first `ARCHIVE_PAX_GLOBAL_BYTES` of the PAX global header, falling back to the requested ref.
 - Stream/gzip/tar read failures map to `IngestError::Http`.
 - **I-03 (`runtime`, `shell/archive.rs`):** One `Entries::next` call reads at most `ARCHIVE_MAX_HEADER_BYTES` from the decompressed stream, covering the previous entry's padding, GNU `L`/`K` and PAX `x` bodies, GNU sparse extension blocks, and the header. An overrun fails the run with `DomainError::InvalidMetadata`; it is never a skip, because the path is not parsed. The budget runs before path classification, so an entry that classification would drop (hidden, excluded, non-regular) also fails the run when its header is over budget. tar reads extension bodies internally, so no type or boundary can express the bound. A byte budget on the shared reader enforces it, and each entry body is drained before the next call so only headers are metered.
+- **I-04 (`boundary`, `DomainError::usage`, `invalid_source`, `unsupported_source`, `invalid_metadata`):** These constructors pass the message through `sanitize_error_detail`, so the stored text has no control characters or line breaks, including text echoed from argv, `--exclude` patterns, or URLs. `DomainError`'s `Display` also passes the message of these four variants through `sanitize_error_detail`, so a library consumer that builds a variant directly still gets sanitized stderr text. The stored value stays as given to the variant.
 
 ## 4. Limits and Tunables
 

@@ -6,23 +6,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [0.6.0]
 
 ### Library consumers and CLI users
 
 Observable behavior. **Action** = code or config change required.
 
-#### Fixed
+#### Breaking
 
 - **`--exclude '! '` is a usage error, not a re-include-all**: Unescaped trailing whitespace is trimmed before parsing, as in `.gitignore`. Before, `! ` and `!<TAB>` were accepted and compiled to a whitelist rule matching every path, re-including all excluded files. `/ ` and `!/ ` were no-ops. All four are now usage errors (`src/core/policy/exclude.rs`, `docs/security_and_filtering.md` sec. 3.6).
   - **Action:** Remove patterns that are only `!` or `/` plus trailing whitespace. `*.log ` matches as before.
-- **Overflow diagnostics sanitize names**: Paths and directory names in the `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` overflow lists are sanitized like other stderr diagnostics: `\t`, `\r`, `\n` become spaces; other control characters become `\u{FFFD}` (`src/core/error.rs`).
 - **`--exclude` matches `\` the same on every platform**: A `\` in a path segment matches as U+FFFD everywhere. Before, Windows read `\` as `/`, so `--exclude secret.md` also dropped `docs\secret.md`. On Unix, a pattern matching a `\` in a file name (such as `a\\b` for `a\b`) no longer matches it (`src/core/policy/exclude.rs`, `docs/security_and_filtering.md` sec. 3.6).
   - **Action:** Rewrite Unix patterns that depended on a `\` in a file name.
-- **Archive file and directory at one path fail the run**: A tarball that stores `a` as a file and also has entries under `a/` fails with `InvalidMetadata`. Before, the digest listed `a` as both. A skipped `a` (binary, oversized, or non-text) does not trigger it (`src/core/storage.rs`, `docs/security_and_filtering.md` sec. 2 and 3.4).
-  - **Action:** None for ordinary repositories.
 - **Root entries no longer merge with a directory named `<root>`**: The `MAX_FILE_COUNT` overflow list groups root-level entries under `./`, not `<root>/`. Before, a top-level `<root>` directory shared that key, and its count merged with the root files (`src/core/selector.rs`, `context.md` sec. 3.2).
   - **Action:** Library consumers comparing `CandidateLimitExceededError::largest_directories` names to `"<root>/"` must compare to `"./"`.
+
+#### Fixed
+
+- **Overflow diagnostics sanitize names**: Paths and directory names in the `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` overflow lists are sanitized like other stderr diagnostics: `\t`, `\r`, `\n` become spaces; other control characters become `\u{FFFD}` (`src/core/error.rs`).
+- **Usage and source errors sanitize echoed input**: Messages that echo an argument, `--exclude` pattern, or URL now pass the same control-character sanitization as overflow lists. The sanitization runs in `DomainError`'s `Display`, so it also covers variants built directly. Before, an ESC in these values reached stderr raw. The required-arguments message is one line: `the following required arguments were not provided: <SOURCE>` (`src/core/error.rs`, `src/core/cli.rs`, `src/core/policy/exclude.rs`, `src/core/github/url.rs`).
+  - **Action:** None for ordinary inputs. Scripts that matched the old two-line required-arguments text must match the one-line text.
+- **Archive file and directory at one path fail the run**: A tarball that stores `a` as a file and also has entries under `a/` fails with `InvalidMetadata`. Before, the digest listed `a` as both. A skipped `a` (binary, oversized, or non-text) does not trigger it (`src/core/storage.rs`, `docs/security_and_filtering.md` sec. 2 and 3.4).
+  - **Action:** None for ordinary repositories.
 - **Oversized archive headers fail the run**: A GitHub tarball whose GNU long-name, GNU long-link, or PAX record exceeds the header read budget fails with `InvalidMetadata`, even if policy would drop the entry (hidden, excluded, non-regular). Before, tar read the whole record, then skipped or dropped the entry (`src/shell/archive.rs`, `docs/security_and_filtering.md` sec. 2, 6.4, 8).
   - **Action:** None for ordinary repositories. Headers within budget whose paths exceed `MAX_PATH_BYTES` still skip.
 
@@ -41,6 +46,7 @@ Internal refactors and test changes. No consumer action required.
 - **Remaining read caps moved to policy**: GitHub API error body and PAX global header caps are `GITHUB_ERROR_BODY_BYTES` and `ARCHIVE_PAX_GLOBAL_BYTES` in `src/core/policy/limits.rs`, mirrored in `docs/security_and_filtering.md` sec. 8. Overflow and selector tests derive expected values from the constants. No observable change.
 - **Walk carries relative paths**: Walk frames and `RegularFile` hold root-relative paths; `classify_entry` and directory exclusion no longer call `strip_prefix` or its unreachable error branch. No behavior change (`src/shell/local/walk.rs`, `src/shell/local/pipeline.rs`).
 - **Docs match code**: Security spec sec. 2 shows tar header read before path normalization; sec. 5 describes the custom walk's symlink handling. README marks `.gitignore` as local-only. `IngestReport::skipped_files` rustdoc lists every skip reason (`docs/security_and_filtering.md`, `README.md`, `src/core/model.rs`).
+- **Rendered digest carries its report**: `RenderedDigest` holds `bytes` and `report: IngestReport`; `CollectionResult::render` takes the `OutputTarget`. Crate-internal, no observable change (`src/core/render/`, `src/shell/mod.rs`).
 - **Single tarball URL builder**: `tarball_url` takes the API base; the test-only GitHub URL uses it too, so tests exercise production path encoding (`src/core/github/url.rs`, `src/shell/github/mod.rs`).
 - **Path classifier without state enum**: `classify_path_segments` returns at the first non-UTF-8 segment instead of tracking `PathClassifierState` (`src/core/policy/classify.rs`).
 - **Duplicate broken-pipe tests removed**: One shared `BrokenPipeWriter` serves both output tests (`src/shell/output.rs`).
@@ -492,6 +498,8 @@ Documentation, build, and removals.
 
 - Initial CLI converting local directories (`.gitignore`-aware, skipping hidden files and symlinks) and GitHub repositories (`--ref <BRANCH|TAG|COMMIT>`, no local `git`) into plain-text or XML digests (`--format <text|xml>`) written atomically to files or stdout (`--output -`), with streaming token estimation, sensitive/lockfile filtering (`.env*`, `*.key`, `*.pem`, `id_rsa*`), and candidate/output size budgets.
 
+[0.6.0]: https://github.com/but212/codefeed/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/but212/codefeed/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/but212/codefeed/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/but212/codefeed/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/but212/codefeed/compare/v0.3.0...v0.3.1

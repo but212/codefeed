@@ -39,10 +39,10 @@ pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
         } => github::collect(owner, repo, reference.as_deref(), &config.exclude)?,
     };
 
-    let rendered = collection.render(config.format)?;
+    let rendered = collection.render(config.format, config.output.clone())?;
     output::deliver(&resolved_output, &rendered.bytes)?;
 
-    Ok(rendered.into_report(config.output.clone()))
+    Ok(rendered.report)
 }
 
 #[cfg(test)]

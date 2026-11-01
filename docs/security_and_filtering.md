@@ -208,7 +208,7 @@ Sanitization runs in a single pass via `write_escaped`:
    - Disallowed XML 1.0 control codes map to `\u{FFFD}`.
 3. **Tree Labels:** Escaped for control characters and XML entities to prevent output corruption.
 4. **Error and Warning Diagnostics (`sanitize_error_detail`):**
-   - Single-line diagnostics emitted to stderr (filesystem paths in I/O errors, root validation errors, HTTP status messages, transport error text, and each path and directory name in the `MAX_OUTPUT_SIZE` and `MAX_FILE_COUNT` overflow lists) convert `\t`, `\r`, `\n` to space `' '` and all other Unicode control characters to `\u{FFFD}` to prevent terminal escape injection or log forgery.
+   - Single-line diagnostics emitted to stderr (filesystem paths in I/O errors, root validation errors, HTTP status messages, transport error text, usage, invalid-source, unsupported-source, and invalid-metadata messages (sanitized in `DomainError` `Display`, since they echo arguments, patterns, or URLs), and each path and directory name in the `MAX_OUTPUT_SIZE` and `MAX_FILE_COUNT` overflow lists) convert `\t`, `\r`, `\n` to space `' '` and all other Unicode control characters to `\u{FFFD}` to prevent terminal escape injection or log forgery.
 
 ---
 

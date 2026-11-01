@@ -16,7 +16,7 @@ use self::pipeline::fold_candidates;
 use self::read::{Body, Candidate};
 use super::IngestError;
 use super::output::ResolvedOutput;
-use crate::core::error::{DomainError, sanitize_error_detail};
+use crate::core::error::DomainError;
 use crate::core::model::{CollectionResult, repository_name};
 use crate::core::policy::{ExcludePatterns, PathStatus};
 use crate::core::selector::Selector;
@@ -55,13 +55,12 @@ fn observe_candidate(selector: Selector, candidate: Candidate) -> Result<Selecto
 
 fn validate_root(root: &Path) -> Result<PathBuf, DomainError> {
     let root_display = root.display();
-    let canonical = fs::canonicalize(root).map_err(|error| {
-        DomainError::invalid_source(sanitize_error_detail(&format!("{root_display} ({error})")))
-    })?;
+    let canonical = fs::canonicalize(root)
+        .map_err(|error| DomainError::invalid_source(format!("{root_display} ({error})")))?;
     if !canonical.is_dir() {
         let display = canonical.display();
-        return Err(DomainError::invalid_source(sanitize_error_detail(
-            &format!("{display} is not a directory"),
+        return Err(DomainError::invalid_source(format!(
+            "{display} is not a directory"
         )));
     }
     Ok(canonical)
