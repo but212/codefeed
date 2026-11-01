@@ -141,6 +141,7 @@ fn invalid_pattern(pattern: &str, reason: &str) -> DomainError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::error::sanitize_error_detail;
     use crate::core::policy::MAX_PATH_BYTES_USIZE;
 
     fn patterns(list: &[&str]) -> ExcludePatterns {
@@ -158,12 +159,28 @@ mod tests {
             let Err(err) = ExcludePatterns::new([pattern]) else {
                 panic!("expected rejection for {pattern:?}");
             };
-            let expected = format!("invalid value '{pattern}' for '--exclude <PATTERN>': ");
+            let expected = format!(
+                "invalid value '{}' for '--exclude <PATTERN>': ",
+                sanitize_error_detail(pattern)
+            );
             assert!(
                 matches!(&err, DomainError::Usage(msg) if msg.starts_with(&expected)),
                 "{pattern:?}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn rejected_pattern_echo_is_sanitized() {
+        let Err(err) = ExcludePatterns::new(["[\x1b[2J"]) else {
+            panic!("expected rejection for a malformed glob");
+        };
+        let rendered = err.to_string();
+        assert!(!rendered.contains('\x1b'), "ESC leaked: {rendered:?}");
+        assert!(
+            rendered.starts_with("invalid value '[\u{FFFD}[2J' for '--exclude <PATTERN>': "),
+            "{rendered:?}"
+        );
     }
 
     #[test]

@@ -210,7 +210,7 @@ where
         exclude,
     } = parsed;
     let source_os = source.ok_or_else(|| {
-        DomainError::usage("the following required arguments were not provided:\n  <SOURCE>")
+        DomainError::usage("the following required arguments were not provided: <SOURCE>")
     })?;
 
     let output_target = match output {
@@ -447,6 +447,35 @@ mod tests {
                 "unexpected error: {err}"
             );
         }
+    }
+
+    #[test]
+    fn cli_argument_errors_sanitize_control_characters_on_one_line() {
+        let cases = [
+            (
+                &["codefeed", ".", "\x1b[2J"][..],
+                "unexpected argument '\u{FFFD}[2J' found",
+            ),
+            (
+                &["codefeed", "--\x1b[2J"][..],
+                "unknown option: --\u{FFFD}[2J",
+            ),
+            (
+                &["codefeed", ".", "-f", "x\x1b"][..],
+                "invalid value 'x\u{FFFD}' for '--format <text|xml>'",
+            ),
+        ];
+        for (args, expected) in cases {
+            let err = parse(args.iter().copied()).unwrap_err();
+            let rendered = err.to_string();
+            assert_eq!(rendered, expected, "{args:?}");
+        }
+
+        let missing = parse(["codefeed"]).unwrap_err().to_string();
+        assert_eq!(
+            missing,
+            "the following required arguments were not provided: <SOURCE>"
+        );
     }
 
     #[test]

@@ -29,26 +29,12 @@ pub(super) const fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OutputLimitExceeded;
 
-/// Rendered digest containing accumulated bytes, token estimation, and collection metrics.
+/// Rendered digest: the bytes to deliver and the report that describes them.
 #[derive(Debug)]
 #[must_use]
 pub(crate) struct RenderedDigest {
     pub(crate) bytes: Vec<u8>,
-    pub(crate) estimated_tokens: usize,
-    pub(crate) included_files: usize,
-    pub(crate) skipped_files: usize,
-}
-
-impl RenderedDigest {
-    /// Consumes the rendered digest to generate an [`IngestReport`] for the given output target.
-    pub(crate) fn into_report(self, output: OutputTarget) -> IngestReport {
-        IngestReport {
-            output,
-            included_files: self.included_files,
-            skipped_files: self.skipped_files,
-            estimated_tokens: self.estimated_tokens,
-        }
-    }
+    pub(crate) report: IngestReport,
 }
 
 /// In-memory buffer strictly bounded by [`MAX_OUTPUT_SIZE`] with value-passing operations.
@@ -86,21 +72,25 @@ impl BoundedBuffer {
 
     pub(crate) fn finish_with_counts(
         self,
+        output: OutputTarget,
         included_files: usize,
         skipped_files: usize,
     ) -> RenderedDigest {
-        let tokens = estimate_tokens_from_bytes(&self.bytes);
+        let estimated_tokens = estimate_tokens_from_bytes(&self.bytes);
         RenderedDigest {
             bytes: self.bytes,
-            estimated_tokens: tokens,
-            included_files,
-            skipped_files,
+            report: IngestReport {
+                output,
+                included_files,
+                skipped_files,
+                estimated_tokens,
+            },
         }
     }
 
     #[cfg(test)]
     pub(crate) fn finish(self) -> RenderedDigest {
-        self.finish_with_counts(0, 0)
+        self.finish_with_counts(OutputTarget::Stdout, 0, 0)
     }
 }
 
@@ -146,19 +136,18 @@ mod tests {
     }
 
     #[test]
-    fn rendered_digest_into_report_preserves_metrics() {
-        use crate::core::model::OutputTarget;
-
-        let digest = RenderedDigest {
-            bytes: b"test output".to_vec(),
-            estimated_tokens: 42,
-            included_files: 10,
-            skipped_files: 3,
-        };
-        let report = digest.into_report(OutputTarget::Stdout);
-        assert_eq!(report.output, OutputTarget::Stdout);
-        assert_eq!(report.included_files, 10);
-        assert_eq!(report.skipped_files, 3);
-        assert_eq!(report.estimated_tokens, 42);
+    fn finish_with_counts_reports_output_counts_and_tokens() {
+        let digest = BoundedBuffer::default()
+            .push_str("test output")
+            .expect("fixture fits the output limit")
+            .finish_with_counts(OutputTarget::Stdout, 10, 3);
+        assert_eq!(digest.bytes, b"test output");
+        assert_eq!(digest.report.output, OutputTarget::Stdout);
+        assert_eq!(digest.report.included_files, 10);
+        assert_eq!(digest.report.skipped_files, 3);
+        assert_eq!(
+            digest.report.estimated_tokens,
+            estimate_tokens_from_bytes(b"test output")
+        );
     }
 }

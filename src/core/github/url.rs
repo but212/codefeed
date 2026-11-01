@@ -223,4 +223,15 @@ mod tests {
         assert!(parse_github_url("https://notgithub.com/a/b").is_err());
         assert!(parse_github_url("https://github.com/a/b/c").is_err());
     }
+
+    #[test]
+    fn rejected_url_echo_is_sanitized() {
+        let err = parse_github_url("https://github.com:99999/o/r\x1b[2J").unwrap_err();
+        let rendered = err.to_string();
+        assert!(!rendered.contains('\x1b'), "ESC leaked: {rendered:?}");
+        assert_eq!(
+            rendered,
+            "invalid source: https://github.com:99999/o/r\u{FFFD}[2J"
+        );
+    }
 }
