@@ -7,7 +7,7 @@ use std::cmp::Ordering;
 use std::iter::once;
 use std::ops::Deref;
 
-use crate::core::error::{DomainError, sanitize_error_detail};
+use crate::core::error::DomainError;
 use crate::core::policy::{MAX_OUTPUT_SIZE, NormalizedPath, OVERFLOW_LARGEST_FILES};
 
 /// 16-byte POD indexing a file path and content slice in [`FileStorage`].
@@ -88,8 +88,7 @@ fn check_no_file_directory_collision(sorted: &FileStorage) -> Result<(), DomainE
             .is_some_and(|rest| rest.starts_with('/'))
         {
             return Err(DomainError::invalid_metadata(format!(
-                "entry path is both a file and a directory: {}",
-                sanitize_error_detail(previous)
+                "entry path is both a file and a directory: {previous}"
             )));
         }
         previous = next;

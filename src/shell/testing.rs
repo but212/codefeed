@@ -33,11 +33,7 @@ pub(super) fn with_test_github_url<R>(url: String, f: impl FnOnce() -> R) -> R {
 }
 
 pub(super) fn get_test_github_url() -> Option<String> {
-    TEST_GITHUB_URL
-        .lock()
-        .unwrap()
-        .clone()
-        .or_else(|| std::env::var("CODEFEED_GITHUB_API_URL").ok())
+    TEST_GITHUB_URL.lock().unwrap().clone()
 }
 
 #[derive(Debug)]

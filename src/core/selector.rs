@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use memchr::memchr;
 
-use crate::core::error::{DomainError, sanitize_error_detail};
+use crate::core::error::DomainError;
 use crate::core::model::CollectionResult;
 use crate::core::policy::{
     MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, OVERFLOW_LARGEST_DIRECTORIES, PathStatus,
@@ -59,8 +59,7 @@ impl CandidateBudget {
         let mut budget = self.add(path)?;
         if path.len() as u64 <= MAX_PATH_BYTES && !budget.paths.insert(path.to_string()) {
             return Err(DomainError::invalid_metadata(format!(
-                "duplicate entry path: {}",
-                sanitize_error_detail(path)
+                "duplicate entry path: {path}"
             )));
         }
         Ok(budget)
