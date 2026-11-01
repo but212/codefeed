@@ -115,10 +115,7 @@ mod tests {
         ];
 
         for (label, records) in test_cases {
-            let storage = records.into_iter().fold(FileStorage::new(), |s, r| {
-                s.push(&NormalizedPath::from(r.path), r.content)
-                    .expect("test fixture fits the output limit")
-            });
+            let storage: FileStorage = records.into_iter().collect();
             let raw_bytes =
                 usize::try_from(storage.total_bytes()).expect("storage total bytes fits in usize");
 
