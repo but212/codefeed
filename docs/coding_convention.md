@@ -130,3 +130,4 @@
 - **Filesystem isolation:** Use `crate::shell::testing::temp_dir` in shell tests; core unit tests never touch the disk.
 - **Network mocking:** Mock HTTP via local `TcpListener` bound to `127.0.0.1:0` (`MockServer`). External network calls in tests are forbidden.
 - **Limit checks:** Validate relations via `const _` assertions, never runtime tests.
+  - **Exception (documentation sync):** A runtime test may compare limit constants with the mirrored values in `docs/security_and_filtering.md` sec. 8. `const` assertions cannot read that table.

@@ -218,6 +218,7 @@ fn classify_local_path(
 mod tests {
     use super::super::validate_root;
     use super::*;
+    use crate::core::policy::MAX_PATH_DEPTH;
     use crate::shell::testing::temp_dir;
     use ignore::WalkBuilder;
     use std::io::Cursor;
@@ -225,22 +226,24 @@ mod tests {
 
     #[test]
     fn rejects_excessive_path_depth() {
-        let mut excessive = PathBuf::new();
-        for _ in 0..257 {
-            excessive.push("d");
-        }
-        excessive.push("file.txt");
+        let nested = |directories: usize| {
+            let mut path = PathBuf::new();
+            for _ in 0..directories {
+                path.push("d");
+            }
+            path.push("file.txt");
+            path
+        };
         let exclude = ExcludePatterns::default();
-        let result = classify_local_path(&excessive, &exclude);
-        assert!(result.is_err());
+        assert!(classify_local_path(&nested(MAX_PATH_DEPTH), &exclude).is_ok());
 
-        let mut normal = PathBuf::new();
-        for _ in 0..256 {
-            normal.push("d");
-        }
-        normal.push("file.txt");
-        let result = classify_local_path(&normal, &exclude);
-        assert!(result.is_ok());
+        let err = classify_local_path(&nested(MAX_PATH_DEPTH + 1), &exclude)
+            .expect_err("one level past the limit must be rejected");
+        assert!(
+            err.to_string()
+                .contains("local path exceeds maximum directory depth"),
+            "unexpected message: {err}"
+        );
     }
 
     #[test]

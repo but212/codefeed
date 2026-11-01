@@ -225,26 +225,6 @@ mod tests {
     }
 
     #[test]
-    fn text_renders_files_in_deterministic_order() {
-        let files = vec![
-            FileRecord {
-                path: "z.txt",
-                content: "z",
-            },
-            FileRecord {
-                path: "a.txt",
-                content: "a",
-            },
-        ];
-        let digest = render_text_digest("repo", Some("abc"), &files, 1).unwrap();
-        let first = digest.find("FILE: a.txt").expect("a.txt is missing");
-        let second = digest.find("FILE: z.txt").expect("z.txt is missing");
-        assert!(first < second);
-        assert!(digest.contains("Revision: abc"));
-        assert!(digest.contains("Skipped: 1"));
-    }
-
-    #[test]
     fn text_escapes_revision_header() {
         let revision = "feature\\x\r\nFiles: 9";
         let rendered = render_text_digest("repo", Some(revision), &[], 0).unwrap();

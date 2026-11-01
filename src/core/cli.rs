@@ -265,6 +265,20 @@ mod tests {
     use crate::core::model::{GitRef, Source};
     use crate::core::policy::ExcludePatterns;
 
+    /// An argument value that is not valid Unicode on the current platform.
+    #[cfg(unix)]
+    fn non_utf8_os_value() -> std::ffi::OsString {
+        use std::os::unix::ffi::OsStringExt;
+        std::ffi::OsString::from_vec(vec![0xff])
+    }
+
+    /// An argument value that is not valid Unicode on the current platform.
+    #[cfg(windows)]
+    fn non_utf8_os_value() -> std::ffi::OsString {
+        use std::os::windows::ffi::OsStringExt;
+        std::ffi::OsString::from_wide(&[0xD800])
+    }
+
     fn parse_run<'a>(args: impl IntoIterator<Item = &'a str>) -> RunConfig {
         match parse(args).expect("expected parse to succeed") {
             CliAction::Run(config) => *config,
@@ -419,20 +433,11 @@ mod tests {
         }
     }
 
+    #[cfg(any(unix, windows))]
     #[test]
     fn cli_non_utf8_format_reports_lossy_value() {
-        #[cfg(unix)]
-        let raw_val = {
-            use std::os::unix::ffi::OsStringExt;
-            std::ffi::OsString::from_vec(vec![0xff])
-        };
-        #[cfg(windows)]
-        let raw_val = {
-            use std::os::windows::ffi::OsStringExt;
-            std::ffi::OsString::from_wide(&[0xD800])
-        };
+        let raw_val = non_utf8_os_value();
 
-        #[cfg(any(unix, windows))]
         {
             let args = [
                 std::ffi::OsString::from("codefeed"),
@@ -581,20 +586,11 @@ mod tests {
         }
     }
 
+    #[cfg(any(unix, windows))]
     #[test]
     fn cli_exclude_non_utf8_value_is_a_usage_error() {
-        #[cfg(unix)]
-        let raw_val = {
-            use std::os::unix::ffi::OsStringExt;
-            std::ffi::OsString::from_vec(vec![0xff])
-        };
-        #[cfg(windows)]
-        let raw_val = {
-            use std::os::windows::ffi::OsStringExt;
-            std::ffi::OsString::from_wide(&[0xD800])
-        };
+        let raw_val = non_utf8_os_value();
 
-        #[cfg(any(unix, windows))]
         {
             let args = [
                 std::ffi::OsString::from("codefeed"),

@@ -277,8 +277,6 @@ mod tests {
 
     #[test]
     fn skips_too_large_files() {
-        use crate::core::policy::MAX_FILE_SIZE_USIZE;
-
         let mock_data = gzip_tarball(&[
             ("repo-root/small.txt", b"small", EntryType::Regular),
             (
@@ -429,74 +427,50 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_paths_across_repo_roots_fail_the_run() {
-        let mock_data = gzip_tarball(&[
-            ("r1/a.txt", b"first", EntryType::Regular),
-            ("r2/a.txt", b"second", EntryType::Regular),
-        ]);
-
-        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
-            .unwrap_err();
-        assert!(
-            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
-            "expected InvalidMetadata, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn duplicate_paths_after_normalization_fail_the_run() {
-        let mock_data = gzip_tarball(&[
-            ("repo/a//b.txt", b"first", EntryType::Regular),
-            ("repo/a/b.txt", b"second", EntryType::Regular),
-        ]);
-
-        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
-            .unwrap_err();
-        assert!(
-            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
-            "expected InvalidMetadata, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn duplicate_skipped_candidate_fails_the_run() {
+    fn colliding_entry_paths_fail_the_run() {
         // The oversized second entry is skipped for size, but its path still collides with the stored first entry.
         let oversized = vec![b'x'; MAX_FILE_SIZE_USIZE + 1];
-        let mock_data = gzip_archive(|tar| {
-            for body in [&b"first"[..], oversized.as_slice()] {
-                let mut header = tar::Header::new_gnu();
-                header.set_entry_type(EntryType::Regular);
-                header.set_size(body.len() as u64);
-                header.set_mode(0o644);
-                let name = b"repo/a.txt";
-                header.as_mut_bytes()[..name.len()].copy_from_slice(name);
-                header.set_cksum();
-                tar.append(&header, body).unwrap();
-            }
-        });
-
-        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
-            .unwrap_err();
-        assert!(
-            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
-            "expected InvalidMetadata, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn file_and_directory_with_same_path_fail_the_run() {
-        // `a` is stored as a file, and `a/b` needs `a` as a directory: the digest tree would show both.
-        let mock_data = gzip_tarball(&[
-            ("repo-root/a", b"file", EntryType::Regular),
-            ("repo-root/a/b", b"nested", EntryType::Regular),
-        ]);
-
-        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
-            .unwrap_err();
-        assert!(
-            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
-            "expected InvalidMetadata, got: {err:?}"
-        );
+        type TarEntry<'a> = (&'a str, &'a [u8], EntryType);
+        // (case, entries): every case has two entries that collide in the digest tree.
+        let cases: [(&str, Vec<TarEntry<'_>>); 4] = [
+            (
+                "across repo roots",
+                vec![
+                    ("r1/a.txt", &b"first"[..], EntryType::Regular),
+                    ("r2/a.txt", &b"second"[..], EntryType::Regular),
+                ],
+            ),
+            (
+                "after normalization",
+                vec![
+                    ("repo/a//b.txt", &b"first"[..], EntryType::Regular),
+                    ("repo/a/b.txt", &b"second"[..], EntryType::Regular),
+                ],
+            ),
+            (
+                "skipped candidate",
+                vec![
+                    ("repo/a.txt", &b"first"[..], EntryType::Regular),
+                    ("repo/a.txt", oversized.as_slice(), EntryType::Regular),
+                ],
+            ),
+            (
+                "file and directory",
+                vec![
+                    ("repo-root/a", &b"file"[..], EntryType::Regular),
+                    ("repo-root/a/b", &b"nested"[..], EntryType::Regular),
+                ],
+            ),
+        ];
+        for (case, entries) in cases {
+            let mock_data = gzip_tarball(&entries);
+            let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+                .unwrap_err();
+            assert!(
+                matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
+                "{case}: expected InvalidMetadata, got: {err:?}"
+            );
+        }
     }
 
     #[test]
@@ -567,18 +541,22 @@ mod tests {
         assert_eq!(result.skipped, 1);
     }
 
+    /// Asserts that the run fails because a header exceeds the `ARCHIVE_MAX_HEADER_BYTES` budget.
+    fn assert_header_budget_failure(mock_data: &[u8]) {
+        let err = collect_default(mock_data, "https://github.com/owner/repo", None).unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(msg)) if msg.contains("ARCHIVE_MAX_HEADER_BYTES")),
+            "expected header budget failure, got: {err:?}"
+        );
+    }
+
     #[test]
     fn oversized_gnu_long_name_header_fails_the_run() {
         // tar reads the `L` extension body whole before the path reaches policy, so the header budget bounds it.
         let long_name = format!("repo-root/{}", "a".repeat(70_000));
         let mock_data = gzip_tarball(&[(long_name.as_str(), b"content", EntryType::Regular)]);
 
-        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
-            .unwrap_err();
-        assert!(
-            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(msg)) if msg.contains("ARCHIVE_MAX_HEADER_BYTES")),
-            "expected header budget failure, got: {err:?}"
-        );
+        assert_header_budget_failure(&mock_data);
     }
 
     #[test]
@@ -597,12 +575,7 @@ mod tests {
                 .unwrap();
         });
 
-        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
-            .unwrap_err();
-        assert!(
-            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(msg)) if msg.contains("ARCHIVE_MAX_HEADER_BYTES")),
-            "expected header budget failure, got: {err:?}"
-        );
+        assert_header_budget_failure(&mock_data);
     }
 
     #[test]
@@ -614,11 +587,6 @@ mod tests {
             ("repo-root/src/main.rs", b"fn main() {}", EntryType::Regular),
         ]);
 
-        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
-            .unwrap_err();
-        assert!(
-            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(msg)) if msg.contains("ARCHIVE_MAX_HEADER_BYTES")),
-            "expected header budget failure, got: {err:?}"
-        );
+        assert_header_budget_failure(&mock_data);
     }
 }

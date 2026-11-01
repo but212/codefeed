@@ -199,13 +199,18 @@ mod tests {
     }
 
     #[test]
-    fn message_constructors_sanitize_control_characters() {
+    fn sanitizes_control_characters_in_every_message_variant() {
         let raw = "a\x1b[2J\nb";
+        // Constructors and directly built variants both render sanitized text through Display.
         let cases = [
             DomainError::usage(raw),
             DomainError::invalid_source(raw),
             DomainError::unsupported_source(raw),
             DomainError::invalid_metadata(raw),
+            DomainError::Usage(raw.to_string()),
+            DomainError::InvalidSource(raw.to_string()),
+            DomainError::UnsupportedSource(raw.to_string()),
+            DomainError::InvalidMetadata(raw.to_string()),
         ];
         for err in cases {
             let rendered = err.to_string();
@@ -213,22 +218,6 @@ mod tests {
             assert!(!rendered.contains('\n'), "newline leaked: {rendered:?}");
         }
         assert_eq!(DomainError::usage(raw).to_string(), "a\u{FFFD}[2J b");
-    }
-
-    #[test]
-    fn display_sanitizes_variants_built_without_constructors() {
-        let raw = "a\x1b[2J\nb".to_string();
-        let cases = [
-            DomainError::Usage(raw.clone()),
-            DomainError::InvalidSource(raw.clone()),
-            DomainError::UnsupportedSource(raw.clone()),
-            DomainError::InvalidMetadata(raw),
-        ];
-        for err in cases {
-            let rendered = err.to_string();
-            assert!(!rendered.contains('\x1b'), "ESC leaked: {rendered:?}");
-            assert!(!rendered.contains('\n'), "newline leaked: {rendered:?}");
-        }
     }
 
     #[test]

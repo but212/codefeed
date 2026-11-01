@@ -170,12 +170,12 @@ mod tests {
 
     #[test]
     fn test_classify_path_segments_depth_limit() {
-        let normal: Vec<&[u8]> = std::iter::repeat_n(b"d".as_slice(), 256)
+        let normal: Vec<&[u8]> = std::iter::repeat_n(b"d".as_slice(), MAX_PATH_DEPTH)
             .chain(std::iter::once(b"file.txt".as_slice()))
             .collect();
         assert!(classify_path_segments(normal, &ExcludePatterns::default()).is_ok());
 
-        let excessive: Vec<&[u8]> = std::iter::repeat_n(b"d".as_slice(), 257)
+        let excessive: Vec<&[u8]> = std::iter::repeat_n(b"d".as_slice(), MAX_PATH_DEPTH + 1)
             .chain(std::iter::once(b"file.txt".as_slice()))
             .collect();
         assert_eq!(
@@ -192,7 +192,7 @@ mod tests {
             Ok(PathStatus::Ignored)
         );
 
-        let deep_noise: Vec<&[u8]> = std::iter::repeat_n(b"d".as_slice(), 257)
+        let deep_noise: Vec<&[u8]> = std::iter::repeat_n(b"d".as_slice(), MAX_PATH_DEPTH + 1)
             .chain(std::iter::once(b"Cargo.lock".as_slice()))
             .collect();
         assert_eq!(

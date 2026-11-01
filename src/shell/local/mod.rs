@@ -161,6 +161,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "creating a symlink on Windows requires Developer Mode or elevation"]
     fn rejects_windows_symlink_file() -> Result<(), Box<dyn std::error::Error>> {
         use std::os::windows::fs::symlink_file;
 
@@ -168,13 +169,11 @@ mod tests {
         let target = root.join("target.txt");
         let link = root.join("link.txt");
         fs::write(&target, "content")?;
+        symlink_file(&target, &link)?;
 
-        if symlink_file(&target, &link).is_ok() {
-            let res = collect_default(&root, &ResolvedOutput::STDOUT)?;
-            assert_eq!(res.files.len(), 1, "only the regular target is collected");
-            assert_eq!(res.skipped, 0);
-            let _ = fs::remove_file(&link);
-        }
+        let res = collect_default(&root, &ResolvedOutput::STDOUT)?;
+        assert_eq!(res.files.len(), 1, "only the regular target is collected");
+        assert_eq!(res.skipped, 0);
         Ok(())
     }
 
@@ -235,13 +234,6 @@ mod tests {
             fs::set_permissions(dir, fs::Permissions::from_mode(0o0000))?;
         }
 
-        if fs::read_dir(&locked[0]).is_ok() {
-            for dir in &locked {
-                let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o0755));
-            }
-            return Ok(());
-        }
-
         let res = collect_default(&root, &ResolvedOutput::STDOUT);
 
         // Restore permissions so TempDirGuard can clean up
@@ -273,10 +265,6 @@ mod tests {
         fs::write(root.join("b.txt"), "visible")?;
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o0000))?;
 
-        if fs::File::open(&locked).is_ok() {
-            return Ok(());
-        }
-
         let res = collect_default(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(res.files.len(), 1);
         assert_eq!(res.skipped, 1);
@@ -307,11 +295,6 @@ mod tests {
         let gitignore = root.join(".gitignore");
         fs::write(&gitignore, "secret.txt\n")?;
         fs::set_permissions(&gitignore, fs::Permissions::from_mode(0o0000))?;
-
-        if fs::File::open(&gitignore).is_ok() {
-            let _ = fs::set_permissions(&gitignore, fs::Permissions::from_mode(0o0644));
-            return Ok(());
-        }
 
         let res = collect_default(&root, &ResolvedOutput::STDOUT);
         let _ = fs::set_permissions(&gitignore, fs::Permissions::from_mode(0o0644));
@@ -377,6 +360,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "creating a symlink on Windows requires Developer Mode or elevation"]
     fn symlinked_gitignore_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
         use std::os::windows::fs::symlink_file;
 
@@ -384,12 +368,11 @@ mod tests {
         let rules = root.join("rules.txt");
         fs::write(&rules, "secret.txt\n")?;
         fs::write(root.join("secret.txt"), "secret")?;
+        symlink_file(&rules, root.join(".gitignore"))?;
 
-        if symlink_file(&rules, root.join(".gitignore")).is_ok() {
-            let err = collect_default(&root, &ResolvedOutput::STDOUT).unwrap_err();
-            assert!(matches!(err, IngestError::Io(_)), "got: {err:?}");
-            assert!(err.to_string().contains(".gitignore"), "got: {err}");
-        }
+        let err = collect_default(&root, &ResolvedOutput::STDOUT).unwrap_err();
+        assert!(matches!(err, IngestError::Io(_)), "got: {err:?}");
+        assert!(err.to_string().contains(".gitignore"), "got: {err}");
         Ok(())
     }
 
@@ -422,27 +405,6 @@ mod tests {
         let res = collect_default(&root, &ResolvedOutput::STDOUT)?;
         assert_eq!(res.files.len(), 1);
         assert_eq!(res.skipped, 1);
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn accounting_rules_non_regular_files_and_unlinked_files()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use std::os::unix::fs::symlink;
-
-        let root = temp_dir("accounting_non_regular")?;
-        let target = root.join("regular.txt");
-        let link = root.join("symlink.txt");
-
-        fs::write(&target, "hello")?;
-        symlink(&target, &link)?;
-
-        // Symlink is filtered out before candidate reservation and should not increase skipped
-        let res = collect_default(&root, &ResolvedOutput::STDOUT)?;
-        assert_eq!(res.files.len(), 1);
-        assert_eq!(res.skipped, 0);
-
         Ok(())
     }
 

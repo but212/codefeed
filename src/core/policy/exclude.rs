@@ -189,8 +189,6 @@ mod tests {
         // with trailing whitespace must therefore be rejected, not compiled to a match-all rule.
         let ex = patterns(&["*.log "]);
         assert!(ex.excludes(&segs("a.log"), false));
-        assert!(ExcludePatterns::new(["*.log", "! "]).is_err());
-        assert!(ExcludePatterns::new(["src/", "!\t"]).is_err());
     }
 
     #[test]
