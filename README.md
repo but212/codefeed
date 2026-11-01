@@ -50,7 +50,7 @@ Options may appear before or after `<SOURCE>`. Short flags accept `=` syntax (`-
 - `-o`, `--output <PATH|->`: Output destination (default: `digest.txt`). `-` streams to stdout.
 - `-r`, `--ref <BRANCH|TAG|COMMIT>`: GitHub revision (default: default branch). Rejects empty, whitespace-only, `.`, and `..`.
 - `-f`, `--format <text|xml>`: Digest format (default: `text`).
-- `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to the source root (e.g. `build/`, `*.log`, `/vendor`). Repeatable; patterns apply in the order given. Works for local and GitHub sources. Unescaped trailing whitespace is trimmed, as in `.gitignore`, so `'! '` is a bare `!`. An invalid pattern, or one that matches nothing (blank, comment, bare `!`), is a usage error. See [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 3.6.
+- `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to the source root (e.g. `build/`, `*.log`, `/vendor`). Repeatable, applied in order; works for local and GitHub sources. Unescaped trailing whitespace is trimmed, as in `.gitignore`, so `'! '` is a bare `!`. Invalid patterns, and patterns matching nothing (blank, comment, bare `!`), are usage errors. See [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 3.6.
 - `-h`, `--help`: Print usage and exit with 0.
 - `--`: Treat subsequent arguments as positionals (for directories starting with `-`).
 
@@ -91,7 +91,7 @@ codefeed -- -my-directory
 
 ## What Is Included
 
-Excluded entries are dropped silently and omitted from the skipped count. The one exception: a tar header over the header budget fails the run before the entry is classified, so an excluded entry with such a header also fails it:
+Excluded entries are dropped silently and not counted as skipped. Exception: a tar header over the header budget fails the run before classification, even for an excluded entry:
 
 - Hidden entries: path segments starting with `.` (e.g. `.git`, `.github`, `.env*`), excluding the source root itself.
 - Symlinks and non-regular files (local and archive).
@@ -120,7 +120,7 @@ Limits either skip an entry or abort the run. Limit values and enforcement detai
 | `MAX_PATH_DEPTH` | Run fails. Hidden and noise entries are dropped before this check. |
 | `MAX_FILE_COUNT` | Run fails; error lists largest directories. |
 | `MAX_OUTPUT_SIZE` | Run fails; no digest written; error lists largest files. |
-| `ARCHIVE_MAX_HEADER_BYTES` | Run fails. A tar header (including long-name or PAX extension data) exceeds the budget. |
+| `ARCHIVE_MAX_HEADER_BYTES` | Run fails. A tar header, including long-name or PAX data, exceeds the budget. |
 | `ARCHIVE_MAX_SECS`, `GITHUB_TIMEOUT_SECS` | Request times out. Header timeouts retry per [sec. 6.5-6.6](docs/security_and_filtering.md#6-github-network-safety). |
 | `MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS` | Transient failures retried with backoff. Waits longer than the cap abort the run. See [sec. 6.5](docs/security_and_filtering.md#6-github-network-safety). |
 

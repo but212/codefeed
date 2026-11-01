@@ -14,17 +14,17 @@ Observable behavior. **Action** = code or config change required.
 
 #### Fixed
 
-- **`--exclude '! '` is rejected instead of re-including everything**: Unescaped trailing whitespace is trimmed before parsing, as in `.gitignore`. Before, `! ` and `!<TAB>` passed validation and compiled to a whitelist rule matching every path, which re-included all excluded files. `/ ` and `!/ ` passed as no-ops. All four are now a usage error (`src/core/policy/exclude.rs`, `docs/security_and_filtering.md` sec. 3.6).
-  - **Action:** Remove patterns that are only `!` or `/` plus trailing whitespace. Patterns such as `*.log ` keep matching as before.
-- **Overflow diagnostics sanitize names**: Each path and directory name in the `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` overflow lists is sanitized like other stderr diagnostics: `\t`, `\r`, and `\n` become spaces, and other control characters become `\u{FFFD}`. Escape sequences in repository names no longer reach the terminal (`src/core/error.rs`).
-- **`--exclude` matches `\` the same on every platform**: A `\` in a path segment is matched as U+FFFD on all platforms. Before, Windows read `\` as `/`, so `--exclude secret.md` also dropped `docs\secret.md` there. On Unix, a pattern that matched a name containing `\` (such as `a\\b` for `a\b`) no longer matches it (`src/core/policy/exclude.rs`, `docs/security_and_filtering.md` sec. 3.6).
-  - **Action:** Rewrite Unix patterns that matched a `\` in a file name so they no longer depend on that `\`.
-- **Archive file and directory with the same path fail the run**: A tarball that stores `a` as a file and also has entries under `a/` now fails with `InvalidMetadata`. Before, the digest listed `a` as both a file and a directory. A skipped `a` (binary, oversized, or non-text) does not trigger the failure (`src/core/storage.rs`, `docs/security_and_filtering.md` sec. 2 and 3.4).
-  - **Action:** None expected for ordinary repositories.
-- **Root entries no longer merge with a directory named `<root>`**: The `MAX_FILE_COUNT` overflow list now groups root-level entries under `./` instead of `<root>/`. Before, a top-level directory named `<root>` shared that key, so its count merged with the root files (`src/core/selector.rs`, `context.md` sec. 3.2).
-  - **Action:** Library consumers that compare `CandidateLimitExceededError::largest_directories` names to `"<root>/"` must compare to `"./"`.
-- **Oversized archive headers fail the run**: A GitHub tarball whose GNU long-name, GNU long-link, or PAX extension record exceeds the header read budget now fails with `InvalidMetadata`, even when the entry would be dropped by policy (hidden, excluded, or non-regular). Before, tar read the whole record and the entry was then skipped or dropped (`src/shell/archive.rs`, `docs/security_and_filtering.md` sec. 2, 6.4 and 8).
-  - **Action:** None expected for ordinary repositories. Entries whose headers fit the budget and whose paths exceed `MAX_PATH_BYTES` still skip as before.
+- **`--exclude '! '` is a usage error, not a re-include-all**: Unescaped trailing whitespace is trimmed before parsing, as in `.gitignore`. Before, `! ` and `!<TAB>` were accepted and compiled to a whitelist rule matching every path, re-including all excluded files. `/ ` and `!/ ` were no-ops. All four are now usage errors (`src/core/policy/exclude.rs`, `docs/security_and_filtering.md` sec. 3.6).
+  - **Action:** Remove patterns that are only `!` or `/` plus trailing whitespace. `*.log ` matches as before.
+- **Overflow diagnostics sanitize names**: Paths and directory names in the `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` overflow lists are sanitized like other stderr diagnostics: `\t`, `\r`, `\n` become spaces; other control characters become `\u{FFFD}` (`src/core/error.rs`).
+- **`--exclude` matches `\` the same on every platform**: A `\` in a path segment matches as U+FFFD everywhere. Before, Windows read `\` as `/`, so `--exclude secret.md` also dropped `docs\secret.md`. On Unix, a pattern matching a `\` in a file name (such as `a\\b` for `a\b`) no longer matches it (`src/core/policy/exclude.rs`, `docs/security_and_filtering.md` sec. 3.6).
+  - **Action:** Rewrite Unix patterns that depended on a `\` in a file name.
+- **Archive file and directory at one path fail the run**: A tarball that stores `a` as a file and also has entries under `a/` fails with `InvalidMetadata`. Before, the digest listed `a` as both. A skipped `a` (binary, oversized, or non-text) does not trigger it (`src/core/storage.rs`, `docs/security_and_filtering.md` sec. 2 and 3.4).
+  - **Action:** None for ordinary repositories.
+- **Root entries no longer merge with a directory named `<root>`**: The `MAX_FILE_COUNT` overflow list groups root-level entries under `./`, not `<root>/`. Before, a top-level `<root>` directory shared that key, and its count merged with the root files (`src/core/selector.rs`, `context.md` sec. 3.2).
+  - **Action:** Library consumers comparing `CandidateLimitExceededError::largest_directories` names to `"<root>/"` must compare to `"./"`.
+- **Oversized archive headers fail the run**: A GitHub tarball whose GNU long-name, GNU long-link, or PAX record exceeds the header read budget fails with `InvalidMetadata`, even if policy would drop the entry (hidden, excluded, non-regular). Before, tar read the whole record, then skipped or dropped the entry (`src/shell/archive.rs`, `docs/security_and_filtering.md` sec. 2, 6.4, 8).
+  - **Action:** None for ordinary repositories. Headers within budget whose paths exceed `MAX_PATH_BYTES` still skip.
 
 ### Contributors
 
@@ -32,21 +32,21 @@ Internal refactors and test changes. No consumer action required.
 
 #### Added
 
-- **Walk and ignore differential test cases**: Expanded `write_reference_fixture` in `src/shell/local/walk.rs` to verify parent directory pruning vs child negation, directory trailing-slash semantics, and mixed BOM handling against `ignore::WalkBuilder`.
-- **Limit values documentation sync test**: Added a unit test in `src/core/policy/limits.rs` validating that every limit constant matches the mirror table in `docs/security_and_filtering.md` §8.
-- **Offline GitHub and error path test coverage**: Added unit tests covering mock streaming ingestion for GitHub sources, CLI success branches for file and stdout targets, directory and file validation edge cases, pipeline channel error transitions, atomic write temp file collisions, and output pipe error handling across shell modules.
+- **Walk and ignore differential tests**: `write_reference_fixture` (`src/shell/local/walk.rs`) covers parent-directory pruning vs child negation, directory trailing-slash semantics, and mixed BOM handling, compared against `ignore::WalkBuilder`.
+- **Limit documentation sync test**: Unit test in `src/core/policy/limits.rs` checks every limit constant against the mirror table in `docs/security_and_filtering.md` §8.
+- **Offline error-path tests**: Unit tests for mock GitHub streaming, CLI success branches (file and stdout), directory and file validation edges, pipeline channel error transitions, atomic-write temp collisions, and output pipe errors.
 
 #### Changed
 
-- **Remaining read caps moved to policy**: The GitHub API error body cap and the PAX global header cap are now `GITHUB_ERROR_BODY_BYTES` and `ARCHIVE_PAX_GLOBAL_BYTES` in `src/core/policy/limits.rs`, mirrored in `docs/security_and_filtering.md` sec. 8. The overflow diagnostic and selector tests derive their expected values from the limit constants. No observable change.
-- **Walk carries relative paths**: Each walk frame and `RegularFile` hold their path relative to the root, so `classify_entry` and directory exclusion no longer call `strip_prefix` or carry its unreachable error branch. Behavior unchanged (`src/shell/local/walk.rs`, `src/shell/local/pipeline.rs`).
-- **Docs match the code**: The security spec sec. 2 shows the tar header read before path normalization. Sec. 5 describes the custom walk's symlink handling. The README marks `.gitignore` as local-only. The `IngestReport::skipped_files` rustdoc lists every skip reason (`docs/security_and_filtering.md`, `README.md`, `src/core/model.rs`).
-- **Single tarball URL builder**: `tarball_url` takes the API base as an argument, and the test-only GitHub URL uses it too, so tests exercise the same path encoding as production (`src/core/github/url.rs`, `src/shell/github/mod.rs`).
-- **Path classifier without state enum**: `classify_path_segments` returns at the first non-UTF-8 segment instead of tracking a `PathClassifierState` (`src/core/policy/classify.rs`).
-- **Duplicate broken-pipe tests removed**: One shared `BrokenPipeWriter` now serves both output tests (`src/shell/output.rs`).
-- **Specification clarity on limit authority**: Clarified in `AGENTS.md` and `docs/security_and_filtering.md` that `src/core/policy/` is the sole authority for limit values, while `docs/security_and_filtering.md` §8 serves as the sole documentation mirror.
-- **Unused re-export removed**: `src/core/github/mod.rs` imports `sanitize_error_detail` instead of re-exporting it. No path that consumers or other modules use changes.
-- **Overflow list sizes moved to policy**: `OVERFLOW_LARGEST_FILES` and `OVERFLOW_LARGEST_DIRECTORIES` in `src/core/policy/limits.rs` replace the literal sizes in `src/core/storage.rs` and `src/core/selector.rs`. Values are unchanged; no observable behavior changes.
+- **Remaining read caps moved to policy**: GitHub API error body and PAX global header caps are `GITHUB_ERROR_BODY_BYTES` and `ARCHIVE_PAX_GLOBAL_BYTES` in `src/core/policy/limits.rs`, mirrored in `docs/security_and_filtering.md` sec. 8. Overflow and selector tests derive expected values from the constants. No observable change.
+- **Walk carries relative paths**: Walk frames and `RegularFile` hold root-relative paths; `classify_entry` and directory exclusion no longer call `strip_prefix` or its unreachable error branch. No behavior change (`src/shell/local/walk.rs`, `src/shell/local/pipeline.rs`).
+- **Docs match code**: Security spec sec. 2 shows tar header read before path normalization; sec. 5 describes the custom walk's symlink handling. README marks `.gitignore` as local-only. `IngestReport::skipped_files` rustdoc lists every skip reason (`docs/security_and_filtering.md`, `README.md`, `src/core/model.rs`).
+- **Single tarball URL builder**: `tarball_url` takes the API base; the test-only GitHub URL uses it too, so tests exercise production path encoding (`src/core/github/url.rs`, `src/shell/github/mod.rs`).
+- **Path classifier without state enum**: `classify_path_segments` returns at the first non-UTF-8 segment instead of tracking `PathClassifierState` (`src/core/policy/classify.rs`).
+- **Duplicate broken-pipe tests removed**: One shared `BrokenPipeWriter` serves both output tests (`src/shell/output.rs`).
+- **Limit authority clarified**: `AGENTS.md` and `docs/security_and_filtering.md` state that `src/core/policy/` is the sole limit authority and `docs/security_and_filtering.md` §8 the sole documentation mirror.
+- **Unused re-export removed**: `src/core/github/mod.rs` imports `sanitize_error_detail` instead of re-exporting it. No consumer-visible path changes.
+- **Overflow list sizes moved to policy**: `OVERFLOW_LARGEST_FILES` and `OVERFLOW_LARGEST_DIRECTORIES` in `src/core/policy/limits.rs` replace literals in `src/core/storage.rs` and `src/core/selector.rs`. Values unchanged.
 
 ---
 
