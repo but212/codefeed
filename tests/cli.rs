@@ -188,6 +188,17 @@ fn exclude_invalid_pattern_is_a_usage_error() {
 }
 
 #[test]
+fn exclude_bare_bang_with_trailing_space_is_a_usage_error() {
+    let output = run(&[".", "-x", "! "]);
+    assert_eq!(output.status.code(), Some(1), "output: {output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("error: invalid value '! ' for '--exclude <PATTERN>'"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
 fn outputs_xml_when_format_xml_specified() -> Result<(), Box<dyn std::error::Error>> {
     let root = TempDir::new("xml");
     std::fs::write(root.path.join("file.rs"), "fn main() { let x = 1 < 2; }")?;

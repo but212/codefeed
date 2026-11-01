@@ -12,7 +12,8 @@ use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::error::DomainError;
 use crate::core::model::CollectionResult;
 use crate::core::policy::{
-    ARCHIVE_BUFFER_BYTES, ARCHIVE_MAX_HEADER_BYTES, ExcludePatterns, MAX_FILE_SIZE,
+    ARCHIVE_BUFFER_BYTES, ARCHIVE_MAX_HEADER_BYTES, ARCHIVE_PAX_GLOBAL_BYTES, ExcludePatterns,
+    MAX_FILE_SIZE,
 };
 use crate::core::selector::Selector;
 
@@ -48,7 +49,7 @@ pub(super) fn collect<R: Read>(
         if entry.header().entry_type() == EntryType::XGlobalHeader {
             content_scratch.clear();
             (&mut entry)
-                .take(1024)
+                .take(ARCHIVE_PAX_GLOBAL_BYTES)
                 .read_to_end(&mut content_scratch)
                 .map_err(|err: io::Error| stream_error(&err))?;
             parsed_revision = parsed_revision.or_else(|| parse_pax_comment(&content_scratch));

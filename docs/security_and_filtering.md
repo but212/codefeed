@@ -123,7 +123,7 @@ Exact matches against the final path segment:
 
 ### 3.6 User Exclusions (`--exclude`)
 
-- Patterns use `.gitignore` syntax and are relative to the source root. Matching is case-sensitive, as in git. Each pattern must yield exactly one rule. A blank line, a comment, a bare `!`, or an invalid glob fails at parse time with `DomainError::Usage`. An unclosed `[` is an error here, though a `.gitignore` file accepts it.
+- Patterns use `.gitignore` syntax and are relative to the source root. Matching is case-sensitive, as in git. Each pattern must yield exactly one rule. Unescaped trailing whitespace is trimmed before parsing, as in `.gitignore`, so `'! '` is a bare `!`. A blank line, a comment, a bare `!`, or an invalid glob fails at parse time with `DomainError::Usage`. An unclosed `[` is an error here, though a `.gitignore` file accepts it.
 - A `\` in a path segment is matched as U+FFFD on every platform, so it is never a separator and never matches a `\` in a pattern. On Unix, a pattern that matched a name containing `\` (such as `a\\b` for `a\b`) no longer matches it. Results are the same on Windows and Unix.
 - The rule applies to local and GitHub sources in the same way. It is independent of `.gitignore` (sec. 3.5): a path is dropped when either one drops it. A `!` pattern re-includes only paths that other user patterns exclude.
 - A path is excluded when it or any ancestor directory matches. Ancestors are tested as directories, from the top down. A `!` pattern cannot re-include a file under an excluded directory.
@@ -225,6 +225,8 @@ Sole documentation mirror for numerical limits (authoritative definitions reside
 | `MAX_OUTPUT_SIZE` | 20 MiB | Storage check & buffer | Run fails; lists `OVERFLOW_LARGEST_FILES` largest files |
 | `ARCHIVE_BUFFER_BYTES` | 64 KiB | Archive read buffer | Buffering parameter (no overflow) |
 | `ARCHIVE_MAX_HEADER_BYTES` | 64 KiB | Archive header read budget | Run fails (`InvalidMetadata`) |
+| `ARCHIVE_PAX_GLOBAL_BYTES` | 1 KiB | PAX global header read | Revision falls back to the requested ref |
+| `GITHUB_ERROR_BODY_BYTES` | 4 KiB | GitHub API error body read | Rest of body left out of the message |
 | `LOCAL_CHANNEL_CAPACITY` | 64 messages | Channel bounds | Blocks sender (no overflow) |
 | `MAX_LOCAL_WORKERS` | 12 threads | Thread pool sizing | Worker concurrency limit |
 | `ARCHIVE_MAX_SECS` | 300 s | Archive stream timer | Fails with request error |

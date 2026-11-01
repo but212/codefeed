@@ -40,6 +40,10 @@ pub(crate) const ARCHIVE_BUFFER_BYTES: usize = 64 * 1024;
 /// Bytes one tar entry-header read may consume from the decompressed archive stream (64 KiB). Covers the
 /// previous entry's padding plus the GNU `L`/`K` and PAX `x` extension bodies and the header itself.
 pub(crate) const ARCHIVE_MAX_HEADER_BYTES: u64 = 64 * 1024;
+/// Bytes of a PAX global header read for its `comment=<sha>` revision record (1 KiB).
+pub(crate) const ARCHIVE_PAX_GLOBAL_BYTES: u64 = 1024;
+/// Bytes of a non-success GitHub API response body kept for the error message (4 KiB).
+pub(crate) const GITHUB_ERROR_BODY_BYTES: u64 = 4 * 1024;
 /// Capacity in messages of each local pipeline channel (jobs and slots). A full channel blocks its
 /// sender, which bounds the file bodies held at once to this value plus two (security §5.5, §8).
 pub(crate) const LOCAL_CHANNEL_CAPACITY: usize = 64;
@@ -76,6 +80,8 @@ const _: () = {
     assert!(ARCHIVE_BUFFER_BYTES > 0);
     // Padding (511) + three extension bodies, each a header block plus a full-length path, + final header.
     assert!(ARCHIVE_MAX_HEADER_BYTES >= 511 + 3 * (512 + MAX_PATH_BYTES + 1024) + 512);
+    // One maximal record `NN comment=<64 hex>\n` (`parse_pax_comment` accepts 64-hex SHAs).
+    assert!(ARCHIVE_PAX_GLOBAL_BYTES >= ("NN comment=".len() + 64 + 1) as u64);
     assert!(LOCAL_CHANNEL_CAPACITY > 0);
     assert!(MAX_LOCAL_WORKERS > 0);
     assert!(MAX_FILE_SIZE as usize as u64 == MAX_FILE_SIZE);
@@ -171,6 +177,14 @@ mod tests {
             (
                 "ARCHIVE_MAX_HEADER_BYTES",
                 format!("{} KiB", ARCHIVE_MAX_HEADER_BYTES / 1024),
+            ),
+            (
+                "ARCHIVE_PAX_GLOBAL_BYTES",
+                format!("{} KiB", ARCHIVE_PAX_GLOBAL_BYTES / 1024),
+            ),
+            (
+                "GITHUB_ERROR_BODY_BYTES",
+                format!("{} KiB", GITHUB_ERROR_BODY_BYTES / 1024),
             ),
             (
                 "LOCAL_CHANNEL_CAPACITY",

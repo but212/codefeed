@@ -178,7 +178,9 @@ impl Selector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::policy::{MAX_FILE_SIZE_USIZE, MAX_PATH_BYTES_USIZE};
+    use crate::core::policy::{
+        MAX_FILE_SIZE_USIZE, MAX_OUTPUT_SIZE, MAX_OUTPUT_SIZE_USIZE, MAX_PATH_BYTES_USIZE,
+    };
 
     #[test]
     fn candidate_budget_enforces_limit() {
@@ -192,19 +194,23 @@ mod tests {
     #[test]
     fn candidate_overflow_includes_largest_directories_diagnostic()
     -> Result<(), Box<dyn std::error::Error>> {
+        let vendor = MAX_FILE_COUNT * 4 / 5;
+        let src = MAX_FILE_COUNT - vendor;
         let mut budget = CandidateBudget::default();
-        for index in 0..8_000 {
+        for index in 0..vendor {
             budget = budget.add(&format!("vendor/pkg_{index}.rs"))?;
         }
-        for index in 0..2_000 {
+        for index in 0..src {
             budget = budget.add(&format!("src/file_{index}.rs"))?;
         }
         let err = budget.add("extra/one.rs").unwrap_err();
         let message = err.to_string();
-        assert!(message.contains("repository contains more than 10000 files"));
+        assert!(message.contains(&format!(
+            "repository contains more than {MAX_FILE_COUNT} files"
+        )));
         assert!(message.contains("largest directories:"));
-        assert!(message.contains("vendor/ (8000 files)"));
-        assert!(message.contains("src/ (2000 files)"));
+        assert!(message.contains(&format!("vendor/ ({vendor} files)")));
+        assert!(message.contains(&format!("src/ ({src} files)")));
         Ok(())
     }
 
@@ -217,7 +223,9 @@ mod tests {
         }
         let err = budget.add("dir_00000/extra.rs").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("repository contains more than 10000 files"));
+        assert!(msg.contains(&format!(
+            "repository contains more than {MAX_FILE_COUNT} files"
+        )));
         assert!(msg.contains("largest directories:"));
         assert!(msg.contains("- dir_00000/ (2 files)"));
     }
@@ -234,16 +242,25 @@ mod tests {
     #[test]
     fn candidate_overflow_separates_root_files_from_directory_named_root()
     -> Result<(), Box<dyn std::error::Error>> {
+        let named_root = MAX_FILE_COUNT * 3 / 5;
+        let root_files = MAX_FILE_COUNT - named_root;
         let mut budget = CandidateBudget::default();
-        for index in 0..6_000 {
+        for index in 0..named_root {
             budget = budget.add(&format!("<root>/pkg_{index}.rs"))?;
         }
-        for index in 0..4_000 {
+        for index in 0..root_files {
             budget = budget.add(&format!("f_{index}.rs"))?;
         }
         let message = budget.add("extra.rs").unwrap_err().to_string();
-        assert!(message.contains("\n  - <root>/ (6000 files)"), "{message}");
-        assert!(message.contains("\n  - ./ (4001 files)"), "{message}");
+        assert!(
+            message.contains(&format!("\n  - <root>/ ({named_root} files)")),
+            "{message}"
+        );
+        // The `extra.rs` entry that overflows the budget is itself a root file.
+        assert!(
+            message.contains(&format!("\n  - ./ ({} files)", root_files + 1)),
+            "{message}"
+        );
         Ok(())
     }
 
@@ -272,7 +289,8 @@ mod tests {
     {
         let chunk = vec![b'x'; MAX_FILE_SIZE_USIZE];
         let mut selector = Selector::new();
-        for i in 0..19 {
+        // Fill the output to one file short of its limit; the next file overflows it.
+        for i in 0..MAX_OUTPUT_SIZE_USIZE / MAX_FILE_SIZE_USIZE - 1 {
             selector = selector.observe(
                 PathStatus::Valid(format!("file_{i:02}.txt").into()),
                 None,
@@ -285,7 +303,10 @@ mod tests {
             })
             .unwrap_err();
         let message = err.to_string();
-        assert!(message.contains("digest exceeds the 20 MiB output limit"));
+        assert!(message.contains(&format!(
+            "digest exceeds the {} MiB output limit",
+            MAX_OUTPUT_SIZE / (1024 * 1024)
+        )));
         assert!(message.contains("largest files:"));
         assert!(message.contains("file_00.txt"));
         Ok(())

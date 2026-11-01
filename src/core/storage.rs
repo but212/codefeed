@@ -213,7 +213,7 @@ pub(crate) fn cmp_path(a: &str, b: &str) -> Ordering {
     a.split('/').cmp(b.split('/'))
 }
 
-/// Diagnostic ranking for digest size: selects up to five largest files.
+/// Diagnostic ranking for digest size: selects up to `OVERFLOW_LARGEST_FILES` largest files.
 ///
 /// Called only on output limit exceeded error paths to format error diagnostics.
 /// Sorts by descending file size, tie-breaking by hierarchical path order (`cmp_path`).
@@ -235,7 +235,7 @@ mod tests {
     use crate::core::policy::MAX_OUTPUT_SIZE_USIZE;
 
     #[test]
-    fn largest_files_selects_top_five_with_stability() {
+    fn largest_files_selects_largest_with_stability() {
         let files = [
             FileRecord {
                 path: "f1.txt",
@@ -266,13 +266,21 @@ mod tests {
                 content: "666666",
             },
         ];
-        let result = largest_files(files);
-        assert_eq!(result.len(), 5);
-        assert_eq!(result[0], ("f6.txt".into(), 6));
-        assert_eq!(result[1], ("f5_a.txt".into(), 5));
-        assert_eq!(result[2], ("f5_b.txt".into(), 5));
-        assert_eq!(result[3], ("f4.txt".into(), 4));
-        assert_eq!(result[4], ("f3.txt".into(), 3));
+        // Full order: descending size, ties by path. The diagnostic keeps the first `OVERFLOW_LARGEST_FILES`.
+        let expected: Vec<(String, usize)> = [
+            ("f6.txt", 6),
+            ("f5_a.txt", 5),
+            ("f5_b.txt", 5),
+            ("f4.txt", 4),
+            ("f3.txt", 3),
+            ("f2.txt", 2),
+            ("f1.txt", 1),
+        ]
+        .into_iter()
+        .take(OVERFLOW_LARGEST_FILES)
+        .map(|(path, size)| (path.to_string(), size))
+        .collect();
+        assert_eq!(largest_files(files), expected);
     }
 
     #[test]

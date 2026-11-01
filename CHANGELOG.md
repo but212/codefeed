@@ -14,6 +14,8 @@ Observable behavior. **Action** = code or config change required.
 
 #### Fixed
 
+- **`--exclude '! '` is rejected instead of re-including everything**: Unescaped trailing whitespace is trimmed before parsing, as in `.gitignore`. Before, `! ` and `!<TAB>` passed validation and compiled to a whitelist rule matching every path, which re-included all excluded files. `/ ` and `!/ ` passed as no-ops. All four are now a usage error (`src/core/policy/exclude.rs`, `docs/security_and_filtering.md` sec. 3.6).
+  - **Action:** Remove patterns that are only `!` or `/` plus trailing whitespace. Patterns such as `*.log ` keep matching as before.
 - **Overflow diagnostics sanitize names**: Each path and directory name in the `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` overflow lists is sanitized like other stderr diagnostics: `\t`, `\r`, and `\n` become spaces, and other control characters become `\u{FFFD}`. Escape sequences in repository names no longer reach the terminal (`src/core/error.rs`).
 - **`--exclude` matches `\` the same on every platform**: A `\` in a path segment is matched as U+FFFD on all platforms. Before, Windows read `\` as `/`, so `--exclude secret.md` also dropped `docs\secret.md` there. On Unix, a pattern that matched a name containing `\` (such as `a\\b` for `a\b`) no longer matches it (`src/core/policy/exclude.rs`, `docs/security_and_filtering.md` sec. 3.6).
   - **Action:** Rewrite Unix patterns that matched a `\` in a file name so they no longer depend on that `\`.
@@ -36,6 +38,7 @@ Internal refactors and test changes. No consumer action required.
 
 #### Changed
 
+- **Remaining read caps moved to policy**: The GitHub API error body cap and the PAX global header cap are now `GITHUB_ERROR_BODY_BYTES` and `ARCHIVE_PAX_GLOBAL_BYTES` in `src/core/policy/limits.rs`, mirrored in `docs/security_and_filtering.md` sec. 8. The overflow diagnostic and selector tests derive their expected values from the limit constants. No observable change.
 - **Walk carries relative paths**: Each walk frame and `RegularFile` hold their path relative to the root, so `classify_entry` and directory exclusion no longer call `strip_prefix` or carry its unreachable error branch. Behavior unchanged (`src/shell/local/walk.rs`, `src/shell/local/pipeline.rs`).
 - **Docs match the code**: The security spec sec. 2 shows the tar header read before path normalization. Sec. 5 describes the custom walk's symlink handling. The README marks `.gitignore` as local-only. The `IngestReport::skipped_files` rustdoc lists every skip reason (`docs/security_and_filtering.md`, `README.md`, `src/core/model.rs`).
 - **Single tarball URL builder**: `tarball_url` takes the API base as an argument, and the test-only GitHub URL uses it too, so tests exercise the same path encoding as production (`src/core/github/url.rs`, `src/shell/github/mod.rs`).

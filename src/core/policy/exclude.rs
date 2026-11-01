@@ -38,7 +38,8 @@ impl ExcludePatterns {
     /// # Errors
     ///
     /// Returns [`DomainError::Usage`] naming the first pattern that is not a valid glob or that
-    /// yields no rule, such as an empty or whitespace-only pattern, a comment, or a bare `!`.
+    /// yields no rule, such as an empty or whitespace-only pattern, a comment, or a bare `!` (with or
+    /// without trailing whitespace).
     pub fn new<I, S>(patterns: I) -> Result<Self, DomainError>
     where
         I: IntoIterator<Item = S>,
@@ -92,12 +93,15 @@ impl ExcludePatterns {
 }
 
 /// Compiles one pattern on its own and requires exactly one rule from it. A pattern whose body is
-/// empty once `!` and the surrounding `/` are removed (such as `!`) would compile to a glob that
-/// matches everything or nothing, so it is rejected before compilation.
+/// empty once trailing whitespace, `!`, and the surrounding `/` are removed (such as `!` or `! `)
+/// would compile to a glob that matches everything or nothing, so it is rejected before compilation.
+/// The body is taken after the trailing whitespace that `add_line` trims, so the check and the
+/// compiled rule agree. An escaped `\ ` keeps its backslash, so it never empties the body.
 fn check_one_rule(pattern: &str) -> Result<(), DomainError> {
-    let body = pattern
+    let trimmed = pattern.trim_end();
+    let body = trimmed
         .strip_prefix('!')
-        .unwrap_or(pattern)
+        .unwrap_or(trimmed)
         .trim_matches('/');
     if body.is_empty() {
         return Err(no_rule(pattern));
@@ -150,7 +154,7 @@ mod tests {
 
     #[test]
     fn new_rejects_patterns_that_are_invalid_or_yield_no_rule() {
-        for pattern in ["", "   ", "#note", "!", "["] {
+        for pattern in ["", "   ", "#note", "!", "! ", "!\t", "/ ", "!/ ", "["] {
             let Err(err) = ExcludePatterns::new([pattern]) else {
                 panic!("expected rejection for {pattern:?}");
             };
@@ -160,6 +164,24 @@ mod tests {
                 "{pattern:?}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn unescaped_trailing_whitespace_is_trimmed_as_in_gitignore() {
+        // `.gitignore` trims trailing whitespace before parsing, so `*.log ` is `*.log`. A bare `!`
+        // with trailing whitespace must therefore be rejected, not compiled to a match-all rule.
+        let ex = patterns(&["*.log "]);
+        assert!(ex.excludes(&segs("a.log"), false));
+        assert!(ExcludePatterns::new(["*.log", "! "]).is_err());
+        assert!(ExcludePatterns::new(["src/", "!\t"]).is_err());
+    }
+
+    #[test]
+    fn escaped_trailing_space_is_a_literal_space() {
+        // `\ ` keeps its space, so the pattern names a file ending in a space.
+        let ex = patterns(&["a\\ "]);
+        assert!(ex.excludes(&segs("a "), false));
+        assert!(!ex.excludes(&segs("a"), false));
     }
 
     #[test]

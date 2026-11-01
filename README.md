@@ -50,7 +50,7 @@ Options may appear before or after `<SOURCE>`. Short flags accept `=` syntax (`-
 - `-o`, `--output <PATH|->`: Output destination (default: `digest.txt`). `-` streams to stdout.
 - `-r`, `--ref <BRANCH|TAG|COMMIT>`: GitHub revision (default: default branch). Rejects empty, whitespace-only, `.`, and `..`.
 - `-f`, `--format <text|xml>`: Digest format (default: `text`).
-- `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to the source root (e.g. `build/`, `*.log`, `/vendor`). Repeatable; patterns apply in the order given. Works for local and GitHub sources. An invalid pattern, or one that matches nothing (blank, comment, bare `!`), is a usage error. See [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 3.6.
+- `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to the source root (e.g. `build/`, `*.log`, `/vendor`). Repeatable; patterns apply in the order given. Works for local and GitHub sources. Unescaped trailing whitespace is trimmed, as in `.gitignore`, so `'! '` is a bare `!`. An invalid pattern, or one that matches nothing (blank, comment, bare `!`), is a usage error. See [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 3.6.
 - `-h`, `--help`: Print usage and exit with 0.
 - `--`: Treat subsequent arguments as positionals (for directories starting with `-`).
 
