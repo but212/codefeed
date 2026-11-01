@@ -150,7 +150,7 @@ mod tests {
         );
         let selector = observe_candidate(Selector::new(), candidate)?;
 
-        let result = selector.finish("test".to_string(), None);
+        let result = selector.finish("test".to_string(), None)?;
         assert_eq!(result.files.len(), 0);
         assert_eq!(result.skipped, 1);
         Ok(())
@@ -173,7 +173,7 @@ mod tests {
         );
         let selector = observe_candidate(Selector::new(), candidate)?;
 
-        let result = selector.finish("test".to_string(), None);
+        let result = selector.finish("test".to_string(), None)?;
         assert_eq!(result.files.len(), 0);
         assert_eq!(result.skipped, 1);
         Ok(())

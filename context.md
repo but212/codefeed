@@ -32,7 +32,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - `FileStorage`: Append-only `path_arena` and `content_arena` indexed by a `spans` vector. Read via `FileStorage::iter` yielding `FileRecord`.
 - `FileSpan`: 16-byte POD of four `u32` arena offsets and lengths (`storage.rs` private).
 - `FileRecord<'a>`: Borrowed `path` and `content` view.
-- `SortedFiles`: `FileStorage` sorted by `cmp_path`. Path uniqueness is enforced upstream by `Selector::observe`. Implements `Deref<Target = FileStorage>`.
+- `SortedFiles`: `FileStorage` sorted by `cmp_path`, with no stored path a directory prefix of another (I-01). Path uniqueness is enforced upstream by `Selector::observe`. Implements `Deref<Target = FileStorage>`.
 
 ### Rendering and results
 
@@ -71,6 +71,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 - `FileStorage::push` rejects candidates before allocation if raw arena bytes would exceed `MAX_OUTPUT_SIZE`.
 - `SortedFiles::new` sorts spans via `cmp_path` (component-by-component comparison), guaranteeing deterministic output regardless of concurrency timing.
+- **I-01 (`runtime`, `SortedFiles::new`):** No stored path is a directory prefix of another stored path (`p` and `p/…`). `DomainError::InvalidMetadata` otherwise. Enforced after sorting by checking adjacent pairs. A schema, type, or boundary check cannot express this because the rule relates separate entries, and a per-entry parse cannot see the others. Skipped candidates are not stored and are not compared, so the digest tree shows each name as either a file or a directory.
 - `Selector::observe` rejects a candidate whose path (at most `MAX_PATH_BYTES`) equals an earlier candidate's path, with `DomainError::InvalidMetadata`. The check covers skipped candidates, so no path names two candidates. Longer paths are skipped before the check.
 - Arena indices are `u32`. Compile-time assertions in `policy/limits.rs` ensure `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX`.
 
@@ -102,7 +103,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 2. Up to `MAX_LOCAL_WORKERS` workers check metadata, read bounded bodies, and reply on bounded slots.
 3. Main thread settles slots in walk order into `Selector::observe`. The first error halts traversal.
 4. Channel capacities are bounded by `LOCAL_CHANNEL_CAPACITY` ([security sec. 8](docs/security_and_filtering.md#8-limit-values)).
-5. Final digest order is established by `SortedFiles::new`. Path uniqueness is established by `Selector::observe`.
+5. Final digest order is established by `SortedFiles::new`, which also enforces I-01. Path uniqueness is established by `Selector::observe`.
 
 ### 3.9 Network
 

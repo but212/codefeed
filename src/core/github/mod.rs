@@ -11,7 +11,8 @@ mod url;
 use crate::core::error::sanitize_error_detail;
 pub(crate) use retry::{AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind};
 pub(crate) use url::{
-    is_github_api_origin, parse_github_url, repository_url, tarball_url, valid_github_name,
+    GITHUB_API_BASE_URL, is_github_api_origin, parse_github_url, repository_url, tarball_url,
+    valid_github_name,
 };
 
 /// Message for a non-success response, without the error-kind prefix. `status_text` is the status

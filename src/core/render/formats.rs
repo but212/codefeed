@@ -199,7 +199,7 @@ mod tests {
         let collection = CollectionResult {
             label: label.to_string(),
             revision: revision.map(str::to_string),
-            files: SortedFiles::new(storage),
+            files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
             skipped,
         };
         let buf = render_with(BoundedBuffer::default(), &collection, renderer)?;
@@ -272,7 +272,7 @@ mod tests {
         let collection = CollectionResult {
             label: "my-repo".into(),
             revision: Some("v1.0".into()),
-            files: SortedFiles::new(storage),
+            files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
             skipped: 2,
         };
         let buf = render_with(BoundedBuffer::default(), &collection, TextRenderer).unwrap();
@@ -332,7 +332,7 @@ hello\n\
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,
-            files: SortedFiles::new(storage),
+            files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
             skipped: 1,
         };
         let buf = render_with(BoundedBuffer::default(), &collection, TextRenderer).unwrap();

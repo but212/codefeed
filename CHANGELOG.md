@@ -17,6 +17,8 @@ Observable behavior. **Action** = code or config change required.
 - **Overflow diagnostics sanitize names**: Each path and directory name in the `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` overflow lists is sanitized like other stderr diagnostics: `\t`, `\r`, and `\n` become spaces, and other control characters become `\u{FFFD}`. Escape sequences in repository names no longer reach the terminal (`src/core/error.rs`).
 - **`--exclude` matches `\` the same on every platform**: A `\` in a path segment is matched as U+FFFD on all platforms. Before, Windows read `\` as `/`, so `--exclude secret.md` also dropped `docs\secret.md` there. On Unix, a pattern that matched a name containing `\` (such as `a\\b` for `a\b`) no longer matches it (`src/core/policy/exclude.rs`, `docs/security_and_filtering.md` sec. 3.6).
   - **Action:** Rewrite Unix patterns that matched a `\` in a file name so they no longer depend on that `\`.
+- **Archive file and directory with the same path fail the run**: A tarball that stores `a` as a file and also has entries under `a/` now fails with `InvalidMetadata`. Before, the digest listed `a` as both a file and a directory. A skipped `a` (binary, oversized, or non-text) does not trigger the failure (`src/core/storage.rs`, `docs/security_and_filtering.md` sec. 2 and 3.4).
+  - **Action:** None expected for ordinary repositories.
 
 ### Contributors
 
@@ -27,6 +29,12 @@ Internal refactors and test changes. No consumer action required.
 - **Walk and ignore differential test cases**: Expanded `write_reference_fixture` in `src/shell/local/walk.rs` to verify parent directory pruning vs child negation, directory trailing-slash semantics, and mixed BOM handling against `ignore::WalkBuilder`.
 - **Limit values documentation sync test**: Added a compile-time test in `src/core/policy/limits.rs` validating that every limit constant matches the mirror table in `docs/security_and_filtering.md` §8.
 - **Offline GitHub and error path test coverage**: Added unit tests covering mock streaming ingestion for GitHub sources, CLI success branches for file and stdout targets, directory and file validation edge cases, pipeline channel error transitions, atomic write temp file collisions, and output pipe error handling across shell modules.
+
+#### Changed
+
+- **Single tarball URL builder**: `tarball_url` takes the API base as an argument, and the test-only GitHub URL uses it too, so tests exercise the same path encoding as production (`src/core/github/url.rs`, `src/shell/github/mod.rs`).
+- **Path classifier without state enum**: `classify_path_segments` returns at the first non-UTF-8 segment instead of tracking a `PathClassifierState` (`src/core/policy/classify.rs`).
+- **Duplicate broken-pipe tests removed**: One shared `BrokenPipeWriter` now serves both output tests (`src/shell/output.rs`).
 
 #### Changed
 

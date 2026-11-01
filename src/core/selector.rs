@@ -153,13 +153,21 @@ impl Selector {
     }
 
     /// Finalizes selection, sorting files lexicographically in-place, and returns a [`CollectionResult`].
-    pub(crate) fn finish(self, label: String, revision: Option<String>) -> CollectionResult {
-        CollectionResult {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::InvalidMetadata`] when a stored path is a directory prefix of another stored path.
+    pub(crate) fn finish(
+        self,
+        label: String,
+        revision: Option<String>,
+    ) -> Result<CollectionResult, DomainError> {
+        Ok(CollectionResult {
             label,
             revision,
-            files: SortedFiles::new(self.storage),
+            files: SortedFiles::new(self.storage)?,
             skipped: self.skipped,
-        }
+        })
     }
 }
 
@@ -300,7 +308,7 @@ mod tests {
             let selector = Selector::new().observe(PathStatus::Valid(path.into()), None, || {
                 Ok::<_, DomainError>(content)
             })?;
-            let collection = selector.finish("test".into(), None);
+            let collection = selector.finish("test".into(), None)?;
             assert_eq!(collection.files.len(), included, "{path}");
             assert_eq!(collection.skipped, skipped, "{path}");
         }
@@ -332,7 +340,7 @@ mod tests {
                 },
             )?;
             assert_eq!(selector.candidates.count, candidates);
-            let collection = selector.finish("test".into(), None);
+            let collection = selector.finish("test".into(), None)?;
             assert_eq!(collection.files.len(), 0);
             assert_eq!(collection.skipped, skipped);
         }

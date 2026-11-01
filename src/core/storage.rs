@@ -7,7 +7,7 @@ use std::cmp::Ordering;
 use std::iter::once;
 use std::ops::Deref;
 
-use crate::core::error::DomainError;
+use crate::core::error::{DomainError, sanitize_error_detail};
 use crate::core::policy::{MAX_OUTPUT_SIZE, NormalizedPath};
 
 /// 16-byte POD indexing a file path and content slice in [`FileStorage`].
@@ -54,16 +54,47 @@ pub(crate) struct FileRecord<'a> {
     pub(crate) content: &'a str,
 }
 
-/// Wrapper guaranteeing that [`FileStorage`] is sorted component-wise lexicographically by path.
+/// Wrapper guaranteeing that [`FileStorage`] is sorted component-wise lexicographically by path
+/// and that no stored path is a directory prefix of another.
 #[derive(Debug)]
 #[cfg_attr(test, derive(Clone))]
 #[must_use]
 pub(crate) struct SortedFiles(FileStorage);
 
 impl SortedFiles {
-    pub(crate) fn new(storage: FileStorage) -> Self {
-        Self(storage.sort_by_path())
+    /// Sorts `storage` by path, then checks that no stored path names a file and a directory at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::InvalidMetadata`] when one stored path is a directory prefix of another,
+    /// since the digest tree would show the same entry as both a file and a directory.
+    pub(crate) fn new(storage: FileStorage) -> Result<Self, DomainError> {
+        let sorted = storage.sort_by_path();
+        check_no_file_directory_collision(&sorted)?;
+        Ok(Self(sorted))
     }
+}
+
+/// Checks adjacent pairs only. If `p` is a directory prefix of some `p/…` path, the element right
+/// after `p` in `cmp_path` order also starts with `p/`, so the first colliding pair is always adjacent.
+fn check_no_file_directory_collision(sorted: &FileStorage) -> Result<(), DomainError> {
+    let mut paths = sorted.iter().map(|record| record.path);
+    let Some(mut previous) = paths.next() else {
+        return Ok(());
+    };
+    for next in paths {
+        if next
+            .strip_prefix(previous)
+            .is_some_and(|rest| rest.starts_with('/'))
+        {
+            return Err(DomainError::invalid_metadata(format!(
+                "entry path is both a file and a directory: {}",
+                sanitize_error_detail(previous)
+            )));
+        }
+        previous = next;
+    }
+    Ok(())
 }
 
 /// Read-only view. `FileStorage` mutators consume `self`, so sortedness cannot be broken through this view.
@@ -329,6 +360,32 @@ mod tests {
         let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
         assert_eq!(paths, vec!["src/a.rs", "src-test/b.rs"]);
         Ok(())
+    }
+
+    fn sorted_from(paths: &[&str]) -> Result<SortedFiles, DomainError> {
+        let storage: FileStorage = paths
+            .iter()
+            .map(|path| FileRecord { path, content: "x" })
+            .collect();
+        SortedFiles::new(storage)
+    }
+
+    #[test]
+    fn sorted_files_rejects_path_that_is_also_a_directory() {
+        for paths in [&["a", "a/b"][..], &["a/b", "a"], &["x/a", "x/a/b/c"]] {
+            let err = sorted_from(paths).unwrap_err();
+            assert!(
+                matches!(&err, DomainError::InvalidMetadata(msg) if msg.starts_with("entry path is both a file and a directory")),
+                "{paths:?}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sorted_files_allows_names_that_share_only_a_string_prefix() {
+        for paths in [&["a.txt", "a/b"][..], &["a-b", "a/b"], &["a", "ab/c"]] {
+            assert!(sorted_from(paths).is_ok(), "{paths:?}");
+        }
     }
 
     #[test]

@@ -60,12 +60,15 @@ Entry (local walk or tar stream)
  |     `-- Valid UTF-8 path
  |           `-- Candidate.
  |
- `-- Candidate (Selector::observe)
-       +-- Charges candidate slot. Overflowing MAX_FILE_COUNT fails the run.
-       +-- Path <= MAX_PATH_BYTES equal to an earlier candidate's path (skipped ones included) -> Run fails (InvalidMetadata).
-       +-- Exceeds MAX_PATH_BYTES or declared MAX_FILE_SIZE: skipped; body not read.
-       +-- Body read (bounded by worker or archive stream).
-       `-- Content check passes -> Included. Otherwise skipped.
+ +-- Candidate (Selector::observe)
+ |     +-- Charges candidate slot. Overflowing MAX_FILE_COUNT fails the run.
+ |     +-- Path <= MAX_PATH_BYTES equal to an earlier candidate's path (skipped ones included) -> Run fails (InvalidMetadata).
+ |     +-- Exceeds MAX_PATH_BYTES or declared MAX_FILE_SIZE: skipped; body not read.
+ |     +-- Body read (bounded by worker or archive stream).
+ |     `-- Content check passes -> Included. Otherwise skipped.
+ |
+ `-- Digest assembly (SortedFiles::new)
+       `-- Stored path is a directory prefix of another stored path -> Run fails (InvalidMetadata). Skipped candidates are not compared.
 ```
 
 ---
@@ -106,6 +109,7 @@ Exact matches against the final path segment:
 | Depth > `MAX_PATH_DEPTH` | Run fails with `InvalidMetadata`. Hidden/noise items dropped prior to check. |
 | Path > `MAX_PATH_BYTES` | Consumes candidate slot; counted as skipped; body not read. |
 | Path <= `MAX_PATH_BYTES` equal to another candidate's path | Run fails with `InvalidMetadata`. Applies to skipped candidates too. Longer duplicates are skipped and not compared. |
+| Stored path is a directory prefix of another stored path (`a` and `a/…`) | Run fails with `InvalidMetadata` at digest assembly. Skipped candidates are not compared. |
 
 ### 3.5 Ignore Files (Local Only)
 

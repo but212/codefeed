@@ -119,7 +119,8 @@ mod tests {
             let collection = CollectionResult {
                 label: label.to_string(),
                 revision: None,
-                files: SortedFiles::new(storage),
+                files: SortedFiles::new(storage)
+                    .expect("test fixture has no file/directory collision"),
                 skipped: 0,
             };
 
@@ -144,7 +145,7 @@ mod tests {
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,
-            files: SortedFiles::new(storage),
+            files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
             skipped: 0,
         };
         match collection.render(DigestFormat::Text) {
@@ -169,7 +170,8 @@ mod tests {
         let collection = CollectionResult {
             label: "repo".into(),
             revision: None,
-            files: SortedFiles::new(files.into_iter().collect()),
+            files: SortedFiles::new(files.into_iter().collect())
+                .expect("test fixture has no file/directory collision"),
             skipped: 0,
         };
 

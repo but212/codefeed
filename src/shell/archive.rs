@@ -50,7 +50,7 @@ pub(super) fn collect<R: Read>(
     }
 
     let revision = parsed_revision.or_else(|| default_reference.map(str::to_string));
-    Ok(selector.finish(label.to_string(), revision))
+    Ok(selector.finish(label.to_string(), revision)?)
 }
 
 fn process_tar_entry<R: Read>(
@@ -405,6 +405,38 @@ mod tests {
             matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
             "expected InvalidMetadata, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn file_and_directory_with_same_path_fail_the_run() {
+        // `a` is stored as a file, and `a/b` needs `a` as a directory: the digest tree would show both.
+        let mock_data = gzip_tarball(&[
+            ("repo-root/a", b"file", EntryType::Regular),
+            ("repo-root/a/b", b"nested", EntryType::Regular),
+        ]);
+
+        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+            .unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
+            "expected InvalidMetadata, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn skipped_file_with_nested_path_does_not_fail_the_run() {
+        // The binary `a` is skipped, so it is not stored and does not collide with `a/b`.
+        let mock_data = gzip_tarball(&[
+            ("repo-root/a", b"\0\x01\x02", EntryType::Regular),
+            ("repo-root/a/b", b"nested", EntryType::Regular),
+        ]);
+
+        let result = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+            .expect("collection should succeed");
+
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files.iter().next().unwrap().path, "a/b");
+        assert_eq!(result.skipped, 1);
     }
 
     #[test]
