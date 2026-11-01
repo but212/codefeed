@@ -428,9 +428,9 @@ mod tests {
 
     #[test]
     fn colliding_entry_paths_fail_the_run() {
+        type TarEntry<'a> = (&'a str, &'a [u8], EntryType);
         // The oversized second entry is skipped for size, but its path still collides with the stored first entry.
         let oversized = vec![b'x'; MAX_FILE_SIZE_USIZE + 1];
-        type TarEntry<'a> = (&'a str, &'a [u8], EntryType);
         // (case, entries): every case has two entries that collide in the digest tree.
         let cases: [(&str, Vec<TarEntry<'_>>); 4] = [
             (
@@ -579,7 +579,7 @@ mod tests {
         // A PAX global header body and a multi-block file body are both read by the loop, so every
         // read site sees the cut.
         let body: Vec<u8> = (0..2048u32)
-            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13).to_le_bytes()[0])
             .collect();
         let mock_data = gzip_tarball(&[
             (

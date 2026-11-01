@@ -121,7 +121,10 @@ mod tests {
     fn bounded_buffer_limit_is_exact_at_every_boundary() {
         for limit in 0..=8u64 {
             let full = BoundedBuffer::with_limit(0, limit)
-                .push_bytes(&vec![b'x'; limit as usize])
+                .push_bytes(&vec![
+                    b'x';
+                    usize::try_from(limit).expect("limit fits in usize")
+                ])
                 .expect("content at the limit fits");
             assert_eq!(
                 full.push_bytes(b"x").err(),

@@ -38,7 +38,7 @@ impl RegularFile {
 
     /// Test constructor. `relative` must have no parent directories, so the root is its parent.
     #[cfg(test)]
-    pub(super) fn from_parts(path: PathBuf, relative: PathBuf) -> Self {
+    pub(super) fn from_parts(path: PathBuf, relative: &Path) -> Self {
         let name = relative
             .file_name()
             .expect("test path has a file name")
