@@ -58,7 +58,7 @@ pub(super) fn fold_candidates<T>(
             s.spawn(|| run_worker(&jobs, &aborted));
         }
         // Senders move into the producer, so they drop before the workers are joined.
-        s.spawn(move || produce_slots(walker, root, output, exclude, job_tx, slot_tx));
+        s.spawn(move || produce_slots(walker, output, exclude, job_tx, slot_tx));
 
         let result = settle_slots(slot_rx, init, step);
         if result.is_err() {
@@ -72,7 +72,6 @@ pub(super) fn fold_candidates<T>(
 /// the producer thread, or a pending reply when a worker reads its body.
 fn dispatch(
     entry: Result<RegularFile, IngestError>,
-    root: &Path,
     output: Option<&Path>,
     exclude: &ExcludePatterns,
     jobs: &SyncSender<Job>,
@@ -81,7 +80,7 @@ fn dispatch(
         Ok(file) => file,
         Err(err) => return Some(Slot::Ready(Err(err))),
     };
-    let path = match classify_entry(root, output, exclude, file.as_path()) {
+    let path = match classify_entry(output, exclude, &file) {
         Ok(PathStatus::Ignored) => return None,
         Ok(PathStatus::NonUtf8Candidate(prefix)) => {
             return Some(Slot::Ready(Ok(Some(Candidate::NonUtf8(prefix)))));
@@ -149,14 +148,13 @@ fn settle<T>(
 )]
 fn produce_slots(
     walker: Walk<'_>,
-    root: &Path,
     output: Option<&Path>,
     exclude: &ExcludePatterns,
     jobs: SyncSender<Job>,
     slots: SyncSender<Slot>,
 ) {
     for entry in walker {
-        let Some(slot) = dispatch(entry, root, output, exclude, &jobs) else {
+        let Some(slot) = dispatch(entry, output, exclude, &jobs) else {
             continue;
         };
         let fatal = matches!(slot, Slot::Ready(Err(_)));
@@ -269,13 +267,7 @@ mod tests {
 
         // 1. dispatch when walk entry is Err
         let walk_err = IngestError::Io(io::Error::other("walk failed"));
-        let slot = dispatch(
-            Err(walk_err),
-            Path::new("."),
-            None,
-            &ExcludePatterns::default(),
-            &job_tx,
-        );
+        let slot = dispatch(Err(walk_err), None, &ExcludePatterns::default(), &job_tx);
         assert!(matches!(slot, Some(Slot::Ready(Err(_)))));
 
         // settle with Slot::Ready(Err)
@@ -286,14 +278,8 @@ mod tests {
         let temp = temp_dir("dispatch_disconnect").unwrap();
         let file = temp.join("test.txt");
         fs::write(&file, "data").unwrap();
-        let regular = RegularFile::from_path(file);
-        let slot = dispatch(
-            Ok(regular),
-            &temp,
-            None,
-            &ExcludePatterns::default(),
-            &job_tx,
-        );
+        let regular = RegularFile::from_parts(file, PathBuf::from("test.txt"));
+        let slot = dispatch(Ok(regular), None, &ExcludePatterns::default(), &job_tx);
         // jobs.send fails, returning Slot::Ready(Err(worker_stopped()))
         assert!(matches!(slot, Some(Slot::Ready(Err(_)))));
         let res = settle(slot.unwrap(), 0, &mut |_acc, _c| Ok(1));

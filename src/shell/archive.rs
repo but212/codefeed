@@ -1,6 +1,7 @@
 //! Tarball archive streaming ingestion and entry admission.
 
-use std::io::{BufReader, Read};
+use std::cell::Cell;
+use std::io::{self, BufReader, Read};
 
 use flate2::read::GzDecoder;
 use tar::{Archive, EntryType};
@@ -8,8 +9,12 @@ use tar::{Archive, EntryType};
 use super::IngestError;
 use super::error::transport_error;
 use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
+use crate::core::error::DomainError;
 use crate::core::model::CollectionResult;
-use crate::core::policy::{ARCHIVE_BUFFER_BYTES, ExcludePatterns, MAX_FILE_SIZE};
+use crate::core::policy::{
+    ARCHIVE_BUFFER_BYTES, ARCHIVE_MAX_HEADER_BYTES, ARCHIVE_PAX_GLOBAL_BYTES, ExcludePatterns,
+    MAX_FILE_SIZE,
+};
 use crate::core::selector::Selector;
 
 /// Collects files from a tarball reader directly into a [`CollectionResult`].
@@ -23,34 +28,105 @@ pub(super) fn collect<R: Read>(
     default_reference: Option<&str>,
     exclude: &ExcludePatterns,
 ) -> Result<CollectionResult, IngestError> {
-    let mut archive = Archive::new(GzDecoder::new(BufReader::with_capacity(
-        ARCHIVE_BUFFER_BYTES,
-        reader,
-    )));
-    let entries = archive
+    let budget = HeaderBudget::new();
+    let mut archive = Archive::new(Metered {
+        inner: GzDecoder::new(BufReader::with_capacity(ARCHIVE_BUFFER_BYTES, reader)),
+        budget: &budget,
+    });
+    let mut entries = archive
         .entries()
-        .map_err(|err: std::io::Error| stream_error(&err))?;
+        .map_err(|err: io::Error| stream_error(&err))?;
     let mut parsed_revision = None;
     let mut selector = Selector::new();
     let mut content_scratch = Vec::with_capacity(32 * 1024);
 
-    for entry_res in entries {
-        let mut entry = entry_res.map_err(|err: std::io::Error| stream_error(&err))?;
+    loop {
+        budget.arm();
+        let next = entries.next();
+        budget.disarm();
+        let Some(entry_res) = next else { break };
+        let mut entry = entry_res.map_err(|err: io::Error| header_error(&err, &budget))?;
         if entry.header().entry_type() == EntryType::XGlobalHeader {
             content_scratch.clear();
-            entry
-                .take(1024)
+            (&mut entry)
+                .take(ARCHIVE_PAX_GLOBAL_BYTES)
                 .read_to_end(&mut content_scratch)
-                .map_err(|err: std::io::Error| stream_error(&err))?;
+                .map_err(|err: io::Error| stream_error(&err))?;
             parsed_revision = parsed_revision.or_else(|| parse_pax_comment(&content_scratch));
-            continue;
+        } else {
+            content_scratch.clear();
+            selector = process_tar_entry(&mut entry, selector, &mut content_scratch, exclude)?;
         }
-        content_scratch.clear();
-        selector = process_tar_entry(&mut entry, selector, &mut content_scratch, exclude)?;
+        drain_entry(&mut entry)?;
     }
 
     let revision = parsed_revision.or_else(|| default_reference.map(str::to_string));
-    Ok(selector.finish(label.to_string(), revision))
+    Ok(selector.finish(label.to_string(), revision)?)
+}
+
+/// Byte budget for one `Entries::next` call (I-03). Armed before the call and disarmed after it, so only
+/// the reads that tar makes for headers and extension bodies are metered. Entry bodies are read unmetered.
+struct HeaderBudget {
+    remaining: Cell<u64>,
+    exceeded: Cell<bool>,
+}
+
+impl HeaderBudget {
+    fn new() -> Self {
+        Self {
+            remaining: Cell::new(u64::MAX),
+            exceeded: Cell::new(false),
+        }
+    }
+
+    fn arm(&self) {
+        self.remaining.set(ARCHIVE_MAX_HEADER_BYTES);
+    }
+
+    fn disarm(&self) {
+        self.remaining.set(u64::MAX);
+    }
+}
+
+/// Meters the decompressed stream against a [`HeaderBudget`]. A read at an exhausted budget records the
+/// overrun and fails, so the failure cannot be mistaken for a transport error.
+struct Metered<'a, R> {
+    inner: R,
+    budget: &'a HeaderBudget,
+}
+
+impl<R: Read> Read for Metered<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let remaining = self.budget.remaining.get();
+        if remaining == 0 && !buf.is_empty() {
+            self.budget.exceeded.set(true);
+            return Err(io::Error::other(
+                "tar entry header exceeds ARCHIVE_MAX_HEADER_BYTES",
+            ));
+        }
+        let cap = usize::try_from(remaining)
+            .unwrap_or(usize::MAX)
+            .min(buf.len());
+        let read = self.inner.read(&mut buf[..cap])?;
+        self.budget.remaining.set(remaining - read as u64);
+        Ok(read)
+    }
+}
+
+/// Maps a failure from `Entries::next` to a run error. An overrun is a policy violation: the entry's path
+/// is never parsed, so the entry cannot be counted as skipped.
+fn header_error(err: &io::Error, budget: &HeaderBudget) -> IngestError {
+    if budget.exceeded.get() {
+        DomainError::invalid_metadata("tar entry header exceeds ARCHIVE_MAX_HEADER_BYTES").into()
+    } else {
+        stream_error(err)
+    }
+}
+
+/// Discards the unread rest of an entry body, so the next header read starts at its padding.
+fn drain_entry<R: Read>(entry: &mut tar::Entry<R>) -> Result<(), IngestError> {
+    io::copy(entry, &mut io::sink()).map_err(|err: io::Error| stream_error(&err))?;
+    Ok(())
 }
 
 fn process_tar_entry<R: Read>(
@@ -408,6 +484,38 @@ mod tests {
     }
 
     #[test]
+    fn file_and_directory_with_same_path_fail_the_run() {
+        // `a` is stored as a file, and `a/b` needs `a` as a directory: the digest tree would show both.
+        let mock_data = gzip_tarball(&[
+            ("repo-root/a", b"file", EntryType::Regular),
+            ("repo-root/a/b", b"nested", EntryType::Regular),
+        ]);
+
+        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+            .unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
+            "expected InvalidMetadata, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn skipped_file_with_nested_path_does_not_fail_the_run() {
+        // The binary `a` is skipped, so it is not stored and does not collide with `a/b`.
+        let mock_data = gzip_tarball(&[
+            ("repo-root/a", b"\0\x01\x02", EntryType::Regular),
+            ("repo-root/a/b", b"nested", EntryType::Regular),
+        ]);
+
+        let result = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+            .expect("collection should succeed");
+
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files.iter().next().unwrap().path, "a/b");
+        assert_eq!(result.skipped, 1);
+    }
+
+    #[test]
     fn non_regular_entries_are_dropped_before_path_normalization() {
         // Pins the documented order: entry type filtering runs before tar path normalization, so
         // a non-regular entry with a traversal path is ignored rather than rejected.
@@ -440,5 +548,77 @@ mod tests {
         };
         assert!(matches!(err, IngestError::Http(_)), "{err}");
         assert!(err.to_string().starts_with("GitHub request failed:"));
+    }
+
+    #[test]
+    fn path_over_max_path_bytes_within_header_budget_is_skipped() {
+        // A 5 000-byte path needs a `L` header that fits the budget, so it is skipped rather than failed.
+        let long_name = format!("repo-root/{}", "a".repeat(5_000));
+        let mock_data = gzip_tarball(&[
+            (long_name.as_str(), b"content", EntryType::Regular),
+            ("repo-root/src/main.rs", b"fn main() {}", EntryType::Regular),
+        ]);
+
+        let result = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+            .expect("collection should succeed");
+
+        let paths: Vec<&str> = result.files.iter().map(|f| f.path).collect();
+        assert_eq!(paths, vec!["src/main.rs"]);
+        assert_eq!(result.skipped, 1);
+    }
+
+    #[test]
+    fn oversized_gnu_long_name_header_fails_the_run() {
+        // tar reads the `L` extension body whole before the path reaches policy, so the header budget bounds it.
+        let long_name = format!("repo-root/{}", "a".repeat(70_000));
+        let mock_data = gzip_tarball(&[(long_name.as_str(), b"content", EntryType::Regular)]);
+
+        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+            .unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(msg)) if msg.contains("ARCHIVE_MAX_HEADER_BYTES")),
+            "expected header budget failure, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn oversized_pax_header_fails_the_run() {
+        // The PAX `x` body is read whole by tar, so an oversized path record fails the run.
+        let long_path = format!("repo-root/{}", "a".repeat(70_000));
+        let mock_data = gzip_archive(|tar| {
+            tar.append_pax_extensions([("path", long_path.as_bytes())])
+                .unwrap();
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(EntryType::Regular);
+            header.set_size(7);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, "repo-root/x.txt", &b"content"[..])
+                .unwrap();
+        });
+
+        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+            .unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(msg)) if msg.contains("ARCHIVE_MAX_HEADER_BYTES")),
+            "expected header budget failure, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn oversized_header_of_hidden_entry_fails_the_run() {
+        // The budget runs before classification, so a hidden entry that policy would drop still fails the run.
+        let hidden_name = format!("repo-root/.cache/{}/f.txt", "a".repeat(70_000));
+        let mock_data = gzip_tarball(&[
+            (hidden_name.as_str(), b"content", EntryType::Regular),
+            ("repo-root/src/main.rs", b"fn main() {}", EntryType::Regular),
+        ]);
+
+        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+            .unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(msg)) if msg.contains("ARCHIVE_MAX_HEADER_BYTES")),
+            "expected header budget failure, got: {err:?}"
+        );
     }
 }

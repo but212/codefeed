@@ -38,6 +38,9 @@ Entry (local walk or tar stream)
  |     +-- Hidden or ignored by a `.gitignore` -> Pruned, not entered; its `.gitignore` is never read.
  |     `-- Matched by a user exclusion (sec. 3.6) -> Pruned, not entered; its `.gitignore` is never read.
  |
+ +-- Tar header read (`Entries::next`, GNU `L`/`K` and PAX `x` bodies included). Runs before path classification and applies to every entry type.
+ |     `-- Over `ARCHIVE_MAX_HEADER_BYTES` for one read -> Run fails (InvalidMetadata), even for entries that would be dropped.
+ |
  +-- Non-regular file (symlink, FIFO, socket, device, non-file tar header)
  |     `-- Dropped silently. Omitted from count.
  |
@@ -60,12 +63,15 @@ Entry (local walk or tar stream)
  |     `-- Valid UTF-8 path
  |           `-- Candidate.
  |
- `-- Candidate (Selector::observe)
-       +-- Charges candidate slot. Overflowing MAX_FILE_COUNT fails the run.
-       +-- Path <= MAX_PATH_BYTES equal to an earlier candidate's path (skipped ones included) -> Run fails (InvalidMetadata).
-       +-- Exceeds MAX_PATH_BYTES or declared MAX_FILE_SIZE: skipped; body not read.
-       +-- Body read (bounded by worker or archive stream).
-       `-- Content check passes -> Included. Otherwise skipped.
+ +-- Candidate (Selector::observe)
+ |     +-- Charges candidate slot. Overflowing MAX_FILE_COUNT fails the run.
+ |     +-- Path <= MAX_PATH_BYTES equal to an earlier candidate's path (skipped ones included) -> Run fails (InvalidMetadata).
+ |     +-- Exceeds MAX_PATH_BYTES or declared MAX_FILE_SIZE: skipped; body not read.
+ |     +-- Body read (bounded by worker or archive stream).
+ |     `-- Content check passes -> Included. Otherwise skipped.
+ |
+ `-- Digest assembly (SortedFiles::new)
+       `-- Stored path is a directory prefix of another stored path -> Run fails (InvalidMetadata). Skipped candidates are not compared.
 ```
 
 ---
@@ -106,6 +112,7 @@ Exact matches against the final path segment:
 | Depth > `MAX_PATH_DEPTH` | Run fails with `InvalidMetadata`. Hidden/noise items dropped prior to check. |
 | Path > `MAX_PATH_BYTES` | Consumes candidate slot; counted as skipped; body not read. |
 | Path <= `MAX_PATH_BYTES` equal to another candidate's path | Run fails with `InvalidMetadata`. Applies to skipped candidates too. Longer duplicates are skipped and not compared. |
+| Stored path is a directory prefix of another stored path (`a` and `a/…`) | Run fails with `InvalidMetadata` at digest assembly. Skipped candidates are not compared. |
 
 ### 3.5 Ignore Files (Local Only)
 
@@ -116,7 +123,8 @@ Exact matches against the final path segment:
 
 ### 3.6 User Exclusions (`--exclude`)
 
-- Patterns use `.gitignore` syntax and are relative to the source root. Matching is case-sensitive, as in git. Each pattern must yield exactly one rule. A blank line, a comment, a bare `!`, or an invalid glob fails at parse time with `DomainError::Usage`. An unclosed `[` is an error here, though a `.gitignore` file accepts it.
+- Patterns use `.gitignore` syntax and are relative to the source root. Matching is case-sensitive, as in git. Each pattern must yield exactly one rule. Unescaped trailing whitespace is trimmed before parsing, as in `.gitignore`, so `'! '` is a bare `!`. A blank line, a comment, a bare `!`, or an invalid glob fails at parse time with `DomainError::Usage`. An unclosed `[` is an error here, though a `.gitignore` file accepts it.
+- A `\` in a path segment is matched as U+FFFD on every platform, so it is never a separator and never matches a `\` in a pattern. On Unix, a pattern that matched a name containing `\` (such as `a\\b` for `a\b`) no longer matches it. Results are the same on Windows and Unix.
 - The rule applies to local and GitHub sources in the same way. It is independent of `.gitignore` (sec. 3.5): a path is dropped when either one drops it. A `!` pattern re-includes only paths that other user patterns exclude.
 - A path is excluded when it or any ancestor directory matches. Ancestors are tested as directories, from the top down. A `!` pattern cannot re-include a file under an excluded directory.
 - Excluded local directories are pruned, so their `.gitignore` is never read. Excluded entries are not candidates and are omitted from the skipped count.
@@ -144,7 +152,7 @@ Candidate budget overflow aborts the run without emitting partial output.
 
 ## 5. Local Filesystem Safety
 
-- **No Symlinks:** Walker uses `follow_links(false)`. Workers call `fs::symlink_metadata` before open, rejecting symlinks to files, directories, or special devices.
+- **No Symlinks:** The walk classifies entries with `DirEntry::file_type()`, which does not follow links, and drops entries that are neither directories nor regular files. Workers call `fs::symlink_metadata` before open, rejecting symlinks to files, directories, or special devices.
 - **Output Exclusion:** Canonical destination is resolved upfront (`resolve_output_target`) and excluded from traversal to prevent self-ingest.
 - **Atomic Writes:** Destination written via temporary file `.codefeed.{nanos}.{counter}.tmp` in target directory, flushed, and renamed. The name does not depend on the target name. Unix preserves permissions and syncs parent directory. Parent sync failure logs a warning without aborting. `write_atomic` drops the file handle before `TempPath` unlinks the temporary file on `Drop`.
 - **Unavailable vs. Fatal:** `NotFound`, `PermissionDenied`, or Windows sharing (32) / locking (33) errors mark files unavailable (skipped). Other I/O errors or unreadable directories abort the run. A directory's `.gitignore` is not a file candidate: any read failure, symlink, oversize file, or non-UTF-8 content aborts the run (sec. 3.5). First error in walk order is deterministically reported.
@@ -171,6 +179,7 @@ Candidate budget overflow aborts the run without emitting partial output.
 ### 6.4 Streaming
 
 - Fetches tarball in a single HTTP request (`/repos/{owner}/{repo}/tarball/{ref}`). Streams via gzip/tar directly into `Selector::observe` without disk spooling.
+- Each tar header read is metered against `ARCHIVE_MAX_HEADER_BYTES`, so an extension body cannot allocate past that budget before its path is checked. Entry bodies are not metered.
 
 ### 6.5 Retries
 
@@ -199,7 +208,7 @@ Sanitization runs in a single pass via `write_escaped`:
    - Disallowed XML 1.0 control codes map to `\u{FFFD}`.
 3. **Tree Labels:** Escaped for control characters and XML entities to prevent output corruption.
 4. **Error and Warning Diagnostics (`sanitize_error_detail`):**
-   - Single-line diagnostics emitted to stderr (filesystem paths in I/O errors, root validation errors, HTTP status messages, transport error text) convert `\t`, `\r`, `\n` to space `' '` and all other Unicode control characters to `\u{FFFD}` to prevent terminal escape injection or log forgery.
+   - Single-line diagnostics emitted to stderr (filesystem paths in I/O errors, root validation errors, HTTP status messages, transport error text, and each path and directory name in the `MAX_OUTPUT_SIZE` and `MAX_FILE_COUNT` overflow lists) convert `\t`, `\r`, `\n` to space `' '` and all other Unicode control characters to `\u{FFFD}` to prevent terminal escape injection or log forgery.
 
 ---
 
@@ -212,9 +221,12 @@ Sole documentation mirror for numerical limits (authoritative definitions reside
 | `MAX_FILE_SIZE` | 1 MiB | Declared size, bounded read, and `.gitignore` read | Skipped, counted in summary; `.gitignore`: run fails |
 | `MAX_PATH_BYTES` | 4,096 B | Path classification | Skipped, counted in summary |
 | `MAX_PATH_DEPTH` | 256 levels | Path classification | Run fails (`InvalidMetadata`) |
-| `MAX_FILE_COUNT` | 10,000 files | Candidate budget | Run fails; lists 3 largest dirs |
-| `MAX_OUTPUT_SIZE` | 20 MiB | Storage check & buffer | Run fails; lists 5 largest files |
+| `MAX_FILE_COUNT` | 10,000 files | Candidate budget | Run fails; lists `OVERFLOW_LARGEST_DIRECTORIES` largest dirs |
+| `MAX_OUTPUT_SIZE` | 20 MiB | Storage check & buffer | Run fails; lists `OVERFLOW_LARGEST_FILES` largest files |
 | `ARCHIVE_BUFFER_BYTES` | 64 KiB | Archive read buffer | Buffering parameter (no overflow) |
+| `ARCHIVE_MAX_HEADER_BYTES` | 64 KiB | Archive header read budget | Run fails (`InvalidMetadata`) |
+| `ARCHIVE_PAX_GLOBAL_BYTES` | 1 KiB | PAX global header read | Revision falls back to the requested ref |
+| `GITHUB_ERROR_BODY_BYTES` | 4 KiB | GitHub API error body read | Rest of body left out of the message |
 | `LOCAL_CHANNEL_CAPACITY` | 64 messages | Channel bounds | Blocks sender (no overflow) |
 | `MAX_LOCAL_WORKERS` | 12 threads | Thread pool sizing | Worker concurrency limit |
 | `ARCHIVE_MAX_SECS` | 300 s | Archive stream timer | Fails with request error |
@@ -223,3 +235,5 @@ Sole documentation mirror for numerical limits (authoritative definitions reside
 | `RETRY_INITIAL_DELAY_MS` | 250 ms | Backoff initial delay | Initial retry sleep |
 | `RETRY_MAX_DELAY_MS` | 5,000 ms | Backoff cap & wait limit | Longer server wait fails run |
 | `ASCII_BYTES_PER_TOKEN` | 4 B | Token heuristic | Token estimate calculation |
+| `OVERFLOW_LARGEST_FILES` | 5 files | Overflow diagnostic | Lists this many largest files (no overflow) |
+| `OVERFLOW_LARGEST_DIRECTORIES` | 3 directories | Overflow diagnostic | Lists this many largest directories (no overflow) |

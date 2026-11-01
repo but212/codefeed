@@ -101,7 +101,7 @@ impl Display for DomainError {
                     err.limit
                 )?;
                 for (dir, count) in &err.largest_directories {
-                    write!(f, "\n  - {dir} ({count} files)")?;
+                    write!(f, "\n  - {} ({count} files)", sanitize_error_detail(dir))?;
                 }
                 Ok(())
             }
@@ -115,7 +115,11 @@ impl Display for DomainError {
                     write!(f, "\nlargest files:")?;
                     for (path, size) in largest_files.as_slice() {
                         let formatted_size = format_size(*size);
-                        write!(f, "\n  - {path} ({formatted_size})")?;
+                        write!(
+                            f,
+                            "\n  - {} ({formatted_size})",
+                            sanitize_error_detail(path)
+                        )?;
                     }
                 }
                 Ok(())
@@ -147,6 +151,7 @@ impl std::error::Error for DomainError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::policy::MAX_FILE_COUNT;
 
     #[test]
     fn output_too_large_message_derives_from_limit() {
@@ -182,6 +187,30 @@ mod tests {
         assert_eq!(
             sanitized,
             "hello world  foo\u{FFFD}[31mbar\u{FFFD}baz\u{FFFD}del\u{FFFD}c1"
+        );
+    }
+
+    #[test]
+    fn overflow_diagnostics_sanitize_control_characters() {
+        let candidates = DomainError::candidate_limit_exceeded(
+            MAX_FILE_COUNT,
+            vec![("d\x1b]0;t\x07/".into(), 3)],
+        )
+        .to_string();
+        assert_eq!(
+            candidates,
+            format!(
+                "repository contains more than {MAX_FILE_COUNT} files\nlargest directories:\n  - d\u{FFFD}]0;t\u{FFFD}/ (3 files)"
+            )
+        );
+
+        let mib = MAX_OUTPUT_SIZE / (1024 * 1024);
+        let output = DomainError::output_too_large(vec![("f\x1b[31m\n.txt".into(), 1)]).to_string();
+        assert_eq!(
+            output,
+            format!(
+                "digest exceeds the {mib} MiB output limit\nlargest files:\n  - f\u{FFFD}[31m .txt (1 B)"
+            )
         );
     }
 }

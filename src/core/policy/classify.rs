@@ -51,12 +51,6 @@ pub(crate) enum PathStatus {
     NonUtf8Candidate(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PathClassifierState {
-    ValidUtf8,
-    NonUtf8Prefix,
-}
-
 /// Error indicating that a path's directory nesting depth exceeds [`MAX_PATH_DEPTH`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DepthExceededError;
@@ -101,30 +95,16 @@ where
     }
 
     let mut scratch = String::new();
-    let mut state = PathClassifierState::ValidUtf8;
     for segment in &segments {
-        match state {
-            PathClassifierState::ValidUtf8 => {
-                if let Ok(s) = std::str::from_utf8(segment) {
-                    if !scratch.is_empty() {
-                        scratch.push('/');
-                    }
-                    scratch.push_str(s);
-                } else {
-                    state = PathClassifierState::NonUtf8Prefix;
-                    if !scratch.is_empty() {
-                        scratch.push('/');
-                    }
-                }
-            }
-            PathClassifierState::NonUtf8Prefix => {}
+        if !scratch.is_empty() {
+            scratch.push('/');
         }
+        let Ok(s) = std::str::from_utf8(segment) else {
+            return Ok(PathStatus::NonUtf8Candidate(scratch));
+        };
+        scratch.push_str(s);
     }
-
-    match state {
-        PathClassifierState::ValidUtf8 => Ok(PathStatus::Valid(NormalizedPath(scratch))),
-        PathClassifierState::NonUtf8Prefix => Ok(PathStatus::NonUtf8Candidate(scratch)),
-    }
+    Ok(PathStatus::Valid(NormalizedPath(scratch)))
 }
 
 #[cfg(test)]

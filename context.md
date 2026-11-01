@@ -16,7 +16,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - `OutputTarget`: `File(PathBuf)` or `Stdout`.
 - `ResolvedOutput`: Filesystem-resolved target (`shell`-private, constructed solely by `resolve_output_target`).
 - `DigestFormat`: `Text` or `Xml`.
-- `ExcludePatterns`: Validated user `--exclude` patterns in `.gitignore` syntax, relative to the source root and case-sensitive. Each pattern yields exactly one rule. Implements `Default` (no patterns) and `Eq` by pattern text.
+- `ExcludePatterns`: Validated user `--exclude` patterns in `.gitignore` syntax, relative to the source root and case-sensitive. Each pattern yields exactly one rule. A `\` in a path segment is matched as U+FFFD on every platform. Implements `Default` (no patterns) and `Eq` by pattern text.
 - `RunConfig`: Struct of `source`, `output`, `format`, and `exclude`.
 
 ### Candidate collection
@@ -24,7 +24,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - `PathStatus`: Result of path classification: `Valid(NormalizedPath)`, `Ignored`, or `NonUtf8Candidate(prefix)`.
 - `NormalizedPath`: Non-empty, slash-separated, UTF-8 relative path without empty or `.` segments.
 - `Selector`: Linear state managing arena storage, `CandidateBudget`, and skipped tally. Settles candidates via `observe` and completes via `finish`.
-- `CandidateBudget`: Candidate counter and per-directory tallies (`selector.rs` private).
+- `CandidateBudget`: Candidate counter, per-directory tallies, and the seen-path set used for uniqueness (`selector.rs` private).
 - `CollectionResult`: Struct containing `label`, optional `revision`, `files: SortedFiles`, and `skipped`.
 
 ### Storage
@@ -32,7 +32,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - `FileStorage`: Append-only `path_arena` and `content_arena` indexed by a `spans` vector. Read via `FileStorage::iter` yielding `FileRecord`.
 - `FileSpan`: 16-byte POD of four `u32` arena offsets and lengths (`storage.rs` private).
 - `FileRecord<'a>`: Borrowed `path` and `content` view.
-- `SortedFiles`: `FileStorage` sorted by `cmp_path`. Path uniqueness is enforced upstream by `Selector::observe`. Implements `Deref<Target = FileStorage>`.
+- `SortedFiles`: `FileStorage` sorted by `cmp_path`, with no stored path a directory prefix of another (I-01). Path uniqueness is enforced upstream by `Selector::observe`. Implements `Deref<Target = FileStorage>`.
 
 ### Rendering and results
 
@@ -58,8 +58,9 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 - Order: hidden -> user exclusion -> noise/sensitive entries -> depth check -> non-UTF-8 prefixing -> valid path ([security sec. 2](docs/security_and_filtering.md#2-evaluation-order)). Shared by local walk and tar stream via `classify_path_segments`.
 - `Ignored` entries consume no candidate slot and are omitted from skipped counts.
-- Depth limit violation is the only path check aborting the entire run during classification. Hidden and noise entries are dropped before depth evaluation. For GitHub tar archives, `normalize_tar_entry_path` also aborts the run with `DomainError::InvalidMetadata` upon encountering embedded NUL bytes, traversal segments (`..`), or a `.` root segment, for regular-file entries. Non-regular tar entries are dropped before normalization runs.
-- Non-UTF-8 candidates record their valid prefix (`"a/b/"` or `""`), charged to the budget under the first segment (`"a/"`) or root (`"<root>/"`).
+- Depth limit violation is the only path check aborting the entire run during classification. Hidden and noise entries are dropped before depth evaluation. For GitHub tar archives, `normalize_tar_entry_path` also aborts the run with `DomainError::InvalidMetadata` upon encountering embedded NUL bytes, traversal segments (`..`), or a `.` root segment, for regular-file entries. Non-regular tar entries are dropped before normalization runs. Oversized tar headers abort the run under I-03 ([sec. 3.9](#39-network)).
+- Non-UTF-8 candidates record their valid prefix (`"a/b/"` or `""`), charged to the budget under the first segment (`"a/"`) or root (`"./"`).
+- **I-02 (`boundary`, `classify_path_segments`):** No classified path or non-UTF-8 prefix has a first segment starting with `.`, since hidden segments are `Ignored` and empty or `.` segments are dropped. The budget therefore keys root-level entries as `"./"`, which no real directory can produce.
 
 ### 3.3 Accounting
 
@@ -71,6 +72,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 - `FileStorage::push` rejects candidates before allocation if raw arena bytes would exceed `MAX_OUTPUT_SIZE`.
 - `SortedFiles::new` sorts spans via `cmp_path` (component-by-component comparison), guaranteeing deterministic output regardless of concurrency timing.
+- **I-01 (`runtime`, `SortedFiles::new`):** No stored path is a directory prefix of another stored path (`p` and `p/…`). `DomainError::InvalidMetadata` otherwise. Enforced after sorting by checking adjacent pairs. A schema, type, or boundary check cannot express this because the rule relates separate entries, and a per-entry parse cannot see the others. Skipped candidates are not stored and are not compared, so the digest tree shows each name as either a file or a directory.
 - `Selector::observe` rejects a candidate whose path (at most `MAX_PATH_BYTES`) equals an earlier candidate's path, with `DomainError::InvalidMetadata`. The check covers skipped candidates, so no path names two candidates. Longer paths are skipped before the check.
 - Arena indices are `u32`. Compile-time assertions in `policy/limits.rs` ensure `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX`.
 
@@ -91,8 +93,9 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 ### 3.7 Diagnostics
 
 - Overflow diagnostics generate only on error paths.
-- `MAX_OUTPUT_SIZE` overflow lists the 5 largest files (sorted by size descending, then path).
-- `MAX_FILE_COUNT` overflow lists the 3 largest directories (sorted by candidate count descending, then name).
+- `MAX_OUTPUT_SIZE` overflow lists the `OVERFLOW_LARGEST_FILES` largest files (sorted by size descending, then path).
+- `MAX_FILE_COUNT` overflow lists the `OVERFLOW_LARGEST_DIRECTORIES` largest directories (sorted by candidate count descending, then name).
+- Names in both overflow lists are passed through `sanitize_error_detail` by `DomainError`'s `Display`. The stored values stay raw.
 - Local runs produce identical diagnostics deterministically.
 
 ### 3.8 Local Traversal Pipeline
@@ -101,14 +104,15 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 2. Up to `MAX_LOCAL_WORKERS` workers check metadata, read bounded bodies, and reply on bounded slots.
 3. Main thread settles slots in walk order into `Selector::observe`. The first error halts traversal.
 4. Channel capacities are bounded by `LOCAL_CHANNEL_CAPACITY` ([security sec. 8](docs/security_and_filtering.md#8-limit-values)).
-5. Final digest order is established by `SortedFiles::new`. Path uniqueness is established by `Selector::observe`.
+5. Final digest order is established by `SortedFiles::new`, which also enforces I-01. Path uniqueness is established by `Selector::observe`.
 
 ### 3.9 Network
 
 - Request parameters, retry classes, and timeouts follow [security sec. 6](docs/security_and_filtering.md#6-github-network-safety).
 - Archive entries stream through `Selector::observe` without disk writes.
-- Revision SHA extracts from PAX global header, falling back to the requested ref.
+- Revision SHA extracts from the first `ARCHIVE_PAX_GLOBAL_BYTES` of the PAX global header, falling back to the requested ref.
 - Stream/gzip/tar read failures map to `IngestError::Http`.
+- **I-03 (`runtime`, `shell/archive.rs`):** One `Entries::next` call reads at most `ARCHIVE_MAX_HEADER_BYTES` from the decompressed stream, covering the previous entry's padding, GNU `L`/`K` and PAX `x` bodies, GNU sparse extension blocks, and the header. An overrun fails the run with `DomainError::InvalidMetadata`; it is never a skip, because the path is not parsed. The budget runs before path classification, so an entry that classification would drop (hidden, excluded, non-regular) also fails the run when its header is over budget. tar reads extension bodies internally, so no type or boundary can express the bound. A byte budget on the shared reader enforces it, and each entry body is drained before the next call so only headers are metered.
 
 ## 4. Limits and Tunables
 

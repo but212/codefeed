@@ -10,11 +10,11 @@ use crate::core::storage::SortedFiles;
 pub struct GitRef(String);
 
 impl GitRef {
-    /// Creates a new `GitRef`, rejecting empty or whitespace-only strings.
+    /// Creates a new `GitRef`, rejecting empty, whitespace-only, `.`, and `..` strings.
     ///
     /// # Errors
     ///
-    /// Returns [`DomainError::InvalidSource`] if `value` is empty or only whitespace.
+    /// Returns [`DomainError::InvalidSource`] if `value` is empty, only whitespace, `.`, or `..`.
     pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
         let string = value.into();
         let trimmed = string.trim_ascii();
@@ -129,7 +129,7 @@ impl Source {
     /// # Errors
     ///
     /// Returns [`DomainError::InvalidSource`] if `reference` is [`Some`] when called on a [`Source::Local`] variant,
-    /// or if the reference string is empty or only whitespace.
+    /// or if the reference string is empty, only whitespace, `.`, or `..`.
     pub fn with_reference(self, reference: Option<impl Into<String>>) -> Result<Self, DomainError> {
         match self {
             Self::Local(_) => {
@@ -207,7 +207,7 @@ pub struct IngestReport {
     pub output: OutputTarget,
     /// Number of candidate files included in the rendered digest.
     pub included_files: usize,
-    /// Number of candidate files rejected due to size, encoding, or binary content.
+    /// Number of candidate files skipped: over a size or path limit, non-UTF-8 path, unavailable, binary, or invalid UTF-8.
     pub skipped_files: usize,
     /// Approximate token count of the rendered digest.
     pub estimated_tokens: usize,

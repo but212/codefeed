@@ -6,7 +6,9 @@ use memchr::memchr;
 
 use crate::core::error::{DomainError, sanitize_error_detail};
 use crate::core::model::CollectionResult;
-use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, PathStatus};
+use crate::core::policy::{
+    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, OVERFLOW_LARGEST_DIRECTORIES, PathStatus,
+};
 use crate::core::storage::{FileStorage, SortedFiles};
 
 /// UTF-8 text predicate: NUL-free bytes within size limit, returning string slice.
@@ -72,14 +74,16 @@ impl CandidateBudget {
     }
 }
 
+/// Budget key for `path`: its first segment with a trailing `/`, or `./` for root-level entries.
+/// No classified first segment starts with `.` (I-02), so `./` never names a real directory.
 fn extract_dir_slice(path: &str) -> &str {
-    memchr(b'/', path.as_bytes()).map_or("<root>/", |index| &path[..=index])
+    memchr(b'/', path.as_bytes()).map_or("./", |index| &path[..=index])
 }
 
 fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String, usize)> {
     let mut dirs: Vec<(&str, usize)> = dir_counts.iter().map(|(d, &c)| (d.as_str(), c)).collect();
     dirs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-    dirs.truncate(3);
+    dirs.truncate(OVERFLOW_LARGEST_DIRECTORIES);
     dirs.into_iter().map(|(d, c)| (d.to_string(), c)).collect()
 }
 
@@ -153,20 +157,30 @@ impl Selector {
     }
 
     /// Finalizes selection, sorting files lexicographically in-place, and returns a [`CollectionResult`].
-    pub(crate) fn finish(self, label: String, revision: Option<String>) -> CollectionResult {
-        CollectionResult {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::InvalidMetadata`] when a stored path is a directory prefix of another stored path.
+    pub(crate) fn finish(
+        self,
+        label: String,
+        revision: Option<String>,
+    ) -> Result<CollectionResult, DomainError> {
+        Ok(CollectionResult {
             label,
             revision,
-            files: SortedFiles::new(self.storage),
+            files: SortedFiles::new(self.storage)?,
             skipped: self.skipped,
-        }
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::policy::{MAX_FILE_SIZE_USIZE, MAX_PATH_BYTES_USIZE};
+    use crate::core::policy::{
+        MAX_FILE_SIZE_USIZE, MAX_OUTPUT_SIZE, MAX_OUTPUT_SIZE_USIZE, MAX_PATH_BYTES_USIZE,
+    };
 
     #[test]
     fn candidate_budget_enforces_limit() {
@@ -180,19 +194,23 @@ mod tests {
     #[test]
     fn candidate_overflow_includes_largest_directories_diagnostic()
     -> Result<(), Box<dyn std::error::Error>> {
+        let vendor = MAX_FILE_COUNT * 4 / 5;
+        let src = MAX_FILE_COUNT - vendor;
         let mut budget = CandidateBudget::default();
-        for index in 0..8_000 {
+        for index in 0..vendor {
             budget = budget.add(&format!("vendor/pkg_{index}.rs"))?;
         }
-        for index in 0..2_000 {
+        for index in 0..src {
             budget = budget.add(&format!("src/file_{index}.rs"))?;
         }
         let err = budget.add("extra/one.rs").unwrap_err();
         let message = err.to_string();
-        assert!(message.contains("repository contains more than 10000 files"));
+        assert!(message.contains(&format!(
+            "repository contains more than {MAX_FILE_COUNT} files"
+        )));
         assert!(message.contains("largest directories:"));
-        assert!(message.contains("vendor/ (8000 files)"));
-        assert!(message.contains("src/ (2000 files)"));
+        assert!(message.contains(&format!("vendor/ ({vendor} files)")));
+        assert!(message.contains(&format!("src/ ({src} files)")));
         Ok(())
     }
 
@@ -205,7 +223,9 @@ mod tests {
         }
         let err = budget.add("dir_00000/extra.rs").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("repository contains more than 10000 files"));
+        assert!(msg.contains(&format!(
+            "repository contains more than {MAX_FILE_COUNT} files"
+        )));
         assert!(msg.contains("largest directories:"));
         assert!(msg.contains("- dir_00000/ (2 files)"));
     }
@@ -213,9 +233,35 @@ mod tests {
     #[test]
     fn extracts_dir_slice_from_paths() {
         assert_eq!(extract_dir_slice("src/core/decide.rs"), "src/");
-        assert_eq!(extract_dir_slice("root_file.txt"), "<root>/");
-        assert_eq!(extract_dir_slice(""), "<root>/");
+        assert_eq!(extract_dir_slice("root_file.txt"), "./");
+        assert_eq!(extract_dir_slice(""), "./");
         assert_eq!(extract_dir_slice("vendor/"), "vendor/");
+        assert_eq!(extract_dir_slice("<root>/x.rs"), "<root>/");
+    }
+
+    #[test]
+    fn candidate_overflow_separates_root_files_from_directory_named_root()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let named_root = MAX_FILE_COUNT * 3 / 5;
+        let root_files = MAX_FILE_COUNT - named_root;
+        let mut budget = CandidateBudget::default();
+        for index in 0..named_root {
+            budget = budget.add(&format!("<root>/pkg_{index}.rs"))?;
+        }
+        for index in 0..root_files {
+            budget = budget.add(&format!("f_{index}.rs"))?;
+        }
+        let message = budget.add("extra.rs").unwrap_err().to_string();
+        assert!(
+            message.contains(&format!("\n  - <root>/ ({named_root} files)")),
+            "{message}"
+        );
+        // The `extra.rs` entry that overflows the budget is itself a root file.
+        assert!(
+            message.contains(&format!("\n  - ./ ({} files)", root_files + 1)),
+            "{message}"
+        );
+        Ok(())
     }
 
     #[test]
@@ -243,7 +289,8 @@ mod tests {
     {
         let chunk = vec![b'x'; MAX_FILE_SIZE_USIZE];
         let mut selector = Selector::new();
-        for i in 0..19 {
+        // Fill the output to one file short of its limit; the next file overflows it.
+        for i in 0..MAX_OUTPUT_SIZE_USIZE / MAX_FILE_SIZE_USIZE - 1 {
             selector = selector.observe(
                 PathStatus::Valid(format!("file_{i:02}.txt").into()),
                 None,
@@ -256,7 +303,10 @@ mod tests {
             })
             .unwrap_err();
         let message = err.to_string();
-        assert!(message.contains("digest exceeds the 20 MiB output limit"));
+        assert!(message.contains(&format!(
+            "digest exceeds the {} MiB output limit",
+            MAX_OUTPUT_SIZE / (1024 * 1024)
+        )));
         assert!(message.contains("largest files:"));
         assert!(message.contains("file_00.txt"));
         Ok(())
@@ -300,7 +350,7 @@ mod tests {
             let selector = Selector::new().observe(PathStatus::Valid(path.into()), None, || {
                 Ok::<_, DomainError>(content)
             })?;
-            let collection = selector.finish("test".into(), None);
+            let collection = selector.finish("test".into(), None)?;
             assert_eq!(collection.files.len(), included, "{path}");
             assert_eq!(collection.skipped, skipped, "{path}");
         }
@@ -332,7 +382,7 @@ mod tests {
                 },
             )?;
             assert_eq!(selector.candidates.count, candidates);
-            let collection = selector.finish("test".into(), None);
+            let collection = selector.finish("test".into(), None)?;
             assert_eq!(collection.files.len(), 0);
             assert_eq!(collection.skipped, skipped);
         }

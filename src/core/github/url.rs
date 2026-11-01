@@ -4,7 +4,7 @@ use memchr::{memchr, memchr2};
 
 use crate::core::error::DomainError;
 
-pub(super) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
+pub(crate) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 
 /// Exact-origin match: returns `true` if `url == GITHUB_API_BASE_URL` or starts with `GITHUB_API_BASE_URL + "/"`.
 #[must_use]
@@ -106,10 +106,10 @@ pub(crate) fn repository_url(owner: &str, repo: &str) -> String {
     format!("https://github.com/{owner}/{repo}")
 }
 
-/// Constructs the tarball download URL for the given repository and optional Git reference.
+/// Constructs the tarball download URL under `base` for the given repository and optional Git reference.
 #[must_use]
-pub(crate) fn tarball_url(owner: &str, repo: &str, reference: Option<&str>) -> String {
-    let mut url = String::from(GITHUB_API_BASE_URL);
+pub(crate) fn tarball_url(base: &str, owner: &str, repo: &str, reference: Option<&str>) -> String {
+    let mut url = String::from(base);
     for segment in ["repos", owner, repo, "tarball"] {
         url = append_encoded_segment(url, segment);
     }
@@ -193,16 +193,20 @@ mod tests {
     #[test]
     fn builds_tarball_urls() {
         assert_eq!(
-            tarball_url("rust-lang", "cargo", None),
+            tarball_url(GITHUB_API_BASE_URL, "rust-lang", "cargo", None),
             "https://api.github.com/repos/rust-lang/cargo/tarball"
         );
         assert_eq!(
-            tarball_url("rust-lang", "cargo", Some("main")),
+            tarball_url(GITHUB_API_BASE_URL, "rust-lang", "cargo", Some("main")),
             "https://api.github.com/repos/rust-lang/cargo/tarball/main"
         );
         assert_eq!(
-            tarball_url("owner", "repo", Some("feature/test")),
+            tarball_url(GITHUB_API_BASE_URL, "owner", "repo", Some("feature/test")),
             "https://api.github.com/repos/owner/repo/tarball/feature%2Ftest"
+        );
+        assert_eq!(
+            tarball_url("http://127.0.0.1:8080", "owner", "repo", Some("main")),
+            "http://127.0.0.1:8080/repos/owner/repo/tarball/main"
         );
     }
 

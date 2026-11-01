@@ -40,7 +40,7 @@ pub(super) fn collect(
         observe_candidate,
     )?;
 
-    Ok(selector.finish(label, None))
+    Ok(selector.finish(label, None)?)
 }
 
 fn observe_candidate(selector: Selector, candidate: Candidate) -> Result<Selector, IngestError> {
@@ -606,7 +606,7 @@ mod tests {
         let selector = Selector::new();
         let candidate = Candidate::NonUtf8("invalid/utf8".to_string());
         let updated = observe_candidate(selector, candidate)?;
-        let result = updated.finish("repo".to_string(), None);
+        let result = updated.finish("repo".to_string(), None)?;
         assert_eq!(result.skipped, 1);
         assert_eq!(result.files.len(), 0);
         Ok(())

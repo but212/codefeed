@@ -7,8 +7,8 @@ use std::cmp::Ordering;
 use std::iter::once;
 use std::ops::Deref;
 
-use crate::core::error::DomainError;
-use crate::core::policy::{MAX_OUTPUT_SIZE, NormalizedPath};
+use crate::core::error::{DomainError, sanitize_error_detail};
+use crate::core::policy::{MAX_OUTPUT_SIZE, NormalizedPath, OVERFLOW_LARGEST_FILES};
 
 /// 16-byte POD indexing a file path and content slice in [`FileStorage`].
 ///
@@ -54,16 +54,47 @@ pub(crate) struct FileRecord<'a> {
     pub(crate) content: &'a str,
 }
 
-/// Wrapper guaranteeing that [`FileStorage`] is sorted component-wise lexicographically by path.
+/// Wrapper guaranteeing that [`FileStorage`] is sorted component-wise lexicographically by path
+/// and that no stored path is a directory prefix of another.
 #[derive(Debug)]
 #[cfg_attr(test, derive(Clone))]
 #[must_use]
 pub(crate) struct SortedFiles(FileStorage);
 
 impl SortedFiles {
-    pub(crate) fn new(storage: FileStorage) -> Self {
-        Self(storage.sort_by_path())
+    /// Sorts `storage` by path, then checks that no stored path names a file and a directory at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::InvalidMetadata`] when one stored path is a directory prefix of another,
+    /// since the digest tree would show the same entry as both a file and a directory.
+    pub(crate) fn new(storage: FileStorage) -> Result<Self, DomainError> {
+        let sorted = storage.sort_by_path();
+        check_no_file_directory_collision(&sorted)?;
+        Ok(Self(sorted))
     }
+}
+
+/// Checks adjacent pairs only. If `p` is a directory prefix of some `p/…` path, the element right
+/// after `p` in `cmp_path` order also starts with `p/`, so the first colliding pair is always adjacent.
+fn check_no_file_directory_collision(sorted: &FileStorage) -> Result<(), DomainError> {
+    let mut paths = sorted.iter().map(|record| record.path);
+    let Some(mut previous) = paths.next() else {
+        return Ok(());
+    };
+    for next in paths {
+        if next
+            .strip_prefix(previous)
+            .is_some_and(|rest| rest.starts_with('/'))
+        {
+            return Err(DomainError::invalid_metadata(format!(
+                "entry path is both a file and a directory: {}",
+                sanitize_error_detail(previous)
+            )));
+        }
+        previous = next;
+    }
+    Ok(())
 }
 
 /// Read-only view. `FileStorage` mutators consume `self`, so sortedness cannot be broken through this view.
@@ -182,7 +213,7 @@ pub(crate) fn cmp_path(a: &str, b: &str) -> Ordering {
     a.split('/').cmp(b.split('/'))
 }
 
-/// Diagnostic ranking for digest size: selects up to five largest files.
+/// Diagnostic ranking for digest size: selects up to `OVERFLOW_LARGEST_FILES` largest files.
 ///
 /// Called only on output limit exceeded error paths to format error diagnostics.
 /// Sorts by descending file size, tie-breaking by hierarchical path order (`cmp_path`).
@@ -194,7 +225,7 @@ pub(crate) fn largest_files<'a>(
         .map(|f| (f.path, f.content.len()))
         .collect();
     sized.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| cmp_path(a.0, b.0)));
-    sized.truncate(5);
+    sized.truncate(OVERFLOW_LARGEST_FILES);
     sized.into_iter().map(|(p, s)| (p.to_string(), s)).collect()
 }
 
@@ -204,7 +235,7 @@ mod tests {
     use crate::core::policy::MAX_OUTPUT_SIZE_USIZE;
 
     #[test]
-    fn largest_files_selects_top_five_with_stability() {
+    fn largest_files_selects_largest_with_stability() {
         let files = [
             FileRecord {
                 path: "f1.txt",
@@ -235,13 +266,21 @@ mod tests {
                 content: "666666",
             },
         ];
-        let result = largest_files(files);
-        assert_eq!(result.len(), 5);
-        assert_eq!(result[0], ("f6.txt".into(), 6));
-        assert_eq!(result[1], ("f5_a.txt".into(), 5));
-        assert_eq!(result[2], ("f5_b.txt".into(), 5));
-        assert_eq!(result[3], ("f4.txt".into(), 4));
-        assert_eq!(result[4], ("f3.txt".into(), 3));
+        // Full order: descending size, ties by path. The diagnostic keeps the first `OVERFLOW_LARGEST_FILES`.
+        let expected: Vec<(String, usize)> = [
+            ("f6.txt", 6),
+            ("f5_a.txt", 5),
+            ("f5_b.txt", 5),
+            ("f4.txt", 4),
+            ("f3.txt", 3),
+            ("f2.txt", 2),
+            ("f1.txt", 1),
+        ]
+        .into_iter()
+        .take(OVERFLOW_LARGEST_FILES)
+        .map(|(path, size)| (path.to_string(), size))
+        .collect();
+        assert_eq!(largest_files(files), expected);
     }
 
     #[test]
@@ -329,6 +368,32 @@ mod tests {
         let paths: Vec<&str> = storage.iter().map(|f| f.path).collect();
         assert_eq!(paths, vec!["src/a.rs", "src-test/b.rs"]);
         Ok(())
+    }
+
+    fn sorted_from(paths: &[&str]) -> Result<SortedFiles, DomainError> {
+        let storage: FileStorage = paths
+            .iter()
+            .map(|path| FileRecord { path, content: "x" })
+            .collect();
+        SortedFiles::new(storage)
+    }
+
+    #[test]
+    fn sorted_files_rejects_path_that_is_also_a_directory() {
+        for paths in [&["a", "a/b"][..], &["a/b", "a"], &["x/a", "x/a/b/c"]] {
+            let err = sorted_from(paths).unwrap_err();
+            assert!(
+                matches!(&err, DomainError::InvalidMetadata(msg) if msg.starts_with("entry path is both a file and a directory")),
+                "{paths:?}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sorted_files_allows_names_that_share_only_a_string_prefix() {
+        for paths in [&["a.txt", "a/b"][..], &["a-b", "a/b"], &["a", "ab/c"]] {
+            assert!(sorted_from(paths).is_ok(), "{paths:?}");
+        }
     }
 
     #[test]

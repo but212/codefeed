@@ -10,6 +10,7 @@ use crate::core::github::{
     AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind, api_error,
     status_retry_warning, transport_retry_warning,
 };
+use crate::core::policy::GITHUB_ERROR_BODY_BYTES;
 use crate::shell::IngestError;
 use crate::shell::error::transport_error;
 use crate::shell::output;
@@ -78,7 +79,7 @@ impl Attempt {
                 let _ = response
                     .into_body()
                     .into_reader()
-                    .take(4096)
+                    .take(GITHUB_ERROR_BODY_BYTES)
                     .read_to_end(&mut body_bytes);
                 IngestError::Api(api_error(
                     status.as_u16(),

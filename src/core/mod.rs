@@ -19,6 +19,9 @@
 //!   2. Function-local stack variables and owned value parameters (`let mut` / `mut self`):
 //!      Fully isolated scratch computation with zero caller-observable side effects.
 //!      Any `&mut` reference parameter (including `&mut self`) is strictly forbidden.
+//!   3. Interior mutability inside a dependency that is not observable through its API, such as the
+//!      matching buffer pool of `ignore::gitignore::Gitignore` used by `policy/exclude.rs`. Core code
+//!      must not add any.
 
 pub(crate) mod archive;
 pub(crate) mod cli;

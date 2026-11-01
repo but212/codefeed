@@ -102,7 +102,7 @@ mod tests {
             .unwrap()
             .push(&crate::core::policy::NormalizedPath::from("src/lib.rs"), "")
             .unwrap();
-        let files = SortedFiles::new(storage);
+        let files = SortedFiles::new(storage).unwrap();
 
         let buf = render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str).unwrap();
         let digest = buf.finish();
@@ -125,7 +125,7 @@ mod tests {
                 "",
             )
             .unwrap();
-        let files = SortedFiles::new(storage);
+        let files = SortedFiles::new(storage).unwrap();
 
         let buf = render_tree(BoundedBuffer::default(), &files, |b, name| {
             b.push_str(&name.to_uppercase())
@@ -146,7 +146,7 @@ mod tests {
             .unwrap()
             .push(&NormalizedPath::from("b/z.txt"), "")
             .unwrap();
-        let files = SortedFiles::new(storage);
+        let files = SortedFiles::new(storage).unwrap();
 
         let buf = render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str).unwrap();
         let digest = buf.finish();
@@ -189,7 +189,7 @@ mod tests {
             .unwrap()
             .push(&NormalizedPath::from("root.txt"), "")
             .unwrap();
-        let files = SortedFiles::new(storage);
+        let files = SortedFiles::new(storage).unwrap();
 
         let buf = render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str).unwrap();
         let digest = buf.finish();
