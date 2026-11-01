@@ -155,7 +155,7 @@ mod tests {
         }
         let mut dir = AdmittedDir::root();
         for name in segments {
-            match admit_dir(&dir, name, patterns) {
+            match admit_dir(dir, name, patterns) {
                 Some(admitted) => dir = admitted,
                 None => return true,
             }

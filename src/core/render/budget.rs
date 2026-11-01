@@ -40,7 +40,8 @@ pub(crate) struct RenderedDigest {
 /// In-memory buffer with value-passing operations, bounded by a byte `limit`.
 ///
 /// Invariant I-B1 (`runtime`): `bytes.len() <= limit`. `push_bytes` is the only growth path and checks it.
-/// Production always uses [`MAX_OUTPUT_SIZE`](crate::core::policy::MAX_OUTPUT_SIZE); the limit is a parameter only so tests can sweep every boundary.
+/// Outside tests the limit is always [`MAX_OUTPUT_SIZE`](crate::core::policy::MAX_OUTPUT_SIZE): [`BoundedBuffer::with_capacity`]
+/// is the only constructor, and the arbitrary-limit constructor exists only under `cfg(test)` so tests can sweep every boundary.
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 #[must_use]
@@ -52,15 +53,23 @@ pub(crate) struct BoundedBuffer {
 #[cfg(test)]
 impl Default for BoundedBuffer {
     fn default() -> Self {
-        Self::with_limit(0, crate::core::policy::MAX_OUTPUT_SIZE)
+        Self::with_capacity(0)
     }
 }
 
 impl BoundedBuffer {
-    pub(crate) fn with_limit(capacity: usize, limit: u64) -> Self {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
             bytes: Vec::with_capacity(capacity),
+            limit: crate::core::policy::MAX_OUTPUT_SIZE,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_limit(capacity: usize, limit: u64) -> Self {
+        Self {
             limit,
+            ..Self::with_capacity(capacity)
         }
     }
 

@@ -5,7 +5,6 @@
 
 use crate::core::error::DomainError;
 use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
-use crate::core::policy::MAX_OUTPUT_SIZE;
 
 mod budget;
 mod escape;
@@ -40,7 +39,7 @@ pub(crate) fn render_with<R: FormatRenderer>(
 impl CollectionResult {
     /// Renders the collected files into [`RenderedDigest`] using the specified format.
     ///
-    /// Binds output generation to [`MAX_OUTPUT_SIZE`] and calculates the estimated token count.
+    /// Binds output generation to [`MAX_OUTPUT_SIZE`](crate::core::policy::MAX_OUTPUT_SIZE) and calculates the estimated token count.
     /// The digest's report records `output` as its delivery target.
     /// Consumes `self` as part of the linear ingestion pipeline.
     ///
@@ -66,7 +65,7 @@ impl CollectionResult {
         let capacity = usize::try_from(self.files.total_bytes())
             .unwrap_or(usize::MAX)
             .saturating_add(4096);
-        let buf = BoundedBuffer::with_limit(capacity, MAX_OUTPUT_SIZE);
+        let buf = BoundedBuffer::with_capacity(capacity);
         let included = self.files.len();
         let skipped = self.skipped;
         let rendered = match format {

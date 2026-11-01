@@ -93,7 +93,11 @@ impl<'a> Walk<'a> {
             return Ok(None);
         }
         if is_dir {
-            if let Some(admitted) = admit_dir(&parent, name.as_encoded_bytes(), self.exclude) {
+            if let Some(admitted) = admit_dir(
+                AdmittedDir::clone(&parent),
+                name.as_encoded_bytes(),
+                self.exclude,
+            ) {
                 self.frames.push(Frame::enter(&path, Arc::new(admitted))?);
             }
             Ok(None)
@@ -227,7 +231,7 @@ mod tests {
         let nested = |directories: usize| {
             let mut dir = AdmittedDir::root();
             for _ in 0..directories {
-                dir = admit_dir(&dir, b"d", &exclude).expect("d is not excluded");
+                dir = admit_dir(dir, b"d", &exclude).expect("d is not excluded");
             }
             dir
         };

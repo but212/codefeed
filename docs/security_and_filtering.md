@@ -128,7 +128,7 @@ Exact matches against the final path segment:
 - The rule applies to local and GitHub sources in the same way. It is independent of `.gitignore` (sec. 3.5): a path is dropped when either one drops it. A `!` pattern re-includes only paths that other user patterns exclude.
 - A path is excluded when it or any ancestor directory matches. Ancestors are tested as directories, from the top down. A `!` pattern cannot re-include a file under an excluded directory.
 - Excluded local directories are pruned, so their `.gitignore` is never read. Excluded entries are not candidates and are omitted from the skipped count.
-- Matching tests the first `MAX_PATH_DEPTH + 1` segments of a path, whatever its byte length, so a match on a path longer than `MAX_PATH_BYTES` still excludes it. The matching cost is at most that many tests, each linear in its prefix. This bounds the matching work for attacker-controlled archive paths (threat T2, sec. 1).
+- Matching tests the first `MAX_PATH_DEPTH + 1` segments of a path, whatever its byte length, so a match on a path longer than `MAX_PATH_BYTES` still excludes it. The matching cost is at most that many tests, each linear in its prefix. This bounds the matching work for attacker-controlled archive paths (threat T2, sec. 1). Classifying one path takes time linear in its byte length: each admitted directory extends its prefixes in place, and the match prefix stops growing past the window.
 - A match beyond the first `MAX_PATH_DEPTH + 1` segments is not seen. Such an entry is not excluded and fails its depth limit (sec. 3.4), as any other deep entry does.
 
 ---

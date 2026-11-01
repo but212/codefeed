@@ -78,7 +78,7 @@ where
     };
     let mut dir = AdmittedDir::root();
     for name in ancestors {
-        let Some(admitted) = admit_dir(&dir, name, exclude) else {
+        let Some(admitted) = admit_dir(dir, name, exclude) else {
             return Ok(PathStatus::Ignored);
         };
         dir = admitted;
@@ -115,36 +115,43 @@ impl AdmittedDir {
     }
 }
 
-/// Admits directory `name` under `parent`. Returns `None` when it is hidden or user-excluded.
+/// Admits directory `name` under `dir`. Returns `None` when it is hidden or user-excluded.
 ///
-/// Only the new prefix is matched. The prefixes of `parent`'s ancestors were matched when `parent` was
+/// Takes `dir` by value and extends its prefixes in place, so admitting one directory costs time linear
+/// in the bytes it appends. Callers that keep `dir` clone it first.
+///
+/// Only the new prefix is matched. The prefixes of `dir`'s ancestors were matched when `dir` was
 /// admitted, and a match there would have returned `None` already. Matching stops after the first
-/// `MAX_PATH_DEPTH + 1` segments, so a directory past that window is not matched.
+/// `MAX_PATH_DEPTH + 1` segments: deeper, the match prefix stops growing and is not matched.
 pub(crate) fn admit_dir(
-    parent: &AdmittedDir,
+    mut dir: AdmittedDir,
     name: &[u8],
     exclude: &ExcludePatterns,
 ) -> Option<AdmittedDir> {
     if is_hidden_segment(name) {
         return None;
     }
-    let mut match_prefix = parent.match_prefix.clone();
-    push_match_segment(&mut match_prefix, name);
-    if parent.depth <= MAX_PATH_DEPTH && exclude.excludes_prefix(&match_prefix, true) {
-        return None;
+    if dir.depth <= MAX_PATH_DEPTH {
+        push_match_segment(&mut dir.match_prefix, name);
+        if exclude.excludes_prefix(&dir.match_prefix, true) {
+            return None;
+        }
     }
-    let output = match &parent.output {
-        DirPrefix::NonUtf8(prefix) => DirPrefix::NonUtf8(prefix.clone()),
-        DirPrefix::Utf8(prefix) => match std::str::from_utf8(name) {
-            Ok(segment) => DirPrefix::Utf8(join_segment(prefix, segment)),
-            Err(_) => DirPrefix::NonUtf8(with_separator(prefix)),
-        },
+    dir.output = match dir.output {
+        DirPrefix::NonUtf8(prefix) => DirPrefix::NonUtf8(prefix),
+        DirPrefix::Utf8(mut prefix) => {
+            push_separator(&mut prefix);
+            match std::str::from_utf8(name) {
+                Ok(segment) => {
+                    prefix.push_str(segment);
+                    DirPrefix::Utf8(prefix)
+                }
+                Err(_) => DirPrefix::NonUtf8(prefix),
+            }
+        }
     };
-    Some(AdmittedDir {
-        depth: parent.depth + 1,
-        match_prefix,
-        output,
-    })
+    dir.depth += 1;
+    Some(dir)
 }
 
 /// Classifies file `name` directly under `parent`. The checks on `parent`'s ancestors already ran in
@@ -191,10 +198,15 @@ pub(crate) fn classify_leaf(
 /// The prefix followed by its `/` separator, or empty when the prefix is empty. This is the output a
 /// non-UTF-8 segment reports, so the trailing separator is part of the contract.
 fn with_separator(prefix: &str) -> String {
-    if prefix.is_empty() {
-        String::new()
-    } else {
-        format!("{prefix}/")
+    let mut separated = prefix.to_string();
+    push_separator(&mut separated);
+    separated
+}
+
+/// Appends the `/` separator unless the prefix is empty.
+fn push_separator(prefix: &mut String) {
+    if !prefix.is_empty() {
+        prefix.push('/');
     }
 }
 
@@ -411,20 +423,40 @@ mod tests {
     fn admit_dir_checks_only_the_match_window_and_hidden_names() {
         let exclude = ExcludePatterns::new(["build/"]).unwrap();
         let root = AdmittedDir::root();
-        assert!(admit_dir(&root, b"build", &exclude).is_none());
-        assert!(admit_dir(&root, b".git", &exclude).is_none());
-        assert!(admit_dir(&root, b"src", &exclude).is_some());
+        assert!(admit_dir(root.clone(), b"build", &exclude).is_none());
+        assert!(admit_dir(root.clone(), b".git", &exclude).is_none());
+        assert!(admit_dir(root, b"src", &exclude).is_some());
 
         // A match past the first `MAX_PATH_DEPTH + 1` directories is not seen, as in the file check.
         let mut deep = AdmittedDir::root();
         for _ in 0..=MAX_PATH_DEPTH {
-            deep = admit_dir(&deep, b"d", &exclude).expect("d is not excluded");
+            deep = admit_dir(deep, b"d", &exclude).expect("d is not excluded");
         }
-        assert!(admit_dir(&deep, b"build", &exclude).is_some());
+        assert!(admit_dir(deep.clone(), b"build", &exclude).is_some());
         assert!(
-            admit_dir(&deep, b".git", &exclude).is_none(),
+            admit_dir(deep, b".git", &exclude).is_none(),
             "hidden names are checked at every depth"
         );
+    }
+
+    #[test]
+    fn admit_dir_stops_growing_match_prefix_past_window() {
+        let exclude = ExcludePatterns::default();
+        let mut dir = AdmittedDir::root();
+        for _ in 0..=MAX_PATH_DEPTH {
+            dir = admit_dir(dir, b"d", &exclude).expect("d is not excluded");
+        }
+        let window_len = dir.match_prefix.len();
+        let depth = dir.depth;
+        for _ in 0..8 {
+            dir = admit_dir(dir, b"d", &exclude).expect("d is not excluded");
+        }
+        assert_eq!(
+            dir.match_prefix.len(),
+            window_len,
+            "the match prefix grows only inside the window"
+        );
+        assert_eq!(dir.depth, depth + 8);
     }
 
     #[test]
