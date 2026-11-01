@@ -326,6 +326,28 @@ mod tests {
     }
 
     #[test]
+    fn non_utf8_candidate_consumes_budget_and_fails_when_exhausted() -> Result<(), DomainError> {
+        let mut selector = Selector::new();
+        for i in 0..MAX_FILE_COUNT {
+            let path = PathStatus::Valid(format!("file_{i}.txt").into());
+            selector =
+                selector.observe(path, None, || Ok::<_, DomainError>(Some(&b"content"[..])))?;
+        }
+
+        let err = selector
+            .observe(
+                PathStatus::NonUtf8Candidate("dir/".into()),
+                None,
+                || -> Result<Option<Vec<u8>>, DomainError> {
+                    panic!("non-UTF-8 candidates are never read")
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, DomainError::CandidateLimitExceeded(..)));
+        Ok(())
+    }
+
+    #[test]
     fn observe_counts_candidates_by_content_outcome() -> Result<(), Box<dyn std::error::Error>> {
         // (path, content, included, skipped); `None` content means the file was unavailable.
         let cases: [(&str, Option<Vec<u8>>, usize, usize); 6] = [

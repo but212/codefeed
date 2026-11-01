@@ -227,6 +227,10 @@ mod tests {
         let invalid = b"52 comment=not-a-sha\n";
         assert_eq!(parse_pax_comment(invalid), None);
 
+        // A non-UTF-8 PAX record is not a commit SHA, and the parser must not panic.
+        let non_utf8 = b"comment=\xFF\xFEc1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n";
+        assert_eq!(parse_pax_comment(non_utf8), None);
+
         // Only exactly 40 or 64 hex characters are a commit SHA.
         let boundary = [
             ("a".repeat(39), false),

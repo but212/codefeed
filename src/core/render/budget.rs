@@ -1,7 +1,7 @@
 //! In-memory bounded buffer and token estimation heuristic.
 
 use crate::core::model::{IngestReport, OutputTarget};
-use crate::core::policy::{ASCII_BYTES_PER_TOKEN, MAX_OUTPUT_SIZE};
+use crate::core::policy::ASCII_BYTES_PER_TOKEN;
 
 /// Token estimation heuristic calculating ASCII bytes and non-ASCII character counts.
 #[must_use]
@@ -25,7 +25,7 @@ pub(super) const fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
     if total > 1 { total } else { 1 }
 }
 
-/// Error returned when rendered content exceeds [`MAX_OUTPUT_SIZE`].
+/// Error returned when rendered content exceeds the buffer's limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OutputLimitExceeded;
 
@@ -37,25 +37,36 @@ pub(crate) struct RenderedDigest {
     pub(crate) report: IngestReport,
 }
 
-/// In-memory buffer strictly bounded by [`MAX_OUTPUT_SIZE`] with value-passing operations.
+/// In-memory buffer with value-passing operations, bounded by a byte `limit`.
+///
+/// Invariant I-B1 (`runtime`): `bytes.len() <= limit`. `push_bytes` is the only growth path and checks it.
+/// Production always uses [`MAX_OUTPUT_SIZE`](crate::core::policy::MAX_OUTPUT_SIZE); the limit is a parameter only so tests can sweep every boundary.
 #[derive(Debug)]
-#[cfg_attr(test, derive(Default, PartialEq, Eq))]
-#[repr(transparent)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[must_use]
 pub(crate) struct BoundedBuffer {
     bytes: Vec<u8>,
+    limit: u64,
+}
+
+#[cfg(test)]
+impl Default for BoundedBuffer {
+    fn default() -> Self {
+        Self::with_limit(0, crate::core::policy::MAX_OUTPUT_SIZE)
+    }
 }
 
 impl BoundedBuffer {
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
+    pub(crate) fn with_limit(capacity: usize, limit: u64) -> Self {
         Self {
             bytes: Vec::with_capacity(capacity),
+            limit,
         }
     }
 
     pub(crate) fn push_bytes(mut self, slice: &[u8]) -> Result<Self, OutputLimitExceeded> {
         let new_len = self.bytes.len().saturating_add(slice.len());
-        if new_len as u64 > MAX_OUTPUT_SIZE {
+        if new_len as u64 > self.limit {
             return Err(OutputLimitExceeded);
         }
         self.bytes.extend_from_slice(slice);
@@ -104,6 +115,20 @@ mod tests {
         let buf = BoundedBuffer::default();
         let large = vec![b'x'; MAX_OUTPUT_SIZE_USIZE + 1];
         assert_eq!(buf.push_bytes(&large), Err(OutputLimitExceeded));
+    }
+
+    #[test]
+    fn bounded_buffer_limit_is_exact_at_every_boundary() {
+        for limit in 0..=8u64 {
+            let full = BoundedBuffer::with_limit(0, limit)
+                .push_bytes(&vec![b'x'; limit as usize])
+                .expect("content at the limit fits");
+            assert_eq!(
+                full.push_bytes(b"x").err(),
+                Some(OutputLimitExceeded),
+                "limit {limit}"
+            );
+        }
     }
 
     #[test]

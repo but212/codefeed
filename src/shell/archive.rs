@@ -541,6 +541,84 @@ mod tests {
         assert_eq!(result.skipped, 1);
     }
 
+    #[test]
+    fn entry_path_past_max_depth_fails_the_run() {
+        let deep_path = format!(
+            "repo-root/{}/file.txt",
+            vec!["d"; crate::core::policy::MAX_PATH_DEPTH + 1].join("/")
+        );
+        let mock_data = gzip_tarball(&[(deep_path.as_str(), b"content", EntryType::Regular)]);
+
+        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+            .unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(msg)) if msg.contains("maximum directory depth")),
+            "expected depth failure, got: {err:?}"
+        );
+    }
+
+    /// Yields `data`, then fails the way a dropped connection does.
+    struct DroppedAfter<'a> {
+        data: &'a [u8],
+    }
+
+    impl Read for DroppedAfter<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.data.is_empty() {
+                return Err(io::Error::other("connection reset"));
+            }
+            let n = buf.len().min(self.data.len());
+            buf[..n].copy_from_slice(&self.data[..n]);
+            self.data = &self.data[n..];
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn stream_cut_at_any_offset_never_yields_partial_output() {
+        // A PAX global header body and a multi-block file body are both read by the loop, so every
+        // read site sees the cut.
+        let body: Vec<u8> = (0..2048u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let mock_data = gzip_tarball(&[
+            (
+                "pax_global_header",
+                b"52 comment=c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n",
+                EntryType::XGlobalHeader,
+            ),
+            ("repo-root/src/main.rs", body.as_slice(), EntryType::Regular),
+        ]);
+
+        let full = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+            .expect("intact stream collects");
+        let expected_files = full.files.len();
+
+        for cut in 0..mock_data.len() {
+            let reader = DroppedAfter {
+                data: &mock_data[..cut],
+            };
+            match collect(
+                reader,
+                "https://github.com/owner/repo",
+                None,
+                &ExcludePatterns::default(),
+            ) {
+                Err(IngestError::Http(_)) => {}
+                // The tar end marker can sit before the last gzip bytes, so a cut there completes the run.
+                Ok(partial) => {
+                    assert_eq!(partial.files.len(), expected_files, "cut at {cut}");
+                    assert_eq!(
+                        partial.files.total_bytes(),
+                        full.files.total_bytes(),
+                        "cut at {cut}"
+                    );
+                }
+                Err(other) => panic!("cut at {cut}: unexpected error {other:?}"),
+            }
+        }
+    }
+
     /// Asserts that the run fails because a header exceeds the `ARCHIVE_MAX_HEADER_BYTES` budget.
     fn assert_header_budget_failure(mock_data: &[u8]) {
         let err = collect_default(mock_data, "https://github.com/owner/repo", None).unwrap_err();

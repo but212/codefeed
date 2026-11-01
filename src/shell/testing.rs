@@ -33,6 +33,12 @@ pub(super) fn with_test_github_url<R>(url: String, f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// Runs `f` with no URL override, holding the same lock as [`with_test_github_url`] so no override leaks in.
+pub(super) fn with_default_github_origin<R>(f: impl FnOnce() -> R) -> R {
+    let _lock = TEST_GITHUB_MUTEX.lock().unwrap();
+    f()
+}
+
 pub(super) fn get_test_github_url() -> Option<String> {
     TEST_GITHUB_URL.lock().unwrap().clone()
 }

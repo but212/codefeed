@@ -220,6 +220,50 @@ mod tests {
         assert_eq!(DomainError::usage(raw).to_string(), "a\u{FFFD}[2J b");
     }
 
+    /// A formatting sink that rejects any write which would exceed `remaining` bytes.
+    struct FailingSink {
+        remaining: usize,
+    }
+
+    impl std::fmt::Write for FailingSink {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.remaining = self.remaining.checked_sub(s.len()).ok_or(std::fmt::Error)?;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn display_propagates_sink_failure_at_every_write() {
+        use std::fmt::Write as _;
+
+        let errors = [
+            DomainError::candidate_limit_exceeded(
+                MAX_FILE_COUNT,
+                vec![("dir_a".into(), 3), ("dir_b".into(), 2)],
+            ),
+            DomainError::output_too_large(vec![("big.txt".into(), 2_000_000)]),
+        ];
+        for err in errors {
+            let full = err.to_string();
+            // A sink with exactly `full.len()` bytes accepts every write.
+            let mut exact = FailingSink {
+                remaining: full.len(),
+            };
+            write!(exact, "{err}").expect("sink with exact capacity accepts all writes");
+
+            // Any shorter sink must fail, whichever `write!` in `Display` crosses the boundary.
+            for capacity in 0..full.len() {
+                let mut sink = FailingSink {
+                    remaining: capacity,
+                };
+                assert!(
+                    write!(sink, "{err}").is_err(),
+                    "capacity {capacity}: {full:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn overflow_diagnostics_sanitize_control_characters() {
         let candidates = DomainError::candidate_limit_exceeded(

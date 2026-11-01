@@ -5,6 +5,7 @@
 
 use crate::core::error::DomainError;
 use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
+use crate::core::policy::MAX_OUTPUT_SIZE;
 
 mod budget;
 mod escape;
@@ -65,7 +66,7 @@ impl CollectionResult {
         let capacity = usize::try_from(self.files.total_bytes())
             .unwrap_or(usize::MAX)
             .saturating_add(4096);
-        let buf = BoundedBuffer::with_capacity(capacity);
+        let buf = BoundedBuffer::with_limit(capacity, MAX_OUTPUT_SIZE);
         let included = self.files.len();
         let skipped = self.skipped;
         let rendered = match format {
@@ -158,6 +159,55 @@ mod tests {
             digest.report.estimated_tokens,
             budget::estimate_tokens_from_bytes(&digest.bytes)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn render_fails_at_every_write_position_within_its_limit() -> Result<(), DomainError> {
+        // Every write (framing, header, tree, escaped body) must propagate a limit failure.
+        let storage = [
+            ("src/main.rs", "fn main() {}\r\n"),
+            ("src/a&b/c.txt", "a < b & \"c\" 'd'\u{FFFE}\x0C tail"),
+            ("README.md", "héllo 한글 🦀\n"),
+        ]
+        .into_iter()
+        .try_fold(FileStorage::new(), |storage, (path, content)| {
+            storage.push(&NormalizedPath::from(path), content)
+        })?;
+        let collection = CollectionResult {
+            label: "repo".into(),
+            revision: Some("abc123".into()),
+            files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
+            skipped: 1,
+        };
+
+        for format in [DigestFormat::Text, DigestFormat::Xml] {
+            let render_at = |limit: u64| match format {
+                DigestFormat::Text => render_with(
+                    BoundedBuffer::with_limit(0, limit),
+                    &collection,
+                    TextRenderer,
+                ),
+                DigestFormat::Xml => render_with(
+                    BoundedBuffer::with_limit(0, limit),
+                    &collection,
+                    XmlRenderer,
+                ),
+            };
+            let full = render_at(u64::MAX)
+                .expect("unlimited render succeeds")
+                .finish()
+                .bytes;
+            for limit in 0..full.len() as u64 {
+                assert_eq!(
+                    render_at(limit).err(),
+                    Some(OutputLimitExceeded),
+                    "{format:?} limit {limit}"
+                );
+            }
+            let exact = render_at(full.len() as u64).expect("exact limit succeeds");
+            assert_eq!(exact.finish().bytes, full, "{format:?}");
+        }
         Ok(())
     }
 

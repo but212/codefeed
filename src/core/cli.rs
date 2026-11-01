@@ -588,6 +588,38 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
+    fn cli_reference_non_utf8_value_is_a_usage_error() {
+        let raw_val = non_utf8_os_value();
+        let args = [
+            std::ffi::OsString::from("codefeed"),
+            std::ffi::OsString::from("https://github.com/owner/repo"),
+            std::ffi::OsString::from("--ref"),
+            raw_val,
+        ];
+        let err = parse(args.iter()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("git reference must be valid utf-8"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn cli_non_utf8_source_is_a_local_path() {
+        let raw_source = non_utf8_os_value();
+        let args = [std::ffi::OsString::from("codefeed"), raw_source.clone()];
+        let CliAction::Run(config) = parse(args.iter()).expect("non-UTF-8 source is a path") else {
+            panic!("expected Run action");
+        };
+        assert!(
+            matches!(&config.source, Source::Local(path) if path.as_os_str() == raw_source.as_os_str()),
+            "expected local path source"
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
     fn cli_exclude_non_utf8_value_is_a_usage_error() {
         let raw_val = non_utf8_os_value();
 

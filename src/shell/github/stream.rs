@@ -288,6 +288,29 @@ mod tests {
     }
 
     #[test]
+    fn dropped_connection_is_retried_as_transport_error() {
+        let server = MockServer::spawn(2, |index, _req, _port| match index {
+            // An empty response closes the socket before any status line.
+            0 => Vec::new(),
+            _ => {
+                b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess".to_vec()
+            }
+        });
+
+        let client = GithubClient::new();
+        let url = server.url("/test");
+        let mut reader = client
+            .stream_url(&url)
+            .expect("retry after a dropped connection succeeds");
+        let mut body = String::new();
+        reader.read_to_string(&mut body).expect("read body");
+        assert_eq!(body, "success");
+
+        let (_, connections) = server.join();
+        assert_eq!(connections, 2);
+    }
+
+    #[test]
     fn stream_drop_mid_body_is_http() {
         let gz_bytes = gzip_tarball(&[("repo-root/file.txt", &b"hello"[..], EntryType::Regular)]);
         let truncated = gz_bytes[..16].to_vec();
