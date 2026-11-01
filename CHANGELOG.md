@@ -36,6 +36,8 @@ Internal refactors and test changes. No consumer action required.
 
 #### Changed
 
+- **Walk carries relative paths**: Each walk frame and `RegularFile` hold their path relative to the root, so `classify_entry` and directory exclusion no longer call `strip_prefix` or carry its unreachable error branch. Behavior unchanged (`src/shell/local/walk.rs`, `src/shell/local/pipeline.rs`).
+- **Docs match the code**: The security spec sec. 2 shows the tar header read before path normalization. Sec. 5 describes the custom walk's symlink handling. The README marks `.gitignore` as local-only. The `IngestReport::skipped_files` rustdoc lists every skip reason (`docs/security_and_filtering.md`, `README.md`, `src/core/model.rs`).
 - **Single tarball URL builder**: `tarball_url` takes the API base as an argument, and the test-only GitHub URL uses it too, so tests exercise the same path encoding as production (`src/core/github/url.rs`, `src/shell/github/mod.rs`).
 - **Path classifier without state enum**: `classify_path_segments` returns at the first non-UTF-8 segment instead of tracking a `PathClassifierState` (`src/core/policy/classify.rs`).
 - **Duplicate broken-pipe tests removed**: One shared `BrokenPipeWriter` now serves both output tests (`src/shell/output.rs`).

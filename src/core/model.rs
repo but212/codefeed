@@ -207,7 +207,7 @@ pub struct IngestReport {
     pub output: OutputTarget,
     /// Number of candidate files included in the rendered digest.
     pub included_files: usize,
-    /// Number of candidate files rejected due to size, encoding, or binary content.
+    /// Number of candidate files skipped: over a size or path limit, non-UTF-8 path, unavailable, binary, or invalid UTF-8.
     pub skipped_files: usize,
     /// Approximate token count of the rendered digest.
     pub estimated_tokens: usize,
