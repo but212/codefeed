@@ -6,34 +6,10 @@ use std::path::Path;
 
 use super::IngestError;
 use super::atomic::{parent_dir, write_atomic};
+use super::stdio::ignore_broken_pipe;
 use crate::core::error::DomainError;
 use crate::core::model::OutputTarget;
 use crate::shell::error::sanitized_io_error;
-
-fn ignore_broken_pipe(result: io::Result<()>) -> io::Result<()> {
-    match result {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
-        Err(e) => Err(e),
-    }
-}
-
-pub(super) fn write_line_to<W: io::Write>(out: &mut W, line: &str) -> io::Result<()> {
-    ignore_broken_pipe(writeln!(out, "{line}"))
-}
-
-pub(super) fn write_stdout_line(line: &str) {
-    let stdout = io::stdout();
-    let mut lock = stdout.lock();
-    let _ = write_line_to(&mut lock, line);
-}
-
-/// Writes one line to stderr. A closed stderr is not an error, so the failure is dropped.
-pub(super) fn write_stderr_line(line: &str) {
-    let stderr = io::stderr();
-    let mut lock = stderr.lock();
-    let _ = write_line_to(&mut lock, line);
-}
 
 /// Output target resolved against the filesystem. Only [`resolve_output_target`] constructs it,
 /// so collection and delivery never receive an unresolved request.
@@ -118,6 +94,7 @@ fn render_stdout_to<W: Write>(out: &mut W, bytes: &[u8]) -> Result<(), IngestErr
 mod tests {
     use std::path::PathBuf;
 
+    use super::super::stdio::BrokenPipeWriter;
     use super::super::testing::temp_dir;
     use super::*;
 
@@ -303,35 +280,5 @@ mod tests {
         );
         assert_eq!(resolved, out_link);
         Ok(())
-    }
-
-    struct FailingWriter;
-    impl io::Write for FailingWriter {
-        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
-            Err(io::Error::from(io::ErrorKind::PermissionDenied))
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Err(io::Error::from(io::ErrorKind::PermissionDenied))
-        }
-    }
-
-    struct BrokenPipeWriter;
-    impl io::Write for BrokenPipeWriter {
-        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
-            Err(io::Error::from(io::ErrorKind::BrokenPipe))
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Err(io::Error::from(io::ErrorKind::BrokenPipe))
-        }
-    }
-
-    #[test]
-    fn write_line_to_handles_broken_pipe_and_propagates_other_errors() {
-        let mut broken = BrokenPipeWriter;
-        assert!(write_line_to(&mut broken, "test").is_ok());
-
-        let mut failing = FailingWriter;
-        let err = write_line_to(&mut failing, "test").unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
     }
 }

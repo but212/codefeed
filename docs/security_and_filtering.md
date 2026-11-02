@@ -8,7 +8,7 @@
 
 | # | Threat | Mitigation | Implementation |
 | :--- | :--- | :--- | :--- |
-| T1 | Secret disclosure in digest | Path/name exclusion (sec. 3). Content is not scanned (sec. 1.2). | `policy/exclusions.rs`, `policy/classify.rs` |
+| T1 | Secret disclosure in digest | Path/name exclusion (sec. 3). Content is not scanned (sec. 1.2). | `policy/exclusions.rs`, `path.rs` |
 | T2 | Resource exhaustion | Size, count, depth, and path limits; bounded reads and channels; timeouts (sec. 5, sec. 6). | `policy/limits.rs`, `local/`, `github/` |
 | T3 | Credential forwarding across origins | Origin validation; redirects strip authorization headers (sec. 6). | `core/github/url.rs`, `shell/github/` |
 | T4 | Injection into terminals, XML, or LLM boundaries | Contextual output escaping (sec. 7). XML format isolates file bodies; text format isolates headers and paths while emitting bodies verbatim. | `core/render/escape.rs`, `core/render/formats.rs` |
@@ -49,7 +49,7 @@ Entry (local walk or tar stream)
  |     |     `-- Run fails (InvalidMetadata).
  |     `-- Strips the first path segment (repository root directory).
  |
- +-- Path classification (policy::classify_path_segments)
+ +-- Path classification (path::classify_path_segments)
  |     +-- Hidden segment
  |     |     `-- Ignored. Dropped silently. Omitted from count.
  |     +-- Matched by a user exclusion (sec. 3.6)
@@ -164,8 +164,9 @@ Candidate budget overflow aborts the run without emitting partial output.
 
 ### 6.1 Authentication
 
-- Resolves `GITHUB_TOKEN` first, then `GH_TOKEN`. Empty or whitespace values are ignored.
+- Resolves the variables listed in `TOKEN_ENV_VARS` (`src/core/policy/auth.rs`) in order: `GITHUB_TOKEN` first, then `GH_TOKEN`. Empty or whitespace values are ignored.
 - Attaches `Authorization: Bearer <token>` strictly when `is_github_api_origin(url)` holds (`https://api.github.com`).
+- The error message for 403 and 429 names the token variables only for an anonymous request. A request that carried a token gets no hint. A redirect target is not sent the token; its error is classified by the original API request.
 - Enforces `RedirectAuthHeaders::Never`; redirects never transmit credentials.
 
 ### 6.2 Memory

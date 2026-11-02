@@ -2,8 +2,9 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use crate::core::error::{DomainError, sanitize_error_detail};
-use crate::core::model::{DigestFormat, IngestReport, OutputTarget, RunConfig, Source};
+use crate::core::model::{DigestFormat, IngestReport, OutputTarget, RunConfig};
 use crate::core::policy::ExcludePatterns;
+use crate::core::source::Source;
 
 pub(crate) const HELP: &str = "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>] [--exclude <PATTERN>]...";
 
@@ -262,8 +263,8 @@ fn parse_format(val: &str) -> Result<DigestFormat, DomainError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::{GitRef, Source};
     use crate::core::policy::ExcludePatterns;
+    use crate::core::source::{GitRef, Source};
 
     /// An argument value that is not valid Unicode on the current platform.
     #[cfg(unix)]

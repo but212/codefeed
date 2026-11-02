@@ -1,7 +1,5 @@
 use std::fmt::{Display, Formatter, Result};
 
-use crate::core::policy::MAX_OUTPUT_SIZE;
-
 /// Diagnostic details for exceeded candidate limits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateLimitExceededError {
@@ -9,6 +7,15 @@ pub struct CandidateLimitExceededError {
     pub limit: usize,
     /// Top directories contributing to the candidate overflow.
     pub largest_directories: Vec<(String, usize)>,
+}
+
+/// Diagnostic details for an exceeded output size limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputTooLargeError {
+    /// The output size limit in bytes that was exceeded.
+    pub limit: u64,
+    /// Largest files contributing to the overflow, as `(path, size in bytes)`.
+    pub largest_files: Vec<(String, usize)>,
 }
 
 /// Pure domain rule failure. Core returns this type only; effect failures belong to the shell.
@@ -26,7 +33,7 @@ pub enum DomainError {
     /// Repository metadata or API response payload is malformed.
     InvalidMetadata(String),
     /// Rendered digest exceeds the maximum allowed output size.
-    OutputTooLarge(Vec<(String, usize)>),
+    OutputTooLarge(OutputTooLargeError),
 }
 
 impl DomainError {
@@ -68,8 +75,11 @@ impl DomainError {
 
     /// Constructs an [`OutputTooLarge`](Self::OutputTooLarge) error with diagnostic largest file entries.
     #[cold]
-    pub(crate) const fn output_too_large(largest_files: Vec<(String, usize)>) -> Self {
-        Self::OutputTooLarge(largest_files)
+    pub(crate) const fn output_too_large(limit: u64, largest_files: Vec<(String, usize)>) -> Self {
+        Self::OutputTooLarge(OutputTooLargeError {
+            limit,
+            largest_files,
+        })
     }
 }
 
@@ -116,12 +126,12 @@ impl Display for DomainError {
                 "invalid repository metadata: {}",
                 sanitize_error_detail(message)
             ),
-            Self::OutputTooLarge(largest_files) => {
-                let limit_mib = MAX_OUTPUT_SIZE / (1024 * 1024);
+            Self::OutputTooLarge(err) => {
+                let limit_mib = err.limit / (1024 * 1024);
                 write!(f, "digest exceeds the {limit_mib} MiB output limit")?;
-                if !largest_files.is_empty() {
+                if !err.largest_files.is_empty() {
                     write!(f, "\nlargest files:")?;
-                    for (path, size) in largest_files.as_slice() {
+                    for (path, size) in &err.largest_files {
                         let formatted_size = format_size(*size);
                         write!(
                             f,
@@ -159,14 +169,13 @@ impl std::error::Error for DomainError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::policy::MAX_FILE_COUNT;
+    use crate::core::policy::{MAX_FILE_COUNT, MAX_OUTPUT_SIZE};
 
     #[test]
-    fn output_too_large_message_derives_from_limit() {
-        let mib = MAX_OUTPUT_SIZE / (1024 * 1024);
+    fn output_too_large_message_derives_from_payload_limit() {
         assert_eq!(
-            DomainError::output_too_large(Vec::new()).to_string(),
-            format!("digest exceeds the {mib} MiB output limit")
+            DomainError::output_too_large(7 * 1024 * 1024, Vec::new()).to_string(),
+            "digest exceeds the 7 MiB output limit"
         );
     }
 
@@ -241,7 +250,7 @@ mod tests {
                 MAX_FILE_COUNT,
                 vec![("dir_a".into(), 3), ("dir_b".into(), 2)],
             ),
-            DomainError::output_too_large(vec![("big.txt".into(), 2_000_000)]),
+            DomainError::output_too_large(MAX_OUTPUT_SIZE, vec![("big.txt".into(), 2_000_000)]),
         ];
         for err in errors {
             let full = err.to_string();
@@ -279,7 +288,9 @@ mod tests {
         );
 
         let mib = MAX_OUTPUT_SIZE / (1024 * 1024);
-        let output = DomainError::output_too_large(vec![("f\x1b[31m\n.txt".into(), 1)]).to_string();
+        let output =
+            DomainError::output_too_large(MAX_OUTPUT_SIZE, vec![("f\x1b[31m\n.txt".into(), 1)])
+                .to_string();
         assert_eq!(
             output,
             format!(

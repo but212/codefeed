@@ -1,6 +1,5 @@
 //! In-memory bounded buffer and token estimation heuristic.
 
-use crate::core::model::{IngestReport, OutputTarget};
 use crate::core::policy::ASCII_BYTES_PER_TOKEN;
 
 /// Token estimation heuristic calculating ASCII bytes and non-ASCII character counts.
@@ -32,12 +31,14 @@ pub(super) fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OutputLimitExceeded;
 
-/// Rendered digest: the bytes to deliver and the report that describes them.
+/// Rendered digest: the bytes to deliver and the counts that describe them.
 #[derive(Debug)]
 #[must_use]
 pub(crate) struct RenderedDigest {
     pub(crate) bytes: Vec<u8>,
-    pub(crate) report: IngestReport,
+    pub(crate) included_files: usize,
+    pub(crate) skipped_files: usize,
+    pub(crate) estimated_tokens: usize,
 }
 
 /// In-memory buffer with value-passing operations, bounded by a byte `limit`.
@@ -95,25 +96,21 @@ impl BoundedBuffer {
 
     pub(crate) fn finish_with_counts(
         self,
-        output: OutputTarget,
         included_files: usize,
         skipped_files: usize,
     ) -> RenderedDigest {
         let estimated_tokens = estimate_tokens_from_bytes(&self.bytes);
         RenderedDigest {
             bytes: self.bytes,
-            report: IngestReport {
-                output,
-                included_files,
-                skipped_files,
-                estimated_tokens,
-            },
+            included_files,
+            skipped_files,
+            estimated_tokens,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn finish(self) -> RenderedDigest {
-        self.finish_with_counts(OutputTarget::Stdout, 0, 0)
+        self.finish_with_counts(0, 0)
     }
 }
 
@@ -224,13 +221,12 @@ mod tests {
         let digest = BoundedBuffer::default()
             .push_str("test output")
             .expect("fixture fits the output limit")
-            .finish_with_counts(OutputTarget::Stdout, 10, 3);
+            .finish_with_counts(10, 3);
         assert_eq!(digest.bytes, b"test output");
-        assert_eq!(digest.report.output, OutputTarget::Stdout);
-        assert_eq!(digest.report.included_files, 10);
-        assert_eq!(digest.report.skipped_files, 3);
+        assert_eq!(digest.included_files, 10);
+        assert_eq!(digest.skipped_files, 3);
         assert_eq!(
-            digest.report.estimated_tokens,
+            digest.estimated_tokens,
             estimate_tokens_from_bytes(b"test output")
         );
     }

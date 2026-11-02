@@ -52,7 +52,8 @@ Before changing code, read these documents:
 
 | Change | Update |
 | :--- | :--- |
-| Limit, exclusion list, or domain type | `src/core/policy/` (authority), `docs/security_and_filtering.md` sec. 3-4 and sec. 8 |
+| Limit or exclusion list | `src/core/policy/` (authority), `docs/security_and_filtering.md` sec. 3-4 and sec. 8 |
+| Path type or path classification | `src/core/path.rs`, `docs/security_and_filtering.md` sec. 2 |
 | CLI flag or option-value rule | `src/core/cli.rs`, `tests/cli.rs`, `README.md` |
 | Exit code | `src/shell/cli.rs` (`run_cli`), `tests/cli.rs`, `README.md` |
 | Output format | `src/core/render/`, `README.md` (Output), `context.md` sec. 3.5 |

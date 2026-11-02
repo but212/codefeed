@@ -2,9 +2,11 @@
 //!
 //! The work is split by concern:
 //! - `walk`: which entries are candidates, and how their paths are classified.
+//! - `gitignore`: how each directory's `.gitignore` is read and compiled into rules.
 //! - `read`: how one candidate's metadata and bounded body are read.
 //! - `pipeline`: the sorted producer, the read workers, and settlement in walk order.
 
+mod gitignore;
 mod pipeline;
 mod read;
 mod walk;
@@ -16,9 +18,10 @@ use self::pipeline::fold_candidates;
 use self::read::{Body, Candidate};
 use super::IngestError;
 use super::output::ResolvedOutput;
+use crate::core::collection::{CollectionResult, repository_name};
 use crate::core::error::DomainError;
-use crate::core::model::{CollectionResult, repository_name};
-use crate::core::policy::{ExcludePatterns, PathStatus};
+use crate::core::path::PathStatus;
+use crate::core::policy::ExcludePatterns;
 use crate::core::selector::Selector;
 
 /// Collects files from a local directory root, excluding the output file if located inside it.
@@ -73,10 +76,11 @@ fn local_label(root: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::{DigestFormat, OutputTarget, RunConfig, Source};
+    use crate::core::model::{DigestFormat, OutputTarget, RunConfig};
     use crate::core::policy::MAX_FILE_SIZE_USIZE;
+    use crate::core::source::Source;
     use crate::ingest;
-    use crate::shell::archive;
+    use crate::shell::github::archive;
     use crate::shell::testing::{gzip_tarball, run_with_timeout, temp_dir};
     use std::io;
     use tar::EntryType;

@@ -86,19 +86,19 @@ pub(super) fn component_at_offset(path: &str, offset: usize) -> Option<(&str, bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{policy::NormalizedPath, storage::FileStorage};
+    use crate::core::{path::NormalizedPath, storage::FileStorage};
 
     #[test]
     fn renders_ascii_tree_correctly() {
         let storage = FileStorage::new()
-            .push(&crate::core::policy::NormalizedPath::from("Cargo.toml"), "")
+            .push(&crate::core::path::NormalizedPath::from("Cargo.toml"), "")
             .unwrap()
             .push(
-                &crate::core::policy::NormalizedPath::from("src/core/a.rs"),
+                &crate::core::path::NormalizedPath::from("src/core/a.rs"),
                 "",
             )
             .unwrap()
-            .push(&crate::core::policy::NormalizedPath::from("src/lib.rs"), "")
+            .push(&crate::core::path::NormalizedPath::from("src/lib.rs"), "")
             .unwrap();
         let files = SortedFiles::new(storage).unwrap();
 
@@ -119,7 +119,7 @@ mod tests {
     fn formats_tree_nodes_custom_formatter() {
         let storage = FileStorage::new()
             .push(
-                &crate::core::policy::NormalizedPath::from("dir_name/file_name.txt"),
+                &crate::core::path::NormalizedPath::from("dir_name/file_name.txt"),
                 "",
             )
             .unwrap();

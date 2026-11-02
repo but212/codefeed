@@ -1,8 +1,9 @@
 //! Relative path normalization, depth enforcement, and segment classification.
 
-use super::exclude::{ExcludePatterns, push_match_segment};
-use super::exclusions::{is_hidden_segment, is_ignored_filename};
-use super::limits::MAX_PATH_DEPTH;
+use crate::core::error::DomainError;
+use crate::core::policy::{
+    ExcludePatterns, MAX_PATH_DEPTH, is_hidden_segment, is_ignored_filename, push_match_segment,
+};
 
 /// Non-empty, normalized slash-separated relative UTF-8 path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +59,15 @@ pub(crate) enum PathStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DepthExceededError;
 
+impl DepthExceededError {
+    /// Returns the [`DomainError::InvalidMetadata`] for a path nested past [`MAX_PATH_DEPTH`].
+    /// `subject` names the entry kind in the message, such as `local path` or `Tar entry path`.
+    #[cold]
+    pub(crate) fn domain_error(subject: &str) -> DomainError {
+        DomainError::invalid_metadata(format!("{subject} exceeds maximum directory depth"))
+    }
+}
+
 /// Classifies a sequence of raw path segment bytes into [`PathStatus`].
 ///
 /// Checks run in this order: hidden segment, user exclusion, noise or sensitive name, depth. Each
@@ -99,8 +109,9 @@ pub(crate) struct AdmittedDir {
     output: DirPrefix,
 }
 
-/// Output prefix of an admitted directory. `NonUtf8` holds the valid prefix before the first non-UTF-8
-/// segment, which every path below reports as its candidate prefix.
+/// Output prefix of an admitted directory. Both variants hold the valid prefix ending in `/`, or empty at
+/// the root, so a path below extends it with a bare segment. `NonUtf8` holds the prefix before the first
+/// non-UTF-8 segment, which every path below reports as its candidate prefix.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DirPrefix {
     Utf8(String),
@@ -148,16 +159,14 @@ pub(crate) fn admit_dir(
     }
     let output = match output {
         DirPrefix::NonUtf8(prefix) => DirPrefix::NonUtf8(prefix),
-        DirPrefix::Utf8(prefix) => {
-            let mut prefix = push_separator(prefix);
-            match std::str::from_utf8(name) {
-                Ok(segment) => {
-                    prefix.push_str(segment);
-                    DirPrefix::Utf8(prefix)
-                }
-                Err(_) => DirPrefix::NonUtf8(prefix),
+        DirPrefix::Utf8(mut prefix) => match std::str::from_utf8(name) {
+            Ok(segment) => {
+                prefix.push_str(segment);
+                prefix.push('/');
+                DirPrefix::Utf8(prefix)
             }
-        }
+            Err(_) => DirPrefix::NonUtf8(prefix),
+        },
     };
     Some(AdmittedDir {
         depth: depth + 1,
@@ -196,36 +205,13 @@ pub(crate) fn classify_leaf(
     }
 
     match (&parent.output, std::str::from_utf8(name)) {
-        (DirPrefix::NonUtf8(prefix), _) => Ok(PathStatus::NonUtf8Candidate(prefix.clone())),
-        (DirPrefix::Utf8(prefix), Err(_)) => {
-            Ok(PathStatus::NonUtf8Candidate(with_separator(prefix)))
+        (DirPrefix::Utf8(prefix), Ok(segment)) => Ok(PathStatus::Valid(NormalizedPath(format!(
+            "{prefix}{segment}"
+        )))),
+        (DirPrefix::Utf8(prefix) | DirPrefix::NonUtf8(prefix), _) => {
+            Ok(PathStatus::NonUtf8Candidate(prefix.clone()))
         }
-        (DirPrefix::Utf8(prefix), Ok(segment)) => Ok(PathStatus::Valid(NormalizedPath(
-            join_segment(prefix, segment),
-        ))),
     }
-}
-
-/// The prefix followed by its `/` separator, or empty when the prefix is empty. This is the output a
-/// non-UTF-8 segment reports, so the trailing separator is part of the contract.
-fn with_separator(prefix: &str) -> String {
-    push_separator(prefix.to_string())
-}
-
-/// Appends the `/` separator unless the prefix is empty.
-#[must_use]
-fn push_separator(mut prefix: String) -> String {
-    if !prefix.is_empty() {
-        prefix.push('/');
-    }
-    prefix
-}
-
-/// Appends `segment` to a `/`-joined prefix, with no leading separator when the prefix is empty.
-fn join_segment(prefix: &str, segment: &str) -> String {
-    let mut joined = with_separator(prefix);
-    joined.push_str(segment);
-    joined
 }
 
 #[cfg(test)]
@@ -260,6 +246,15 @@ mod tests {
     #[should_panic(expected = "NormalizedPath requires non-empty segments and no trailing slash")]
     fn normalized_path_rejects_empty_string() {
         let _ = NormalizedPath::from("");
+    }
+
+    #[test]
+    fn depth_exceeded_error_names_its_entry_kind() {
+        let err = DepthExceededError::domain_error("Tar entry path");
+        assert!(
+            matches!(&err, DomainError::InvalidMetadata(msg) if msg == "Tar entry path exceeds maximum directory depth"),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -552,6 +547,13 @@ mod tests {
             ),
             (segs(&[b"\xff", b"x.rs"]), &exclude, nonutf8("")),
             (segs(&[b"src", b"\xff.rs"]), &exclude, nonutf8("src/")),
+            (segs(&[b"a", b"b", b"c.rs"]), &none, valid("a/b/c.rs")),
+            (
+                segs(&[b"a", b"b", b"\xff", b"x.rs"]),
+                &none,
+                nonutf8("a/b/"),
+            ),
+            (segs(&[b"a", b"\xff", b"b", b"c.rs"]), &none, nonutf8("a/")),
             (segs(&[b"\xff", b"build", b"x"]), &exclude, ignored()),
             (segs(&[b"build", b"\xff"]), &exclude, ignored()),
             (segs(&[b"\xff", b"a.log"]), &exclude, ignored()),

@@ -4,10 +4,11 @@ use std::collections::{HashMap, HashSet};
 
 use memchr::memchr;
 
+use crate::core::collection::CollectionResult;
 use crate::core::error::DomainError;
-use crate::core::model::CollectionResult;
+use crate::core::path::PathStatus;
 use crate::core::policy::{
-    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, OVERFLOW_LARGEST_DIRECTORIES, PathStatus,
+    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, OVERFLOW_LARGEST_DIRECTORIES,
 };
 use crate::core::storage::{FileStorage, SortedFiles};
 
@@ -31,7 +32,6 @@ pub(crate) fn exceeds_size_limits(path_len: usize, size_hint: Option<u64>) -> bo
 struct CandidateBudget {
     count: usize,
     dir_counts: HashMap<String, usize>,
-    paths: HashSet<String>,
 }
 
 impl CandidateBudget {
@@ -49,20 +49,6 @@ impl CandidateBudget {
             return Err(self.overflow_error());
         }
         Ok(self)
-    }
-
-    /// Adds a valid candidate path. Rejects it when a candidate within `MAX_PATH_BYTES` already holds the same path.
-    ///
-    /// Skipped candidates count: two entries with one path are ambiguous even when one is skipped.
-    /// Longer paths are skipped before output and never reach the digest, so they are not tracked.
-    pub(crate) fn admit_unique(self, path: &str) -> Result<Self, DomainError> {
-        let mut budget = self.add(path)?;
-        if path.len() as u64 <= MAX_PATH_BYTES && !budget.paths.insert(path.to_string()) {
-            return Err(DomainError::invalid_metadata(format!(
-                "duplicate entry path: {path}"
-            )));
-        }
-        Ok(budget)
     }
 
     fn overflow_error(&self) -> DomainError {
@@ -101,6 +87,7 @@ fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String,
 pub(crate) struct Selector {
     storage: FileStorage,
     candidates: CandidateBudget,
+    paths: HashSet<String>,
     skipped: usize,
 }
 
@@ -112,10 +99,23 @@ impl Selector {
             candidates: CandidateBudget {
                 count: 0,
                 dir_counts: HashMap::with_capacity(32),
-                paths: HashSet::new(),
             },
+            paths: HashSet::new(),
             skipped: 0,
         }
+    }
+
+    /// Claims `path` for uniqueness. Rejects it when a candidate within `MAX_PATH_BYTES` already holds the same path.
+    ///
+    /// Skipped candidates count: two entries with one path are ambiguous even when one is skipped.
+    /// Longer paths are skipped before output and never reach the digest, so they are not tracked.
+    fn claim_path(mut self, path: &str) -> Result<Self, DomainError> {
+        if path.len() as u64 <= MAX_PATH_BYTES && !self.paths.insert(path.to_string()) {
+            return Err(DomainError::invalid_metadata(format!(
+                "duplicate entry path: {path}"
+            )));
+        }
+        Ok(self)
     }
 
     /// Observes one candidate entry and settles it.
@@ -142,7 +142,8 @@ impl Selector {
             }
             PathStatus::Valid(path) => path,
         };
-        self.candidates = self.candidates.admit_unique(&path)?;
+        self.candidates = self.candidates.add(&path)?;
+        self = self.claim_path(&path)?;
         if exceeds_size_limits(path.len(), size_hint) {
             return Ok(self.skip());
         }

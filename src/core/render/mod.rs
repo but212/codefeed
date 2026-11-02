@@ -3,8 +3,9 @@
 //! Coordinates layout rendering across text and XML formats,
 //! token estimation, and output size cap enforcement.
 
+use crate::core::collection::CollectionResult;
 use crate::core::error::DomainError;
-use crate::core::model::{CollectionResult, DigestFormat, OutputTarget};
+use crate::core::model::DigestFormat;
 
 mod budget;
 mod escape;
@@ -40,7 +41,6 @@ impl CollectionResult {
     /// Renders the collected files into [`RenderedDigest`] using the specified format.
     ///
     /// Binds output generation to [`MAX_OUTPUT_SIZE`](crate::core::policy::MAX_OUTPUT_SIZE) and calculates the estimated token count.
-    /// The digest's report records `output` as its delivery target.
     /// Consumes `self` as part of the linear ingestion pipeline.
     ///
     /// # Output Size Invariant
@@ -57,11 +57,7 @@ impl CollectionResult {
     /// # Errors
     ///
     /// Returns [`DomainError::OutputTooLarge`] if output exceeds the maximum size limit.
-    pub(crate) fn render(
-        self,
-        format: DigestFormat,
-        output: OutputTarget,
-    ) -> Result<RenderedDigest, DomainError> {
+    pub(crate) fn render(self, format: DigestFormat) -> Result<RenderedDigest, DomainError> {
         let capacity = usize::try_from(self.files.total_bytes())
             .unwrap_or(usize::MAX)
             .saturating_add(4096);
@@ -73,7 +69,7 @@ impl CollectionResult {
             DigestFormat::Xml => render_with(buf, &self, XmlRenderer),
         };
         match rendered {
-            Ok(buf) => Ok(buf.finish_with_counts(output, included, skipped)),
+            Ok(buf) => Ok(buf.finish_with_counts(included, skipped)),
             Err(OutputLimitExceeded) => Err(self.files.output_too_large_error()),
         }
     }
@@ -83,7 +79,8 @@ impl CollectionResult {
 mod tests {
     use super::*;
     use crate::core::error::DomainError;
-    use crate::core::policy::{MAX_OUTPUT_SIZE_USIZE, NormalizedPath};
+    use crate::core::path::NormalizedPath;
+    use crate::core::policy::MAX_OUTPUT_SIZE_USIZE;
     use crate::core::storage::{FileRecord, FileStorage, SortedFiles};
 
     #[test]
@@ -127,7 +124,7 @@ mod tests {
             };
 
             for format in [DigestFormat::Text, DigestFormat::Xml] {
-                let digest = collection.clone().render(format, OutputTarget::Stdout)?;
+                let digest = collection.clone().render(format)?;
                 assert!(
                     digest.bytes.len() >= raw_bytes,
                     "Format {format:?} output length ({}) must be >= raw arena bytes ({raw_bytes}) for {label}",
@@ -147,12 +144,11 @@ mod tests {
             files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
             skipped: 2,
         };
-        let digest = collection.render(DigestFormat::Text, OutputTarget::Stdout)?;
-        assert_eq!(digest.report.output, OutputTarget::Stdout);
-        assert_eq!(digest.report.included_files, 1);
-        assert_eq!(digest.report.skipped_files, 2);
+        let digest = collection.render(DigestFormat::Text)?;
+        assert_eq!(digest.included_files, 1);
+        assert_eq!(digest.skipped_files, 2);
         assert_eq!(
-            digest.report.estimated_tokens,
+            digest.estimated_tokens,
             budget::estimate_tokens_from_bytes(&digest.bytes)
         );
         Ok(())
@@ -219,10 +215,10 @@ mod tests {
             files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
             skipped: 0,
         };
-        match collection.render(DigestFormat::Text, OutputTarget::Stdout) {
-            Err(DomainError::OutputTooLarge(largest_files)) => {
-                assert_eq!(largest_files.len(), 1);
-                assert_eq!(largest_files[0].0, "large.txt");
+        match collection.render(DigestFormat::Text) {
+            Err(DomainError::OutputTooLarge(err)) => {
+                assert_eq!(err.largest_files.len(), 1);
+                assert_eq!(err.largest_files[0].0, "large.txt");
             }
             other => panic!("expected OutputTooLarge, got {other:?}"),
         }
@@ -246,16 +242,14 @@ mod tests {
             skipped: 0,
         };
 
-        let text_digest = collection
-            .clone()
-            .render(DigestFormat::Text, OutputTarget::Stdout)?;
+        let text_digest = collection.clone().render(DigestFormat::Text)?;
         let text_rendered = std::str::from_utf8(&text_digest.bytes)?;
         assert!(
             text_rendered.contains(raw_ansi),
             "Text format must preserve raw ANSI/control characters for LLM fidelity"
         );
 
-        let xml_digest = collection.render(DigestFormat::Xml, OutputTarget::Stdout)?;
+        let xml_digest = collection.render(DigestFormat::Xml)?;
         let xml_str = std::str::from_utf8(&xml_digest.bytes)?;
         assert!(
             !xml_str.contains('\x1b'),

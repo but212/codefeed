@@ -183,7 +183,7 @@ impl FormatRenderer for XmlRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::CollectionResult;
+    use crate::core::collection::CollectionResult;
     use crate::core::render::render_with;
     use crate::core::storage::{FileRecord, FileStorage, SortedFiles};
 

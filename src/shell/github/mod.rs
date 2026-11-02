@@ -1,40 +1,35 @@
 //! GitHub collection orchestration: streaming tarball ingestion and HTTP transport.
 
+pub(in crate::shell) mod archive;
 mod client;
 mod stream;
 
-use crate::core::github::{GITHUB_API_BASE_URL, repository_url, tarball_url};
-use crate::core::model::CollectionResult;
+use crate::core::collection::CollectionResult;
+use crate::core::github::{repository_url, tarball_url};
 use crate::core::policy::ExcludePatterns;
 use crate::shell::IngestError;
 use client::GithubClient;
 
 /// Collects files from a remote GitHub repository via streaming tarball download.
+/// `api_base` is the API origin, `GITHUB_API_BASE_URL` in production.
 pub(super) fn collect(
+    api_base: &str,
     owner: &str,
     repo: &str,
     reference: Option<&str>,
     exclude: &ExcludePatterns,
 ) -> Result<CollectionResult, IngestError> {
     let client = GithubClient::new();
-    let url = resolve_tarball_url(owner, repo, reference);
+    let url = tarball_url(api_base, owner, repo, reference);
     let reader = client.stream_url(&url)?;
     let label = repository_url(owner, repo);
-    super::archive::collect(reader, &label, reference, exclude)
-}
-
-fn resolve_tarball_url(owner: &str, repo: &str, reference: Option<&str>) -> String {
-    #[cfg(test)]
-    if let Some(base) = super::testing::get_test_github_url() {
-        return tarball_url(base.trim_end_matches('/'), owner, repo, reference);
-    }
-    tarball_url(GITHUB_API_BASE_URL, owner, repo, reference)
+    archive::collect(reader, &label, reference, exclude)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::testing::{MockServer, gzip_tarball, with_test_github_url};
+    use crate::shell::testing::{MockServer, gzip_tarball};
     use tar::EntryType;
 
     fn tarball_response(gz: &[u8]) -> Vec<u8> {
@@ -51,14 +46,13 @@ mod tests {
         let gz = gzip_tarball(&[("repo-root/file.txt", b"hello github", EntryType::Regular)]);
         let server = MockServer::spawn(1, move |_index, _req, _port| tarball_response(&gz));
 
-        let result = with_test_github_url(server.url(""), || {
-            collect(
-                "test-owner",
-                "test-repo",
-                Some("main"),
-                &ExcludePatterns::default(),
-            )
-        })
+        let result = collect(
+            &server.url(""),
+            "test-owner",
+            "test-repo",
+            Some("main"),
+            &ExcludePatterns::default(),
+        )
         .expect("github collection succeeds");
 
         assert_eq!(result.label, "https://github.com/test-owner/test-repo");
@@ -77,14 +71,13 @@ mod tests {
         let gz = gzip_tarball(&[("repo-root/file.txt", b"hello github", EntryType::Regular)]);
         let server = MockServer::spawn(1, move |_index, _req, _port| tarball_response(&gz));
 
-        let result = with_test_github_url(server.url(""), || {
-            collect(
-                "test-owner",
-                "test-repo",
-                Some("feature/x"),
-                &ExcludePatterns::default(),
-            )
-        })
+        let result = collect(
+            &server.url(""),
+            "test-owner",
+            "test-repo",
+            Some("feature/x"),
+            &ExcludePatterns::default(),
+        )
         .expect("github collection succeeds");
 
         assert_eq!(result.files.len(), 1);
@@ -99,23 +92,16 @@ mod tests {
                 .to_vec()
         });
 
-        let Err(err) = with_test_github_url(server.url(""), || {
-            collect("test-owner", "test-repo", None, &ExcludePatterns::default())
-        }) else {
+        let Err(err) = collect(
+            &server.url(""),
+            "test-owner",
+            "test-repo",
+            None,
+            &ExcludePatterns::default(),
+        ) else {
             panic!("expected 404 to fail collection");
         };
         assert!(matches!(err, IngestError::Api(_)), "{err}");
         server.join();
-    }
-
-    #[test]
-    fn tarball_url_defaults_to_github_api_origin_without_override() {
-        let url = crate::shell::testing::with_default_github_origin(|| {
-            resolve_tarball_url("test-owner", "test-repo", Some("main"))
-        });
-        assert_eq!(
-            url,
-            tarball_url(GITHUB_API_BASE_URL, "test-owner", "test-repo", Some("main"))
-        );
     }
 }

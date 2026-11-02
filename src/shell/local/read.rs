@@ -4,7 +4,8 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
 
-use crate::core::policy::{MAX_FILE_SIZE, NormalizedPath};
+use crate::core::path::NormalizedPath;
+use crate::core::policy::MAX_FILE_SIZE;
 use crate::core::selector::exceeds_size_limits;
 use crate::shell::IngestError;
 use crate::shell::error::io_error_at;

@@ -8,8 +8,8 @@ use ureq::typestate::WithoutBody;
 use ureq::{Agent, RequestBuilder};
 use zeroize::Zeroizing;
 
-use crate::core::github::is_github_api_origin;
-use crate::core::policy::{ARCHIVE_MAX_SECS, GITHUB_TIMEOUT_SECS};
+use crate::core::github::{Auth, is_github_api_origin};
+use crate::core::policy::{ARCHIVE_MAX_SECS, GITHUB_TIMEOUT_SECS, TOKEN_ENV_VARS};
 
 pub(super) const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 
@@ -40,13 +40,30 @@ impl GithubClient {
         }
     }
 
+    /// Token sent with a request to `url`. Only the GitHub API origin receives it.
+    fn credentials(&self, url: &str) -> Option<&Zeroizing<String>> {
+        if is_github_api_origin(url) {
+            self.auth_header.as_ref()
+        } else {
+            None
+        }
+    }
+
+    /// Whether a request to `url` carries a token, for error classification.
+    pub(super) fn auth(&self, url: &str) -> Auth {
+        match self.credentials(url) {
+            Some(_) => Auth::Token,
+            None => Auth::Anonymous,
+        }
+    }
+
     /// Builds a GET for `url`. Auth and API-version headers are sent only to the GitHub API origin.
     pub(super) fn request(&self, url: &str) -> RequestBuilder<WithoutBody> {
         let request = self.agent.get(url);
         if !is_github_api_origin(url) {
             return request;
         }
-        let request = match &self.auth_header {
+        let request = match self.credentials(url) {
             Some(auth) => request.header("Authorization", auth.as_str()),
             None => request,
         };
@@ -58,7 +75,7 @@ pub(super) fn resolve_token_with<F>(mut lookup: F) -> Option<Zeroizing<String>>
 where
     F: FnMut(&str) -> Result<String, std::env::VarError>,
 {
-    ["GITHUB_TOKEN", "GH_TOKEN"].into_iter().find_map(|key| {
+    TOKEN_ENV_VARS.into_iter().find_map(|key| {
         let raw = Zeroizing::new(lookup(key).ok()?);
         let trimmed = raw.trim_ascii();
         (!trimmed.is_empty()).then(|| Zeroizing::new(trimmed.to_string()))
@@ -198,6 +215,21 @@ mod tests {
             !req2.to_ascii_lowercase().contains("authorization"),
             "redirected request must not contain authorization header: {req2}"
         );
+    }
+
+    #[test]
+    fn auth_is_token_only_for_the_api_origin_with_a_token() {
+        const API: &str = "https://api.github.com/repos/foo/bar/tarball";
+        const CODELOAD: &str = "https://codeload.github.com/foo/bar/tar.gz";
+        let mut client = GithubClient::new();
+
+        client.auth_header = Some(Zeroizing::new("Bearer test_token".to_string()));
+        assert_eq!(client.auth(API), Auth::Token);
+        assert_eq!(client.auth(CODELOAD), Auth::Anonymous);
+
+        client.auth_header = None;
+        assert_eq!(client.auth(API), Auth::Anonymous);
+        assert_eq!(client.auth(CODELOAD), Auth::Anonymous);
     }
 
     #[test]

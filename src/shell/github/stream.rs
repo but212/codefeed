@@ -7,13 +7,13 @@ use zeroize::Zeroizing;
 
 use super::client::GithubClient;
 use crate::core::github::{
-    AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind, api_error,
+    AttemptState, Auth, RateLimitHeaders, RequestOutcome, Transition, TransportKind, api_error,
     status_retry_warning, transport_retry_warning,
 };
 use crate::core::policy::GITHUB_ERROR_BODY_BYTES;
 use crate::shell::IngestError;
 use crate::shell::error::transport_error;
-use crate::shell::output;
+use crate::shell::stdio;
 
 enum Attempt {
     Status {
@@ -59,16 +59,16 @@ impl Attempt {
     fn warn(&self, count: usize, url: &str, delay: Duration) {
         let message = match self {
             Self::Status { response, .. } => {
-                status_retry_warning(&response.status().to_string(), count, url, delay)
+                status_retry_warning(response.status().as_u16(), count, url, delay)
             }
             Self::Transport(error) => {
                 transport_retry_warning(&error.to_string(), count, url, delay)
             }
         };
-        output::write_stderr_line(&message);
+        stdio::write_stderr_line(&message);
     }
 
-    fn into_error(self) -> IngestError {
+    fn into_error(self, auth: Auth) -> IngestError {
         match self {
             Self::Status {
                 response,
@@ -81,12 +81,7 @@ impl Attempt {
                     .into_reader()
                     .take(GITHUB_ERROR_BODY_BYTES)
                     .read_to_end(&mut body_bytes);
-                IngestError::Api(api_error(
-                    status.as_u16(),
-                    &status.to_string(),
-                    &body_bytes,
-                    retry_after,
-                ))
+                IngestError::Api(api_error(status.as_u16(), &body_bytes, retry_after, auth))
             }
             Self::Transport(error) => transport_error(&error.to_string()),
         }
@@ -96,6 +91,7 @@ impl Attempt {
 impl GithubClient {
     pub(super) fn stream_url(&self, url: &str) -> Result<impl Read + Send, IngestError> {
         let mut attempt_state = AttemptState::new();
+        let auth = self.auth(url);
         loop {
             let (attempt, outcome) = match self.request(url).call() {
                 Ok(resp) if resp.status().is_success() => {
@@ -114,7 +110,7 @@ impl GithubClient {
                     attempt.warn(count, url, delay);
                     std::thread::sleep(delay);
                 }
-                Transition::Fail => return Err(attempt.into_error()),
+                Transition::Fail => return Err(attempt.into_error(auth)),
             }
         }
     }
@@ -148,8 +144,8 @@ fn unix_now_secs() -> u64 {
 mod tests {
     use super::*;
     use crate::ExcludePatterns;
-    use crate::core::policy::MAX_ATTEMPTS;
-    use crate::shell::archive;
+    use crate::core::policy::{MAX_ATTEMPTS, TOKEN_ENV_VARS};
+    use crate::shell::github::archive;
     use crate::shell::testing::{MockServer, gzip_tarball};
     use std::io::Read;
     use tar::EntryType;
@@ -213,12 +209,18 @@ mod tests {
     #[test]
     fn client_error_is_not_retried() {
         let reset = (epoch_now_secs() + 2400).to_string();
-        // (case, response): a 404 is terminal, with or without remaining quota.
+        // (case, response, status, exact message): a 4xx is terminal, with or without remaining quota.
+        let token_hint = format!(
+            "(set {} to authenticate or increase rate limits)",
+            TOKEN_ENV_VARS.join(" or ")
+        );
         let cases = [
             (
                 "bare 404",
                 b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found"
                     .to_vec(),
+                404,
+                "HTTP 404: not found".to_string(),
             ),
             (
                 "404 with remaining quota",
@@ -226,9 +228,18 @@ mod tests {
                     "HTTP/1.1 404 Not Found\r\nx-ratelimit-remaining: 59\r\nx-ratelimit-reset: {reset}\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found"
                 )
                 .into_bytes(),
+                404,
+                "HTTP 404: not found".to_string(),
+            ),
+            (
+                "403 without rate-limit signal",
+                b"HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nforbidden"
+                    .to_vec(),
+                403,
+                format!("HTTP 403: forbidden {token_hint}"),
             ),
         ];
-        for (case, response) in cases {
+        for (case, response, status, message) in cases {
             let server = MockServer::spawn(1, move |_index, _req, _port| response.clone());
 
             let client = GithubClient::new();
@@ -236,10 +247,16 @@ mod tests {
             let Err(err) = client.stream_url(&url) else {
                 panic!("{case}: expected error");
             };
-            assert!(matches!(err, IngestError::Api(_)), "{case}: {err}");
-            let msg = err.to_string();
-            assert!(msg.contains("404"), "{case}: {msg}");
-            assert!(!msg.contains("retry available"), "{case}: {msg}");
+            let IngestError::Api(api) = &err else {
+                panic!("{case}: expected Api error, got {err}");
+            };
+            assert_eq!(api.status(), status, "{case}");
+            assert_eq!(api.retry_after(), None, "{case}");
+            assert_eq!(
+                err.to_string(),
+                format!("GitHub API error: {message}"),
+                "{case}"
+            );
 
             let (_, connections) = server.join();
             assert_eq!(connections, 1, "{case}");
@@ -257,10 +274,42 @@ mod tests {
         let Err(err) = client.stream_url(&url) else {
             panic!("expected error");
         };
-        assert!(err.to_string().contains("503"));
+        let IngestError::Api(api) = &err else {
+            panic!("expected Api error, got {err}");
+        };
+        assert_eq!(api.status(), 503);
+        assert_eq!(api.retry_after(), None);
+        assert_eq!(err.to_string(), "GitHub API error: HTTP 503: unavailable");
 
         let (_, connections) = server.join();
         assert_eq!(connections, MAX_ATTEMPTS);
+    }
+
+    #[test]
+    fn retry_after_beyond_retry_cap_fails_at_once_with_the_delay_in_the_error() {
+        // A 3600 s Retry-After exceeds the retry cap, so the first response is final.
+        let server = MockServer::spawn(1, |_index, _req, _port| {
+            b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 3600\r\nContent-Length: 12\r\nConnection: close\r\n\r\nrate limited"
+                .to_vec()
+        });
+
+        let client = GithubClient::new();
+        let url = server.url("/test");
+        let Err(err) = client.stream_url(&url) else {
+            panic!("expected error");
+        };
+        let IngestError::Api(api) = &err else {
+            panic!("expected Api error, got {err}");
+        };
+        assert_eq!(api.status(), 429);
+        assert_eq!(api.retry_after(), Some(Duration::from_secs(3600)));
+        assert_eq!(
+            err.to_string(),
+            "GitHub API error: HTTP 429: rate limited (retry available in 3600s) (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
+        );
+
+        let (_, connections) = server.join();
+        assert_eq!(connections, 1);
     }
 
     #[test]

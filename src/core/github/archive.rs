@@ -1,5 +1,6 @@
 use crate::core::error::DomainError;
-use crate::core::policy::{ExcludePatterns, PathStatus, classify_path_segments};
+use crate::core::path::{DepthExceededError, PathStatus, classify_path_segments};
+use crate::core::policy::ExcludePatterns;
 use memchr::{memchr, memmem};
 
 /// Normalizes a raw tar entry path, stripping the root directory prefix,
@@ -50,9 +51,8 @@ pub(crate) fn normalize_tar_entry_path(
 
     let rel = &trimmed[slash_index + 1..];
 
-    classify_path_segments(rel.split(|&b| b == b'/'), exclude).map_err(|_| {
-        DomainError::invalid_metadata("Tar entry path exceeds maximum directory depth")
-    })
+    classify_path_segments(rel.split(|&b| b == b'/'), exclude)
+        .map_err(|_| DepthExceededError::domain_error("Tar entry path"))
 }
 
 /// Parses a 40- or 64-hex-character commit SHA from a `comment=<sha>` PAX record.

@@ -80,7 +80,7 @@ codefeed -- -my-directory
 
 ## Output
 
-- **File output** (`-o <PATH>`): Atomic write via temporary file, sync, and rename. Preserves Unix permissions. Parent directory sync failure warns to stderr without failing. Prints `Wrote <PATH> (<N> files, <N> skipped, ~<N> tokens)` to stdout.
+- **File output** (`-o <PATH>`): Atomic write via temporary file, sync, and rename. Preserves Unix permissions. Parent directory sync failure warns to stderr without failing. Prints `Wrote <PATH> (<N> files, <N> skipped, ~<N> tokens)` to stdout, where `<PATH>` is the `-o` value as given.
 - **Stream output** (`-o -`): Digest writes to stdout; summary writes to stderr. Writes nothing on failure.
 - **Header**: Local digests start with `Repository: <directory name>`. GitHub digests start with `Repository: https://github.com/{owner}/{repo}`.
 - **Text format** (`text`): Verbatim UTF-8 file contents; binary (NUL) or invalid UTF-8 files are skipped. Header labels and paths are escaped; ANSI sequences are kept.

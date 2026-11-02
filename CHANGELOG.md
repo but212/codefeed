@@ -12,9 +12,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 Observable behavior. **Action** = code or config change required.
 
+#### Breaking
+
+- **`IngestError::Api` carries `GithubApiError`**: The payload was a `String`. It is now a struct with read-only `status() -> u16` and `retry_after() -> Option<Duration>`. The message drops the reason phrase: `GitHub API error: HTTP 404 Not Found: not found` becomes `GitHub API error: HTTP 404: not found`. Private fields keep the code and the text in sync (`src/core/github/mod.rs`, `src/shell/error.rs`).
+  - **Action:** Match `IngestError::Api(err)` and call `err.status()` or `err.retry_after()`. Do not parse the reason phrase from `err.to_string()`; it no longer contains one.
+- **`DomainError::OutputTooLarge` carries `OutputTooLargeError`**: The payload was a bare list of largest files. It is now a struct with public `limit: u64` and `largest_files`. `Display` text is unchanged (`src/core/error.rs`).
+  - **Action:** Match `DomainError::OutputTooLarge(err)` and read `err.largest_files`. The limit is in `err.limit`.
+
 #### Fixed
 
-- **Completion summary sanitizes the destination**: `Wrote <PATH>` passes the output path through `sanitize_error_detail` (`\t`, `\r`, `\n` become spaces; other control characters become `\u{FFFD}`). Before, control characters reached stdout raw (`src/core/cli.rs`, `docs/security_and_filtering.md` sec. 7).
+- **Completion summary sanitizes the destination**: `Wrote <PATH>` sanitizes the output path via `sanitize_error_detail` (`\t`, `\r`, `\n` become spaces; other control characters become `\u{FFFD}`). Before, control characters reached stdout raw (`src/core/cli.rs`, `docs/security_and_filtering.md` sec. 7).
   - **Action:** None for ordinary paths.
 - **Overlong directory names no longer grow the budget unbounded**: The per-directory budget key was the full first segment, including skipped paths over `MAX_PATH_BYTES`. It is now truncated to `MAX_PATH_BYTES` at a char boundary, so names sharing a prefix share a key. Overflow diagnostics show the truncated name (`src/core/selector.rs`, `docs/security_and_filtering.md` sec. 3.4).
   - **Action:** None.
@@ -23,6 +30,10 @@ Observable behavior. **Action** = code or config change required.
 
 - **Non-regular `.gitignore` fails the run**: A local `.gitignore` that is a FIFO, socket, or device fails with `IngestError::Io` (`InvalidInput`, "not a regular file"); before, its rules were dropped silently. A directory named `.gitignore` still adds no rules (`src/shell/local/walk.rs`, `docs/security_and_filtering.md` sec. 3.5).
   - **Action:** Remove or replace a non-regular `.gitignore` in the source tree.
+- **Token hint only for anonymous 403 and 429**: A 403 or 429 from a run whose GitHub API request sent a token no longer ends with the `set GITHUB_TOKEN or GH_TOKEN` hint: the token was not the missing step. Anonymous requests keep it. A redirect target gets no token; its error is classified by the API request (`src/core/github/mod.rs`).
+  - **Action:** None.
+- **Retry warning names the status code only**: The stderr line reads `GitHub HTTP status 503 on attempt 1/3`, not `GitHub HTTP status 503 Service Unavailable on attempt 1/3` (`src/core/github/mod.rs`).
+  - **Action:** Do not parse the reason phrase from the warning.
 
 ### Contributors
 
@@ -30,11 +41,22 @@ Internal change. No consumer action required.
 
 #### Changed
 
-- **Token estimate counts in chunks**: `estimate_tokens_from_bytes` (`src/core/render/budget.rs`) uses chunked `u32` counters instead of an index loop and is no longer `const fn`. Output and `estimated_tokens` are unchanged. A reference test covers every byte value across boundary lengths.
-- **Path sort compares bytes**: `cmp_path` (`src/core/storage.rs`) compares path bytes, not `split('/')` components. Order and output are unchanged; an exhaustive small-alphabet test pins it.
-- **Pure helpers take owned values**: `push_match_segment` (`src/core/policy/exclude.rs`), `push_separator`, and `admit_dir` (`src/core/policy/classify.rs`) take and return owned values, not `&mut` (coding convention sec. 3). No behavior change.
+- **Token estimate counts in chunks**: `estimate_tokens_from_bytes` (`src/core/render/budget.rs`) uses chunked `u32` counters instead of an index loop and is no longer `const fn`. Output and `estimated_tokens` unchanged. A reference test covers every byte value at boundary lengths.
+- **Path sort compares bytes**: `cmp_path` (`src/core/storage.rs`) compares bytes, not `split('/')` components. Order and output unchanged; an exhaustive small-alphabet test pins it.
+- **Pure helpers take owned values**: `push_match_segment` (`src/core/policy/exclude.rs`) and `admit_dir` (`src/core/policy/classify.rs`) take and return owned values, not `&mut` (coding convention sec. 3). No behavior change.
 - **Pure queries are `#[must_use]`**: Non-`Result` `pub(crate)` and `pub(super)` queries in `src/core` (coding convention sec. 3). No behavior change.
 - **Tree rendering asserts its invariant**: `render_level` (`src/core/render/tree.rs`) panics on a path ending before the current tree offset instead of dropping the rest of the tree. `NormalizedPath` makes this unreachable; output is unchanged.
+- **Path types moved to `core/path.rs`**: `NormalizedPath`, `PathStatus`, `AdmittedDir`, and the classification functions move from `src/core/policy/classify.rs` to `src/core/path.rs`. `error.rs` no longer imports `policy`, removing the `error`/`policy` cycle. `push_match_segment` is `pub(crate)`. No behavior change.
+- **Report built in shell**: `RenderedDigest` carries bytes and counts. `CollectionResult::render` takes only the format; `ingest` builds `IngestReport` with the requested output. Output is unchanged (`src/core/render/`, `src/shell/mod.rs`).
+- **GitHub API origin injected**: `shell/github::collect` takes the API origin; `ingest` passes `GITHUB_API_BASE_URL`. The global test override and its helpers are removed. The auth header still goes only to that origin (`src/shell/mod.rs`, `src/shell/github/mod.rs`, `src/shell/testing.rs`).
+- **Diagnostic writers and `.gitignore` loading split out**: `shell/stdio.rs` owns the stdout and stderr line writers, and `shell/local/gitignore.rs` owns `.gitignore` loading. No behavior change.
+- **Selector claims paths in one step**: `Selector::claim_path` records each candidate path, and `CandidateBudget` holds counts only. Check order is unchanged.
+- **Depth error mapping in one place**: `DepthExceededError::domain_error` builds the depth error for tar entries and local paths (`src/core/path.rs`, `src/core/archive.rs`, `src/shell/local/walk.rs`).
+- **Token variables and token use decided in one place**: `TOKEN_ENV_VARS` (`src/core/policy/auth.rs`) lists `GITHUB_TOKEN` then `GH_TOKEN`; the token hint reads the same list. `api_error` takes `Auth`. `GithubClient::credentials(url)` decides whether a request carries the token; the header and the error's `Auth` both derive from it (`src/core/github/mod.rs`, `src/shell/github/client.rs`, `src/shell/github/stream.rs`).
+- **Archive streaming under `shell/github/`**: `src/shell/archive.rs` moves to `src/shell/github/archive.rs`. It is used only by the GitHub path. No behavior change.
+- **Source and collection split from `model.rs`**: `Source`, `GitRef`, and `GithubName` move to `src/core/source.rs`, and `CollectionResult` and `repository_name` move to `src/core/collection.rs`. `src/core/model.rs` keeps `RunConfig`, `OutputTarget`, `DigestFormat`, and `IngestReport`. Public paths from `codefeed` are unchanged. No behavior change.
+- **Directory prefix separator in one place**: `admit_dir` appends the `/` separator to every admitted directory prefix, so `with_separator`, `join_segment`, and `push_separator` (`src/core/path.rs`) are removed. Output is unchanged.
+- **Tar path rules under `core/github/`**: `src/core/archive.rs` moves to `src/core/github/archive.rs`. It is used only by the GitHub path. No behavior change.
 
 ---
 
