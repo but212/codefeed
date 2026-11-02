@@ -14,14 +14,14 @@ Observable behavior. **Action** = code or config change required.
 
 #### Fixed
 
-- **Completion summary sanitizes the destination**: `Wrote <PATH>` passes the output path through `sanitize_error_detail`: `\t`, `\r`, `\n` become spaces; other control characters become `\u{FFFD}`. Before, a control character in the output path reached stdout raw (`src/core/cli.rs`, `docs/security_and_filtering.md` sec. 7).
+- **Completion summary sanitizes the destination**: `Wrote <PATH>` passes the output path through `sanitize_error_detail` (`\t`, `\r`, `\n` become spaces; other control characters become `\u{FFFD}`). Before, control characters reached stdout raw (`src/core/cli.rs`, `docs/security_and_filtering.md` sec. 7).
   - **Action:** None for ordinary paths.
-- **Overlong directory names no longer grow the budget unbounded**: The per-directory budget key was the full first segment, including skipped paths over `MAX_PATH_BYTES`. It is now truncated to `MAX_PATH_BYTES` on a char boundary, so names with one prefix share a key. Overflow diagnostics show the truncated name (`src/core/selector.rs`, `docs/security_and_filtering.md` sec. 3.4).
+- **Overlong directory names no longer grow the budget unbounded**: The per-directory budget key was the full first segment, including skipped paths over `MAX_PATH_BYTES`. It is now truncated to `MAX_PATH_BYTES` at a char boundary, so names sharing a prefix share a key. Overflow diagnostics show the truncated name (`src/core/selector.rs`, `docs/security_and_filtering.md` sec. 3.4).
   - **Action:** None.
 
 #### Changed
 
-- **Non-regular `.gitignore` fails the run**: A local `.gitignore` that is a FIFO, socket, or device fails with `IngestError::Io` (`InvalidInput`, "not a regular file"). Before, its rules were dropped silently. A directory named `.gitignore` still adds no rules (`src/shell/local/walk.rs`, `docs/security_and_filtering.md` sec. 3.5).
+- **Non-regular `.gitignore` fails the run**: A local `.gitignore` that is a FIFO, socket, or device fails with `IngestError::Io` (`InvalidInput`, "not a regular file"); before, its rules were dropped silently. A directory named `.gitignore` still adds no rules (`src/shell/local/walk.rs`, `docs/security_and_filtering.md` sec. 3.5).
   - **Action:** Remove or replace a non-regular `.gitignore` in the source tree.
 
 ### Contributors
@@ -30,11 +30,11 @@ Internal change. No consumer action required.
 
 #### Changed
 
-- **Token estimate counts in chunks**: `estimate_tokens_from_bytes` (`src/core/render/budget.rs`) uses chunked `u32` counters instead of an index loop, and is no longer `const fn`. Output and `estimated_tokens` are unchanged. A reference test covers every byte value across boundary lengths.
-- **Path sort compares bytes**: `cmp_path` (`src/core/storage.rs`) compares path bytes, not `split('/')` components. Order and output are unchanged; an exhaustive small-alphabet test pins the order.
+- **Token estimate counts in chunks**: `estimate_tokens_from_bytes` (`src/core/render/budget.rs`) uses chunked `u32` counters instead of an index loop and is no longer `const fn`. Output and `estimated_tokens` are unchanged. A reference test covers every byte value across boundary lengths.
+- **Path sort compares bytes**: `cmp_path` (`src/core/storage.rs`) compares path bytes, not `split('/')` components. Order and output are unchanged; an exhaustive small-alphabet test pins it.
 - **Pure helpers take owned values**: `push_match_segment` (`src/core/policy/exclude.rs`), `push_separator`, and `admit_dir` (`src/core/policy/classify.rs`) take and return owned values, not `&mut` (coding convention sec. 3). No behavior change.
 - **Pure queries are `#[must_use]`**: Non-`Result` `pub(crate)` and `pub(super)` queries in `src/core` (coding convention sec. 3). No behavior change.
-- **Tree rendering asserts its invariant**: `render_level` (`src/core/render/tree.rs`) panics on a path ending before the current tree offset, instead of dropping the rest of the tree. `NormalizedPath` makes this unreachable; output is unchanged.
+- **Tree rendering asserts its invariant**: `render_level` (`src/core/render/tree.rs`) panics on a path ending before the current tree offset instead of dropping the rest of the tree. `NormalizedPath` makes this unreachable; output is unchanged.
 
 ---
 
