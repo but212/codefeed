@@ -14,8 +14,8 @@ Observable behavior. **Action** = code or config change required.
 
 #### Breaking
 
-- **`IngestError::Api` carries `GithubApiError`**: The payload was a `String`. It is now a struct with public `status: u16` and `retry_after: Option<Duration>`; its `Display` text is unchanged (`src/core/github/mod.rs`, `src/shell/error.rs`).
-  - **Action:** Match `IngestError::Api(err)` and read `err.status` or `err.retry_after`. `err.to_string()` returns the previous message.
+- **`IngestError::Api` carries `GithubApiError`**: The payload was a `String`. It is now a struct with read-only accessors `status() -> u16` and `retry_after() -> Option<Duration>`. Its message names the status code only, so `GitHub API error: HTTP 404 Not Found: not found` becomes `GitHub API error: HTTP 404: not found`. The reason phrase is dropped, and the fields are private, so the code and the text cannot disagree (`src/core/github/mod.rs`, `src/shell/error.rs`).
+  - **Action:** Match `IngestError::Api(err)` and call `err.status()` or `err.retry_after()`. Do not parse the reason phrase from `err.to_string()`; it no longer contains one.
 - **`DomainError::OutputTooLarge` carries `OutputTooLargeError`**: The payload was the bare list of largest files. It is now a struct with public `limit: u64` and `largest_files`; its `Display` text is unchanged (`src/core/error.rs`).
   - **Action:** Match `DomainError::OutputTooLarge(err)` and read `err.largest_files`. The limit is in `err.limit`.
 
@@ -47,7 +47,7 @@ Internal change. No consumer action required.
 - **GitHub API origin injected**: `shell/github::collect` takes the API origin. The global test override and its helpers are removed, and `ingest` passes `GITHUB_API_BASE_URL`. The auth header still goes only to that origin (`src/shell/mod.rs`, `src/shell/github/mod.rs`, `src/shell/testing.rs`).
 - **Diagnostic writers and `.gitignore` loading split out**: `shell/stdio.rs` owns the stdout and stderr line writers, and `shell/local/gitignore.rs` owns `.gitignore` loading. No behavior change.
 - **Selector claims paths in one step**: `Selector::claim_path` records each candidate path, and `CandidateBudget` holds counts only. Check order is unchanged.
-- **Depth error mapping in one place**: `DepthExceededError::into_domain_error` builds the depth error for tar entries and local paths (`src/core/path.rs`, `src/core/archive.rs`, `src/shell/local/walk.rs`).
+- **Depth error mapping in one place**: `DepthExceededError::domain_error` builds the depth error for tar entries and local paths (`src/core/path.rs`, `src/core/archive.rs`, `src/shell/local/walk.rs`).
 
 ---
 

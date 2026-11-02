@@ -1,5 +1,5 @@
 use crate::core::error::DomainError;
-use crate::core::path::{PathStatus, classify_path_segments};
+use crate::core::path::{DepthExceededError, PathStatus, classify_path_segments};
 use crate::core::policy::ExcludePatterns;
 use memchr::{memchr, memmem};
 
@@ -52,7 +52,7 @@ pub(crate) fn normalize_tar_entry_path(
     let rel = &trimmed[slash_index + 1..];
 
     classify_path_segments(rel.split(|&b| b == b'/'), exclude)
-        .map_err(|err| err.into_domain_error("Tar entry path"))
+        .map_err(|_| DepthExceededError::domain_error("Tar entry path"))
 }
 
 /// Parses a 40- or 64-hex-character commit SHA from a `comment=<sha>` PAX record.

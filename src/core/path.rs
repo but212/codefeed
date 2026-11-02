@@ -63,7 +63,7 @@ impl DepthExceededError {
     /// Returns the [`DomainError::InvalidMetadata`] for a path nested past [`MAX_PATH_DEPTH`].
     /// `subject` names the entry kind in the message, such as `local path` or `Tar entry path`.
     #[cold]
-    pub(crate) fn into_domain_error(self, subject: &str) -> DomainError {
+    pub(crate) fn domain_error(subject: &str) -> DomainError {
         DomainError::invalid_metadata(format!("{subject} exceeds maximum directory depth"))
     }
 }
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn depth_exceeded_error_names_its_entry_kind() {
-        let err = DepthExceededError.into_domain_error("Tar entry path");
+        let err = DepthExceededError::domain_error("Tar entry path");
         assert!(
             matches!(&err, DomainError::InvalidMetadata(msg) if msg == "Tar entry path exceeds maximum directory depth"),
             "{err:?}"

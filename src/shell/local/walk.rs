@@ -13,7 +13,7 @@ use std::vec;
 use ignore::gitignore::Gitignore;
 
 use super::gitignore::read_rules;
-use crate::core::path::{AdmittedDir, PathStatus, admit_dir, classify_leaf};
+use crate::core::path::{AdmittedDir, DepthExceededError, PathStatus, admit_dir, classify_leaf};
 use crate::core::policy::{ExcludePatterns, is_hidden_segment};
 use crate::shell::IngestError;
 use crate::shell::error::io_error_at;
@@ -158,7 +158,7 @@ pub(super) fn classify_entry(
         return Ok(PathStatus::Ignored);
     }
     classify_leaf(&file.parent, file.name.as_encoded_bytes(), exclude)
-        .map_err(|err| err.into_domain_error("local path").into())
+        .map_err(|_| DepthExceededError::domain_error("local path").into())
 }
 
 #[cfg(test)]

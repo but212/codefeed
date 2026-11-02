@@ -84,13 +84,8 @@ mod tests {
         let limit_mib = MAX_OUTPUT_SIZE / (1024 * 1024);
         let cases: [(IngestError, String); 9] = [
             (
-                IngestError::Api(crate::core::github::api_error(
-                    500,
-                    "500 Internal Server Error",
-                    b"boom",
-                    None,
-                )),
-                "GitHub API error: HTTP 500 Internal Server Error: boom".into(),
+                IngestError::Api(crate::core::github::api_error(500, b"boom", None)),
+                "GitHub API error: HTTP 500: boom".into(),
             ),
             (DomainError::usage("bad flag").into(), "bad flag".into()),
             (
