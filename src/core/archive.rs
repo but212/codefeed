@@ -56,6 +56,7 @@ pub(crate) fn normalize_tar_entry_path(
 }
 
 /// Parses a 40- or 64-hex-character commit SHA from a `comment=<sha>` PAX record.
+#[must_use]
 pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
     memmem::find(bytes, b"comment=")?;
     let text = std::str::from_utf8(bytes).ok()?;

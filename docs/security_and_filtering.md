@@ -34,7 +34,7 @@ Entry (local walk or tar stream)
  |
  +-- Directory (local walk only)
  |     +-- Entered: `.gitignore` read once; the same bytes validate and compile its rules.
- |     |     `-- Symlink, larger than `MAX_FILE_SIZE`, unreadable, or not valid UTF-8 -> Run fails (Io). Sec. 3.5.
+ |     |     `-- Symlink, non-regular file, larger than `MAX_FILE_SIZE`, unreadable, or not valid UTF-8 -> Run fails (Io). Sec. 3.5.
  |     +-- Hidden or ignored by a `.gitignore` -> Pruned, not entered; its `.gitignore` is never read.
  |     `-- Matched by a user exclusion (sec. 3.6) -> Pruned, not entered; its `.gitignore` is never read.
  |
@@ -110,7 +110,7 @@ Exact matches against the final path segment:
 | Rule | Effect |
 | :--- | :--- |
 | Depth > `MAX_PATH_DEPTH` | Run fails with `InvalidMetadata`. Hidden/noise items dropped prior to check. |
-| Path > `MAX_PATH_BYTES` | Consumes candidate slot; counted as skipped; body not read. |
+| Path > `MAX_PATH_BYTES` | Consumes candidate slot; counted as skipped; body not read. Its first-segment budget key is truncated to `MAX_PATH_BYTES` on a char boundary (I-05). |
 | Path <= `MAX_PATH_BYTES` equal to another candidate's path | Run fails with `InvalidMetadata`. Applies to skipped candidates too. Longer duplicates are skipped and not compared. |
 | Stored path is a directory prefix of another stored path (`a` and `a/…`) | Run fails with `InvalidMetadata` at digest assembly. Skipped candidates are not compared. |
 
@@ -119,7 +119,7 @@ Exact matches against the final path segment:
 - Applies `.gitignore` files within source tree (Git binary not required).
 - `.ignore`, global gitignore, `.git/info/exclude`, and parent-directory `.gitignore` files are ignored.
 - The local walk reads a directory's `.gitignore` once, when it enters that directory. The bytes that validate the file are the bytes that compile its rules, so no later read can change them.
-- A `.gitignore` that is a symlink, exceeds `MAX_FILE_SIZE`, is unreadable, or is not valid UTF-8 fails the run (`IngestError::Io`, path named). The symlink is not followed. A rule set that fails to compile fails the run too. Invalid glob lines are skipped, as before.
+- A `.gitignore` that is a symlink, is neither a regular file nor a directory (such as a FIFO), exceeds `MAX_FILE_SIZE`, is unreadable, or is not valid UTF-8 fails the run (`IngestError::Io`, path named). The symlink is not followed. A directory named `.gitignore` contributes no rules. A rule set that fails to compile fails the run too. Invalid glob lines are skipped, as before.
 
 ### 3.6 User Exclusions (`--exclude`)
 
@@ -155,7 +155,7 @@ Candidate budget overflow aborts the run without emitting partial output.
 - **No Symlinks:** The walk classifies entries with `DirEntry::file_type()`, which does not follow links, and drops entries that are neither directories nor regular files. Workers call `fs::symlink_metadata` before open, rejecting symlinks to files, directories, or special devices. The root path is canonicalized first, so a symlinked root is followed; the no-symlink rule applies to every entry beneath it.
 - **Output Exclusion:** Canonical destination is resolved upfront (`resolve_output_target`) and excluded from traversal to prevent self-ingest.
 - **Atomic Writes:** Destination written via temporary file `.codefeed.{nanos}.{counter}.tmp` in target directory, flushed, and renamed. The name does not depend on the target name. Unix preserves permissions and syncs parent directory. Parent sync failure logs a warning without aborting. `write_atomic` drops the file handle before `TempPath` unlinks the temporary file on `Drop`.
-- **Unavailable vs. Fatal:** `NotFound`, `PermissionDenied`, or Windows sharing (32) / locking (33) errors mark files unavailable (skipped). Other I/O errors or unreadable directories abort the run. A directory's `.gitignore` is not a file candidate: any read failure, symlink, oversize file, or non-UTF-8 content aborts the run (sec. 3.5). First error in walk order is deterministically reported.
+- **Unavailable vs. Fatal:** `NotFound`, `PermissionDenied`, or Windows sharing (32) / locking (33) errors mark files unavailable (skipped). Other I/O errors or unreadable directories abort the run. A directory's `.gitignore` is not a file candidate: any read failure, symlink, non-regular file, oversize file, or non-UTF-8 content aborts the run (sec. 3.5). First error in walk order is deterministically reported.
 - **Bounded Concurrency:** Producer and workers communicate across bounded `sync_channel` queues (`LOCAL_CHANNEL_CAPACITY`). Memory holds at most `LOCAL_CHANNEL_CAPACITY + 2` concurrent file bodies, each bounded to `MAX_FILE_SIZE + 1`. Abort signals set an `AtomicBool` halting worker reads.
 
 ---
@@ -208,7 +208,7 @@ Sanitization runs in a single pass via `write_escaped`:
    - Disallowed XML 1.0 control codes map to `\u{FFFD}`.
 3. **Tree Labels:** Escaped for control characters and XML entities to prevent output corruption.
 4. **Error and Warning Diagnostics (`sanitize_error_detail`):**
-   - Single-line diagnostics emitted to stderr (filesystem paths in I/O errors, root validation errors, HTTP status messages, transport error text, usage, invalid-source, unsupported-source, and invalid-metadata messages (sanitized in `DomainError` `Display`, since they echo arguments, patterns, or URLs), and each path and directory name in the `MAX_OUTPUT_SIZE` and `MAX_FILE_COUNT` overflow lists) convert `\t`, `\r`, `\n` to space `' '` and all other Unicode control characters to `\u{FFFD}` to prevent terminal escape injection or log forgery.
+   - Single-line diagnostics emitted to stderr (filesystem paths in I/O errors, root validation errors, HTTP status messages, transport error text, usage, invalid-source, unsupported-source, and invalid-metadata messages (sanitized in `DomainError` `Display`, since they echo arguments, patterns, or URLs), each path and directory name in the `MAX_OUTPUT_SIZE` and `MAX_FILE_COUNT` overflow lists) convert `\t`, `\r`, `\n` to space `' '` and all other Unicode control characters to `\u{FFFD}` to prevent terminal escape injection or log forgery. The file-target completion summary (`Wrote <PATH>`) goes to stdout, and its destination path is sanitized the same way.
 
 ---
 

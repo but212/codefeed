@@ -75,8 +75,16 @@ impl CandidateBudget {
 
 /// Budget key for `path`: its first segment with a trailing `/`, or `./` for root-level entries.
 /// No classified first segment starts with `.` (I-02), so `./` never names a real directory.
+/// The key is capped at `MAX_PATH_BYTES` on a char boundary (I-05), so overlong segments cannot
+/// grow the key store beyond the candidate count times `MAX_PATH_BYTES`.
 fn extract_dir_slice(path: &str) -> &str {
-    memchr(b'/', path.as_bytes()).map_or("./", |index| &path[..=index])
+    let dir = memchr(b'/', path.as_bytes()).map_or("./", |index| &path[..=index]);
+    let limit = usize::try_from(MAX_PATH_BYTES).expect("invariant: MAX_PATH_BYTES fits in usize");
+    let mut end = dir.len().min(limit);
+    while !dir.is_char_boundary(end) {
+        end -= 1;
+    }
+    &dir[..end]
 }
 
 fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String, usize)> {
@@ -227,6 +235,46 @@ mod tests {
         assert_eq!(extract_dir_slice(""), "./");
         assert_eq!(extract_dir_slice("vendor/"), "vendor/");
         assert_eq!(extract_dir_slice("<root>/x.rs"), "<root>/");
+    }
+
+    #[test]
+    fn extract_dir_slice_caps_overlong_first_segment() {
+        let overlong = format!("{}/file.rs", "a".repeat(MAX_PATH_BYTES_USIZE + 10));
+        assert_eq!(
+            extract_dir_slice(&overlong),
+            "a".repeat(MAX_PATH_BYTES_USIZE)
+        );
+    }
+
+    #[test]
+    fn extract_dir_slice_cuts_overlong_segment_at_char_boundary() {
+        // `a` followed by two-byte `é` puts every character start at an odd offset, so byte
+        // `MAX_PATH_BYTES` lands inside a character and the cut moves back one byte.
+        let overlong = format!("a{}/file.rs", "é".repeat(MAX_PATH_BYTES_USIZE));
+        let dir = extract_dir_slice(&overlong);
+        assert_eq!(dir.len(), MAX_PATH_BYTES_USIZE - 1);
+        assert!(dir.starts_with('a'));
+        assert!(dir.chars().skip(1).all(|c| c == 'é'));
+    }
+
+    #[test]
+    fn candidate_budget_merges_overlong_directories_sharing_capped_prefix()
+    -> Result<(), DomainError> {
+        let head = "a".repeat(MAX_PATH_BYTES_USIZE + 5);
+        let mut budget = CandidateBudget::default();
+        for index in 0..3 {
+            budget = budget.add(&format!("{head}{index}/file.rs"))?;
+        }
+        assert_eq!(budget.count, 3);
+        assert_eq!(budget.dir_counts.len(), 1);
+        assert_eq!(budget.dir_counts.values().copied().collect::<Vec<_>>(), [3]);
+        assert!(
+            budget
+                .dir_counts
+                .keys()
+                .all(|key| key.len() <= MAX_PATH_BYTES_USIZE)
+        );
+        Ok(())
     }
 
     #[test]

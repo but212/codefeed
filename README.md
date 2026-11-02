@@ -50,7 +50,7 @@ Options may appear before or after `<SOURCE>`. Short flags accept `=` syntax (`-
 - `-o`, `--output <PATH|->`: Output destination (default: `digest.txt`). `-` streams to stdout.
 - `-r`, `--ref <BRANCH|TAG|COMMIT>`: GitHub revision (default: default branch). Rejects empty, whitespace-only, `.`, and `..`.
 - `-f`, `--format <text|xml>`: Digest format (default: `text`).
-- `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to the source root (e.g. `build/`, `*.log`, `/vendor`). Repeatable, applied in order; works for local and GitHub sources. Unescaped trailing whitespace is trimmed, as in `.gitignore`, so `'! '` is a bare `!`. Invalid patterns, and patterns matching nothing (blank, comment, bare `!`), are usage errors. See [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 3.6.
+- `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to the source root (e.g. `build/`, `*.log`, `/vendor`). Repeatable, applied in order, for local and GitHub sources. Unescaped trailing whitespace is trimmed, as in `.gitignore` (`'! '` is a bare `!`). Invalid patterns and patterns matching nothing (blank, comment, bare `!`) are usage errors. See [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 3.6.
 - `-h`, `--help`: Print usage and exit with 0.
 - `--`: Treat subsequent arguments as positionals (for directories starting with `-`).
 
@@ -97,7 +97,7 @@ Excluded entries are dropped silently and not counted as skipped. Exception: a t
 - Symlinks and non-regular files (local and archive).
 - Lockfiles: `Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`, `go.sum`, `poetry.lock`, `Pipfile.lock`, `composer.lock`, `Gemfile.lock`.
 - Credential files matching prefixes (`id_rsa*`, `credentials*`) or extensions (`*.pem`, `*.key`, `*.pfx`, `*.p12`, `*.pkcs12`).
-- Files matched by in-tree `.gitignore` (local sources only; GitHub archives do not apply `.gitignore`). A local `.gitignore` that is a symlink, exceeds `MAX_FILE_SIZE`, is unreadable, or is not valid UTF-8 fails the run instead.
+- Files matched by in-tree `.gitignore` (local sources only; GitHub archives do not apply `.gitignore`). A local `.gitignore` that is a symlink, is not a regular file (such as a FIFO), exceeds `MAX_FILE_SIZE`, is unreadable, or is not valid UTF-8 fails the run instead.
 - Paths matched by `--exclude` patterns, including everything under an excluded directory.
 
 Skipped entries are counted in the summary:

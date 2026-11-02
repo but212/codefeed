@@ -2,6 +2,7 @@
 
 use super::budget::{BoundedBuffer, OutputLimitExceeded};
 
+#[must_use]
 pub(super) const fn escape_header(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     match bytes[i] {
         b'\\' => Some((1, "\\\\")),
@@ -27,6 +28,7 @@ const XML_BODY_START: [bool; 256] = {
     table
 };
 
+#[must_use]
 pub(super) const fn escape_xml_body(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     if !XML_BODY_START[bytes[i] as usize] {
         return None;
@@ -52,6 +54,7 @@ const fn xml_body_match(bytes: &[u8], i: usize) -> Option<(usize, &'static str)>
     }
 }
 
+#[must_use]
 pub(super) const fn escape_xml_single_line(
     bytes: &[u8],
     i: usize,

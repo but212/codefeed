@@ -74,12 +74,13 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - `SortedFiles::new` sorts spans via `cmp_path` (component-by-component comparison), guaranteeing deterministic output regardless of concurrency timing.
 - **I-01 (`runtime`, `SortedFiles::new`):** No stored path is a directory prefix of another stored path (`p` and `p/…`). `DomainError::InvalidMetadata` otherwise. Enforced after sorting by checking adjacent pairs. A schema, type, or boundary check cannot express this because the rule relates separate entries, and a per-entry parse cannot see the others. Skipped candidates are not stored and are not compared, so the digest tree shows each name as either a file or a directory.
 - `Selector::observe` rejects a candidate whose path (at most `MAX_PATH_BYTES`) equals an earlier candidate's path, with `DomainError::InvalidMetadata`. The check covers skipped candidates, so no path names two candidates. Longer paths are skipped before the check.
+- **I-05 (`boundary`, `extract_dir_slice`):** Every candidate budget key is at most `MAX_PATH_BYTES` bytes and ends on a UTF-8 char boundary. Keys are cut from the first segment at the single point where they are built, so the key store holds at most candidate count times `MAX_PATH_BYTES` bytes. A `type` or `schema` cannot express a length cap on a `&str` key, and `CandidateBudget::add` needs no separate check.
 - Arena indices are `u32`. Compile-time assertions in `policy/limits.rs` ensure `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX`.
 
 ### 3.5 Rendering
 
 - **Escaping:** Single-pass via `write_escaped` per [security sec. 7](docs/security_and_filtering.md#7-output-sanitization).
-- **Tree:** Deterministic text tree generated from `SortedFiles` in one pass (`tree.rs`).
+- **Tree:** Deterministic text tree generated from `SortedFiles` in one pass (`tree.rs`). Relies on `NormalizedPath` having non-empty segments and no trailing `/`: `render_level` panics if a path ends before a tree offset.
 - **Header:** Local sources use root directory name (`root` for filesystem root); GitHub sources use canonical `https://github.com/{owner}/{repo}`.
 - **Token Estimate:** ASCII bytes divided by `ASCII_BYTES_PER_TOKEN` plus non-ASCII character count (minimum 1 for non-empty digests, 0 for empty).
 
@@ -88,7 +89,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - File destinations resolve at startup; directory targets are rejected; canonical destination is excluded from traversal to prevent self-ingest.
 - Writes are atomic: temporary file -> sync -> rename -> parent directory sync (Unix). Prior output remains untouched on failure. Parent sync failure logs a warning without failing.
 - Stdout buffers the complete digest in memory, emitting only on success. Broken pipe on stdout exits with code `0`.
-- Completion summary emits to stdout for file targets, stderr for stdout targets.
+- Completion summary emits to stdout for file targets, stderr for stdout targets. The file target's path in the summary passes through `sanitize_error_detail`.
 
 ### 3.7 Diagnostics
 
@@ -100,7 +101,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 ### 3.8 Local Traversal Pipeline
 
-1. Producer walks depth-first in file-name order without following links (`Walk`, `walk.rs`). A directory matched by a user exclusion is pruned before its `.gitignore` is read. Entering any other directory reads its `.gitignore` once and compiles its rules from those bytes (a symlink, an oversized, unreadable, or non-UTF-8 file fails the run, [security sec. 3.5](docs/security_and_filtering.md#35-ignore-files-local-only)). Rules match through `ignore::gitignore`. Jobs go out for regular files in walk order.
+1. Producer walks depth-first in file-name order without following links (`Walk`, `walk.rs`). A directory matched by a user exclusion is pruned before its `.gitignore` is read. Entering any other directory reads its `.gitignore` once and compiles its rules from those bytes (a symlink, a non-regular file, an oversized, unreadable, or non-UTF-8 file fails the run, [security sec. 3.5](docs/security_and_filtering.md#35-ignore-files-local-only)). Rules match through `ignore::gitignore`. Jobs go out for regular files in walk order.
 2. Up to `MAX_LOCAL_WORKERS` workers check metadata, read bounded bodies, and reply on bounded slots.
 3. Main thread settles slots in walk order into `Selector::observe`. The first error halts traversal.
 4. Channel capacities are bounded by `LOCAL_CHANNEL_CAPACITY` ([security sec. 8](docs/security_and_filtering.md#8-limit-values)).
@@ -150,4 +151,4 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 
 ### Public API (`src/lib.rs`)
 
-Exports: `ingest`, `RunConfig`, `ExcludePatterns`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, and `CandidateLimitExceededError`. All other items are `pub(crate)`.
+Exports: `ingest`, `RunConfig`, `ExcludePatterns`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, `CandidateLimitExceededError`, and the `#[doc(hidden)]` `cli::run_cli` used by `main.rs`. All other items are `pub(crate)`.
