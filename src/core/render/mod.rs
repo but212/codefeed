@@ -3,8 +3,9 @@
 //! Coordinates layout rendering across text and XML formats,
 //! token estimation, and output size cap enforcement.
 
+use crate::core::collection::CollectionResult;
 use crate::core::error::DomainError;
-use crate::core::model::{CollectionResult, DigestFormat};
+use crate::core::model::DigestFormat;
 
 mod budget;
 mod escape;

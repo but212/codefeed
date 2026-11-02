@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use memchr::memchr;
 
+use crate::core::collection::CollectionResult;
 use crate::core::error::DomainError;
-use crate::core::model::CollectionResult;
 use crate::core::path::PathStatus;
 use crate::core::policy::{
     MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, OVERFLOW_LARGEST_DIRECTORIES,

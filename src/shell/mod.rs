@@ -6,7 +6,6 @@
 use crate::core::github::GITHUB_API_BASE_URL;
 use crate::{IngestReport, RunConfig, Source};
 
-mod archive;
 mod atomic;
 pub(crate) mod cli;
 mod error;
@@ -67,7 +66,8 @@ fn ingest_from(config: &RunConfig, github_api_base: &str) -> Result<IngestReport
 mod tests {
     use super::*;
     use crate::OutputTarget;
-    use crate::core::model::{DigestFormat, GitRef};
+    use crate::core::model::DigestFormat;
+    use crate::core::source::GitRef;
     use crate::shell::testing::{MockServer, gzip_tarball, temp_dir};
     use std::fs;
     use tar::EntryType;

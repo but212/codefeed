@@ -6,23 +6,23 @@ use std::io::{self, BufReader, Read};
 use flate2::read::GzDecoder;
 use tar::{Archive, EntryType};
 
-use super::IngestError;
-use super::error::transport_error;
 use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
+use crate::core::collection::CollectionResult;
 use crate::core::error::DomainError;
-use crate::core::model::CollectionResult;
 use crate::core::policy::{
     ARCHIVE_BUFFER_BYTES, ARCHIVE_MAX_HEADER_BYTES, ARCHIVE_PAX_GLOBAL_BYTES, ExcludePatterns,
     MAX_FILE_SIZE,
 };
 use crate::core::selector::Selector;
+use crate::shell::IngestError;
+use crate::shell::error::transport_error;
 
 /// Collects files from a tarball reader directly into a [`CollectionResult`].
 ///
 /// Decompresses and streams entries through a tuned [`ARCHIVE_BUFFER_BYTES`] buffer,
 /// extracts commit revision from PAX global headers if present (falling back to `default_reference`),
 /// filters non-regular, user-excluded, or sensitive entries via core policies, and feeds valid candidates to [`Selector`].
-pub(super) fn collect<R: Read>(
+pub(in crate::shell) fn collect<R: Read>(
     reader: R,
     label: &str,
     default_reference: Option<&str>,

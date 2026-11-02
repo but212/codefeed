@@ -34,10 +34,9 @@ pub(crate) mod shell;
 
 pub use core::error::{CandidateLimitExceededError, DomainError, OutputTooLargeError};
 pub use core::github::GithubApiError;
-pub use core::model::{
-    DigestFormat, GitRef, GithubName, IngestReport, OutputTarget, RunConfig, Source,
-};
+pub use core::model::{DigestFormat, IngestReport, OutputTarget, RunConfig};
 pub use core::policy::ExcludePatterns;
+pub use core::source::{GitRef, GithubName, Source};
 pub use shell::{IngestError, ingest};
 
 #[doc(hidden)]

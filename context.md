@@ -113,8 +113,11 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - Archive entries stream through `Selector::observe` without disk writes.
 - Revision SHA extracts from the first `ARCHIVE_PAX_GLOBAL_BYTES` of the PAX global header, falling back to the requested ref.
 - Stream/gzip/tar read failures map to `IngestError::Http`.
-- **I-03 (`runtime`, `shell/archive.rs`):** One `Entries::next` call reads at most `ARCHIVE_MAX_HEADER_BYTES` from the decompressed stream, covering the previous entry's padding, GNU `L`/`K` and PAX `x` bodies, GNU sparse extension blocks, and the header. An overrun fails the run with `DomainError::InvalidMetadata`; it is never a skip, because the path is not parsed. The budget runs before path classification, so an entry that classification would drop (hidden, excluded, non-regular) also fails the run when its header is over budget. tar reads extension bodies internally, so no type or boundary can express the bound. A byte budget on the shared reader enforces it, and each entry body is drained before the next call so only headers are metered.
+- **I-03 (`runtime`, `shell/github/archive.rs`):** One `Entries::next` call reads at most `ARCHIVE_MAX_HEADER_BYTES` from the decompressed stream, covering the previous entry's padding, GNU `L`/`K` and PAX `x` bodies, GNU sparse extension blocks, and the header. An overrun fails the run with `DomainError::InvalidMetadata`; it is never a skip, because the path is not parsed. The budget runs before path classification, so an entry that classification would drop (hidden, excluded, non-regular) also fails the run when its header is over budget. tar reads extension bodies internally, so no type or boundary can express the bound. A byte budget on the shared reader enforces it, and each entry body is drained before the next call so only headers are metered.
 - **I-04 (`boundary`, `DomainError::usage`, `invalid_source`, `unsupported_source`, `invalid_metadata`):** These constructors pass the message through `sanitize_error_detail`, so the stored text has no control characters or line breaks, including text echoed from argv, `--exclude` patterns, or URLs. `DomainError`'s `Display` also passes the message of these four variants through `sanitize_error_detail`, so a library consumer that builds a variant directly still gets sanitized stderr text. The stored value stays as given to the variant.
+- **I-06 (`type`, `Auth`, `api_error`):** The token hint appears only in the message of an anonymous 403 or 429. `api_error` is the only place that builds that message and it takes an `Auth`, so a run whose API request carried a token cannot get the hint, including an error from a redirect target, which never receives the token.
+- **I-07 (`boundary`, `GithubClient::credentials`):** Only the GitHub API origin receives the token. The `Authorization` header and the `Auth` given to errors both derive from `credentials(url)`, so they cannot disagree.
+- **I-08 (`boundary`, `TOKEN_ENV_VARS`):** Token environment variable names exist only in `TOKEN_ENV_VARS` (`src/core/policy/auth.rs`). Lookup order and the token hint both read it. A type cannot hold a list of names, so one definition is the enforcement.
 
 ## 4. Limits and Tunables
 
@@ -128,13 +131,15 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 
 - `cli.rs`: CLI argument parsing (`parse`, `Parsed`), `HELP` constant, `CliAction`, `completion_message`.
 - `path.rs`: Path types and classification (`NormalizedPath`, `PathStatus`, `AdmittedDir`, `classify_path_segments`, `admit_dir`, `classify_leaf`). Depends on `policy/` and `error`.
-- `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `exclude.rs` (`ExcludePatterns`).
-- `model.rs`: `Source`, `GitRef`, `GithubName`, `RunConfig`, `OutputTarget`, `DigestFormat`, `CollectionResult`, `IngestReport`.
+- `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `exclude.rs` (`ExcludePatterns`), `auth.rs` (`TOKEN_ENV_VARS`).
+- `source.rs`: `Source`, `GitRef`, `GithubName`, source parsing (`Source::parse` delegates URL rules to `github/`).
+- `model.rs`: `RunConfig`, `OutputTarget`, `DigestFormat`, `IngestReport`.
+- `collection.rs`: `CollectionResult`, `repository_name`.
 - `selector.rs`: `Selector`, `CandidateBudget`, `exceeds_size_limits`.
 - `storage.rs`: `FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, `largest_files`.
 - `error.rs`: `DomainError`, `CandidateLimitExceededError`, `OutputTooLargeError`, `sanitize_error_detail`. Depends on no other core module, so the policy-to-error edge is one-way.
 - `archive.rs`: PAX parsing, tar path normalization (`normalize_tar_entry_path`).
-- `github/`: `url.rs` (URL parsing, origin check), `retry.rs` (header parsing, delay calculation, attempt state machine), `mod.rs` (`GithubApiError`, error formatting).
+- `github/`: `url.rs` (URL parsing, origin check), `retry.rs` (header parsing, delay calculation, attempt state machine), `mod.rs` (`GithubApiError`, `Auth`, error formatting).
 - `render/`: `formats.rs` (text/XML formats), `tree.rs`, `escape.rs`, `budget.rs` (`BoundedBuffer`, `RenderedDigest`, token estimate).
 
 ### Shell (`src/shell/`)
@@ -144,8 +149,7 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 - `cli.rs`: `run_cli` (CLI orchestration, stream selection, exit codes).
 - `error.rs`: `IngestError`, `transport_error`.
 - `local/`: `mod.rs` (`collect`), `walk.rs`, `gitignore.rs` (`.gitignore` loading and compilation), `read.rs` (metadata/body read), `pipeline.rs` (producer/worker pipeline).
-- `archive.rs`: Tarball/gzip streaming and admission.
-- `github/`: `mod.rs` (`collect`), `client.rs` (HTTP/TLS client, token handling), `stream.rs` (archive streaming, retries).
+- `github/`: `mod.rs` (`collect`), `archive.rs` (tarball/gzip streaming and admission), `client.rs` (HTTP/TLS client, token handling), `stream.rs` (HTTP retries, streaming).
 - `atomic.rs`: `write_atomic`, `TempPath`.
 - `output.rs`: `resolve_output_target`, `deliver`.
 - `stdio.rs`: stdout/stderr diagnostic line writers.

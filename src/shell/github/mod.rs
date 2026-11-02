@@ -1,10 +1,11 @@
 //! GitHub collection orchestration: streaming tarball ingestion and HTTP transport.
 
+pub(in crate::shell) mod archive;
 mod client;
 mod stream;
 
+use crate::core::collection::CollectionResult;
 use crate::core::github::{repository_url, tarball_url};
-use crate::core::model::CollectionResult;
 use crate::core::policy::ExcludePatterns;
 use crate::shell::IngestError;
 use client::GithubClient;
@@ -22,7 +23,7 @@ pub(super) fn collect(
     let url = tarball_url(api_base, owner, repo, reference);
     let reader = client.stream_url(&url)?;
     let label = repository_url(owner, repo);
-    super::archive::collect(reader, &label, reference, exclude)
+    archive::collect(reader, &label, reference, exclude)
 }
 
 #[cfg(test)]

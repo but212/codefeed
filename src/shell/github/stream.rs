@@ -7,7 +7,7 @@ use zeroize::Zeroizing;
 
 use super::client::GithubClient;
 use crate::core::github::{
-    AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind, api_error,
+    AttemptState, Auth, RateLimitHeaders, RequestOutcome, Transition, TransportKind, api_error,
     status_retry_warning, transport_retry_warning,
 };
 use crate::core::policy::GITHUB_ERROR_BODY_BYTES;
@@ -59,7 +59,7 @@ impl Attempt {
     fn warn(&self, count: usize, url: &str, delay: Duration) {
         let message = match self {
             Self::Status { response, .. } => {
-                status_retry_warning(&response.status().to_string(), count, url, delay)
+                status_retry_warning(response.status().as_u16(), count, url, delay)
             }
             Self::Transport(error) => {
                 transport_retry_warning(&error.to_string(), count, url, delay)
@@ -68,7 +68,7 @@ impl Attempt {
         stdio::write_stderr_line(&message);
     }
 
-    fn into_error(self) -> IngestError {
+    fn into_error(self, auth: Auth) -> IngestError {
         match self {
             Self::Status {
                 response,
@@ -81,7 +81,7 @@ impl Attempt {
                     .into_reader()
                     .take(GITHUB_ERROR_BODY_BYTES)
                     .read_to_end(&mut body_bytes);
-                IngestError::Api(api_error(status.as_u16(), &body_bytes, retry_after))
+                IngestError::Api(api_error(status.as_u16(), &body_bytes, retry_after, auth))
             }
             Self::Transport(error) => transport_error(&error.to_string()),
         }
@@ -91,6 +91,7 @@ impl Attempt {
 impl GithubClient {
     pub(super) fn stream_url(&self, url: &str) -> Result<impl Read + Send, IngestError> {
         let mut attempt_state = AttemptState::new();
+        let auth = self.auth(url);
         loop {
             let (attempt, outcome) = match self.request(url).call() {
                 Ok(resp) if resp.status().is_success() => {
@@ -109,7 +110,7 @@ impl GithubClient {
                     attempt.warn(count, url, delay);
                     std::thread::sleep(delay);
                 }
-                Transition::Fail => return Err(attempt.into_error()),
+                Transition::Fail => return Err(attempt.into_error(auth)),
             }
         }
     }
@@ -143,8 +144,8 @@ fn unix_now_secs() -> u64 {
 mod tests {
     use super::*;
     use crate::ExcludePatterns;
-    use crate::core::policy::MAX_ATTEMPTS;
-    use crate::shell::archive;
+    use crate::core::policy::{MAX_ATTEMPTS, TOKEN_ENV_VARS};
+    use crate::shell::github::archive;
     use crate::shell::testing::{MockServer, gzip_tarball};
     use std::io::Read;
     use tar::EntryType;
@@ -209,7 +210,10 @@ mod tests {
     fn client_error_is_not_retried() {
         let reset = (epoch_now_secs() + 2400).to_string();
         // (case, response, status, exact message): a 4xx is terminal, with or without remaining quota.
-        let token_hint = "(set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)";
+        let token_hint = format!(
+            "(set {} to authenticate or increase rate limits)",
+            TOKEN_ENV_VARS.join(" or ")
+        );
         let cases = [
             (
                 "bare 404",

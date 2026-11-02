@@ -30,6 +30,10 @@ Observable behavior. **Action** = code or config change required.
 
 - **Non-regular `.gitignore` fails the run**: A local `.gitignore` that is a FIFO, socket, or device fails with `IngestError::Io` (`InvalidInput`, "not a regular file"); before, its rules were dropped silently. A directory named `.gitignore` still adds no rules (`src/shell/local/walk.rs`, `docs/security_and_filtering.md` sec. 3.5).
   - **Action:** Remove or replace a non-regular `.gitignore` in the source tree.
+- **Token hint only for anonymous 403 and 429**: A 403 or 429 from a run whose GitHub API request sent a token no longer ends with the `set GITHUB_TOKEN or GH_TOKEN` hint, since the token was not the missing step. Anonymous requests keep it. A redirect target is not sent the token; its error is classified by the API request (`src/core/github/mod.rs`).
+  - **Action:** None.
+- **Retry warning names the status code only**: The stderr line reads `GitHub HTTP status 503 on attempt 1/3`, not `GitHub HTTP status 503 Service Unavailable on attempt 1/3` (`src/core/github/mod.rs`).
+  - **Action:** Do not parse the reason phrase from the warning.
 
 ### Contributors
 
@@ -48,6 +52,9 @@ Internal change. No consumer action required.
 - **Diagnostic writers and `.gitignore` loading split out**: `shell/stdio.rs` owns the stdout and stderr line writers, and `shell/local/gitignore.rs` owns `.gitignore` loading. No behavior change.
 - **Selector claims paths in one step**: `Selector::claim_path` records each candidate path, and `CandidateBudget` holds counts only. Check order is unchanged.
 - **Depth error mapping in one place**: `DepthExceededError::domain_error` builds the depth error for tar entries and local paths (`src/core/path.rs`, `src/core/archive.rs`, `src/shell/local/walk.rs`).
+- **Token variables and token use decided in one place**: `TOKEN_ENV_VARS` (`src/core/policy/auth.rs`) lists `GITHUB_TOKEN` then `GH_TOKEN`, and the token hint reads the same list. `api_error` takes `Auth`. `GithubClient::credentials(url)` decides whether a request carries the token, and both the header and the error's `Auth` derive from it (`src/core/github/mod.rs`, `src/shell/github/client.rs`, `src/shell/github/stream.rs`).
+- **Archive streaming under `shell/github/`**: `src/shell/archive.rs` moves to `src/shell/github/archive.rs`. It is used only by the GitHub path. No behavior change.
+- **Source and collection split from `model.rs`**: `Source`, `GitRef`, and `GithubName` move to `src/core/source.rs`, and `CollectionResult` and `repository_name` move to `src/core/collection.rs`. `src/core/model.rs` keeps `RunConfig`, `OutputTarget`, `DigestFormat`, and `IngestReport`. Public paths from `codefeed` are unchanged. No behavior change.
 
 ---
 

@@ -25,6 +25,7 @@
 
 pub(crate) mod archive;
 pub(crate) mod cli;
+pub(crate) mod collection;
 pub(crate) mod error;
 pub(crate) mod github;
 pub(crate) mod model;
@@ -32,4 +33,5 @@ pub(crate) mod path;
 pub(crate) mod policy;
 pub(crate) mod render;
 pub(crate) mod selector;
+pub(crate) mod source;
 pub(crate) mod storage;
