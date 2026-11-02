@@ -6,6 +6,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Contributors
+
+Internal change. No consumer action required.
+
+#### Changed
+
+- **Token estimate counts in chunks**: `estimate_tokens_from_bytes` (`src/core/render/budget.rs`) counts ASCII and lead bytes in chunks with `u32` counters, instead of an index loop, and is no longer `const fn`. Output and `estimated_tokens` are unchanged. A reference-definition test covers every byte value across boundary lengths.
+
+---
+
 ## [0.6.0]
 
 ### Library consumers and CLI users

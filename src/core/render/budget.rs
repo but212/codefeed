@@ -5,19 +5,22 @@ use crate::core::policy::ASCII_BYTES_PER_TOKEN;
 
 /// Token estimation heuristic calculating ASCII bytes and non-ASCII character counts.
 #[must_use]
-pub(super) const fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
+pub(super) fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
     if bytes.is_empty() {
         return 0;
     }
+    // Chunks of 4096 bytes keep the per-chunk `u32` counters far below overflow.
     let mut ascii_bytes = 0usize;
     let mut non_ascii_chars = 0usize;
-    let mut i = 0;
-
-    while i < bytes.len() {
-        let b = bytes[i];
-        ascii_bytes += (b < 0x80) as usize;
-        non_ascii_chars += (b >= 0xC0) as usize;
-        i += 1;
+    for chunk in bytes.chunks(4096) {
+        let mut ascii = 0u32;
+        let mut lead = 0u32;
+        for &b in chunk {
+            ascii += u32::from(b < 0x80);
+            lead += u32::from(b >= 0xC0);
+        }
+        ascii_bytes += ascii as usize;
+        non_ascii_chars += lead as usize;
     }
 
     let ascii_tokens = ascii_bytes / ASCII_BYTES_PER_TOKEN;
@@ -170,6 +173,50 @@ mod tests {
         // 5 Korean characters => 5 tokens
         // Total = 6 tokens
         assert_eq!(estimate_tokens_from_bytes("Hello 안녕하세요".as_bytes()), 6);
+    }
+
+    #[test]
+    fn estimate_tokens_matches_reference_definition() {
+        // Reference: the per-byte definition from context.md sec. 3.5, written as a single loop.
+        fn reference(bytes: &[u8]) -> usize {
+            if bytes.is_empty() {
+                return 0;
+            }
+            let mut ascii = 0usize;
+            let mut lead = 0usize;
+            for &b in bytes {
+                if b < 0x80 {
+                    ascii += 1;
+                }
+                if b >= 0xC0 {
+                    lead += 1;
+                }
+            }
+            (ascii / ASCII_BYTES_PER_TOKEN + lead).max(1)
+        }
+
+        let lengths = [
+            1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 254, 255, 256, 510, 511,
+            512, 4095, 4096, 4097, 8191, 8192, 8193,
+        ];
+        for len in lengths {
+            let cycled: Vec<u8> = (0..=255u8).cycle().take(len).collect();
+            assert_eq!(
+                estimate_tokens_from_bytes(&cycled),
+                reference(&cycled),
+                "cycled bytes, len {len}"
+            );
+        }
+        for value in 0..=255u8 {
+            for len in [1, 2, 3, 4, 5, 64, 4097] {
+                let uniform = vec![value; len];
+                assert_eq!(
+                    estimate_tokens_from_bytes(&uniform),
+                    reference(&uniform),
+                    "byte {value:#04x}, len {len}"
+                );
+            }
+        }
     }
 
     #[test]
