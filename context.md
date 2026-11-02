@@ -74,6 +74,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - `SortedFiles::new` sorts spans via `cmp_path` (component-by-component comparison), guaranteeing deterministic output regardless of concurrency timing.
 - **I-01 (`runtime`, `SortedFiles::new`):** No stored path is a directory prefix of another stored path (`p` and `p/…`). `DomainError::InvalidMetadata` otherwise. Enforced after sorting by checking adjacent pairs. A schema, type, or boundary check cannot express this because the rule relates separate entries, and a per-entry parse cannot see the others. Skipped candidates are not stored and are not compared, so the digest tree shows each name as either a file or a directory.
 - `Selector::observe` rejects a candidate whose path (at most `MAX_PATH_BYTES`) equals an earlier candidate's path, with `DomainError::InvalidMetadata`. The check covers skipped candidates, so no path names two candidates. Longer paths are skipped before the check.
+- **I-05 (`boundary`, `extract_dir_slice`):** Every candidate budget key is at most `MAX_PATH_BYTES` bytes and ends on a UTF-8 char boundary. Keys are cut from the first segment at the single point where they are built, so the key store holds at most candidate count times `MAX_PATH_BYTES` bytes. A `type` or `schema` cannot express a length cap on a `&str` key, and `CandidateBudget::add` needs no separate check.
 - Arena indices are `u32`. Compile-time assertions in `policy/limits.rs` ensure `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX`.
 
 ### 3.5 Rendering
@@ -150,4 +151,4 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 
 ### Public API (`src/lib.rs`)
 
-Exports: `ingest`, `RunConfig`, `ExcludePatterns`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, and `CandidateLimitExceededError`. All other items are `pub(crate)`.
+Exports: `ingest`, `RunConfig`, `ExcludePatterns`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, `CandidateLimitExceededError`, and the `#[doc(hidden)]` `cli::run_cli` used by `main.rs`. All other items are `pub(crate)`.

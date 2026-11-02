@@ -110,7 +110,7 @@ Exact matches against the final path segment:
 | Rule | Effect |
 | :--- | :--- |
 | Depth > `MAX_PATH_DEPTH` | Run fails with `InvalidMetadata`. Hidden/noise items dropped prior to check. |
-| Path > `MAX_PATH_BYTES` | Consumes candidate slot; counted as skipped; body not read. |
+| Path > `MAX_PATH_BYTES` | Consumes candidate slot; counted as skipped; body not read. Its first-segment budget key is truncated to `MAX_PATH_BYTES` on a char boundary (I-05). |
 | Path <= `MAX_PATH_BYTES` equal to another candidate's path | Run fails with `InvalidMetadata`. Applies to skipped candidates too. Longer duplicates are skipped and not compared. |
 | Stored path is a directory prefix of another stored path (`a` and `a/…`) | Run fails with `InvalidMetadata` at digest assembly. Skipped candidates are not compared. |
 
@@ -208,7 +208,7 @@ Sanitization runs in a single pass via `write_escaped`:
    - Disallowed XML 1.0 control codes map to `\u{FFFD}`.
 3. **Tree Labels:** Escaped for control characters and XML entities to prevent output corruption.
 4. **Error and Warning Diagnostics (`sanitize_error_detail`):**
-   - Single-line diagnostics emitted to stderr (filesystem paths in I/O errors, root validation errors, HTTP status messages, transport error text, usage, invalid-source, unsupported-source, and invalid-metadata messages (sanitized in `DomainError` `Display`, since they echo arguments, patterns, or URLs), each path and directory name in the `MAX_OUTPUT_SIZE` and `MAX_FILE_COUNT` overflow lists, and the destination path in the completion summary) convert `\t`, `\r`, `\n` to space `' '` and all other Unicode control characters to `\u{FFFD}` to prevent terminal escape injection or log forgery.
+   - Single-line diagnostics emitted to stderr (filesystem paths in I/O errors, root validation errors, HTTP status messages, transport error text, usage, invalid-source, unsupported-source, and invalid-metadata messages (sanitized in `DomainError` `Display`, since they echo arguments, patterns, or URLs), each path and directory name in the `MAX_OUTPUT_SIZE` and `MAX_FILE_COUNT` overflow lists) convert `\t`, `\r`, `\n` to space `' '` and all other Unicode control characters to `\u{FFFD}` to prevent terminal escape injection or log forgery. The file-target completion summary (`Wrote <PATH>`) goes to stdout, and its destination path is sanitized the same way.
 
 ---
 
