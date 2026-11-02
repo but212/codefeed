@@ -138,8 +138,7 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 - `selector.rs`: `Selector`, `CandidateBudget`, `exceeds_size_limits`.
 - `storage.rs`: `FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, `largest_files`.
 - `error.rs`: `DomainError`, `CandidateLimitExceededError`, `OutputTooLargeError`, `sanitize_error_detail`. Depends on no other core module, so the policy-to-error edge is one-way.
-- `archive.rs`: PAX parsing, tar path normalization (`normalize_tar_entry_path`).
-- `github/`: `url.rs` (URL parsing, origin check), `retry.rs` (header parsing, delay calculation, attempt state machine), `mod.rs` (`GithubApiError`, `Auth`, error formatting).
+- `github/`: `url.rs` (URL parsing, origin check), `archive.rs` (PAX parsing, tar path normalization), `retry.rs` (header parsing, delay calculation, attempt state machine), `mod.rs` (`GithubApiError`, `Auth`, error formatting).
 - `render/`: `formats.rs` (text/XML formats), `tree.rs`, `escape.rs`, `budget.rs` (`BoundedBuffer`, `RenderedDigest`, token estimate).
 
 ### Shell (`src/shell/`)

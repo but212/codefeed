@@ -56,6 +56,7 @@ Internal change. No consumer action required.
 - **Archive streaming under `shell/github/`**: `src/shell/archive.rs` moves to `src/shell/github/archive.rs`. It is used only by the GitHub path. No behavior change.
 - **Source and collection split from `model.rs`**: `Source`, `GitRef`, and `GithubName` move to `src/core/source.rs`, and `CollectionResult` and `repository_name` move to `src/core/collection.rs`. `src/core/model.rs` keeps `RunConfig`, `OutputTarget`, `DigestFormat`, and `IngestReport`. Public paths from `codefeed` are unchanged. No behavior change.
 - **Directory prefix separator in one place**: `admit_dir` appends the `/` separator to every admitted directory prefix, so `with_separator`, `join_segment`, and `push_separator` (`src/core/path.rs`) are removed. Output is unchanged.
+- **Tar path rules under `core/github/`**: `src/core/archive.rs` moves to `src/core/github/archive.rs`. It is used only by the GitHub path. No behavior change.
 
 ---
 

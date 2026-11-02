@@ -23,7 +23,6 @@
 //!      matching buffer pool of `ignore::gitignore::Gitignore` used by `policy/exclude.rs`. Core code
 //!      must not add any.
 
-pub(crate) mod archive;
 pub(crate) mod cli;
 pub(crate) mod collection;
 pub(crate) mod error;

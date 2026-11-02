@@ -1,15 +1,17 @@
-//! GitHub remote-source domain: owner/repo URL rules and retry policy live in submodules;
-//! this module owns the user-facing error and warning text.
+//! GitHub remote-source domain: owner/repo URL rules, tarball path and PAX rules, and retry policy
+//! live in submodules; this module owns the user-facing error and warning text.
 
 use std::fmt::{Display, Formatter, Result};
 use std::time::Duration;
 
 use crate::core::policy::{MAX_ATTEMPTS, TOKEN_ENV_VARS};
 
+mod archive;
 mod retry;
 mod url;
 
 use crate::core::error::sanitize_error_detail;
+pub(crate) use archive::{normalize_tar_entry_path, parse_pax_comment};
 pub(crate) use retry::{AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind};
 pub(crate) use url::{
     GITHUB_API_BASE_URL, is_github_api_origin, parse_github_url, repository_url, tarball_url,

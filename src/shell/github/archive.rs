@@ -6,9 +6,9 @@ use std::io::{self, BufReader, Read};
 use flate2::read::GzDecoder;
 use tar::{Archive, EntryType};
 
-use crate::core::archive::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::collection::CollectionResult;
 use crate::core::error::DomainError;
+use crate::core::github::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::policy::{
     ARCHIVE_BUFFER_BYTES, ARCHIVE_MAX_HEADER_BYTES, ARCHIVE_PAX_GLOBAL_BYTES, ExcludePatterns,
     MAX_FILE_SIZE,

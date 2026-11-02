@@ -1,7 +1,8 @@
 //! Candidate discovery: a sorted, gitignore-aware walk and per-entry path classification.
 //!
-//! The walk owns `.gitignore` loading. Each directory's file is read once, when the walk enters it,
-//! and the same bytes both validate the file and compile its rules. No later step reads it again.
+//! The walk loads `.gitignore` rules through `gitignore.rs`. Each directory's file is read once,
+//! when the walk enters it, and the same bytes both validate the file and compile its rules.
+//! No later step reads it again.
 
 use std::ffi::OsString;
 use std::fs;
