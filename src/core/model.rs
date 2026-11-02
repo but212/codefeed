@@ -203,7 +203,7 @@ impl RunConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct IngestReport {
-    /// Target destination where the digest was delivered.
+    /// Output destination as requested in [`RunConfig`], not the canonical path the digest was written to.
     pub output: OutputTarget,
     /// Number of candidate files included in the rendered digest.
     pub included_files: usize,

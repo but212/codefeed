@@ -23,8 +23,8 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 - `PathStatus`: Result of path classification: `Valid(NormalizedPath)`, `Ignored`, or `NonUtf8Candidate(prefix)`.
 - `NormalizedPath`: Non-empty, slash-separated, UTF-8 relative path without empty or `.` segments.
-- `Selector`: Linear state managing arena storage, `CandidateBudget`, and skipped tally. Settles candidates via `observe` and completes via `finish`.
-- `CandidateBudget`: Candidate counter, per-directory tallies, and the seen-path set used for uniqueness (`selector.rs` private).
+- `Selector`: Linear state managing arena storage, `CandidateBudget`, the seen-path set used for uniqueness, and skipped tally. Settles candidates via `observe` and completes via `finish`.
+- `CandidateBudget`: Candidate counter and per-directory tallies (`selector.rs` private).
 - `CollectionResult`: Struct containing `label`, optional `revision`, `files: SortedFiles`, and `skipped`.
 
 ### Storage
@@ -37,13 +37,13 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 ### Rendering and results
 
 - `BoundedBuffer`: In-memory writer aborting when output would exceed `MAX_OUTPUT_SIZE`.
-- `RenderedDigest`: Struct of `bytes` and `report` (`IngestReport`).
-- `IngestReport`: Struct of `output`, `included_files`, `skipped_files`, and `estimated_tokens` (`#[non_exhaustive]`).
+- `RenderedDigest`: Struct of `bytes`, `included_files`, `skipped_files`, and `estimated_tokens`. It knows no delivery target.
+- `IngestReport`: Struct of `output` (the destination as requested in `RunConfig`, not canonicalized), `included_files`, `skipped_files`, and `estimated_tokens` (`#[non_exhaustive]`). `ingest` fills it from `RunConfig` and `RenderedDigest`.
 
 ### Errors
 
-- `DomainError`: Core failures re-exported from crate root (`Usage`, `CandidateLimitExceeded`, `InvalidSource`, `UnsupportedSource`, `InvalidMetadata`, `OutputTooLarge`).
-- `IngestError`: Shell error re-exported from crate root wrapping `DomainError`, `Io`, `Http`, and `Api`.
+- `DomainError`: Core failures re-exported from crate root (`Usage`, `CandidateLimitExceeded`, `InvalidSource`, `UnsupportedSource`, `InvalidMetadata`, `OutputTooLarge(OutputTooLargeError)`).
+- `IngestError`: Shell error re-exported from crate root wrapping `DomainError`, `Io`, `Http`, and `Api(GithubApiError)`.
 
 ## 3. Invariants
 
@@ -127,13 +127,14 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 ### Core (`src/core/`)
 
 - `cli.rs`: CLI argument parsing (`parse`, `Parsed`), `HELP` constant, `CliAction`, `completion_message`.
-- `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `exclude.rs` (`ExcludePatterns`), `classify.rs` (`classify_path_segments`, `admit_dir`, `classify_leaf`, `AdmittedDir`, `NormalizedPath`, `PathStatus`).
+- `path.rs`: Path types and classification (`NormalizedPath`, `PathStatus`, `AdmittedDir`, `classify_path_segments`, `admit_dir`, `classify_leaf`). Depends on `policy/` and `error`.
+- `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `exclude.rs` (`ExcludePatterns`).
 - `model.rs`: `Source`, `GitRef`, `GithubName`, `RunConfig`, `OutputTarget`, `DigestFormat`, `CollectionResult`, `IngestReport`.
 - `selector.rs`: `Selector`, `CandidateBudget`, `exceeds_size_limits`.
 - `storage.rs`: `FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, `largest_files`.
-- `error.rs`: `DomainError`, `CandidateLimitExceededError`, `sanitize_error_detail`.
+- `error.rs`: `DomainError`, `CandidateLimitExceededError`, `OutputTooLargeError`, `sanitize_error_detail`. Depends on no other core module, so the policy-to-error edge is one-way.
 - `archive.rs`: PAX parsing, tar path normalization (`normalize_tar_entry_path`).
-- `github/`: `url.rs` (URL parsing, origin check), `retry.rs` (header parsing, delay calculation, attempt state machine), `mod.rs` (error formatting).
+- `github/`: `url.rs` (URL parsing, origin check), `retry.rs` (header parsing, delay calculation, attempt state machine), `mod.rs` (`GithubApiError`, error formatting).
 - `render/`: `formats.rs` (text/XML formats), `tree.rs`, `escape.rs`, `budget.rs` (`BoundedBuffer`, `RenderedDigest`, token estimate).
 
 ### Shell (`src/shell/`)
@@ -142,13 +143,14 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 - `mod.rs`: `ingest` pipeline.
 - `cli.rs`: `run_cli` (CLI orchestration, stream selection, exit codes).
 - `error.rs`: `IngestError`, `transport_error`.
-- `local/`: `mod.rs` (`collect`), `walk.rs`, `read.rs` (metadata/body read), `pipeline.rs` (producer/worker pipeline).
+- `local/`: `mod.rs` (`collect`), `walk.rs`, `gitignore.rs` (`.gitignore` loading and compilation), `read.rs` (metadata/body read), `pipeline.rs` (producer/worker pipeline).
 - `archive.rs`: Tarball/gzip streaming and admission.
 - `github/`: `mod.rs` (`collect`), `client.rs` (HTTP/TLS client, token handling), `stream.rs` (archive streaming, retries).
 - `atomic.rs`: `write_atomic`, `TempPath`.
-- `output.rs`: `resolve_output_target`, `deliver`, stdout/stderr line writers.
+- `output.rs`: `resolve_output_target`, `deliver`.
+- `stdio.rs`: stdout/stderr diagnostic line writers.
 - `testing.rs`: Test helpers (`temp_dir`, tarball builder, `MockServer`).
 
 ### Public API (`src/lib.rs`)
 
-Exports: `ingest`, `RunConfig`, `ExcludePatterns`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, `CandidateLimitExceededError`, and the `#[doc(hidden)]` `cli::run_cli` used by `main.rs`. All other items are `pub(crate)`.
+Exports: `ingest`, `RunConfig`, `ExcludePatterns`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, `CandidateLimitExceededError`, `OutputTooLargeError`, `GithubApiError`, and the `#[doc(hidden)]` `cli::run_cli` used by `main.rs`. All other items are `pub(crate)`.

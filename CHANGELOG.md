@@ -12,6 +12,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 Observable behavior. **Action** = code or config change required.
 
+#### Breaking
+
+- **`IngestError::Api` carries `GithubApiError`**: The payload was a `String`. It is now a struct with public `status: u16` and `retry_after: Option<Duration>`; its `Display` text is unchanged (`src/core/github/mod.rs`, `src/shell/error.rs`).
+  - **Action:** Match `IngestError::Api(err)` and read `err.status` or `err.retry_after`. `err.to_string()` returns the previous message.
+- **`DomainError::OutputTooLarge` carries `OutputTooLargeError`**: The payload was the bare list of largest files. It is now a struct with public `limit: u64` and `largest_files`; its `Display` text is unchanged (`src/core/error.rs`).
+  - **Action:** Match `DomainError::OutputTooLarge(err)` and read `err.largest_files`. The limit is in `err.limit`.
+
 #### Fixed
 
 - **Completion summary sanitizes the destination**: `Wrote <PATH>` passes the output path through `sanitize_error_detail` (`\t`, `\r`, `\n` become spaces; other control characters become `\u{FFFD}`). Before, control characters reached stdout raw (`src/core/cli.rs`, `docs/security_and_filtering.md` sec. 7).
@@ -35,6 +42,12 @@ Internal change. No consumer action required.
 - **Pure helpers take owned values**: `push_match_segment` (`src/core/policy/exclude.rs`), `push_separator`, and `admit_dir` (`src/core/policy/classify.rs`) take and return owned values, not `&mut` (coding convention sec. 3). No behavior change.
 - **Pure queries are `#[must_use]`**: Non-`Result` `pub(crate)` and `pub(super)` queries in `src/core` (coding convention sec. 3). No behavior change.
 - **Tree rendering asserts its invariant**: `render_level` (`src/core/render/tree.rs`) panics on a path ending before the current tree offset instead of dropping the rest of the tree. `NormalizedPath` makes this unreachable; output is unchanged.
+- **Path types moved to `core/path.rs`**: `NormalizedPath`, `PathStatus`, `AdmittedDir`, and the classification functions leave `src/core/policy/classify.rs` for `src/core/path.rs`. `error.rs` no longer imports `policy`, which removes the `error` and `policy` cycle. `push_match_segment` is `pub(crate)`. No behavior change.
+- **Report built in shell**: `RenderedDigest` carries bytes and counts. `CollectionResult::render` takes only the format; `ingest` builds `IngestReport` with the requested output. Output is unchanged (`src/core/render/`, `src/shell/mod.rs`).
+- **GitHub API origin injected**: `shell/github::collect` takes the API origin. The global test override and its helpers are removed, and `ingest` passes `GITHUB_API_BASE_URL`. The auth header still goes only to that origin (`src/shell/mod.rs`, `src/shell/github/mod.rs`, `src/shell/testing.rs`).
+- **Diagnostic writers and `.gitignore` loading split out**: `shell/stdio.rs` owns the stdout and stderr line writers, and `shell/local/gitignore.rs` owns `.gitignore` loading. No behavior change.
+- **Selector claims paths in one step**: `Selector::claim_path` records each candidate path, and `CandidateBudget` holds counts only. Check order is unchanged.
+- **Depth error mapping in one place**: `DepthExceededError::into_domain_error` builds the depth error for tar entries and local paths (`src/core/path.rs`, `src/core/archive.rs`, `src/shell/local/walk.rs`).
 
 ---
 

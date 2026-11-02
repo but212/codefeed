@@ -3,6 +3,7 @@
 //! Shell modules perform all effects and feed observations to the functional
 //! core in `crate::core`.
 
+use crate::core::github::GITHUB_API_BASE_URL;
 use crate::{IngestReport, RunConfig, Source};
 
 mod archive;
@@ -12,6 +13,7 @@ mod error;
 mod github;
 mod local;
 mod output;
+mod stdio;
 #[cfg(test)]
 mod testing;
 
@@ -28,6 +30,11 @@ pub use error::IngestError;
 /// Returns [`IngestError`] if input sources are invalid, candidate budgets or output size
 /// limits are exceeded, filesystem operations fail, or network requests error.
 pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
+    ingest_from(config, GITHUB_API_BASE_URL)
+}
+
+/// [`ingest`] with the GitHub API origin passed in, so tests can serve GitHub sources locally.
+fn ingest_from(config: &RunConfig, github_api_base: &str) -> Result<IngestReport, IngestError> {
     let resolved_output = output::resolve_output_target(&config.output)?;
 
     let collection = match &config.source {
@@ -36,13 +43,24 @@ pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
             owner,
             repo,
             reference,
-        } => github::collect(owner, repo, reference.as_deref(), &config.exclude)?,
+        } => github::collect(
+            github_api_base,
+            owner,
+            repo,
+            reference.as_deref(),
+            &config.exclude,
+        )?,
     };
 
-    let rendered = collection.render(config.format, config.output.clone())?;
+    let rendered = collection.render(config.format)?;
     output::deliver(&resolved_output, &rendered.bytes)?;
 
-    Ok(rendered.report)
+    Ok(IngestReport {
+        output: config.output.clone(),
+        included_files: rendered.included_files,
+        skipped_files: rendered.skipped_files,
+        estimated_tokens: rendered.estimated_tokens,
+    })
 }
 
 #[cfg(test)]
@@ -50,8 +68,27 @@ mod tests {
     use super::*;
     use crate::OutputTarget;
     use crate::core::model::{DigestFormat, GitRef};
-    use crate::shell::testing::{MockServer, gzip_tarball, with_test_github_url};
+    use crate::shell::testing::{MockServer, gzip_tarball, temp_dir};
+    use std::fs;
     use tar::EntryType;
+
+    #[test]
+    fn ingest_report_output_keeps_the_requested_path() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("report_requested_path")?;
+        fs::write(root.join("main.rs"), "fn main() {}")?;
+        // `.` is not normalized away: the report names the destination exactly as requested.
+        let requested = root.join(".").join("digest.txt");
+        let config = RunConfig::new(
+            Source::Local(root.to_path_buf()),
+            OutputTarget::File(requested.clone()),
+            DigestFormat::Text,
+        );
+
+        let report = ingest(&config)?;
+
+        assert_eq!(report.output, OutputTarget::File(requested));
+        Ok(())
+    }
 
     #[test]
     fn ingest_github_source_succeeds() {
@@ -69,8 +106,8 @@ mod tests {
 
         let config = RunConfig::new(source, OutputTarget::Stdout, DigestFormat::Text);
 
-        let report = with_test_github_url(server.url(""), || ingest(&config))
-            .expect("ingest should succeed for github source");
+        let report =
+            ingest_from(&config, &server.url("")).expect("ingest should succeed for github source");
 
         assert_eq!(report.included_files, 1);
         assert_eq!(report.skipped_files, 0);

@@ -8,7 +8,7 @@
 
 | # | Threat | Mitigation | Implementation |
 | :--- | :--- | :--- | :--- |
-| T1 | Secret disclosure in digest | Path/name exclusion (sec. 3). Content is not scanned (sec. 1.2). | `policy/exclusions.rs`, `policy/classify.rs` |
+| T1 | Secret disclosure in digest | Path/name exclusion (sec. 3). Content is not scanned (sec. 1.2). | `policy/exclusions.rs`, `path.rs` |
 | T2 | Resource exhaustion | Size, count, depth, and path limits; bounded reads and channels; timeouts (sec. 5, sec. 6). | `policy/limits.rs`, `local/`, `github/` |
 | T3 | Credential forwarding across origins | Origin validation; redirects strip authorization headers (sec. 6). | `core/github/url.rs`, `shell/github/` |
 | T4 | Injection into terminals, XML, or LLM boundaries | Contextual output escaping (sec. 7). XML format isolates file bodies; text format isolates headers and paths while emitting bodies verbatim. | `core/render/escape.rs`, `core/render/formats.rs` |
@@ -49,7 +49,7 @@ Entry (local walk or tar stream)
  |     |     `-- Run fails (InvalidMetadata).
  |     `-- Strips the first path segment (repository root directory).
  |
- +-- Path classification (policy::classify_path_segments)
+ +-- Path classification (path::classify_path_segments)
  |     +-- Hidden segment
  |     |     `-- Ignored. Dropped silently. Omitted from count.
  |     +-- Matched by a user exclusion (sec. 3.6)

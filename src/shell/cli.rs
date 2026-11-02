@@ -6,7 +6,7 @@
 use std::fmt::Display;
 
 use crate::core::cli::{CliAction, HELP, completion_message, parse};
-use crate::shell::output;
+use crate::shell::stdio;
 use crate::{OutputTarget, ingest};
 
 /// Executes the command-line interface entry point.
@@ -25,7 +25,7 @@ where
 
     let config = match action {
         CliAction::Help => {
-            output::write_stdout_line(HELP);
+            stdio::write_stdout_line(HELP);
             return 0;
         }
         CliAction::Run(config) => config,
@@ -37,15 +37,15 @@ where
     };
     let message = completion_message(&report);
     match &report.output {
-        OutputTarget::File(_) => output::write_stdout_line(&message),
-        OutputTarget::Stdout => output::write_stderr_line(&message),
+        OutputTarget::File(_) => stdio::write_stdout_line(&message),
+        OutputTarget::Stdout => stdio::write_stderr_line(&message),
     }
     0
 }
 
 /// Writes one `error:` line to stderr and returns the failure exit code.
 fn report_error(error: &impl Display) -> i32 {
-    output::write_stderr_line(&format!("error: {error}"));
+    stdio::write_stderr_line(&format!("error: {error}"));
     1
 }
 

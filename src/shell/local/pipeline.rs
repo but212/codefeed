@@ -21,9 +21,8 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use super::read::{Candidate, WorkerMsg, read_candidate};
 use super::walk::{RegularFile, Walk, classify_entry};
-use crate::core::policy::{
-    ExcludePatterns, LOCAL_CHANNEL_CAPACITY, MAX_LOCAL_WORKERS, NormalizedPath, PathStatus,
-};
+use crate::core::path::{NormalizedPath, PathStatus};
+use crate::core::policy::{ExcludePatterns, LOCAL_CHANNEL_CAPACITY, MAX_LOCAL_WORKERS};
 use crate::shell::IngestError;
 
 /// One regular file queued for a worker. The worker answers once on `reply`.

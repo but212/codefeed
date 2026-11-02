@@ -1,6 +1,7 @@
 //! GitHub remote-source domain: owner/repo URL rules and retry policy live in submodules;
 //! this module owns the user-facing error and warning text.
 
+use std::fmt::{Display, Formatter, Result};
 use std::time::Duration;
 
 use crate::core::policy::MAX_ATTEMPTS;
@@ -15,27 +16,50 @@ pub(crate) use url::{
     valid_github_name,
 };
 
-/// Message for a non-success response, without the error-kind prefix. `status_text` is the status
-/// as `Display` renders it (`429 Too Many Requests`), so the message keeps the reason phrase.
+/// Non-success GitHub API response. `Display` renders the message without the error-kind prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GithubApiError {
+    /// HTTP status code of the response.
+    pub status: u16,
+    /// Delay the server requested before a retry, when it gave one.
+    pub retry_after: Option<Duration>,
+    message: String,
+}
+
+impl Display for GithubApiError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for GithubApiError {}
+
+/// Error for a non-success response. `status_text` is the status as `Display` renders it
+/// (`429 Too Many Requests`), so the message keeps the reason phrase.
 #[must_use]
 pub(crate) fn api_error(
     status: u16,
     status_text: &str,
     body: &[u8],
     retry_after: Option<Duration>,
-) -> String {
+) -> GithubApiError {
     let raw_detail = String::from_utf8_lossy(body);
     let detail = sanitize_error_detail(&raw_detail);
     let retry_info = retry_after
         .map(|d| format!(" (retry available in {}s)", d.as_secs()))
         .unwrap_or_default();
 
-    if matches!(status, 429 | 403) {
+    let message = if matches!(status, 429 | 403) {
         format!(
             "HTTP {status_text}: {detail}{retry_info} (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
         )
     } else {
         format!("HTTP {status_text}: {detail}{retry_info}")
+    };
+    GithubApiError {
+        status,
+        retry_after,
+        message,
     }
 }
 
@@ -115,8 +139,24 @@ mod tests {
         ];
         for (status, status_text, body, retry_after, expected) in cases {
             let message = api_error(status, status_text, body, retry_after);
-            assert_eq!(message, expected, "status {status}");
+            assert_eq!(message.to_string(), expected, "status {status}");
         }
+    }
+
+    #[test]
+    fn api_error_exposes_status_and_retry_after_separately_from_message() {
+        let err = api_error(
+            429,
+            "429 Too Many Requests",
+            b"rate limit",
+            Some(Duration::from_secs(7)),
+        );
+        assert_eq!(err.status, 429);
+        assert_eq!(err.retry_after, Some(Duration::from_secs(7)));
+        assert_eq!(
+            err.to_string(),
+            "HTTP 429 Too Many Requests: rate limit (retry available in 7s) (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
+        );
     }
 
     #[test]

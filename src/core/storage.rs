@@ -8,7 +8,8 @@ use std::iter::once;
 use std::ops::Deref;
 
 use crate::core::error::DomainError;
-use crate::core::policy::{MAX_OUTPUT_SIZE, NormalizedPath, OVERFLOW_LARGEST_FILES};
+use crate::core::path::NormalizedPath;
+use crate::core::policy::{MAX_OUTPUT_SIZE, OVERFLOW_LARGEST_FILES};
 
 /// 16-byte POD indexing a file path and content slice in [`FileStorage`].
 ///
@@ -157,9 +158,10 @@ impl FileStorage {
         let path = path.as_str();
         if self.total_bytes() + path.len() as u64 + content.len() as u64 > MAX_OUTPUT_SIZE {
             let candidate = FileRecord { path, content };
-            return Err(DomainError::output_too_large(largest_files(
-                self.iter().chain(once(candidate)),
-            )));
+            return Err(DomainError::output_too_large(
+                MAX_OUTPUT_SIZE,
+                largest_files(self.iter().chain(once(candidate))),
+            ));
         }
         // Accepted total is at most `MAX_OUTPUT_SIZE`, which `policy/limits.rs` asserts is `<= u32::MAX`,
         // so every arena offset and length below fits in `u32`.
@@ -196,7 +198,7 @@ impl FileStorage {
     /// Error for storage that exceeds the output limit, naming the largest files.
     #[must_use]
     pub(crate) fn output_too_large_error(&self) -> DomainError {
-        DomainError::output_too_large(largest_files(self.iter()))
+        DomainError::output_too_large(MAX_OUTPUT_SIZE, largest_files(self.iter()))
     }
 }
 
@@ -459,10 +461,11 @@ mod tests {
                     assert!(fits, "content length {content_len} must be rejected");
                     assert_eq!(storage.total_bytes(), MAX_OUTPUT_SIZE);
                 }
-                Err(DomainError::OutputTooLarge(largest)) => {
+                Err(DomainError::OutputTooLarge(err)) => {
                     assert!(!fits, "content length {content_len} must fit");
+                    assert_eq!(err.limit, MAX_OUTPUT_SIZE);
                     assert!(
-                        largest.iter().any(|(p, _)| p == "big.txt"),
+                        err.largest_files.iter().any(|(p, _)| p == "big.txt"),
                         "rejected candidate must appear in diagnostics"
                     );
                 }

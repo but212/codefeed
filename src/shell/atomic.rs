@@ -115,7 +115,7 @@ pub(super) fn write_atomic(output: &Path, bytes: &[u8]) -> Result<(), IngestErro
     {
         let synced = fs::File::open(parent).and_then(|dir| dir.sync_all());
         if let Some(warning) = sync_warning(parent, synced) {
-            super::output::write_stderr_line(&warning);
+            super::stdio::write_stderr_line(&warning);
         }
     }
 

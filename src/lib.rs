@@ -32,7 +32,8 @@
 pub(crate) mod core;
 pub(crate) mod shell;
 
-pub use core::error::{CandidateLimitExceededError, DomainError};
+pub use core::error::{CandidateLimitExceededError, DomainError, OutputTooLargeError};
+pub use core::github::GithubApiError;
 pub use core::model::{
     DigestFormat, GitRef, GithubName, IngestReport, OutputTarget, RunConfig, Source,
 };

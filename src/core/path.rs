@@ -1,8 +1,9 @@
 //! Relative path normalization, depth enforcement, and segment classification.
 
-use super::exclude::{ExcludePatterns, push_match_segment};
-use super::exclusions::{is_hidden_segment, is_ignored_filename};
-use super::limits::MAX_PATH_DEPTH;
+use crate::core::error::DomainError;
+use crate::core::policy::{
+    ExcludePatterns, MAX_PATH_DEPTH, is_hidden_segment, is_ignored_filename, push_match_segment,
+};
 
 /// Non-empty, normalized slash-separated relative UTF-8 path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +58,15 @@ pub(crate) enum PathStatus {
 /// Error indicating that a path's directory nesting depth exceeds [`MAX_PATH_DEPTH`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DepthExceededError;
+
+impl DepthExceededError {
+    /// Returns the [`DomainError::InvalidMetadata`] for a path nested past [`MAX_PATH_DEPTH`].
+    /// `subject` names the entry kind in the message, such as `local path` or `Tar entry path`.
+    #[cold]
+    pub(crate) fn into_domain_error(self, subject: &str) -> DomainError {
+        DomainError::invalid_metadata(format!("{subject} exceeds maximum directory depth"))
+    }
+}
 
 /// Classifies a sequence of raw path segment bytes into [`PathStatus`].
 ///
@@ -260,6 +270,15 @@ mod tests {
     #[should_panic(expected = "NormalizedPath requires non-empty segments and no trailing slash")]
     fn normalized_path_rejects_empty_string() {
         let _ = NormalizedPath::from("");
+    }
+
+    #[test]
+    fn depth_exceeded_error_names_its_entry_kind() {
+        let err = DepthExceededError.into_domain_error("Tar entry path");
+        assert!(
+            matches!(&err, DomainError::InvalidMetadata(msg) if msg == "Tar entry path exceeds maximum directory depth"),
+            "{err:?}"
+        );
     }
 
     #[test]

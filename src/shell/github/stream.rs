@@ -13,7 +13,7 @@ use crate::core::github::{
 use crate::core::policy::GITHUB_ERROR_BODY_BYTES;
 use crate::shell::IngestError;
 use crate::shell::error::transport_error;
-use crate::shell::output;
+use crate::shell::stdio;
 
 enum Attempt {
     Status {
@@ -65,7 +65,7 @@ impl Attempt {
                 transport_retry_warning(&error.to_string(), count, url, delay)
             }
         };
-        output::write_stderr_line(&message);
+        stdio::write_stderr_line(&message);
     }
 
     fn into_error(self) -> IngestError {

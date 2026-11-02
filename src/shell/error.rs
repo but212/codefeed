@@ -5,6 +5,7 @@ use std::io;
 use std::path::Path;
 
 use crate::core::error::{DomainError, sanitize_error_detail};
+use crate::core::github::GithubApiError;
 
 /// Error returned by ingestion. Domain rule failures stay in [`DomainError`]; effect failures
 /// (filesystem, network) are added here by the shell, so core never constructs them.
@@ -18,7 +19,7 @@ pub enum IngestError {
     /// Network transport or connection failure contacting GitHub.
     Http(String),
     /// GitHub returned a non-success HTTP status.
-    Api(String),
+    Api(GithubApiError),
 }
 
 impl Display for IngestError {
@@ -27,7 +28,7 @@ impl Display for IngestError {
             Self::Domain(error) => write!(f, "{error}"),
             Self::Io(error) => write!(f, "filesystem error: {error}"),
             Self::Http(message) => write!(f, "GitHub request failed: {message}"),
-            Self::Api(message) => write!(f, "GitHub API error: {message}"),
+            Self::Api(error) => write!(f, "GitHub API error: {error}"),
         }
     }
 }
@@ -83,8 +84,13 @@ mod tests {
         let limit_mib = MAX_OUTPUT_SIZE / (1024 * 1024);
         let cases: [(IngestError, String); 9] = [
             (
-                IngestError::Api("boom".into()),
-                "GitHub API error: boom".into(),
+                IngestError::Api(crate::core::github::api_error(
+                    500,
+                    "500 Internal Server Error",
+                    b"boom",
+                    None,
+                )),
+                "GitHub API error: HTTP 500 Internal Server Error: boom".into(),
             ),
             (DomainError::usage("bad flag").into(), "bad flag".into()),
             (
@@ -107,7 +113,7 @@ mod tests {
                 "invalid repository metadata: bad".into(),
             ),
             (
-                DomainError::output_too_large(vec![("a.txt".into(), 1024)]).into(),
+                DomainError::output_too_large(MAX_OUTPUT_SIZE, vec![("a.txt".into(), 1024)]).into(),
                 format!(
                     "digest exceeds the {limit_mib} MiB output limit\nlargest files:\n  - a.txt (1.0 KiB)"
                 ),

@@ -72,7 +72,7 @@ impl ExcludePatterns {
 /// A `\` inside a segment is matched as U+FFFD on every platform, so it is never a separator and never
 /// matches a `\` in a pattern. Invalid UTF-8 is matched by its lossy form.
 #[must_use]
-pub(super) fn push_match_segment(mut prefix: String, segment: &[u8]) -> String {
+pub(crate) fn push_match_segment(mut prefix: String, segment: &[u8]) -> String {
     if !prefix.is_empty() {
         prefix.push('/');
     }
@@ -134,10 +134,8 @@ fn invalid_pattern(pattern: &str, reason: &str) -> DomainError {
 mod tests {
     use super::*;
     use crate::core::error::sanitize_error_detail;
-    use crate::core::policy::{
-        AdmittedDir, MAX_PATH_BYTES_USIZE, MAX_PATH_DEPTH, PathStatus, admit_dir,
-        classify_path_segments,
-    };
+    use crate::core::path::{AdmittedDir, PathStatus, admit_dir, classify_path_segments};
+    use crate::core::policy::{MAX_PATH_BYTES_USIZE, MAX_PATH_DEPTH};
 
     fn patterns(list: &[&str]) -> ExcludePatterns {
         ExcludePatterns::new(list.iter().copied()).expect("patterns are valid")
