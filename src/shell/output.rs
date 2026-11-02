@@ -124,10 +124,10 @@ mod tests {
     /// Resolves a file target and returns the canonical path it will be written to.
     fn resolve_file(path: PathBuf) -> Result<PathBuf, IngestError> {
         let resolved = resolve_output_target(&OutputTarget::File(path))?;
-        match resolved.file() {
-            Some(file) => Ok(file.to_path_buf()),
-            None => unreachable!("a file target resolves to a file"),
-        }
+        resolved.file().map_or_else(
+            || unreachable!("a file target resolves to a file"),
+            |file| Ok(file.to_path_buf()),
+        )
     }
 
     #[test]

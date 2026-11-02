@@ -71,7 +71,7 @@ impl ExcludePatterns {
 ///
 /// A `\` inside a segment is matched as U+FFFD on every platform, so it is never a separator and never
 /// matches a `\` in a pattern. Invalid UTF-8 is matched by its lossy form.
-pub(crate) fn push_match_segment(prefix: &mut String, segment: &[u8]) {
+pub(super) fn push_match_segment(prefix: &mut String, segment: &[u8]) {
     if !prefix.is_empty() {
         prefix.push('/');
     }
@@ -167,8 +167,7 @@ mod tests {
         /// Whether the user patterns exclude the path. It must be rejected with these patterns but not
         /// with none, so hidden and noise names are never reported as user-excluded.
         fn excludes(&self, segments: &[&[u8]], is_dir: bool) -> bool {
-            rejected(self, segments, is_dir)
-                && !rejected(&ExcludePatterns::default(), segments, is_dir)
+            rejected(self, segments, is_dir) && !rejected(&Self::default(), segments, is_dir)
         }
     }
 

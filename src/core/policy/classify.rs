@@ -106,7 +106,7 @@ enum DirPrefix {
 
 impl AdmittedDir {
     /// The source root, which has no ancestors to check.
-    pub(crate) fn root() -> Self {
+    pub(crate) const fn root() -> Self {
         Self {
             depth: 0,
             match_prefix: String::new(),
