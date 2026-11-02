@@ -43,7 +43,7 @@ Internal change. No consumer action required.
 
 - **Token estimate counts in chunks**: `estimate_tokens_from_bytes` (`src/core/render/budget.rs`) uses chunked `u32` counters instead of an index loop and is no longer `const fn`. Output and `estimated_tokens` are unchanged. A reference test covers every byte value across boundary lengths.
 - **Path sort compares bytes**: `cmp_path` (`src/core/storage.rs`) compares path bytes, not `split('/')` components. Order and output are unchanged; an exhaustive small-alphabet test pins it.
-- **Pure helpers take owned values**: `push_match_segment` (`src/core/policy/exclude.rs`), `push_separator`, and `admit_dir` (`src/core/policy/classify.rs`) take and return owned values, not `&mut` (coding convention sec. 3). No behavior change.
+- **Pure helpers take owned values**: `push_match_segment` (`src/core/policy/exclude.rs`) and `admit_dir` (`src/core/policy/classify.rs`) take and return owned values, not `&mut` (coding convention sec. 3). No behavior change.
 - **Pure queries are `#[must_use]`**: Non-`Result` `pub(crate)` and `pub(super)` queries in `src/core` (coding convention sec. 3). No behavior change.
 - **Tree rendering asserts its invariant**: `render_level` (`src/core/render/tree.rs`) panics on a path ending before the current tree offset instead of dropping the rest of the tree. `NormalizedPath` makes this unreachable; output is unchanged.
 - **Path types moved to `core/path.rs`**: `NormalizedPath`, `PathStatus`, `AdmittedDir`, and the classification functions leave `src/core/policy/classify.rs` for `src/core/path.rs`. `error.rs` no longer imports `policy`, which removes the `error` and `policy` cycle. `push_match_segment` is `pub(crate)`. No behavior change.
@@ -55,6 +55,7 @@ Internal change. No consumer action required.
 - **Token variables and token use decided in one place**: `TOKEN_ENV_VARS` (`src/core/policy/auth.rs`) lists `GITHUB_TOKEN` then `GH_TOKEN`, and the token hint reads the same list. `api_error` takes `Auth`. `GithubClient::credentials(url)` decides whether a request carries the token, and both the header and the error's `Auth` derive from it (`src/core/github/mod.rs`, `src/shell/github/client.rs`, `src/shell/github/stream.rs`).
 - **Archive streaming under `shell/github/`**: `src/shell/archive.rs` moves to `src/shell/github/archive.rs`. It is used only by the GitHub path. No behavior change.
 - **Source and collection split from `model.rs`**: `Source`, `GitRef`, and `GithubName` move to `src/core/source.rs`, and `CollectionResult` and `repository_name` move to `src/core/collection.rs`. `src/core/model.rs` keeps `RunConfig`, `OutputTarget`, `DigestFormat`, and `IngestReport`. Public paths from `codefeed` are unchanged. No behavior change.
+- **Directory prefix separator in one place**: `admit_dir` appends the `/` separator to every admitted directory prefix, so `with_separator`, `join_segment`, and `push_separator` (`src/core/path.rs`) are removed. Output is unchanged.
 
 ---
 
