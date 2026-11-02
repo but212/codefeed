@@ -153,8 +153,9 @@ fn is_ignored(frames: &[Frame], path: &Path, is_dir: bool) -> bool {
         .is_some_and(|found| found.is_ignore())
 }
 
-/// Reads `dir`'s `.gitignore`. A missing file, or a directory, contributes no rules. A symlink, a file
-/// over `MAX_FILE_SIZE`, or content that fails to parse fails the run, so no rule is skipped silently.
+/// Reads `dir`'s `.gitignore`. A missing file, or a directory, contributes no rules. A symlink, a path
+/// that is neither a regular file nor a directory (such as a FIFO), a file over `MAX_FILE_SIZE`, or
+/// content that fails to parse fails the run, so no rule is skipped silently.
 fn read_rules(dir: &Path) -> Result<Gitignore, IngestError> {
     let gitignore = dir.join(".gitignore");
     let meta = match fs::symlink_metadata(&gitignore) {
@@ -166,8 +167,12 @@ fn read_rules(dir: &Path) -> Result<Gitignore, IngestError> {
         let err = io::Error::new(io::ErrorKind::InvalidInput, "symbolic link is not followed");
         return Err(io_error_at(&gitignore, &err));
     }
-    if !meta.is_file() {
+    if meta.is_dir() {
         return Ok(Gitignore::empty());
+    }
+    if !meta.is_file() {
+        let err = io::Error::new(io::ErrorKind::InvalidInput, "not a regular file");
+        return Err(io_error_at(&gitignore, &err));
     }
     let file = fs::File::open(&gitignore).map_err(|err| io_error_at(&gitignore, &err))?;
     let mut bytes = Vec::new();

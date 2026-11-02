@@ -71,7 +71,8 @@ impl ExcludePatterns {
 ///
 /// A `\` inside a segment is matched as U+FFFD on every platform, so it is never a separator and never
 /// matches a `\` in a pattern. Invalid UTF-8 is matched by its lossy form.
-pub(super) fn push_match_segment(prefix: &mut String, segment: &[u8]) {
+#[must_use]
+pub(super) fn push_match_segment(mut prefix: String, segment: &[u8]) -> String {
     if !prefix.is_empty() {
         prefix.push('/');
     }
@@ -80,6 +81,7 @@ pub(super) fn push_match_segment(prefix: &mut String, segment: &[u8]) {
             .chars()
             .map(|c| if c == '\\' { '\u{FFFD}' } else { c }),
     );
+    prefix
 }
 
 /// Compiles one pattern on its own and requires exactly one rule from it. A pattern whose body is

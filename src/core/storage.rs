@@ -124,15 +124,18 @@ impl FileStorage {
         }
     }
 
+    #[must_use]
     pub(crate) const fn len(&self) -> usize {
         self.spans.len()
     }
 
+    #[must_use]
     pub(crate) const fn total_bytes(&self) -> u64 {
         (self.path_arena.len() + self.content_arena.len()) as u64
     }
 
     /// Sorts `spans` (16-byte records) hierarchically by path components in-place, without modifying string arenas.
+    #[must_use]
     pub(crate) fn sort_by_path(mut self) -> Self {
         let path_arena = &self.path_arena;
         self.spans
@@ -191,6 +194,7 @@ impl FileStorage {
     }
 
     /// Error for storage that exceeds the output limit, naming the largest files.
+    #[must_use]
     pub(crate) fn output_too_large_error(&self) -> DomainError {
         DomainError::output_too_large(largest_files(self.iter()))
     }
@@ -212,6 +216,7 @@ impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
 /// Equivalent to `a.split('/').cmp(b.split('/'))`, computed on bytes. At the first differing byte,
 /// a `/` ends a component that the other path continues, so it sorts first. `/` is ASCII, so it
 /// never occurs inside a multi-byte UTF-8 sequence and every `/` byte is a separator.
+#[must_use]
 pub(crate) fn cmp_path(a: &str, b: &str) -> Ordering {
     let (a_bytes, b_bytes) = (a.as_bytes(), b.as_bytes());
     let common = a_bytes
@@ -231,6 +236,7 @@ pub(crate) fn cmp_path(a: &str, b: &str) -> Ordering {
 ///
 /// Called only on output limit exceeded error paths to format error diagnostics.
 /// Sorts by descending file size, tie-breaking by hierarchical path order (`cmp_path`).
+#[must_use]
 pub(crate) fn largest_files<'a>(
     files: impl IntoIterator<Item = FileRecord<'a>>,
 ) -> Vec<(String, usize)> {

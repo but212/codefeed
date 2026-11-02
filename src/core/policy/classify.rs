@@ -11,6 +11,7 @@ pub(crate) struct NormalizedPath(String);
 
 impl NormalizedPath {
     /// Borrows the normalized path as a string slice.
+    #[must_use]
     pub(crate) const fn as_str(&self) -> &str {
         self.0.as_str()
     }
@@ -27,15 +28,17 @@ impl std::ops::Deref for NormalizedPath {
 #[cfg(test)]
 impl From<&str> for NormalizedPath {
     fn from(s: &str) -> Self {
-        assert!(!s.is_empty(), "NormalizedPath cannot be empty");
-        Self(s.to_string())
+        Self::from(s.to_string())
     }
 }
 
 #[cfg(test)]
 impl From<String> for NormalizedPath {
     fn from(s: String) -> Self {
-        assert!(!s.is_empty(), "NormalizedPath cannot be empty");
+        assert!(
+            !s.is_empty() && s.split('/').all(|segment| !segment.is_empty()),
+            "NormalizedPath requires non-empty segments and no trailing slash"
+        );
         Self(s)
     }
 }
@@ -117,30 +120,36 @@ impl AdmittedDir {
 
 /// Admits directory `name` under `dir`. Returns `None` when it is hidden or user-excluded.
 ///
-/// Takes `dir` by value and extends its prefixes in place, so admitting one directory costs time linear
-/// in the bytes it appends. Callers that keep `dir` clone it first.
+/// Consumes `dir` and returns the admitted child. Each prefix is extended in place, so admitting one
+/// directory costs time linear in the bytes it appends. Callers that keep `dir` clone it first.
 ///
 /// Only the new prefix is matched. The prefixes of `dir`'s ancestors were matched when `dir` was
 /// admitted, and a match there would have returned `None` already. Matching stops after the first
 /// `MAX_PATH_DEPTH + 1` segments: deeper, the match prefix stops growing and is not matched.
+#[must_use]
 pub(crate) fn admit_dir(
-    mut dir: AdmittedDir,
+    dir: AdmittedDir,
     name: &[u8],
     exclude: &ExcludePatterns,
 ) -> Option<AdmittedDir> {
+    let AdmittedDir {
+        depth,
+        mut match_prefix,
+        output,
+    } = dir;
     if is_hidden_segment(name) {
         return None;
     }
-    if dir.depth <= MAX_PATH_DEPTH {
-        push_match_segment(&mut dir.match_prefix, name);
-        if exclude.excludes_prefix(&dir.match_prefix, true) {
+    if depth <= MAX_PATH_DEPTH {
+        match_prefix = push_match_segment(match_prefix, name);
+        if exclude.excludes_prefix(&match_prefix, true) {
             return None;
         }
     }
-    dir.output = match dir.output {
+    let output = match output {
         DirPrefix::NonUtf8(prefix) => DirPrefix::NonUtf8(prefix),
-        DirPrefix::Utf8(mut prefix) => {
-            push_separator(&mut prefix);
+        DirPrefix::Utf8(prefix) => {
+            let mut prefix = push_separator(prefix);
             match std::str::from_utf8(name) {
                 Ok(segment) => {
                     prefix.push_str(segment);
@@ -150,8 +159,11 @@ pub(crate) fn admit_dir(
             }
         }
     };
-    dir.depth += 1;
-    Some(dir)
+    Some(AdmittedDir {
+        depth: depth + 1,
+        match_prefix,
+        output,
+    })
 }
 
 /// Classifies file `name` directly under `parent`. The checks on `parent`'s ancestors already ran in
@@ -167,8 +179,7 @@ pub(crate) fn classify_leaf(
         return Ok(PathStatus::Ignored);
     }
     if parent.depth <= MAX_PATH_DEPTH {
-        let mut full = parent.match_prefix.clone();
-        push_match_segment(&mut full, name);
+        let full = push_match_segment(parent.match_prefix.clone(), name);
         if exclude.excludes_prefix(&full, false) {
             return Ok(PathStatus::Ignored);
         }
@@ -198,16 +209,16 @@ pub(crate) fn classify_leaf(
 /// The prefix followed by its `/` separator, or empty when the prefix is empty. This is the output a
 /// non-UTF-8 segment reports, so the trailing separator is part of the contract.
 fn with_separator(prefix: &str) -> String {
-    let mut separated = prefix.to_string();
-    push_separator(&mut separated);
-    separated
+    push_separator(prefix.to_string())
 }
 
 /// Appends the `/` separator unless the prefix is empty.
-fn push_separator(prefix: &mut String) {
+#[must_use]
+fn push_separator(mut prefix: String) -> String {
     if !prefix.is_empty() {
         prefix.push('/');
     }
+    prefix
 }
 
 /// Appends `segment` to a `/`-joined prefix, with no leading separator when the prefix is empty.
@@ -220,6 +231,36 @@ fn join_segment(prefix: &str, segment: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalized_path_accepts_a_relative_path_with_non_empty_segments() {
+        assert_eq!(NormalizedPath::from("a/b.txt").as_str(), "a/b.txt");
+        assert_eq!(NormalizedPath::from(String::from("c")).as_str(), "c");
+    }
+
+    #[test]
+    #[should_panic(expected = "NormalizedPath requires non-empty segments and no trailing slash")]
+    fn normalized_path_rejects_trailing_slash() {
+        let _ = NormalizedPath::from("a/");
+    }
+
+    #[test]
+    #[should_panic(expected = "NormalizedPath requires non-empty segments and no trailing slash")]
+    fn normalized_path_rejects_empty_segment() {
+        let _ = NormalizedPath::from("a//b");
+    }
+
+    #[test]
+    #[should_panic(expected = "NormalizedPath requires non-empty segments and no trailing slash")]
+    fn normalized_path_rejects_leading_slash() {
+        let _ = NormalizedPath::from(String::from("/a"));
+    }
+
+    #[test]
+    #[should_panic(expected = "NormalizedPath requires non-empty segments and no trailing slash")]
+    fn normalized_path_rejects_empty_string() {
+        let _ = NormalizedPath::from("");
+    }
 
     #[test]
     fn test_classify_path_segments_non_utf8_with_ignored_filename() {

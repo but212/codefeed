@@ -32,10 +32,9 @@ where
     F: Fn(BoundedBuffer, &str) -> Result<BoundedBuffer, OutputLimitExceeded> + Copy,
 {
     let mut i = 0;
-    while let Some((name, is_dir)) = paths
-        .get(i)
-        .and_then(|path| component_at_offset(path, offset))
-    {
+    while i < paths.len() {
+        let (name, is_dir) = component_at_offset(paths[i], offset)
+            .expect("invariant: NormalizedPath extends past every tree offset");
         let start = i;
         i += 1;
         if is_dir {
@@ -73,6 +72,7 @@ where
     Ok(buf)
 }
 
+#[must_use]
 pub(super) fn component_at_offset(path: &str, offset: usize) -> Option<(&str, bool)> {
     let remainder = path.get(offset..)?;
     if remainder.is_empty() {
@@ -157,6 +157,20 @@ mod tests {
     └── z.txt
 ";
         assert_eq!(tree_str, expected);
+    }
+
+    #[test]
+    #[should_panic(expected = "invariant: NormalizedPath extends past every tree offset")]
+    fn render_level_panics_on_path_that_ends_at_a_directory_offset() {
+        // `a/` is not a NormalizedPath. Its child level would start past the end of the path, which
+        // must fail loudly instead of ending the level and dropping the rest of the tree.
+        let _ = render_level(
+            BoundedBuffer::default(),
+            &["a/"],
+            0,
+            "",
+            BoundedBuffer::push_str,
+        );
     }
 
     #[test]

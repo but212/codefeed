@@ -502,6 +502,26 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn gitignore_fifo_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
+        // A FIFO is neither a regular file nor a directory, so its rules cannot be read. Opening it would
+        // block, so the run must fail on its metadata and name `.gitignore`.
+        let root = temp_dir("gitignore_fifo")?;
+        crate::shell::testing::make_fifo(&root.join(".gitignore"))?;
+        fs::write(root.join("a.txt"), "a")?;
+
+        let dir = root.to_path_buf();
+        let err =
+            run_with_timeout(move || collect_default(&dir, &ResolvedOutput::STDOUT)).unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Io(io_err) if io_err.kind() == io::ErrorKind::InvalidInput),
+            "expected IngestError::Io with ErrorKind::InvalidInput, got: {err:?}"
+        );
+        assert!(err.to_string().contains(".gitignore"), "got: {err}");
+        Ok(())
+    }
+
     #[test]
     fn ingests_local_directory_respects_all_exclusion_policies()
     -> Result<(), Box<dyn std::error::Error>> {
