@@ -152,7 +152,7 @@ Candidate budget overflow aborts the run without emitting partial output.
 
 ## 5. Local Filesystem Safety
 
-- **No Symlinks:** The walk classifies entries with `DirEntry::file_type()`, which does not follow links, and drops entries that are neither directories nor regular files. Workers call `fs::symlink_metadata` before open, rejecting symlinks to files, directories, or special devices.
+- **No Symlinks:** The walk classifies entries with `DirEntry::file_type()`, which does not follow links, and drops entries that are neither directories nor regular files. Workers call `fs::symlink_metadata` before open, rejecting symlinks to files, directories, or special devices. The root path is canonicalized first, so a symlinked root is followed; the no-symlink rule applies to every entry beneath it.
 - **Output Exclusion:** Canonical destination is resolved upfront (`resolve_output_target`) and excluded from traversal to prevent self-ingest.
 - **Atomic Writes:** Destination written via temporary file `.codefeed.{nanos}.{counter}.tmp` in target directory, flushed, and renamed. The name does not depend on the target name. Unix preserves permissions and syncs parent directory. Parent sync failure logs a warning without aborting. `write_atomic` drops the file handle before `TempPath` unlinks the temporary file on `Drop`.
 - **Unavailable vs. Fatal:** `NotFound`, `PermissionDenied`, or Windows sharing (32) / locking (33) errors mark files unavailable (skipped). Other I/O errors or unreadable directories abort the run. A directory's `.gitignore` is not a file candidate: any read failure, symlink, oversize file, or non-UTF-8 content aborts the run (sec. 3.5). First error in walk order is deterministically reported.

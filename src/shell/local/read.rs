@@ -89,6 +89,8 @@ mod tests {
     use super::*;
     use crate::core::policy::MAX_FILE_SIZE_USIZE;
     use crate::core::selector::Selector;
+    #[cfg(unix)]
+    use crate::shell::testing::run_with_timeout;
     use crate::shell::testing::temp_dir;
 
     #[test]
@@ -202,6 +204,19 @@ mod tests {
 
         let result = read_candidate(&sub, NormalizedPath::from("subdir"))?;
         assert!(result.is_none());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_candidate_skips_fifo_without_opening() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("read_candidate_fifo")?;
+        let fifo = root.join("pipe");
+        crate::shell::testing::make_fifo(&fifo)?;
+
+        // Opening a FIFO with no writer blocks, so an `open` regression surfaces as a timeout.
+        let msg = run_with_timeout(move || read_candidate(&fifo, NormalizedPath::from("pipe")));
+        assert!(msg?.is_none(), "a FIFO is not a candidate");
         Ok(())
     }
 }
