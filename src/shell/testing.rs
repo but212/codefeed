@@ -7,6 +7,7 @@ use std::net::TcpListener;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
@@ -85,6 +86,35 @@ impl Drop for TempDirGuard {
 
 pub(super) fn temp_dir(label: &str) -> Result<TempDirGuard, Box<dyn Error>> {
     TempDirGuard::new(label)
+}
+
+/// Upper bound for [`run_with_timeout`]. Generous, so a slow runner never trips it.
+const HANG_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Runs `f` on a helper thread and fails if it does not return within [`HANG_TIMEOUT`]. This is a
+/// hang detector only: it turns a regression that blocks (for example, opening a FIFO) into a failure.
+pub(super) fn run_with_timeout<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(HANG_TIMEOUT) {
+        Ok(value) => value,
+        Err(RecvTimeoutError::Timeout) => {
+            panic!("operation did not return within {HANG_TIMEOUT:?}")
+        }
+        Err(RecvTimeoutError::Disconnected) => panic!("operation panicked on its helper thread"),
+    }
+}
+
+/// Creates a named pipe at `path` with the `mkfifo` utility; fails if it cannot be created.
+#[cfg(unix)]
+pub(super) fn make_fifo(path: &Path) -> Result<(), Box<dyn Error>> {
+    let status = std::process::Command::new("mkfifo").arg(path).status()?;
+    if !status.success() {
+        return Err(format!("mkfifo {} failed: {status}", path.display()).into());
+    }
+    Ok(())
 }
 
 /// Builds a gzipped tarball by letting `fill` append entries, for cases that need raw entry headers.

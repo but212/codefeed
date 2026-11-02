@@ -77,7 +77,8 @@ mod tests {
     use crate::core::policy::MAX_FILE_SIZE_USIZE;
     use crate::ingest;
     use crate::shell::archive;
-    use crate::shell::testing::{gzip_tarball, temp_dir};
+    use crate::shell::testing::{gzip_tarball, run_with_timeout, temp_dir};
+    use std::io;
     use tar::EntryType;
 
     fn collect_default(
@@ -175,6 +176,99 @@ mod tests {
         assert_eq!(res.files.len(), 1, "only the regular target is collected");
         assert_eq!(res.skipped, 0);
         Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_and_socket_are_not_candidates() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::net::UnixListener;
+
+        // Short label: the socket path must fit the platform's `sun_path` limit.
+        let root = temp_dir("sf")?;
+        fs::write(root.join("a.txt"), "content")?;
+        crate::shell::testing::make_fifo(&root.join("pipe"))?;
+        let _socket = UnixListener::bind(root.join("sock"))?;
+
+        let dir = root.to_path_buf();
+        let res = run_with_timeout(move || collect_default(&dir, &ResolvedOutput::STDOUT))?;
+
+        assert_eq!(res.files.len(), 1, "only the regular file is a candidate");
+        assert_eq!(res.skipped, 0, "special files are dropped in the walk");
+        Ok(())
+    }
+
+    /// Adds a link to a real directory and a link to the parent (`..`), then checks that only the
+    /// real file is collected, once. `link_dir` creates a directory link, using the platform's flavor.
+    fn assert_directory_links_are_not_followed(
+        link_dir: impl Fn(&Path, &Path) -> io::Result<()>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("dir_links")?;
+        let real = root.join("real");
+        fs::create_dir(&real)?;
+        fs::write(real.join("x.txt"), "x")?;
+        link_dir(&real, &root.join("link"))?;
+        link_dir(Path::new(".."), &root.join("loop"))?;
+
+        let dir = root.to_path_buf();
+        let res = run_with_timeout(move || collect_default(&dir, &ResolvedOutput::STDOUT))?;
+
+        let paths: Vec<&str> = res.files.iter().map(|f| f.path).collect();
+        assert_eq!(paths, vec!["real/x.txt"]);
+        assert_eq!(res.skipped, 0);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_directories_are_not_followed() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+        assert_directory_links_are_not_followed(|target, link| symlink(target, link))
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "creating a symlink on Windows requires Developer Mode or elevation"]
+    fn windows_symlinked_directories_are_not_followed() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::symlink_dir;
+        assert_directory_links_are_not_followed(|target, link| symlink_dir(target, link))
+    }
+
+    /// Collects through a directory link given as the root. The root is canonicalized, so the walk
+    /// runs in the target and the label is the target's basename.
+    fn assert_symlinked_root_is_followed(
+        link_dir: impl Fn(&Path, &Path) -> io::Result<()>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let base = temp_dir("symlinked_root")?;
+        let real = base.join("real_repo");
+        fs::create_dir(&real)?;
+        fs::write(real.join("x.txt"), "x")?;
+        let alias = base.join("alias");
+        link_dir(&real, &alias)?;
+
+        let res = run_with_timeout(move || collect_default(&alias, &ResolvedOutput::STDOUT))?;
+
+        let paths: Vec<&str> = res.files.iter().map(|f| f.path).collect();
+        assert_eq!(paths, vec!["x.txt"]);
+        assert_eq!(
+            res.label, "real_repo",
+            "label is the canonical target basename"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_root_is_followed() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+        assert_symlinked_root_is_followed(|target, link| symlink(target, link))
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "creating a symlink on Windows requires Developer Mode or elevation"]
+    fn windows_symlinked_root_is_followed() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::symlink_dir;
+        assert_symlinked_root_is_followed(|target, link| symlink_dir(target, link))
     }
 
     #[cfg(unix)]
