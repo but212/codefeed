@@ -208,8 +208,23 @@ impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
 }
 
 /// Compares two normalized slash-separated relative paths hierarchically by path components.
+///
+/// Equivalent to `a.split('/').cmp(b.split('/'))`, computed on bytes. At the first differing byte,
+/// a `/` ends a component that the other path continues, so it sorts first. `/` is ASCII, so it
+/// never occurs inside a multi-byte UTF-8 sequence and every `/` byte is a separator.
 pub(crate) fn cmp_path(a: &str, b: &str) -> Ordering {
-    a.split('/').cmp(b.split('/'))
+    let (a_bytes, b_bytes) = (a.as_bytes(), b.as_bytes());
+    let common = a_bytes
+        .iter()
+        .zip(b_bytes)
+        .take_while(|(x, y)| x == y)
+        .count();
+    match (a_bytes.get(common), b_bytes.get(common)) {
+        (None, None) => Ordering::Equal,
+        (None | Some(&b'/'), Some(_)) => Ordering::Less,
+        (Some(_), None | Some(&b'/')) => Ordering::Greater,
+        (Some(x), Some(y)) => x.cmp(y),
+    }
 }
 
 /// Diagnostic ranking for digest size: selects up to `OVERFLOW_LARGEST_FILES` largest files.
@@ -368,6 +383,35 @@ mod tests {
             assert_eq!(paths, expected);
         }
         Ok(())
+    }
+
+    #[test]
+    fn cmp_path_matches_component_order_over_exhaustive_small_alphabet() {
+        // Alphabet: separator, a byte below '/', a letter, and a multi-byte char.
+        let alphabet = ["+", "/", "a", "é"];
+        let mut paths = vec![String::new()];
+        let mut frontier = vec![String::new()];
+        for _ in 0..5 {
+            let next: Vec<String> = frontier
+                .iter()
+                .flat_map(|prefix| {
+                    alphabet
+                        .iter()
+                        .map(move |symbol| format!("{prefix}{symbol}"))
+                })
+                .collect();
+            paths.extend(next.iter().cloned());
+            frontier = next;
+        }
+        for a in &paths {
+            for b in &paths {
+                assert_eq!(
+                    cmp_path(a, b),
+                    a.split('/').cmp(b.split('/')),
+                    "{a:?} vs {b:?}"
+                );
+            }
+        }
     }
 
     fn sorted_from(paths: &[&str]) -> Result<SortedFiles, DomainError> {

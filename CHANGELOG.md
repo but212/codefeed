@@ -15,6 +15,7 @@ Internal change. No consumer action required.
 #### Changed
 
 - **Token estimate counts in chunks**: `estimate_tokens_from_bytes` (`src/core/render/budget.rs`) counts ASCII and lead bytes in chunks with `u32` counters, instead of an index loop, and is no longer `const fn`. Output and `estimated_tokens` are unchanged. A reference-definition test covers every byte value across boundary lengths.
+- **Path sort compares bytes**: `cmp_path` (`src/core/storage.rs`) compares path bytes instead of iterating `split('/')` components. The order is unchanged, pinned by an exhaustive small-alphabet test. Output is unchanged.
 
 ---
 

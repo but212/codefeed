@@ -167,8 +167,7 @@ mod tests {
         /// Whether the user patterns exclude the path. It must be rejected with these patterns but not
         /// with none, so hidden and noise names are never reported as user-excluded.
         fn excludes(&self, segments: &[&[u8]], is_dir: bool) -> bool {
-            rejected(self, segments, is_dir)
-                && !rejected(&Self::default(), segments, is_dir)
+            rejected(self, segments, is_dir) && !rejected(&Self::default(), segments, is_dir)
         }
     }
 
