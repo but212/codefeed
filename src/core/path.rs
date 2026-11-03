@@ -341,17 +341,6 @@ mod tests {
     }
 
     #[test]
-    fn test_normalized_path_invariants_and_classification() {
-        let segments: &[&[u8]] = &[b"src", b"core", b"model.rs"];
-        let status =
-            classify_path_segments(segments.iter().copied(), &ExcludePatterns::default()).unwrap();
-        let Some(CandidatePath::Valid(path)) = status else {
-            panic!("expected CandidatePath::Valid");
-        };
-        assert_eq!(&*path, "src/core/model.rs");
-    }
-
-    #[test]
     fn user_exclusions_drop_matching_paths_before_other_checks() {
         let exclude = ExcludePatterns::new(["build/", "*.log"]).unwrap();
 

@@ -189,6 +189,19 @@ mod tests {
     };
 
     #[test]
+    fn size_limits_admit_exactly_the_limit_and_reject_one_beyond() {
+        assert!(!exceeds_size_limits(0, None));
+        assert!(!exceeds_size_limits(MAX_PATH_BYTES_USIZE, None));
+        assert!(exceeds_size_limits(MAX_PATH_BYTES_USIZE + 1, None));
+        assert!(!exceeds_size_limits(0, Some(MAX_FILE_SIZE)));
+        assert!(exceeds_size_limits(0, Some(MAX_FILE_SIZE + 1)));
+        assert!(!exceeds_size_limits(
+            MAX_PATH_BYTES_USIZE,
+            Some(MAX_FILE_SIZE)
+        ));
+    }
+
+    #[test]
     fn candidate_overflow_includes_largest_directories_diagnostic()
     -> Result<(), Box<dyn std::error::Error>> {
         let vendor = MAX_FILE_COUNT * 4 / 5;

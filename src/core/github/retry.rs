@@ -207,9 +207,11 @@ mod tests {
             u64,
             Option<u64>,
         );
-        let cases: [Row<'_>; 8] = [
+        let cases: [Row<'_>; 9] = [
             (None, Some("59"), Some("1002400"), NOW, None),
             (None, Some("0"), Some("1002400"), NOW, Some(2400)),
+            // A reset at `now` is already due: no wait.
+            (None, Some("0"), Some("1000000"), NOW, None),
             (Some("2"), Some("0"), Some("1002400"), NOW, Some(2)),
             (Some("2"), Some("59"), Some("1002400"), NOW, Some(2)),
             (None, None, Some("1002400"), NOW, None),
@@ -278,6 +280,24 @@ mod tests {
                 RequestOutcome::HttpStatus {
                     status: 429,
                     retry_after: Some(Duration::from_secs(10)),
+                    is_rate_limit: true,
+                },
+                Transition::Fail,
+            ),
+            (
+                0,
+                RequestOutcome::HttpStatus {
+                    status: 429,
+                    retry_after: Some(Duration::from_millis(RETRY_MAX_DELAY_MS)),
+                    is_rate_limit: true,
+                },
+                retry(1, Duration::from_millis(RETRY_MAX_DELAY_MS)),
+            ),
+            (
+                0,
+                RequestOutcome::HttpStatus {
+                    status: 429,
+                    retry_after: Some(Duration::from_millis(RETRY_MAX_DELAY_MS + 1)),
                     is_rate_limit: true,
                 },
                 Transition::Fail,

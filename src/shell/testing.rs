@@ -101,6 +101,21 @@ pub(super) fn gzip_archive(fill: impl FnOnce(&mut Builder<&mut GzEncoder<Vec<u8>
     gz.finish().unwrap()
 }
 
+/// Gzip stream of a tar holding one regular entry, `repo-root/big.txt`, whose body is `body_len` bytes of
+/// `x`. The decompressed stream is exactly one 512-byte header plus the body, with no padding or end
+/// blocks. Generated on demand, so a limit-sized archive is never held in memory.
+pub(super) fn gzip_single_entry_stream(body_len: u64) -> impl Read {
+    let mut header = tar::Header::new_gnu();
+    header.set_path("repo-root/big.txt").unwrap();
+    header.set_entry_type(EntryType::Regular);
+    header.set_size(body_len);
+    header.set_mode(0o644);
+    header.set_cksum();
+    let raw = std::io::Cursor::new(header.as_bytes().to_vec())
+        .chain(std::io::repeat(b'x').take(body_len));
+    flate2::read::GzEncoder::new(raw, Compression::fast())
+}
+
 /// Builds a gzipped tarball from `(path, content, entry type)` triples.
 pub(super) fn gzip_tarball(entries: &[(&str, &[u8], EntryType)]) -> Vec<u8> {
     gzip_archive(|tar| {

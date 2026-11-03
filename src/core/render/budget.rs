@@ -117,14 +117,6 @@ impl BoundedBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::policy::MAX_OUTPUT_SIZE_USIZE;
-
-    #[test]
-    fn bounded_buffer_enforces_output_limit() {
-        let buf = BoundedBuffer::default();
-        let large = vec![b'x'; MAX_OUTPUT_SIZE_USIZE + 1];
-        assert_eq!(buf.push_bytes(&large), Err(OutputLimitExceeded));
-    }
 
     #[test]
     fn bounded_buffer_limit_is_exact_at_every_boundary() {

@@ -254,4 +254,55 @@ mod tests {
             "invalid source: https://github.com:99999/o/r\u{FFFD}[2J"
         );
     }
+
+    #[test]
+    fn valid_github_name_accepts_exactly_the_name_alphabet() {
+        for byte in 0..128u8 {
+            let c = char::from(byte);
+            let in_alphabet = c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_');
+            assert_eq!(
+                valid_github_name(&format!("a{c}b")),
+                in_alphabet,
+                "embedded {c:?}"
+            );
+            assert_eq!(
+                valid_github_name(&c.to_string()),
+                in_alphabet && c != '.',
+                "single {c:?}"
+            );
+        }
+        assert!(!valid_github_name("a\u{e9}"));
+    }
+
+    #[test]
+    fn valid_github_name_rejects_only_empty_and_dot_names_by_length() {
+        for accepted in ["a", ".a", "a.", "ab", "..a", "a..", "...", ".-"] {
+            assert!(valid_github_name(accepted), "{accepted:?}");
+        }
+        for rejected in ["", ".", ".."] {
+            assert!(!valid_github_name(rejected), "{rejected:?}");
+        }
+    }
+
+    #[test]
+    fn tarball_url_encodes_every_byte_outside_the_unreserved_set() {
+        const PREFIX: &str = "https://api.github.com/repos/o/r/tarball/";
+        for byte in 0..128u8 {
+            let c = char::from(byte);
+            let expected = if c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '~') {
+                c.to_string()
+            } else {
+                format!("%{byte:02X}")
+            };
+            assert_eq!(
+                tarball_url(GITHUB_API_BASE_URL, "o", "r", Some(&c.to_string())),
+                format!("{PREFIX}{expected}"),
+                "{c:?}"
+            );
+        }
+        assert_eq!(
+            tarball_url(GITHUB_API_BASE_URL, "o", "r", Some("\u{e9}")),
+            format!("{PREFIX}%C3%A9")
+        );
+    }
 }

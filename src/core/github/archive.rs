@@ -249,5 +249,23 @@ mod tests {
 
         let empty = b"";
         assert_eq!(parse_pax_comment(empty), None);
+
+        // Only a decimal length may precede the record; any other prefix word voids it.
+        let prefixed = format!("ab comment={}\n", "a".repeat(40));
+        assert_eq!(parse_pax_comment(prefixed.as_bytes()), None);
+    }
+
+    #[test]
+    fn dots_inside_a_name_are_not_traversal() {
+        for (raw, expected) in [
+            (&b"repo-root/a..b.txt"[..], "a..b.txt"),
+            (b"repo-root/dir../x", "dir../x"),
+        ] {
+            assert_eq!(
+                normalize(raw).unwrap(),
+                Some(CandidatePath::Valid(expected.into())),
+                "{raw:?}"
+            );
+        }
     }
 }

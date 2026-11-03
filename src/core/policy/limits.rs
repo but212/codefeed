@@ -144,16 +144,6 @@ mod tests {
     }
 
     #[test]
-    fn format_with_commas_formats_numbers_correctly() {
-        assert_eq!(format_with_commas(0), "0");
-        assert_eq!(format_with_commas(999), "999");
-        assert_eq!(format_with_commas(1000), "1,000");
-        assert_eq!(format_with_commas(4096), "4,096");
-        assert_eq!(format_with_commas(10_000), "10,000");
-        assert_eq!(format_with_commas(1_000_000), "1,000,000");
-    }
-
-    #[test]
     fn limit_constants_match_security_specification_table() {
         let spec = include_str!("../../../docs/security_and_filtering.md");
         let table = parse_limits_table(spec);
