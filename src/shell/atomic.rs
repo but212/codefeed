@@ -26,7 +26,7 @@ pub(super) fn parent_dir(path: &Path) -> &Path {
 
 /// Path of a temporary file, unlinked on drop unless persisted. It holds no handle. The file it was
 /// created with is declared after this guard, so it drops, and closes, first.
-struct TempPath(Option<PathBuf>);
+struct TempPath(PathBuf);
 
 impl TempPath {
     /// Creates `.codefeed.{nanos}.{counter}.tmp` in `parent`. The name does not depend on the target,
@@ -44,7 +44,7 @@ impl TempPath {
             let counter = next_counter.fetch_add(1, Ordering::Relaxed);
             let path = parent.join(format!(".codefeed.{timestamp}.{counter}.tmp"));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(file) => return Ok((Self(Some(path)), file)),
+                Ok(file) => return Ok((Self(path), file)),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                     // Try again with a new counter.
                 }
@@ -54,22 +54,22 @@ impl TempPath {
     }
 
     fn path(&self) -> &Path {
-        self.0.as_deref().expect("path is present until persist")
+        &self.0
     }
 
     /// Renames the file over `target`. If the rename fails, the file stays and is unlinked on drop.
+    /// On success the guard is forgotten, so the renamed file is never unlinked.
     fn persist(mut self, target: &Path) -> Result<(), IngestError> {
         fs::rename(self.path(), target).map_err(|err| io_error_at(target, &err))?;
-        self.0 = None;
+        drop(std::mem::take(&mut self.0));
+        std::mem::forget(self);
         Ok(())
     }
 }
 
 impl Drop for TempPath {
     fn drop(&mut self) {
-        if let Some(path) = &self.0 {
-            let _ = fs::remove_file(path);
-        }
+        let _ = fs::remove_file(&self.0);
     }
 }
 

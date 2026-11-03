@@ -8,7 +8,8 @@ use crate::core::collection::CollectionResult;
 use crate::core::error::DomainError;
 use crate::core::path::PathStatus;
 use crate::core::policy::{
-    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, OVERFLOW_LARGEST_DIRECTORIES,
+    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, MAX_PATH_BYTES_USIZE,
+    OVERFLOW_LARGEST_DIRECTORIES,
 };
 use crate::core::storage::{FileStorage, SortedFiles};
 
@@ -37,7 +38,7 @@ struct CandidateBudget {
 impl CandidateBudget {
     /// Adds a single observed candidate path to the budget accounting.
     pub(crate) fn add(mut self, path: &str) -> Result<Self, DomainError> {
-        self.count = self.count.saturating_add(1);
+        self.count += 1;
         let dir = extract_dir_slice(path);
         if let Some(count) = self.dir_counts.get_mut(dir) {
             *count += 1;
@@ -65,8 +66,7 @@ impl CandidateBudget {
 /// grow the key store beyond the candidate count times `MAX_PATH_BYTES`.
 fn extract_dir_slice(path: &str) -> &str {
     let dir = memchr(b'/', path.as_bytes()).map_or("./", |index| &path[..=index]);
-    let limit = usize::try_from(MAX_PATH_BYTES).expect("invariant: MAX_PATH_BYTES fits in usize");
-    let mut end = dir.len().min(limit);
+    let mut end = dir.len().min(MAX_PATH_BYTES_USIZE);
     while !dir.is_char_boundary(end) {
         end -= 1;
     }
@@ -160,7 +160,7 @@ impl Selector {
     }
 
     const fn skip(mut self) -> Self {
-        self.skipped = self.skipped.saturating_add(1);
+        self.skipped += 1;
         self
     }
 

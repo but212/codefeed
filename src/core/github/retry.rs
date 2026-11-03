@@ -111,7 +111,6 @@ pub(crate) enum Transition {
 
 /// Finite state machine managing HTTP attempt state and retry transitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(transparent)]
 pub(crate) struct AttemptState {
     attempt: usize,
 }
@@ -124,7 +123,7 @@ impl AttemptState {
     /// Advances state given an attempt outcome, returning next transition action.
     #[must_use]
     pub(crate) const fn step(self, outcome: &RequestOutcome) -> (Self, Transition) {
-        if self.attempt + 1 > MAX_ATTEMPTS - 1 {
+        if self.attempt >= MAX_ATTEMPTS - 1 {
             return (self, Transition::Fail);
         }
         match outcome {

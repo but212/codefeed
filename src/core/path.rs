@@ -7,7 +7,6 @@ use crate::core::policy::{
 
 /// Non-empty, normalized slash-separated relative UTF-8 path.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[repr(transparent)]
 pub(crate) struct NormalizedPath(String);
 
 impl NormalizedPath {

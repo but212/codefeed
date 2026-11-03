@@ -24,7 +24,7 @@ pub(super) fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
 
     let ascii_tokens = ascii_bytes / ASCII_BYTES_PER_TOKEN;
     let total = ascii_tokens + non_ascii_chars;
-    if total > 1 { total } else { 1 }
+    total.max(1)
 }
 
 /// Error returned when rendered content exceeds the buffer's limit.
@@ -78,7 +78,7 @@ impl BoundedBuffer {
     }
 
     pub(crate) fn push_bytes(mut self, slice: &[u8]) -> Result<Self, OutputLimitExceeded> {
-        let new_len = self.bytes.len().saturating_add(slice.len());
+        let new_len = self.bytes.len() + slice.len();
         if new_len as u64 > self.limit {
             return Err(OutputLimitExceeded);
         }
