@@ -126,6 +126,8 @@
 ## 8. Testing
 
 - **Table-driven tests:** Aggregate cases into `cases = [...]` slices over multiple one-off functions.
+- **Contract over wording:** Assert exact text only for output the README specifies (summary line, digest bytes, exit codes). For other errors, assert one fragment unique to the failing branch, or the variant.
+- **Property tests:** Core invariants over open input spaces (escaping, sanitization, path normalization, exclude patterns) use `proptest` with `crate::core::proptest_config()` (fixed seed, no failure persistence). They live in `core` only, in a `properties` module beside the unit tests, and keep a table of examples for the cases a property cannot distinguish.
 - **In-memory limits:** Validate `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` via `Selector` and `CandidateBudget` without disk I/O.
 - **Filesystem isolation:** Use `crate::shell::testing::temp_dir` in shell tests; core unit tests never touch the disk.
 - **Network mocking:** Mock HTTP via local `TcpListener` bound to `127.0.0.1:0` (`MockServer`). External network calls in tests are forbidden.

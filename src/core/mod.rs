@@ -23,6 +23,20 @@
 //!      matching buffer pool of `ignore::gitignore::Gitignore` used by `policy/exclude.rs`. Core code
 //!      must not add any.
 
+/// Shared configuration for property tests: a fixed seed and no on-disk failure persistence, so runs
+/// are reproducible and leave no `proptest-regressions/` files behind.
+#[cfg(test)]
+pub(crate) fn proptest_config() -> proptest::test_runner::Config {
+    use proptest::test_runner::{Config, RngSeed};
+
+    Config {
+        cases: 256,
+        failure_persistence: None,
+        rng_seed: RngSeed::Fixed(0x00C0_DEFE_ED00_0001),
+        ..Config::default()
+    }
+}
+
 pub(crate) mod cli;
 pub(crate) mod collection;
 pub(crate) mod error;

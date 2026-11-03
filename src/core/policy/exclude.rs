@@ -335,4 +335,67 @@ mod tests {
         assert_eq!(patterns(&["a", "b"]), patterns(&["a", "b"]));
         assert_ne!(patterns(&["a"]), patterns(&["a", "b"]));
     }
+
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn name() -> impl Strategy<Value = String> {
+            "[a-z]{1,8}"
+        }
+
+        proptest! {
+            #![proptest_config(crate::core::proptest_config())]
+
+            /// Any text either compiles to a pattern set or is a usage error: it never panics, and a
+            /// compiled set answers every query.
+            #[test]
+            fn arbitrary_patterns_compile_or_report_a_usage_error(
+                pattern in prop::collection::vec(
+                    prop::sample::select(&['a', 'b', '*', '?', '[', ']', '!', '#', '\\', ' ', '/', '-', '.', '\t'][..]),
+                    0..10,
+                ),
+                candidate in "[a-c/.]{0,8}",
+            ) {
+                let pattern = String::from_iter(pattern);
+                match ExcludePatterns::new([pattern.as_str()]) {
+                    Ok(set) => {
+                        let _ = set.excludes_prefix(&candidate, false);
+                        let _ = set.excludes_prefix(&candidate, true);
+                    }
+                    Err(err) => prop_assert!(matches!(err, DomainError::Usage(_)), "{:?}", err),
+                }
+            }
+
+            /// A plain name excludes that name at any depth and leaves every other name as the empty
+            /// pattern set classifies it.
+            #[test]
+            fn plain_name_excludes_only_that_name(n in name(), other in name()) {
+                prop_assume!(n != other);
+                let set = patterns(&[&n]);
+                let none = ExcludePatterns::default();
+                for is_dir in [false, true] {
+                    prop_assert!(rejected(&set, &[n.as_bytes()], is_dir));
+                    prop_assert!(rejected(&set, &[b"d", n.as_bytes()], is_dir));
+                    prop_assert_eq!(
+                        rejected(&set, &[other.as_bytes()], is_dir),
+                        rejected(&none, &[other.as_bytes()], is_dir)
+                    );
+                }
+            }
+
+            /// A trailing `/` limits a pattern to directories: it excludes a directory of that name
+            /// but leaves a file of that name as the empty pattern set classifies it.
+            #[test]
+            fn trailing_slash_pattern_matches_directories_only(n in name()) {
+                let set = patterns(&[&format!("{n}/")]);
+                let none = ExcludePatterns::default();
+                prop_assert!(rejected(&set, &[n.as_bytes()], true));
+                prop_assert_eq!(
+                    rejected(&set, &[n.as_bytes()], false),
+                    rejected(&none, &[n.as_bytes()], false)
+                );
+            }
+        }
+    }
 }

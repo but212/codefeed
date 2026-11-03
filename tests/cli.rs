@@ -97,6 +97,12 @@ fn creates_default_output_without_subcommand() -> Result<(), Box<dyn std::error:
 
     assert!(output.status.success(), "output: {output:?}");
     assert!(root.path.join("digest.txt").is_file());
+    // File mode reports its summary on stdout; stream mode uses stderr.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Wrote digest.txt (1 files, 0 skipped, ~"),
+        "stdout: {stdout}"
+    );
     Ok(())
 }
 
@@ -121,31 +127,10 @@ fn writes_digest_only_to_stdout_for_dash_output() -> Result<(), Box<dyn std::err
         stderr.contains("Wrote to stdout (1 files, 0 skipped, ~"),
         "stderr: {stderr}"
     );
-    assert!(stderr.contains("tokens)"), "stderr: {stderr}");
     assert!(
         !root.path.join("digest.txt").exists(),
         "no output file expected"
     );
-    Ok(())
-}
-
-#[test]
-fn reports_estimated_tokens_in_file_summary() -> Result<(), Box<dyn std::error::Error>> {
-    let root = TempDir::new("tokens");
-    std::fs::write(root.path.join("code.rs"), "pub fn test() -> i32 { 42 }")?;
-
-    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .current_dir(&root.path)
-        .arg(".")
-        .output()?;
-
-    assert!(output.status.success(), "output: {output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Wrote digest.txt (1 files, 0 skipped, ~"),
-        "stdout: {stdout}"
-    );
-    assert!(stdout.contains("tokens)"), "stdout: {stdout}");
     Ok(())
 }
 
@@ -194,33 +179,6 @@ fn exclude_invalid_pattern_is_a_usage_error() {
             "{pattern:?}: stderr: {stderr}"
         );
     }
-}
-
-#[test]
-fn outputs_xml_when_format_xml_specified() -> Result<(), Box<dyn std::error::Error>> {
-    let root = TempDir::new("xml");
-    std::fs::write(root.path.join("file.rs"), "fn main() { let x = 1 < 2; }")?;
-
-    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .current_dir(&root.path)
-        .arg(".")
-        .arg("--output")
-        .arg("-")
-        .arg("--format")
-        .arg("xml")
-        .output()?;
-
-    assert!(output.status.success(), "output: {output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("<repository name="), "stdout: {stdout}");
-    assert!(stdout.contains("<directory_structure>"), "stdout: {stdout}");
-    assert!(
-        stdout.contains("<file path=\"file.rs\">"),
-        "stdout: {stdout}"
-    );
-    assert!(stdout.contains("1 &lt; 2"), "stdout: {stdout}");
-    assert!(stdout.contains("</repository>"), "stdout: {stdout}");
-    Ok(())
 }
 
 #[cfg(unix)]

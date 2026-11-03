@@ -212,36 +212,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalized_path_accepts_a_relative_path_with_non_empty_segments() {
-        assert_eq!(&*NormalizedPath::from("a/b.txt"), "a/b.txt");
-        assert_eq!(&*NormalizedPath::from(String::from("c")), "c");
-    }
-
-    #[test]
-    #[should_panic(expected = "NormalizedPath requires non-empty segments and no trailing slash")]
-    fn normalized_path_rejects_trailing_slash() {
-        let _ = NormalizedPath::from("a/");
-    }
-
-    #[test]
-    #[should_panic(expected = "NormalizedPath requires non-empty segments and no trailing slash")]
-    fn normalized_path_rejects_empty_segment() {
-        let _ = NormalizedPath::from("a//b");
-    }
-
-    #[test]
-    #[should_panic(expected = "NormalizedPath requires non-empty segments and no trailing slash")]
-    fn normalized_path_rejects_leading_slash() {
-        let _ = NormalizedPath::from(String::from("/a"));
-    }
-
-    #[test]
-    #[should_panic(expected = "NormalizedPath requires non-empty segments and no trailing slash")]
-    fn normalized_path_rejects_empty_string() {
-        let _ = NormalizedPath::from("");
-    }
-
-    #[test]
     fn depth_exceeded_error_names_its_entry_kind() {
         let err = DepthExceededError::domain_error("Tar entry path");
         assert!(
@@ -563,6 +533,63 @@ mod tests {
                 expected,
                 "segments: {segments:?}"
             );
+        }
+    }
+
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        const POOL: &[&[u8]] = &[
+            b"",
+            b".",
+            b"..",
+            b".hidden",
+            b"a",
+            b"src",
+            b"main.rs",
+            b"id_rsa",
+            b"Cargo.lock",
+            b"\xff",
+        ];
+
+        proptest! {
+            #![proptest_config(crate::core::proptest_config())]
+
+            /// A valid candidate is the `/`-join of the input segments once empty and `.` segments are
+            /// dropped, so it never has an empty segment, a leading slash, or a trailing slash. A
+            /// non-UTF-8 candidate carries a prefix that is empty or ends in a single `/`.
+            #[test]
+            fn classified_paths_are_normalized(
+                segments in prop::collection::vec(prop::sample::select(POOL), 0..8)
+            ) {
+                let kept: Vec<&[u8]> = segments
+                    .iter()
+                    .copied()
+                    .filter(|seg| !seg.is_empty() && *seg != b".")
+                    .collect();
+                let result =
+                    classify_path_segments(segments.iter().copied(), &ExcludePatterns::default());
+                match result {
+                    Ok(Some(CandidatePath::Valid(path))) => {
+                        let expected: Vec<&str> = kept
+                            .iter()
+                            .map(|seg| std::str::from_utf8(seg).expect("valid candidates are UTF-8"))
+                            .collect();
+                        prop_assert_eq!(&*path, expected.join("/"));
+                        prop_assert!(!path.is_empty());
+                        prop_assert!(path.split('/').all(|seg| !seg.is_empty() && seg != "."));
+                    }
+                    Ok(Some(CandidatePath::NonUtf8(prefix))) => {
+                        prop_assert!(prefix.is_empty() || prefix.ends_with('/'));
+                        prop_assert!(!prefix.contains("//") && !prefix.starts_with('/'));
+                    }
+                    Ok(None) => {}
+                    Err(DepthExceededError) => {
+                        prop_assert!(false, "{} segments cannot exceed MAX_PATH_DEPTH", kept.len());
+                    }
+                }
+            }
         }
     }
 }

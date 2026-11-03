@@ -289,44 +289,40 @@ mod tests {
 
     #[test]
     fn completion_message_names_destination() {
+        // The summary line is a README contract. The destination is echoed to the terminal,
+        // so control characters in it must not reach the output.
         let cases = [
             (
-                IngestReport {
-                    output: OutputTarget::File(PathBuf::from("digest.txt")),
-                    included_files: 10,
-                    skipped_files: 2,
-                    estimated_tokens: 1500,
-                },
+                OutputTarget::File(PathBuf::from("digest.txt")),
+                10,
+                2,
+                1500,
                 "Wrote digest.txt (10 files, 2 skipped, ~1500 tokens)",
             ),
             (
-                IngestReport {
-                    output: OutputTarget::Stdout,
-                    included_files: 5,
-                    skipped_files: 0,
-                    estimated_tokens: 300,
-                },
+                OutputTarget::Stdout,
+                5,
+                0,
+                300,
                 "Wrote to stdout (5 files, 0 skipped, ~300 tokens)",
             ),
+            (
+                OutputTarget::File(PathBuf::from("a\x1b[2J\nb.txt")),
+                1,
+                0,
+                1,
+                "Wrote a\u{FFFD}[2J b.txt (1 files, 0 skipped, ~1 tokens)",
+            ),
         ];
-        for (report, expected) in cases {
+        for (output, included_files, skipped_files, estimated_tokens, expected) in cases {
+            let report = IngestReport {
+                output,
+                included_files,
+                skipped_files,
+                estimated_tokens,
+            };
             assert_eq!(completion_message(&report), expected);
         }
-    }
-
-    #[test]
-    fn completion_message_sanitizes_destination_path() {
-        // The destination is echoed to the terminal, so control characters must not reach it.
-        let report = IngestReport {
-            output: OutputTarget::File(PathBuf::from("a\x1b[2J\nb.txt")),
-            included_files: 1,
-            skipped_files: 0,
-            estimated_tokens: 1,
-        };
-        assert_eq!(
-            completion_message(&report),
-            "Wrote a\u{FFFD}[2J b.txt (1 files, 0 skipped, ~1 tokens)"
-        );
     }
 
     #[test]
@@ -373,170 +369,111 @@ mod tests {
 
     #[test]
     fn cli_rejects_invalid_invocations() {
-        let invalid_cases: &[&[&str]] = &[
-            &["codefeed"],
-            &["codefeed", "src", "tests"],
-            &["codefeed", ".", "--ref", "main"],
-            &[
-                "codefeed",
-                "https://github.com/rust-lang/cargo",
-                "--ref",
-                "",
-            ],
-            &[
-                "codefeed",
-                "https://github.com/rust-lang/cargo",
-                "--ref",
-                "   ",
-            ],
-            &["codefeed", "https://github.com/rust-lang/cargo", "-r", "-"],
-            &[
-                "codefeed",
-                "https://github.com/rust-lang/cargo",
-                "--ref",
-                "-",
-            ],
-            &["codefeed", "src", "-f", "-"],
-            &["codefeed", "src", "--format", "-"],
-            &["codefeed", "src", "--format=-x"],
-            &["codefeed", "src", "-o", "-x"],
+        const GH: &str = "https://github.com/rust-lang/cargo";
+        // (argv, fragment unique to the failing branch). Rows with the same flag but a different
+        // value shape exercise `reject_option_like`: only `-o -` may take a bare dash.
+        let cases: &[(&[&str], &str)] = &[
+            (&["codefeed"], "required arguments were not provided"),
+            (
+                &["codefeed", "--ref", ""],
+                "required arguments were not provided",
+            ),
+            (&["codefeed", "src", "tests"], "unexpected argument 'tests'"),
+            (
+                &["codefeed", "--", ".", "extra"],
+                "unexpected argument 'extra'",
+            ),
+            (&["codefeed", ".", "--bogus"], "unknown option: --bogus"),
+            (
+                &["codefeed", ".", "--ref", "main"],
+                "--ref is only valid for GitHub sources",
+            ),
+            (
+                &["codefeed", ".", "--ref", ""],
+                "--ref is only valid for GitHub sources",
+            ),
+            (&["codefeed", GH, "--ref", ""], "--ref cannot be empty"),
+            (&["codefeed", GH, "--ref", "   "], "--ref cannot be empty"),
+            (&["codefeed", GH, "-r", "-"], "a value is required for '-r'"),
+            (
+                &["codefeed", GH, "--ref", "-"],
+                "a value is required for '--ref'",
+            ),
+            (
+                &["codefeed", ".", "--output"],
+                "a value is required for '--output'",
+            ),
+            (
+                &["codefeed", "src", "-o", "-x"],
+                "a value is required for '-o'",
+            ),
+            (
+                &["codefeed", "src", "-f", "-"],
+                "a value is required for '-f'",
+            ),
+            (
+                &["codefeed", "src", "--format", "-"],
+                "a value is required for '--format'",
+            ),
+            (&["codefeed", ".", "-x"], "a value is required for '-x'"),
+            (
+                &["codefeed", ".", "-x", "-foo"],
+                "a value is required for '-x'",
+            ),
+            (
+                &["codefeed", ".", "--exclude", "-"],
+                "a value is required for '--exclude'",
+            ),
+            (
+                &["codefeed", ".", "-f", "yaml"],
+                "invalid value 'yaml' for '--format",
+            ),
+            (
+                &["codefeed", "src", "--format=-x"],
+                "invalid value '-x' for '--format",
+            ),
+            (
+                &["codefeed", ".", "-x", "["],
+                "invalid value '[' for '--exclude",
+            ),
+            (
+                &["codefeed", ".", "--exclude", "#note"],
+                "invalid value '#note' for '--exclude",
+            ),
         ];
-        for args in invalid_cases {
+        for (args, fragment) in cases {
+            let err = parse(args.iter().copied()).expect_err(&format!("{args:?}"));
+            assert!(err.to_string().contains(fragment), "{args:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn cli_argument_errors_are_single_line_without_control_characters() {
+        let cases: [&[&str]; 3] = [
+            &["codefeed", ".", "\x1b[2J"],
+            &["codefeed", "--\x1b[2J"],
+            &["codefeed", ".", "-f", "x\x1b"],
+        ];
+        for args in cases {
+            let rendered = parse(args.iter().copied()).unwrap_err().to_string();
             assert!(
-                parse(args.iter().copied()).is_err(),
-                "expected error for: {args:?}"
+                !rendered.chars().any(char::is_control),
+                "{args:?}: {rendered:?}"
             );
         }
+
+        let err = parse(["codefeed", ".", "\x1b[2J"]).unwrap_err();
+        assert_eq!(err.to_string(), "unexpected argument '\u{FFFD}[2J' found");
     }
 
     #[test]
-    fn cli_usage_messages_are_stable() {
-        // (argv, expected message fragment) for each failure path `parse` owns
-        let cases: [(&[&str], &str); 8] = [
-            (
-                &["codefeed", ".", "--output"][..],
-                "a value is required for '--output' but none was supplied",
-            ),
-            (
-                &["codefeed", ".", "-o", "-x"][..],
-                "a value is required for '-o' but none was supplied",
-            ),
-            (
-                &["codefeed", ".", "--format", "-"][..],
-                "a value is required for '--format' but none was supplied",
-            ),
-            (
-                &["codefeed", ".", "extra"][..],
-                "unexpected argument 'extra' found",
-            ),
-            (
-                &["codefeed", "--", ".", "extra"][..],
-                "unexpected argument 'extra' found",
-            ),
-            (&["codefeed", ".", "--bogus"][..], "unknown option: --bogus"),
-            (
-                &["codefeed", ".", "-f", "yaml"][..],
-                "invalid value 'yaml' for '--format <text|xml>'",
-            ),
-            (
-                &["codefeed"][..],
-                "the following required arguments were not provided",
-            ),
-        ];
-        for (args, expected) in cases {
-            let err = parse(args.iter().copied()).unwrap_err();
-            assert!(err.to_string().contains(expected), "{args:?}: {err}");
+    fn cli_help_takes_precedence_over_other_argument_errors() {
+        for args in [
+            &["codefeed", "--ref", "", "--help"][..],
+            &["codefeed", "--help", "--ref", ""][..],
+        ] {
+            assert_eq!(parse(args.iter().copied()).unwrap(), CliAction::Help);
         }
-    }
-
-    #[cfg(any(unix, windows))]
-    #[test]
-    fn cli_non_utf8_format_reports_lossy_value() {
-        let raw_val = non_utf8_os_value();
-
-        {
-            let args = [
-                std::ffi::OsString::from("codefeed"),
-                std::ffi::OsString::from("."),
-                std::ffi::OsString::from("-f"),
-                raw_val,
-            ];
-            let err = parse(args.iter()).unwrap_err();
-            assert!(
-                err.to_string()
-                    .contains("invalid value '\u{FFFD}' for '--format <text|xml>'"),
-                "unexpected error: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn cli_argument_errors_sanitize_control_characters_on_one_line() {
-        let cases = [
-            (
-                &["codefeed", ".", "\x1b[2J"][..],
-                "unexpected argument '\u{FFFD}[2J' found",
-            ),
-            (
-                &["codefeed", "--\x1b[2J"][..],
-                "unknown option: --\u{FFFD}[2J",
-            ),
-            (
-                &["codefeed", ".", "-f", "x\x1b"][..],
-                "invalid value 'x\u{FFFD}' for '--format <text|xml>'",
-            ),
-        ];
-        for (args, expected) in cases {
-            let err = parse(args.iter().copied()).unwrap_err();
-            let rendered = err.to_string();
-            assert_eq!(rendered, expected, "{args:?}");
-        }
-
-        let missing = parse(["codefeed"]).unwrap_err().to_string();
-        assert_eq!(
-            missing,
-            "the following required arguments were not provided: <SOURCE>"
-        );
-    }
-
-    #[test]
-    fn cli_ref_precedence_and_validation() {
-        assert!(matches!(
-            parse(["codefeed", "--ref", "", "--help"]),
-            Ok(CliAction::Help)
-        ));
-        assert!(matches!(
-            parse(["codefeed", "--help", "--ref", ""]),
-            Ok(CliAction::Help)
-        ));
-
-        let missing_source = parse(["codefeed", "--ref", ""]).unwrap_err();
-        assert!(
-            missing_source
-                .to_string()
-                .contains("required arguments were not provided"),
-            "unexpected error: {missing_source}"
-        );
-
-        let local_ref = parse(["codefeed", ".", "--ref", ""]).unwrap_err();
-        assert!(
-            local_ref
-                .to_string()
-                .contains("--ref is only valid for GitHub sources"),
-            "unexpected error: {local_ref}"
-        );
-
-        let github_ref = parse([
-            "codefeed",
-            "https://github.com/rust-lang/cargo",
-            "--ref",
-            "",
-        ])
-        .unwrap_err();
-        assert!(
-            github_ref.to_string().contains("--ref cannot be empty"),
-            "unexpected error: {github_ref}"
-        );
     }
 
     #[test]
@@ -566,58 +503,27 @@ mod tests {
     fn cli_exclude_value_may_start_with_dash_only_inline() {
         let config = parse_run(["codefeed", ".", "--exclude=-foo"]);
         assert_eq!(config.exclude, ExcludePatterns::new(["-foo"]).unwrap());
-
-        for args in [
-            &["codefeed", ".", "-x", "-foo"][..],
-            &["codefeed", ".", "--exclude", "-"][..],
-        ] {
-            let err = parse(args.iter().copied()).unwrap_err();
-            assert!(
-                err.to_string().contains("a value is required for '")
-                    && err.to_string().contains("' but none was supplied"),
-                "{args:?}: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn cli_exclude_rejects_invalid_patterns_and_missing_values() {
-        let cases: [(&[&str], &str); 3] = [
-            (
-                &["codefeed", ".", "-x", "["][..],
-                "invalid value '[' for '--exclude <PATTERN>'",
-            ),
-            (
-                &["codefeed", ".", "--exclude", "#note"][..],
-                "invalid value '#note' for '--exclude <PATTERN>'",
-            ),
-            (
-                &["codefeed", ".", "-x"][..],
-                "a value is required for '-x' but none was supplied",
-            ),
-        ];
-        for (args, expected) in cases {
-            let err = parse(args.iter().copied()).unwrap_err();
-            assert!(err.to_string().contains(expected), "{args:?}: {err}");
-        }
     }
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn cli_reference_non_utf8_value_is_a_usage_error() {
-        let raw_val = non_utf8_os_value();
-        let args = [
-            std::ffi::OsString::from("codefeed"),
-            std::ffi::OsString::from("https://github.com/owner/repo"),
-            std::ffi::OsString::from("--ref"),
-            raw_val,
+    fn cli_non_utf8_flag_value_is_a_usage_error() {
+        const GH: &str = "https://github.com/owner/repo";
+        let cases = [
+            (".", "-f", "invalid value '\u{FFFD}' for '--format"),
+            (GH, "--ref", "git reference must be valid utf-8"),
+            (".", "-x", "exclude pattern must be valid utf-8"),
         ];
-        let err = parse(args.iter()).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("git reference must be valid utf-8"),
-            "unexpected error: {err}"
-        );
+        for (source, flag, fragment) in cases {
+            let args = [
+                std::ffi::OsString::from("codefeed"),
+                std::ffi::OsString::from(source),
+                std::ffi::OsString::from(flag),
+                non_utf8_os_value(),
+            ];
+            let err = parse(args.iter()).unwrap_err();
+            assert!(err.to_string().contains(fragment), "{flag}: {err}");
+        }
     }
 
     #[cfg(any(unix, windows))]
@@ -632,26 +538,5 @@ mod tests {
             matches!(&config.source, Source::Local(path) if path.as_os_str() == raw_source.as_os_str()),
             "expected local path source"
         );
-    }
-
-    #[cfg(any(unix, windows))]
-    #[test]
-    fn cli_exclude_non_utf8_value_is_a_usage_error() {
-        let raw_val = non_utf8_os_value();
-
-        {
-            let args = [
-                std::ffi::OsString::from("codefeed"),
-                std::ffi::OsString::from("."),
-                std::ffi::OsString::from("-x"),
-                raw_val,
-            ];
-            let err = parse(args.iter()).unwrap_err();
-            assert!(
-                err.to_string()
-                    .contains("exclude pattern must be valid utf-8"),
-                "unexpected error: {err}"
-            );
-        }
     }
 }
