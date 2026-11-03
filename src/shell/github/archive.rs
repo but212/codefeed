@@ -46,15 +46,14 @@ pub(in crate::shell) fn collect<R: Read>(
         budget.disarm();
         let Some(entry_res) = next else { break };
         let mut entry = entry_res.map_err(|err: io::Error| header_error(&err, &budget))?;
+        content_scratch.clear();
         if entry.header().entry_type() == EntryType::XGlobalHeader {
-            content_scratch.clear();
             (&mut entry)
                 .take(ARCHIVE_PAX_GLOBAL_BYTES)
                 .read_to_end(&mut content_scratch)
                 .map_err(|err: io::Error| stream_error(&err))?;
             parsed_revision = parsed_revision.or_else(|| parse_pax_comment(&content_scratch));
         } else {
-            content_scratch.clear();
             selector = process_tar_entry(&mut entry, selector, &mut content_scratch, exclude)?;
         }
         drain_entry(&mut entry)?;
@@ -67,24 +66,25 @@ pub(in crate::shell) fn collect<R: Read>(
 /// Byte budget for one `Entries::next` call (I-03). Armed before the call and disarmed after it, so only
 /// the reads that tar makes for headers and extension bodies are metered. Entry bodies are read unmetered.
 struct HeaderBudget {
-    remaining: Cell<u64>,
+    /// Bytes left for the armed call, or `None` while disarmed (unmetered).
+    remaining: Cell<Option<u64>>,
     exceeded: Cell<bool>,
 }
 
 impl HeaderBudget {
     const fn new() -> Self {
         Self {
-            remaining: Cell::new(u64::MAX),
+            remaining: Cell::new(None),
             exceeded: Cell::new(false),
         }
     }
 
     fn arm(&self) {
-        self.remaining.set(ARCHIVE_MAX_HEADER_BYTES);
+        self.remaining.set(Some(ARCHIVE_MAX_HEADER_BYTES));
     }
 
     fn disarm(&self) {
-        self.remaining.set(u64::MAX);
+        self.remaining.set(None);
     }
 }
 
@@ -97,18 +97,18 @@ struct Metered<'a, R> {
 
 impl<R: Read> Read for Metered<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let remaining = self.budget.remaining.get();
+        let Some(remaining) = self.budget.remaining.get() else {
+            return self.inner.read(buf);
+        };
         if remaining == 0 && !buf.is_empty() {
             self.budget.exceeded.set(true);
             return Err(io::Error::other(
                 "tar entry header exceeds ARCHIVE_MAX_HEADER_BYTES",
             ));
         }
-        let cap = usize::try_from(remaining)
-            .unwrap_or(usize::MAX)
-            .min(buf.len());
+        let cap = usize::try_from(remaining).map_or(buf.len(), |left| left.min(buf.len()));
         let read = self.inner.read(&mut buf[..cap])?;
-        self.budget.remaining.set(remaining - read as u64);
+        self.budget.remaining.set(Some(remaining - read as u64));
         Ok(read)
     }
 }

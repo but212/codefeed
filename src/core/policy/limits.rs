@@ -28,8 +28,7 @@ pub(crate) const OVERFLOW_LARGEST_DIRECTORIES: usize = 3;
 pub(crate) const MAX_PATH_DEPTH: usize = 256;
 /// Maximum allowable path length in bytes (4,096 bytes). Paths exceeding this limit are skipped.
 pub(crate) const MAX_PATH_BYTES: u64 = 4096;
-/// Companion `usize` constant for [`MAX_PATH_BYTES`] used in buffer allocations and tests.
-#[cfg(test)]
+/// Companion `usize` constant for [`MAX_PATH_BYTES`] used in key caps, buffer allocations, and tests.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "MAX_PATH_BYTES (4 KiB) fits in usize on all supported targets"

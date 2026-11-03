@@ -33,16 +33,14 @@ where
 {
     let mut i = 0;
     while i < paths.len() {
-        let (name, is_dir) = component_at_offset(paths[i], offset)
-            .expect("invariant: NormalizedPath extends past every tree offset");
+        let (name, is_dir) = component_at_offset(paths[i], offset);
         let start = i;
         i += 1;
         if is_dir {
             let dir_prefix = &paths[start][offset..=(offset + name.len())];
             while paths
                 .get(i)
-                .and_then(|path| path.get(offset..))
-                .is_some_and(|rem| rem.starts_with(dir_prefix))
+                .is_some_and(|path| path[offset..].starts_with(dir_prefix))
             {
                 i += 1;
             }
@@ -72,15 +70,21 @@ where
     Ok(buf)
 }
 
+/// Returns the path component starting at `offset` and whether a `/` follows it.
+///
+/// # Panics
+///
+/// Panics if `offset` is not a char boundary within `path` or leaves no component. Every path in a
+/// [`SortedFiles`] shares its parent prefix up to `offset`, ends in a non-empty segment
+/// (`NormalizedPath`), and is never the directory prefix of another (I-01), so this cannot happen.
 #[must_use]
-pub(super) fn component_at_offset(path: &str, offset: usize) -> Option<(&str, bool)> {
-    let remainder = path.get(offset..)?;
-    if remainder.is_empty() {
-        return None;
-    }
-    memchr(b'/', remainder.as_bytes()).map_or(Some((remainder, false)), |idx| {
-        Some((&remainder[..idx], true))
-    })
+pub(super) fn component_at_offset(path: &str, offset: usize) -> (&str, bool) {
+    let remainder = &path[offset..];
+    assert!(
+        !remainder.is_empty(),
+        "invariant: NormalizedPath extends past every tree offset"
+    );
+    memchr(b'/', remainder.as_bytes()).map_or((remainder, false), |idx| (&remainder[..idx], true))
 }
 
 #[cfg(test)]
@@ -176,18 +180,24 @@ mod tests {
     #[test]
     fn component_at_offset_slices_correctly_and_handles_boundaries() {
         let path = "alpha/beta/gamma.rs";
-        assert_eq!(component_at_offset(path, 0), Some(("alpha", true)));
-        assert_eq!(component_at_offset(path, 6), Some(("beta", true)));
-        assert_eq!(component_at_offset(path, 11), Some(("gamma.rs", false)));
-        assert_eq!(component_at_offset(path, 19), None);
-        assert_eq!(component_at_offset(path, 100), None);
+        assert_eq!(component_at_offset(path, 0), ("alpha", true));
+        assert_eq!(component_at_offset(path, 6), ("beta", true));
+        assert_eq!(component_at_offset(path, 11), ("gamma.rs", false));
 
         let single = "root_file.txt";
-        assert_eq!(
-            component_at_offset(single, 0),
-            Some(("root_file.txt", false))
-        );
-        assert_eq!(component_at_offset(single, 13), None);
+        assert_eq!(component_at_offset(single, 0), ("root_file.txt", false));
+    }
+
+    #[test]
+    #[should_panic(expected = "NormalizedPath extends past every tree offset")]
+    fn component_at_offset_panics_when_offset_ends_the_path() {
+        let _ = component_at_offset("root_file.txt", 13);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds")]
+    fn component_at_offset_panics_when_offset_passes_the_path() {
+        let _ = component_at_offset("root_file.txt", 100);
     }
 
     #[test]

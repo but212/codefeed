@@ -58,10 +58,7 @@ impl CollectionResult {
     ///
     /// Returns [`DomainError::OutputTooLarge`] if output exceeds the maximum size limit.
     pub(crate) fn render(self, format: DigestFormat) -> Result<RenderedDigest, DomainError> {
-        let capacity = usize::try_from(self.files.total_bytes())
-            .unwrap_or(usize::MAX)
-            .saturating_add(4096);
-        let buf = BoundedBuffer::with_capacity(capacity);
+        let buf = BoundedBuffer::with_capacity(self.files.total_bytes() + 4096);
         let included = self.files.len();
         let skipped = self.skipped;
         let rendered = match format {
@@ -112,8 +109,7 @@ mod tests {
 
         for (label, records) in test_cases {
             let storage: FileStorage = records.into_iter().collect();
-            let raw_bytes =
-                usize::try_from(storage.total_bytes()).expect("storage total bytes fits in usize");
+            let raw_bytes = storage.total_bytes();
 
             let collection = CollectionResult {
                 label: label.to_string(),

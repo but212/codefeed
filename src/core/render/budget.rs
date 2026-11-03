@@ -78,7 +78,7 @@ impl BoundedBuffer {
     }
 
     pub(crate) fn push_bytes(mut self, slice: &[u8]) -> Result<Self, OutputLimitExceeded> {
-        let new_len = self.bytes.len().saturating_add(slice.len());
+        let new_len = self.bytes.len() + slice.len();
         if new_len as u64 > self.limit {
             return Err(OutputLimitExceeded);
         }

@@ -132,8 +132,8 @@ impl FileStorage {
     }
 
     #[must_use]
-    pub(crate) const fn total_bytes(&self) -> u64 {
-        (self.path_arena.len() + self.content_arena.len()) as u64
+    pub(crate) const fn total_bytes(&self) -> usize {
+        self.path_arena.len() + self.content_arena.len()
     }
 
     /// Sorts `spans` (16-byte records) hierarchically by path components in-place, without modifying string arenas.
@@ -157,7 +157,7 @@ impl FileStorage {
         content: &str,
     ) -> Result<Self, DomainError> {
         let path = path.as_str();
-        if self.total_bytes() + path.len() as u64 + content.len() as u64 > MAX_OUTPUT_SIZE {
+        if (self.total_bytes() + path.len() + content.len()) as u64 > MAX_OUTPUT_SIZE {
             let candidate = FileRecord { path, content };
             return Err(DomainError::output_too_large(
                 MAX_OUTPUT_SIZE,
@@ -369,7 +369,7 @@ mod tests {
 
         // Storage byte metrics verification via public contract
         let expected_bytes =
-            (rec1.path.len() + rec1.content.len() + rec2.path.len() + rec2.content.len()) as u64;
+            rec1.path.len() + rec1.content.len() + rec2.path.len() + rec2.content.len();
         assert_eq!(storage.total_bytes(), expected_bytes);
 
         // FromIterator verification
@@ -470,7 +470,7 @@ mod tests {
             match FileStorage::new().push(&path, &content) {
                 Ok(storage) => {
                     assert!(fits, "content length {content_len} must be rejected");
-                    assert_eq!(storage.total_bytes(), MAX_OUTPUT_SIZE);
+                    assert_eq!(storage.total_bytes(), MAX_OUTPUT_SIZE_USIZE);
                 }
                 Err(DomainError::OutputTooLarge(err)) => {
                     assert!(!fits, "content length {content_len} must fit");
