@@ -143,7 +143,6 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 
 ### Shell (`src/shell/`)
 
-- `main.rs`: Entry point invoking `run_cli`.
 - `mod.rs`: `ingest` pipeline.
 - `cli.rs`: `run_cli` (CLI orchestration, stream selection, exit codes).
 - `error.rs`: `IngestError`, `transport_error`.

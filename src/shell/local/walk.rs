@@ -6,7 +6,6 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::vec;
@@ -14,8 +13,9 @@ use std::vec;
 use ignore::gitignore::Gitignore;
 
 use super::gitignore::read_rules;
+use crate::core::error::DomainError;
 use crate::core::path::{AdmittedDir, CandidatePath, DepthExceededError, admit_dir, classify_leaf};
-use crate::core::policy::{ExcludePatterns, is_hidden_segment};
+use crate::core::policy::{ExcludePatterns, MAX_DIR_ENTRIES, is_hidden_segment};
 use crate::shell::IngestError;
 use crate::shell::error::io_error_at;
 
@@ -127,9 +127,7 @@ impl Frame {
     /// Reads `dir`'s `.gitignore`, then lists `dir` with children in file-name order.
     fn enter(dir: &Path, admitted: Arc<AdmittedDir>) -> Result<Self, IngestError> {
         let rules = read_rules(dir)?;
-        let mut entries = fs::read_dir(dir)
-            .and_then(Iterator::collect::<io::Result<Vec<_>>>)
-            .map_err(|err| io_error_at(dir, &err))?;
+        let mut entries = list_dir(dir)?;
         entries.sort_by_key(fs::DirEntry::file_name);
         Ok(Self {
             entries: entries.into_iter(),
@@ -137,6 +135,23 @@ impl Frame {
             admitted,
         })
     }
+}
+
+/// Lists `dir`, failing once it holds more than `MAX_DIR_ENTRIES` entries, so the listing is bounded
+/// before any entry is classified.
+fn list_dir(dir: &Path) -> Result<Vec<fs::DirEntry>, IngestError> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(dir).map_err(|err| io_error_at(dir, &err))? {
+        if entries.len() >= MAX_DIR_ENTRIES {
+            return Err(DomainError::invalid_metadata(format!(
+                "directory exceeds {MAX_DIR_ENTRIES} entries: {}",
+                dir.display()
+            ))
+            .into());
+        }
+        entries.push(entry.map_err(|err| io_error_at(dir, &err))?);
+    }
+    Ok(entries)
 }
 
 /// Whether the closest `.gitignore` that has an opinion on `path` excludes it. A `!` pattern there re-includes it.
@@ -446,6 +461,25 @@ mod tests {
         let item = walk.next();
         assert!(item.is_some());
         assert!(item.unwrap().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn directory_with_more_entries_than_the_limit_fails_before_listing_all()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::core::policy::MAX_DIR_ENTRIES;
+
+        let root = temp_dir("walk_dir_entry_limit")?;
+        // Hidden entries never become candidates, so only the listing limit can stop them.
+        for index in 0..=MAX_DIR_ENTRIES {
+            fs::write(root.join(format!(".h{index}")), "")?;
+        }
+        let exclude = ExcludePatterns::default();
+        let err = Walk::new(&root, &exclude).err();
+        assert!(
+            matches!(&err, Some(IngestError::Domain(DomainError::InvalidMetadata(msg))) if msg.contains("exceeds")),
+            "expected directory entry limit failure, got: {err:?}"
+        );
         Ok(())
     }
 }

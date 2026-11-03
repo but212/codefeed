@@ -35,11 +35,13 @@ Entry (local walk or tar stream)
  +-- Directory (local walk only)
  |     +-- Entered: `.gitignore` read once; the same bytes validate and compile its rules.
  |     |     `-- Symlink, non-regular file, larger than `MAX_FILE_SIZE`, unreadable, or not valid UTF-8 -> Run fails (Io). Sec. 3.5.
+ |     +-- Listing over `MAX_DIR_ENTRIES` entries (hidden and ignored included) -> Run fails (InvalidMetadata).
  |     +-- Hidden or ignored by a `.gitignore` -> Pruned, not entered; its `.gitignore` is never read.
  |     `-- Matched by a user exclusion (sec. 3.6) -> Pruned, not entered; its `.gitignore` is never read.
  |
  +-- Tar header read (`Entries::next`, GNU `L`/`K` and PAX `x` bodies included). Runs before path classification and applies to every entry type.
  |     `-- Over `ARCHIVE_MAX_HEADER_BYTES` for one read -> Run fails (InvalidMetadata), even for entries that would be dropped.
+ +-- Decompressed archive stream over `ARCHIVE_MAX_DECOMPRESSED_BYTES` -> Run fails (InvalidMetadata), entry bodies included.
  |
  +-- Non-regular file (symlink, FIFO, socket, device, non-file tar header)
  |     `-- Dropped silently. Omitted from count.
@@ -180,7 +182,7 @@ Candidate budget overflow aborts the run without emitting partial output.
 ### 6.4 Streaming
 
 - Fetches tarball in a single HTTP request (`/repos/{owner}/{repo}/tarball/{ref}`). Streams via gzip/tar directly into `Selector::observe` without disk spooling.
-- Each tar header read is metered against `ARCHIVE_MAX_HEADER_BYTES`, so an extension body cannot allocate past that budget before its path is checked. Entry bodies are not metered.
+- Each tar header read is metered against `ARCHIVE_MAX_HEADER_BYTES`, so an extension body cannot allocate past that budget before its path is checked. Entry bodies are not metered by the header budget; the whole decompressed stream is metered against `ARCHIVE_MAX_DECOMPRESSED_BYTES`.
 
 ### 6.5 Retries
 
@@ -226,6 +228,8 @@ Sole documentation mirror for numerical limits (authoritative definitions reside
 | `MAX_OUTPUT_SIZE` | 20 MiB | Storage check & buffer | Run fails; lists `OVERFLOW_LARGEST_FILES` largest files |
 | `ARCHIVE_BUFFER_BYTES` | 64 KiB | Archive read buffer | Buffering parameter (no overflow) |
 | `ARCHIVE_MAX_HEADER_BYTES` | 64 KiB | Archive header read budget | Run fails (`InvalidMetadata`) |
+| `ARCHIVE_MAX_DECOMPRESSED_BYTES` | 256 MiB | Decompressed archive stream meter | Run fails (`InvalidMetadata`) |
+| `MAX_DIR_ENTRIES` | 20,000 entries | Local directory listing | Run fails (`InvalidMetadata`) |
 | `ARCHIVE_PAX_GLOBAL_BYTES` | 1 KiB | PAX global header read | Revision falls back to the requested ref |
 | `GITHUB_ERROR_BODY_BYTES` | 4 KiB | GitHub API error body read | Rest of body left out of the message |
 | `LOCAL_CHANNEL_CAPACITY` | 64 messages | Channel bounds | Blocks sender (no overflow) |

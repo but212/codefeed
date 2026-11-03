@@ -10,8 +10,8 @@ use crate::core::collection::CollectionResult;
 use crate::core::error::DomainError;
 use crate::core::github::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::policy::{
-    ARCHIVE_BUFFER_BYTES, ARCHIVE_MAX_HEADER_BYTES, ARCHIVE_PAX_GLOBAL_BYTES, ExcludePatterns,
-    MAX_FILE_SIZE,
+    ARCHIVE_BUFFER_BYTES, ARCHIVE_MAX_DECOMPRESSED_BYTES, ARCHIVE_MAX_HEADER_BYTES,
+    ARCHIVE_PAX_GLOBAL_BYTES, ExcludePatterns, MAX_FILE_SIZE,
 };
 use crate::core::selector::Selector;
 use crate::shell::IngestError;
@@ -28,108 +28,153 @@ pub(in crate::shell) fn collect<R: Read>(
     default_reference: Option<&str>,
     exclude: &ExcludePatterns,
 ) -> Result<CollectionResult, IngestError> {
-    let budget = HeaderBudget::new();
+    let meter = StreamMeter::new();
     let mut archive = Archive::new(Metered {
         inner: GzDecoder::new(BufReader::with_capacity(ARCHIVE_BUFFER_BYTES, reader)),
-        budget: &budget,
+        meter: &meter,
     });
     let mut entries = archive
         .entries()
-        .map_err(|err: io::Error| stream_error(&err))?;
+        .map_err(|err: io::Error| stream_error(&err, &meter))?;
     let mut parsed_revision = None;
     let mut selector = Selector::new();
     let mut content_scratch = Vec::with_capacity(32 * 1024);
 
     loop {
-        budget.arm();
+        meter.arm();
         let next = entries.next();
-        budget.disarm();
+        meter.disarm();
         let Some(entry_res) = next else { break };
-        let mut entry = entry_res.map_err(|err: io::Error| header_error(&err, &budget))?;
+        let mut entry = entry_res.map_err(|err: io::Error| stream_error(&err, &meter))?;
         content_scratch.clear();
         if entry.header().entry_type() == EntryType::XGlobalHeader {
             (&mut entry)
                 .take(ARCHIVE_PAX_GLOBAL_BYTES)
                 .read_to_end(&mut content_scratch)
-                .map_err(|err: io::Error| stream_error(&err))?;
+                .map_err(|err: io::Error| stream_error(&err, &meter))?;
             parsed_revision = parsed_revision.or_else(|| parse_pax_comment(&content_scratch));
         } else {
-            selector = process_tar_entry(&mut entry, selector, &mut content_scratch, exclude)?;
+            selector =
+                process_tar_entry(&mut entry, selector, &mut content_scratch, exclude, &meter)?;
         }
-        drain_entry(&mut entry)?;
+        drain_entry(&mut entry, &meter)?;
     }
 
     let revision = parsed_revision.or_else(|| default_reference.map(str::to_string));
     Ok(selector.finish(label.to_string(), revision)?)
 }
 
-/// Byte budget for one `Entries::next` call (I-03). Armed before the call and disarmed after it, so only
-/// the reads that tar makes for headers and extension bodies are metered. Entry bodies are read unmetered.
-struct HeaderBudget {
-    /// Bytes left for the armed call, or `None` while disarmed (unmetered).
-    remaining: Cell<Option<u64>>,
-    exceeded: Cell<bool>,
+/// Which stream limit a read overran. Recorded on the [`StreamMeter`] so the failure cannot be mistaken
+/// for a transport error once tar or gzip wrap the `io::Error`.
+#[derive(Debug, Clone, Copy)]
+enum Overrun {
+    /// One `Entries::next` call read more than `ARCHIVE_MAX_HEADER_BYTES` (I-03).
+    Header,
+    /// The decompressed stream is longer than `ARCHIVE_MAX_DECOMPRESSED_BYTES`.
+    Decompressed,
 }
 
-impl HeaderBudget {
+impl Overrun {
+    const fn message(self) -> &'static str {
+        match self {
+            Self::Header => "tar entry header exceeds ARCHIVE_MAX_HEADER_BYTES",
+            Self::Decompressed => "decompressed archive exceeds ARCHIVE_MAX_DECOMPRESSED_BYTES",
+        }
+    }
+}
+
+/// Byte meters on the decompressed stream. The header budget (I-03) is armed before an `Entries::next`
+/// call and disarmed after it, so only the reads tar makes for headers and extension bodies count
+/// against it. The total counts every read, entry bodies included.
+struct StreamMeter {
+    /// Bytes left for the armed call, or `None` while disarmed (unmetered).
+    header_remaining: Cell<Option<u64>>,
+    /// Decompressed bytes read so far.
+    total: Cell<u64>,
+    overrun: Cell<Option<Overrun>>,
+}
+
+impl StreamMeter {
     const fn new() -> Self {
         Self {
-            remaining: Cell::new(None),
-            exceeded: Cell::new(false),
+            header_remaining: Cell::new(None),
+            total: Cell::new(0),
+            overrun: Cell::new(None),
         }
     }
 
     fn arm(&self) {
-        self.remaining.set(Some(ARCHIVE_MAX_HEADER_BYTES));
+        self.header_remaining.set(Some(ARCHIVE_MAX_HEADER_BYTES));
     }
 
     fn disarm(&self) {
-        self.remaining.set(None);
+        self.header_remaining.set(None);
+    }
+
+    /// Records `overrun` and returns the error that stops the read.
+    fn fail(&self, overrun: Overrun) -> io::Error {
+        self.overrun.set(Some(overrun));
+        io::Error::other(overrun.message())
+    }
+
+    /// Largest read allowed now. The total allows one byte past its limit, so an overrun is detected
+    /// rather than mistaken for end of stream.
+    fn read_cap(&self, requested: usize) -> io::Result<usize> {
+        let header = match self.header_remaining.get() {
+            Some(0) if requested > 0 => return Err(self.fail(Overrun::Header)),
+            Some(remaining) => remaining,
+            None => u64::MAX,
+        };
+        let total = ARCHIVE_MAX_DECOMPRESSED_BYTES - self.total.get() + 1;
+        let allowed = header.min(total).min(requested as u64);
+        // `allowed <= requested`, so it fits in `usize`.
+        Ok(usize::try_from(allowed).unwrap_or(requested))
+    }
+
+    /// Accounts for `read` bytes just read.
+    fn record(&self, read: usize) -> io::Result<()> {
+        let read = read as u64;
+        let total = self.total.get() + read;
+        self.total.set(total);
+        if total > ARCHIVE_MAX_DECOMPRESSED_BYTES {
+            return Err(self.fail(Overrun::Decompressed));
+        }
+        if let Some(remaining) = self.header_remaining.get() {
+            self.header_remaining.set(Some(remaining - read));
+        }
+        Ok(())
     }
 }
 
-/// Meters the decompressed stream against a [`HeaderBudget`]. A read at an exhausted budget records the
-/// overrun and fails, so the failure cannot be mistaken for a transport error.
+/// Reader that applies a [`StreamMeter`] to the decompressed stream.
 struct Metered<'a, R> {
     inner: R,
-    budget: &'a HeaderBudget,
+    meter: &'a StreamMeter,
 }
 
 impl<R: Read> Read for Metered<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let Some(remaining) = self.budget.remaining.get() else {
-            return self.inner.read(buf);
-        };
-        if remaining == 0 && !buf.is_empty() {
-            self.budget.exceeded.set(true);
-            return Err(io::Error::other(
-                "tar entry header exceeds ARCHIVE_MAX_HEADER_BYTES",
-            ));
-        }
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "remaining <= ARCHIVE_MAX_HEADER_BYTES, which policy/limits.rs asserts fits in usize"
-        )]
-        let cap = (remaining as usize).min(buf.len());
+        let cap = self.meter.read_cap(buf.len())?;
         let read = self.inner.read(&mut buf[..cap])?;
-        self.budget.remaining.set(Some(remaining - read as u64));
+        self.meter.record(read)?;
         Ok(read)
     }
 }
 
-/// Maps a failure from `Entries::next` to a run error. An overrun is a policy violation: the entry's path
-/// is never parsed, so the entry cannot be counted as skipped.
-fn header_error(err: &io::Error, budget: &HeaderBudget) -> IngestError {
-    if budget.exceeded.get() {
-        DomainError::invalid_metadata("tar entry header exceeds ARCHIVE_MAX_HEADER_BYTES").into()
-    } else {
-        stream_error(err)
-    }
+/// Maps a failure while streaming the archive to a run error. A limit overrun is a policy violation
+/// (for a header, the entry's path is never parsed, so it cannot be counted as skipped). Any other
+/// `io::Error` here comes from the network body, gzip, or tar decoding, so it never surfaces as a
+/// filesystem error.
+fn stream_error(err: &io::Error, meter: &StreamMeter) -> IngestError {
+    meter.overrun.get().map_or_else(
+        || transport_error(&err.to_string()),
+        |overrun| DomainError::invalid_metadata(overrun.message()).into(),
+    )
 }
 
 /// Discards the unread rest of an entry body, so the next header read starts at its padding.
-fn drain_entry<R: Read>(entry: &mut tar::Entry<R>) -> Result<(), IngestError> {
-    io::copy(entry, &mut io::sink()).map_err(|err: io::Error| stream_error(&err))?;
+fn drain_entry<R: Read>(entry: &mut tar::Entry<R>, meter: &StreamMeter) -> Result<(), IngestError> {
+    io::copy(entry, &mut io::sink()).map_err(|err: io::Error| stream_error(&err, meter))?;
     Ok(())
 }
 
@@ -138,6 +183,7 @@ fn process_tar_entry<R: Read>(
     selector: Selector,
     content_scratch: &mut Vec<u8>,
     exclude: &ExcludePatterns,
+    meter: &StreamMeter,
 ) -> Result<Selector, IngestError> {
     // 1. Skip directories, symlinks, and special entries before path decoding
     if !matches!(
@@ -160,15 +206,9 @@ fn process_tar_entry<R: Read>(
         entry
             .take(MAX_FILE_SIZE + 1)
             .read_to_end(content_scratch)
-            .map_err(|err: std::io::Error| stream_error(&err))?;
+            .map_err(|err: io::Error| stream_error(&err, meter))?;
         Ok(Some(content_scratch))
     })
-}
-
-/// Maps any failure while streaming the archive to a request error. Every `io::Error` here comes from the
-/// network body, gzip, or tar decoding, so it never surfaces as a filesystem error.
-fn stream_error(err: &std::io::Error) -> IngestError {
-    transport_error(&err.to_string())
 }
 
 #[cfg(test)]
@@ -672,5 +712,20 @@ mod tests {
         ]);
 
         assert_header_budget_failure(&mock_data);
+    }
+
+    #[test]
+    fn decompressed_stream_beyond_the_limit_fails_the_run() {
+        use crate::core::policy::ARCHIVE_MAX_DECOMPRESSED_BYTES;
+
+        // One oversized entry is skipped, but its body is still drained from the stream.
+        let body = vec![b'x'; usize::try_from(ARCHIVE_MAX_DECOMPRESSED_BYTES).unwrap() + 1];
+        let mock_data = gzip_tarball(&[("repo-root/big.txt", &body, EntryType::Regular)]);
+
+        let err = collect_default(&mock_data, "label", None).unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(msg)) if msg.contains("ARCHIVE_MAX_DECOMPRESSED_BYTES")),
+            "expected decompressed limit failure, got: {err:?}"
+        );
     }
 }

@@ -34,6 +34,10 @@ pub(crate) const MAX_PATH_BYTES: u64 = 4096;
     reason = "MAX_PATH_BYTES (4 KiB) fits in usize on all supported targets"
 )]
 pub(crate) const MAX_PATH_BYTES_USIZE: usize = MAX_PATH_BYTES as usize;
+/// Maximum entries one local directory may list (20,000 entries), hidden and ignored ones included. Overflow fails the run.
+pub(crate) const MAX_DIR_ENTRIES: usize = 20_000;
+/// Maximum decompressed archive stream length (256 MiB in bytes), entry bodies included. Overflow fails the run.
+pub(crate) const ARCHIVE_MAX_DECOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
 /// Capacity in bytes for buffering incoming archive decompression streams (64 KiB).
 pub(crate) const ARCHIVE_BUFFER_BYTES: usize = 64 * 1024;
 /// Bytes one tar entry-header read may consume from the decompressed archive stream (64 KiB). Covers the
@@ -81,6 +85,8 @@ const _: () = {
     assert!(ARCHIVE_MAX_HEADER_BYTES >= 511 + 3 * (512 + MAX_PATH_BYTES + 1024) + 512);
     // One maximal record `NN comment=<64 hex>\n` (`parse_pax_comment` accepts 64-hex SHAs).
     assert!(ARCHIVE_PAX_GLOBAL_BYTES >= ("NN comment=".len() + 64 + 1) as u64);
+    assert!(MAX_DIR_ENTRIES > 0);
+    assert!(ARCHIVE_MAX_DECOMPRESSED_BYTES >= MAX_OUTPUT_SIZE);
     assert!(LOCAL_CHANNEL_CAPACITY > 0);
     assert!(MAX_LOCAL_WORKERS > 0);
     assert!(MAX_FILE_SIZE as usize as u64 == MAX_FILE_SIZE);
@@ -177,6 +183,14 @@ mod tests {
             (
                 "ARCHIVE_MAX_HEADER_BYTES",
                 format!("{} KiB", ARCHIVE_MAX_HEADER_BYTES / 1024),
+            ),
+            (
+                "ARCHIVE_MAX_DECOMPRESSED_BYTES",
+                format!("{} MiB", ARCHIVE_MAX_DECOMPRESSED_BYTES / (1024 * 1024)),
+            ),
+            (
+                "MAX_DIR_ENTRIES",
+                format!("{} entries", format_with_commas(MAX_DIR_ENTRIES as u64)),
             ),
             (
                 "ARCHIVE_PAX_GLOBAL_BYTES",

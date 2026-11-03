@@ -17,6 +17,10 @@ Observable behavior. **Action** = code or config change required.
 - **`GithubName` drops `#[repr(transparent)]`**: The struct no longer promises identical memory layout to `String` (`src/core/source.rs`).
   - **Action:** Code relying on transmuting or FFI-passing `GithubName` as `String` must use `GithubName::as_str` or `to_string`.
 
+#### Fixed
+
+- **Unbounded directory listing and decompressed archive stream**: A local directory with more than `MAX_DIR_ENTRIES` entries (hidden and ignored included) and a GitHub archive whose decompressed stream exceeds `ARCHIVE_MAX_DECOMPRESSED_BYTES` now fail the run with `InvalidMetadata` (`src/shell/local/walk.rs`, `src/shell/github/archive.rs`, `src/core/policy/limits.rs`).
+
 ### Contributors
 
 Internal change. No consumer action required.

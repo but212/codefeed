@@ -121,6 +121,8 @@ Limits either skip an entry or abort the run. Limit values and enforcement detai
 | `MAX_FILE_COUNT` | Run fails; error lists largest directories. |
 | `MAX_OUTPUT_SIZE` | Run fails; no digest written; error lists largest files. |
 | `ARCHIVE_MAX_HEADER_BYTES` | Run fails. A tar header, including long-name or PAX data, exceeds the budget. |
+| `ARCHIVE_MAX_DECOMPRESSED_BYTES` | Run fails. The decompressed archive stream exceeds the limit. |
+| `MAX_DIR_ENTRIES` | Run fails. A local directory lists more entries than the limit. |
 | `ARCHIVE_MAX_SECS`, `GITHUB_TIMEOUT_SECS` | Request times out. Header timeouts retry per [sec. 6.5-6.6](docs/security_and_filtering.md#6-github-network-safety). |
 | `MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS` | Transient failures retried with backoff. Waits longer than the cap abort the run. See [sec. 6.5](docs/security_and_filtering.md#6-github-network-safety). |
 
