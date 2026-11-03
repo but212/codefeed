@@ -77,7 +77,7 @@ fn read_bounded(path: &Path, file_len: u64) -> Result<Option<Vec<u8>>, IngestErr
         Err(err) if is_unavailable_file(&err) => return Ok(None),
         Err(err) => return Err(io_error_at(path, &err)),
     };
-    let mut buf = Vec::with_capacity(usize::try_from(file_len).unwrap_or_else(|_| usize::MAX));
+    let mut buf = Vec::with_capacity(usize::try_from(file_len).unwrap_or(usize::MAX));
     match file.take(MAX_FILE_SIZE + 1).read_to_end(&mut buf) {
         Ok(_) => Ok(Some(buf)),
         Err(err) if is_unavailable_file(&err) => Ok(None),
