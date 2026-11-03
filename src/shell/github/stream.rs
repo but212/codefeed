@@ -46,11 +46,7 @@ impl Attempt {
                 )
             }
             Err(error) => {
-                let kind = if is_retryable_transport_error(&error) {
-                    TransportKind::Retryable
-                } else {
-                    TransportKind::Permanent
-                };
+                let kind = transport_kind(&error);
                 (Self::Transport(error), RequestOutcome::TransportError(kind))
             }
         }
@@ -116,11 +112,13 @@ impl GithubClient {
     }
 }
 
-const fn is_retryable_transport_error(error: &ureq::Error) -> bool {
-    matches!(
-        error,
-        ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed
-    )
+const fn transport_kind(error: &ureq::Error) -> TransportKind {
+    match error {
+        ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed => {
+            TransportKind::Retryable
+        }
+        _ => TransportKind::Permanent,
+    }
 }
 
 /// Reads rate-limit headers from a response. A present but non-UTF-8 header counts as present with no value.
@@ -314,17 +312,21 @@ mod tests {
 
     #[test]
     fn does_not_retry_non_transient_transport_error() {
-        assert!(is_retryable_transport_error(&ureq::Error::Timeout(
-            ureq::Timeout::Global
-        )));
-        assert!(is_retryable_transport_error(&ureq::Error::ConnectionFailed));
-        assert!(is_retryable_transport_error(&ureq::Error::Io(
-            std::io::Error::from(std::io::ErrorKind::ConnectionReset)
-        )));
-        assert!(!is_retryable_transport_error(&ureq::Error::HostNotFound));
-        assert!(!is_retryable_transport_error(&ureq::Error::Tls(
-            "cert error"
-        )));
+        let retryable = TransportKind::Retryable;
+        let permanent = TransportKind::Permanent;
+        assert_eq!(
+            transport_kind(&ureq::Error::Timeout(ureq::Timeout::Global)),
+            retryable
+        );
+        assert_eq!(transport_kind(&ureq::Error::ConnectionFailed), retryable);
+        assert_eq!(
+            transport_kind(&ureq::Error::Io(std::io::Error::from(
+                std::io::ErrorKind::ConnectionReset
+            ))),
+            retryable
+        );
+        assert_eq!(transport_kind(&ureq::Error::HostNotFound), permanent);
+        assert_eq!(transport_kind(&ureq::Error::Tls("cert error")), permanent);
 
         let server = MockServer::spawn(1, |_index, _req, _port| b"NOT_HTTP/1.1\r\n\r\n".to_vec());
 
