@@ -5,6 +5,7 @@
 
 use std::cmp::Ordering;
 use std::iter::once;
+use std::num::TryFromIntError;
 use std::ops::Deref;
 
 use crate::core::error::DomainError;
@@ -165,16 +166,12 @@ impl FileStorage {
         }
         // Accepted total is at most `MAX_OUTPUT_SIZE`, which `policy/limits.rs` asserts is `<= u32::MAX`,
         // so every arena offset and length below fits in `u32`.
-        let path_offset = u32::try_from(self.path_arena.len())
-            .expect("invariant: arena bounded by MAX_OUTPUT_SIZE");
-        let path_len =
-            u32::try_from(path.len()).expect("invariant: arena bounded by MAX_OUTPUT_SIZE");
+        let path_offset = arena_u32(self.path_arena.len());
+        let path_len = arena_u32(path.len());
         self.path_arena.push_str(path);
 
-        let content_offset = u32::try_from(self.content_arena.len())
-            .expect("invariant: arena bounded by MAX_OUTPUT_SIZE");
-        let content_len =
-            u32::try_from(content.len()).expect("invariant: arena bounded by MAX_OUTPUT_SIZE");
+        let content_offset = arena_u32(self.content_arena.len());
+        let content_len = arena_u32(content.len());
         self.content_arena.push_str(content);
 
         let span = FileSpan {
@@ -200,6 +197,20 @@ impl FileStorage {
     pub(crate) fn output_too_large_error(&self) -> DomainError {
         DomainError::output_too_large(MAX_OUTPUT_SIZE, largest_files(self.iter()))
     }
+}
+
+/// Narrows an arena offset or length to `u32`.
+///
+/// The failure path lives in a single `#[cold]` function so the panic message and location are
+/// emitted once instead of per call site.
+fn arena_u32(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or_else(|error| arena_bound_violated(error))
+}
+
+#[cold]
+#[inline(never)]
+fn arena_bound_violated(error: TryFromIntError) -> ! {
+    panic!("invariant: arena bounded by MAX_OUTPUT_SIZE: {error:?}")
 }
 
 #[cfg(test)]
