@@ -106,7 +106,11 @@ impl<R: Read> Read for Metered<'_, R> {
                 "tar entry header exceeds ARCHIVE_MAX_HEADER_BYTES",
             ));
         }
-        let cap = usize::try_from(remaining).map_or(buf.len(), |left| left.min(buf.len()));
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "remaining <= ARCHIVE_MAX_HEADER_BYTES, which policy/limits.rs asserts fits in usize"
+        )]
+        let cap = (remaining as usize).min(buf.len());
         let read = self.inner.read(&mut buf[..cap])?;
         self.budget.remaining.set(Some(remaining - read as u64));
         Ok(read)
@@ -145,12 +149,14 @@ fn process_tar_entry<R: Read>(
 
     // 2. Path decoding, root stripping, normalization & policy classification
     let path_bytes = entry.path_bytes();
-    let status = normalize_tar_entry_path(&path_bytes, exclude)?;
+    let Some(candidate) = normalize_tar_entry_path(&path_bytes, exclude)? else {
+        return Ok(selector);
+    };
 
     let size_hint = Some(entry.size());
 
     // 3. Pre-I/O candidate admission: the body is read only if the candidate is admitted
-    selector.observe(status, size_hint, move || {
+    selector.observe(candidate, size_hint, move || {
         entry
             .take(MAX_FILE_SIZE + 1)
             .read_to_end(content_scratch)

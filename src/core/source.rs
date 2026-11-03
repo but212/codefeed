@@ -36,7 +36,6 @@ impl std::ops::Deref for GitRef {
 
 /// Validated GitHub owner or repository name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(transparent)]
 pub struct GithubName(String);
 
 impl GithubName {

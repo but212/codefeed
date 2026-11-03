@@ -19,9 +19,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
-use super::read::{Candidate, WorkerMsg, read_candidate};
+use super::read::{Candidate, read_candidate};
 use super::walk::{RegularFile, Walk, classify_entry};
-use crate::core::path::{NormalizedPath, PathStatus};
+use crate::core::path::{CandidatePath, NormalizedPath};
 use crate::core::policy::{ExcludePatterns, LOCAL_CHANNEL_CAPACITY, MAX_LOCAL_WORKERS};
 use crate::shell::IngestError;
 
@@ -29,13 +29,13 @@ use crate::shell::IngestError;
 struct Job {
     path: NormalizedPath,
     entry_path: PathBuf,
-    reply: SyncSender<WorkerMsg>,
+    reply: SyncSender<Result<Option<Candidate>, IngestError>>,
 }
 
 /// One walk entry in walk order: decided on the producer thread, or waiting for a worker.
 enum Slot {
-    Ready(WorkerMsg),
-    Pending(Receiver<WorkerMsg>),
+    Ready(Result<Option<Candidate>, IngestError>),
+    Pending(Receiver<Result<Option<Candidate>, IngestError>>),
 }
 
 /// Walks `root` in sorted order and folds each candidate through `step` in that order.
@@ -80,11 +80,11 @@ fn dispatch(
         Err(err) => return Some(Slot::Ready(Err(err))),
     };
     let path = match classify_entry(output, exclude, &file) {
-        Ok(PathStatus::Ignored) => return None,
-        Ok(PathStatus::NonUtf8Candidate(prefix)) => {
+        Ok(None) => return None,
+        Ok(Some(CandidatePath::NonUtf8(prefix))) => {
             return Some(Slot::Ready(Ok(Some(Candidate::NonUtf8(prefix)))));
         }
-        Ok(PathStatus::Valid(path)) => path,
+        Ok(Some(CandidatePath::Valid(path))) => path,
         Err(err) => return Some(Slot::Ready(Err(err))),
     };
 
@@ -214,7 +214,7 @@ mod tests {
             Vec::new(),
             |mut paths, candidate| {
                 if let Candidate::File(path, _) = candidate {
-                    paths.push(path.as_str().to_string());
+                    paths.push(path.to_string());
                 }
                 Ok(paths)
             },

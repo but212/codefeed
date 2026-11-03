@@ -14,8 +14,8 @@ use crate::core::policy::{ARCHIVE_MAX_SECS, GITHUB_TIMEOUT_SECS, TOKEN_ENV_VARS}
 pub(super) const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 
 pub(super) struct GithubClient {
-    pub(super) agent: Agent,
-    pub(super) auth_header: Option<Zeroizing<String>>,
+    agent: Agent,
+    auth_header: Option<Zeroizing<String>>,
 }
 
 impl GithubClient {
@@ -32,7 +32,9 @@ impl GithubClient {
             .tls_config(tls)
             .build();
 
-        let auth_header = resolve_token_from_env().as_ref().map(bearer_header);
+        let auth_header = resolve_token_with(|k| std::env::var(k))
+            .as_ref()
+            .map(bearer_header);
 
         Self {
             agent: Agent::new_with_config(config),
@@ -80,10 +82,6 @@ where
         let trimmed = raw.trim_ascii();
         (!trimmed.is_empty()).then(|| Zeroizing::new(trimmed.to_string()))
     })
-}
-
-fn resolve_token_from_env() -> Option<Zeroizing<String>> {
-    resolve_token_with(|k| std::env::var(k))
 }
 
 fn bearer_header(token: &Zeroizing<String>) -> Zeroizing<String> {

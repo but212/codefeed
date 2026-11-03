@@ -6,7 +6,7 @@ use memchr::memchr;
 
 use crate::core::collection::CollectionResult;
 use crate::core::error::DomainError;
-use crate::core::path::PathStatus;
+use crate::core::path::CandidatePath;
 use crate::core::policy::{
     MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, MAX_PATH_BYTES_USIZE,
     OVERFLOW_LARGEST_DIRECTORIES,
@@ -120,9 +120,8 @@ impl Selector {
 
     /// Observes one candidate entry and settles it.
     ///
-    /// - [`PathStatus::Ignored`] is dropped without consuming candidate budget.
-    /// - [`PathStatus::NonUtf8Candidate`] and paths over the size limits consume candidate budget and are skipped.
-    /// - [`PathStatus::Valid`] consumes candidate budget and must not repeat an earlier valid path within `MAX_PATH_BYTES`,
+    /// - [`CandidatePath::NonUtf8`] and paths over the size limits consume candidate budget and are skipped.
+    /// - [`CandidatePath::Valid`] consumes candidate budget and must not repeat an earlier valid path within `MAX_PATH_BYTES`,
     ///   then, within the size limits, `read` runs; its bytes are stored when they are UTF-8 text, and skipped otherwise or when `None` (unavailable file).
     ///
     /// # Errors
@@ -130,17 +129,16 @@ impl Selector {
     /// Returns budget, duplicate-path, or output-limit errors as `E`, and any error from `read` unchanged.
     pub(crate) fn observe<B: AsRef<[u8]>, E: From<DomainError>>(
         mut self,
-        status: PathStatus,
+        candidate: CandidatePath,
         size_hint: Option<u64>,
         read: impl FnOnce() -> Result<Option<B>, E>,
     ) -> Result<Self, E> {
-        let path = match status {
-            PathStatus::Ignored => return Ok(self),
-            PathStatus::NonUtf8Candidate(prefix) => {
+        let path = match candidate {
+            CandidatePath::NonUtf8(prefix) => {
                 self.candidates = self.candidates.add(&prefix)?;
                 return Ok(self.skip());
             }
-            PathStatus::Valid(path) => path,
+            CandidatePath::Valid(path) => path,
         };
         self.candidates = self.candidates.add(&path)?;
         self = self.claim_path(&path)?;
@@ -331,13 +329,13 @@ mod tests {
         // Fill the output to one file short of its limit; the next file overflows it.
         for i in 0..MAX_OUTPUT_SIZE_USIZE / MAX_FILE_SIZE_USIZE - 1 {
             selector = selector.observe(
-                PathStatus::Valid(format!("file_{i:02}.txt").into()),
+                CandidatePath::Valid(format!("file_{i:02}.txt").into()),
                 None,
                 || Ok::<_, DomainError>(Some(chunk.as_slice())),
             )?;
         }
         let err = selector
-            .observe(PathStatus::Valid("overflow.txt".into()), None, || {
+            .observe(CandidatePath::Valid("overflow.txt".into()), None, || {
                 Ok::<_, DomainError>(Some(chunk.as_slice()))
             })
             .unwrap_err();
@@ -355,7 +353,7 @@ mod tests {
     fn observe_enforces_candidate_budget_before_read() -> Result<(), Box<dyn std::error::Error>> {
         let mut selector = Selector::new();
         for i in 0..MAX_FILE_COUNT {
-            let path = PathStatus::Valid(format!("file_{i}.txt").into());
+            let path = CandidatePath::Valid(format!("file_{i}.txt").into());
             selector =
                 selector.observe(path, None, || Ok::<_, DomainError>(Some(&b"content"[..])))?;
         }
@@ -363,7 +361,7 @@ mod tests {
         // The 10,001st candidate fails at admission, so its read closure must never run.
         let err = selector
             .observe(
-                PathStatus::Valid("overflow.txt".into()),
+                CandidatePath::Valid("overflow.txt".into()),
                 None,
                 || -> Result<Option<Vec<u8>>, DomainError> {
                     panic!("read must not run past the candidate budget")
@@ -378,14 +376,14 @@ mod tests {
     fn non_utf8_candidate_consumes_budget_and_fails_when_exhausted() -> Result<(), DomainError> {
         let mut selector = Selector::new();
         for i in 0..MAX_FILE_COUNT {
-            let path = PathStatus::Valid(format!("file_{i}.txt").into());
+            let path = CandidatePath::Valid(format!("file_{i}.txt").into());
             selector =
                 selector.observe(path, None, || Ok::<_, DomainError>(Some(&b"content"[..])))?;
         }
 
         let err = selector
             .observe(
-                PathStatus::NonUtf8Candidate("dir/".into()),
+                CandidatePath::NonUtf8("dir/".into()),
                 None,
                 || -> Result<Option<Vec<u8>>, DomainError> {
                     panic!("non-UTF-8 candidates are never read")
@@ -408,9 +406,10 @@ mod tests {
             ("gone.txt", None, 0, 1),
         ];
         for (path, content, included, skipped) in cases {
-            let selector = Selector::new().observe(PathStatus::Valid(path.into()), None, || {
-                Ok::<_, DomainError>(content)
-            })?;
+            let selector =
+                Selector::new().observe(CandidatePath::Valid(path.into()), None, || {
+                    Ok::<_, DomainError>(content)
+                })?;
             let collection = selector.finish("test".into(), None)?;
             assert_eq!(collection.files.len(), included, "{path}");
             assert_eq!(collection.skipped, skipped, "{path}");
@@ -421,18 +420,17 @@ mod tests {
     #[test]
     fn observe_does_not_read_settled_candidates() -> Result<(), Box<dyn std::error::Error>> {
         let overlong = format!("{}/file.rs", "a".repeat(MAX_PATH_BYTES_USIZE));
-        // (status, size_hint, candidates counted, skipped)
-        let cases: [(PathStatus, Option<u64>, usize, usize); 5] = [
-            (PathStatus::Ignored, None, 0, 0),
-            (PathStatus::NonUtf8Candidate(String::new()), None, 1, 1),
-            (PathStatus::NonUtf8Candidate("dir/sub/".into()), None, 1, 1),
+        // (candidate, size_hint, candidates counted, skipped)
+        let cases: [(CandidatePath, Option<u64>, usize, usize); 4] = [
+            (CandidatePath::NonUtf8(String::new()), None, 1, 1),
+            (CandidatePath::NonUtf8("dir/sub/".into()), None, 1, 1),
             (
-                PathStatus::Valid("big.bin".into()),
+                CandidatePath::Valid("big.bin".into()),
                 Some(MAX_FILE_SIZE + 1),
                 1,
                 1,
             ),
-            (PathStatus::Valid(overlong.into()), None, 1, 1),
+            (CandidatePath::Valid(overlong.into()), None, 1, 1),
         ];
         for (status, size_hint, candidates, skipped) in cases {
             let selector = Selector::new().observe(
@@ -464,7 +462,7 @@ mod tests {
         }
 
         let err = Selector::new()
-            .observe(PathStatus::Valid("a.txt".into()), None, || {
+            .observe(CandidatePath::Valid("a.txt".into()), None, || {
                 Err::<Option<Vec<u8>>, _>(TestError::Read)
             })
             .unwrap_err();
@@ -483,12 +481,12 @@ mod tests {
         // (path, expected diagnostic path): the diagnostic names the sanitized path.
         for (path, expected) in [("a.txt", "a.txt"), ("a\x07.txt", "a\u{FFFD}.txt")] {
             let selector = Selector::new()
-                .observe(PathStatus::Valid(path.into()), None, || {
+                .observe(CandidatePath::Valid(path.into()), None, || {
                     Ok::<_, DomainError>(Some(&b"first"[..]))
                 })
                 .expect("first candidate is admitted");
             let err = selector
-                .observe(PathStatus::Valid(path.into()), None, || {
+                .observe(CandidatePath::Valid(path.into()), None, || {
                     Ok::<_, DomainError>(Some(&b"second"[..]))
                 })
                 .unwrap_err();
@@ -502,12 +500,12 @@ mod tests {
         // A skipped candidate still names its path, so it collides with a stored one in either order.
         for (first_hint, second_hint) in [(None, oversized), (oversized, None)] {
             let selector = Selector::new()
-                .observe(PathStatus::Valid("a.txt".into()), first_hint, || {
+                .observe(CandidatePath::Valid("a.txt".into()), first_hint, || {
                     Ok::<_, DomainError>(Some(&b"first"[..]))
                 })
                 .expect("first candidate is admitted");
             let err = selector
-                .observe(PathStatus::Valid("a.txt".into()), second_hint, || {
+                .observe(CandidatePath::Valid("a.txt".into()), second_hint, || {
                     Ok::<_, DomainError>(Some(&b"second"[..]))
                 })
                 .unwrap_err();
@@ -521,7 +519,7 @@ mod tests {
         let overlong = format!("{}/file.rs", "a".repeat(MAX_PATH_BYTES_USIZE));
         let selector = Selector::new()
             .observe(
-                PathStatus::Valid(overlong.clone().into()),
+                CandidatePath::Valid(overlong.clone().into()),
                 None,
                 || -> Result<Option<Vec<u8>>, DomainError> {
                     panic!("read must not run for an overlong candidate")
@@ -530,7 +528,7 @@ mod tests {
             .expect("first overlong candidate is skipped");
         let selector = selector
             .observe(
-                PathStatus::Valid(overlong.into()),
+                CandidatePath::Valid(overlong.into()),
                 None,
                 || -> Result<Option<Vec<u8>>, DomainError> {
                     panic!("read must not run for an overlong candidate")

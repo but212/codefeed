@@ -9,14 +9,6 @@ use crate::core::policy::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NormalizedPath(String);
 
-impl NormalizedPath {
-    /// Borrows the normalized path as a string slice.
-    #[must_use]
-    pub(crate) const fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
 impl std::ops::Deref for NormalizedPath {
     type Target = str;
 
@@ -43,15 +35,16 @@ impl From<String> for NormalizedPath {
     }
 }
 
-/// Path classification outcome from a single-pass policy evaluation.
+/// Candidate path outcome from a single-pass policy evaluation.
+///
+/// An entry is either a valid UTF-8 path or a non-UTF-8 candidate carrying its valid prefix.
+/// Ignored entries (hidden, conventional noise, sensitive patterns, or empty/root) are represented by `None`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum PathStatus {
+pub(crate) enum CandidatePath {
     /// Normalized valid relative UTF-8 path.
     Valid(NormalizedPath),
-    /// Ignored path (hidden component, conventional noise, sensitive pattern, or root).
-    Ignored,
     /// Non-UTF-8 path that is not hidden and must be counted against candidate budget as skipped.
-    NonUtf8Candidate(String),
+    NonUtf8(String),
 }
 
 /// Error indicating that a path's directory nesting depth exceeds [`MAX_PATH_DEPTH`].
@@ -67,17 +60,18 @@ impl DepthExceededError {
     }
 }
 
-/// Classifies a sequence of raw path segment bytes into [`PathStatus`].
+/// Classifies a sequence of raw path segment bytes into [`Option<CandidatePath>`].
 ///
 /// Checks run in this order: hidden segment, user exclusion, noise or sensitive name, depth. Each
-/// check that matches returns `Ignored` before the later ones run, so an excluded path is never
-/// reported as a depth error. Builds a normalized UTF-8 path string for valid candidates or prefix
-/// strings for non-UTF-8 candidates. Empty and `.` segments are dropped, so a [`NormalizedPath`]
-/// never contains them.
+/// check that matches returns `None` before the later ones run, so a path excluded within the first
+/// `MAX_PATH_DEPTH + 1` segments is never reported as a depth error. A match past that window is not
+/// seen, and the path fails its depth limit. Builds a normalized UTF-8 path string for valid
+/// candidates or prefix strings for non-UTF-8 candidates. Empty and `.` segments are dropped, so a
+/// [`NormalizedPath`] never contains them.
 pub(crate) fn classify_path_segments<'a, I>(
     segments: I,
     exclude: &ExcludePatterns,
-) -> Result<PathStatus, DepthExceededError>
+) -> Result<Option<CandidatePath>, DepthExceededError>
 where
     I: IntoIterator<Item = &'a [u8]>,
 {
@@ -86,12 +80,12 @@ where
         .filter(|seg| !seg.is_empty() && *seg != b".")
         .collect();
     let Some((leaf, ancestors)) = segments.split_last() else {
-        return Ok(PathStatus::Ignored);
+        return Ok(None);
     };
     let mut dir = AdmittedDir::root();
     for name in ancestors {
         let Some(admitted) = admit_dir(dir, name, exclude) else {
-            return Ok(PathStatus::Ignored);
+            return Ok(None);
         };
         dir = admitted;
     }
@@ -182,21 +176,21 @@ pub(crate) fn classify_leaf(
     parent: &AdmittedDir,
     name: &[u8],
     exclude: &ExcludePatterns,
-) -> Result<PathStatus, DepthExceededError> {
+) -> Result<Option<CandidatePath>, DepthExceededError> {
     if is_hidden_segment(name) {
-        return Ok(PathStatus::Ignored);
+        return Ok(None);
     }
     if parent.depth <= MAX_PATH_DEPTH {
         let full = push_match_segment(parent.match_prefix.clone(), name);
         if exclude.excludes_prefix(&full, false) {
-            return Ok(PathStatus::Ignored);
+            return Ok(None);
         }
     }
 
     // Lossy decoding keeps the ASCII name rules exact: invalid bytes become U+FFFD, which never
     // equals a noise name, and prefix and extension matches see the same ASCII bytes.
     if is_ignored_filename(&String::from_utf8_lossy(name)) {
-        return Ok(PathStatus::Ignored);
+        return Ok(None);
     }
 
     if parent.depth > MAX_PATH_DEPTH {
@@ -204,11 +198,11 @@ pub(crate) fn classify_leaf(
     }
 
     match (&parent.output, std::str::from_utf8(name)) {
-        (DirPrefix::Utf8(prefix), Ok(segment)) => Ok(PathStatus::Valid(NormalizedPath(format!(
-            "{prefix}{segment}"
+        (DirPrefix::Utf8(prefix), Ok(segment)) => Ok(Some(CandidatePath::Valid(NormalizedPath(
+            format!("{prefix}{segment}"),
         )))),
         (DirPrefix::Utf8(prefix) | DirPrefix::NonUtf8(prefix), _) => {
-            Ok(PathStatus::NonUtf8Candidate(prefix.clone()))
+            Ok(Some(CandidatePath::NonUtf8(prefix.clone())))
         }
     }
 }
@@ -219,8 +213,8 @@ mod tests {
 
     #[test]
     fn normalized_path_accepts_a_relative_path_with_non_empty_segments() {
-        assert_eq!(NormalizedPath::from("a/b.txt").as_str(), "a/b.txt");
-        assert_eq!(NormalizedPath::from(String::from("c")).as_str(), "c");
+        assert_eq!(&*NormalizedPath::from("a/b.txt"), "a/b.txt");
+        assert_eq!(&*NormalizedPath::from(String::from("c")), "c");
     }
 
     #[test]
@@ -258,28 +252,28 @@ mod tests {
 
     #[test]
     fn test_classify_path_segments_non_utf8_with_ignored_filename() {
-        // non-UTF-8 directory segment with ignored filename (id_rsa) -> Ignored
+        // non-UTF-8 directory segment with ignored filename (id_rsa) -> Ignored (None)
         let segments: &[&[u8]] = &[b"\xff\xfe", b"id_rsa"];
         assert_eq!(
             classify_path_segments(segments.iter().copied(), &ExcludePatterns::default()),
-            Ok(PathStatus::Ignored)
+            Ok(None)
         );
 
-        // non-UTF-8 directory segment with valid candidate filename (main.rs) -> NonUtf8Candidate
+        // non-UTF-8 directory segment with valid candidate filename (main.rs) -> NonUtf8
         let segments: &[&[u8]] = &[b"\xff\xfe", b"main.rs"];
         assert_eq!(
             classify_path_segments(segments.iter().copied(), &ExcludePatterns::default()),
-            Ok(PathStatus::NonUtf8Candidate(String::new()))
+            Ok(Some(CandidatePath::NonUtf8(String::new())))
         );
 
-        // non-UTF-8 directory segment + valid dir + valid candidate filename -> NonUtf8Candidate with prefix
+        // non-UTF-8 directory segment + valid dir + valid candidate filename -> NonUtf8 with prefix
         let segments: &[&[u8]] = &[b"src", b"\xff\xfe", b"main.rs"];
         assert_eq!(
             classify_path_segments(segments.iter().copied(), &ExcludePatterns::default()),
-            Ok(PathStatus::NonUtf8Candidate("src/".to_string()))
+            Ok(Some(CandidatePath::NonUtf8("src/".to_string())))
         );
 
-        // C-01: sensitive prefix or extension on an invalid-UTF-8 final segment -> Ignored
+        // C-01: sensitive prefix or extension on an invalid-UTF-8 final segment -> Ignored (None)
         let sensitive: [&[&[u8]]; 3] = [
             &[b"dir", b"id_rsa\xff.key"],
             &[b"secret\xff.key"],
@@ -288,18 +282,18 @@ mod tests {
         for segments in sensitive {
             assert_eq!(
                 classify_path_segments(segments.iter().copied(), &ExcludePatterns::default()),
-                Ok(PathStatus::Ignored),
+                Ok(None),
                 "segments: {segments:?}"
             );
         }
 
-        // C-02: invalid-UTF-8 final segment with no sensitive match -> NonUtf8Candidate
+        // C-02: invalid-UTF-8 final segment with no sensitive match -> NonUtf8
         let plain: [&[&[u8]]; 2] = [&[b"notes\xff.txt"], &[b"src", b"\xff.rs"]];
         for segments in plain {
             assert!(
                 matches!(
                     classify_path_segments(segments.iter().copied(), &ExcludePatterns::default()),
-                    Ok(PathStatus::NonUtf8Candidate(_))
+                    Ok(Some(CandidatePath::NonUtf8(_)))
                 ),
                 "segments: {segments:?}"
             );
@@ -309,7 +303,7 @@ mod tests {
         let noise_suffix: &[&[u8]] = &[b"Cargo.lock\xff"];
         assert!(matches!(
             classify_path_segments(noise_suffix.iter().copied(), &ExcludePatterns::default()),
-            Ok(PathStatus::NonUtf8Candidate(_))
+            Ok(Some(CandidatePath::NonUtf8(_)))
         ));
     }
 
@@ -334,7 +328,7 @@ mod tests {
             .collect();
         assert_eq!(
             classify_path_segments(deep_hidden, &ExcludePatterns::default()),
-            Ok(PathStatus::Ignored)
+            Ok(None)
         );
 
         let deep_noise: Vec<&[u8]> = std::iter::repeat_n(b"d".as_slice(), MAX_PATH_DEPTH + 1)
@@ -342,7 +336,7 @@ mod tests {
             .collect();
         assert_eq!(
             classify_path_segments(deep_noise, &ExcludePatterns::default()),
-            Ok(PathStatus::Ignored)
+            Ok(None)
         );
     }
 
@@ -351,10 +345,9 @@ mod tests {
         let segments: &[&[u8]] = &[b"src", b"core", b"model.rs"];
         let status =
             classify_path_segments(segments.iter().copied(), &ExcludePatterns::default()).unwrap();
-        let PathStatus::Valid(path) = status else {
-            panic!("expected PathStatus::Valid");
+        let Some(CandidatePath::Valid(path)) = status else {
+            panic!("expected CandidatePath::Valid");
         };
-        assert_eq!(path.as_str(), "src/core/model.rs");
         assert_eq!(&*path, "src/core/model.rs");
     }
 
@@ -363,7 +356,7 @@ mod tests {
         let exclude = ExcludePatterns::new(["build/", "*.log"]).unwrap();
 
         // An excluded ancestor, an excluded file name, and an excluded non-UTF-8 final segment are all
-        // Ignored, so none of them is counted as a skipped candidate.
+        // Ignored (None), so none of them is counted as a skipped candidate.
         let excluded: [&[&[u8]]; 4] = [
             &[b"build", b"main.rs"],
             &[b"src", b"build", b"x.txt"],
@@ -373,7 +366,7 @@ mod tests {
         for segments in excluded {
             assert_eq!(
                 classify_path_segments(segments.iter().copied(), &exclude),
-                Ok(PathStatus::Ignored),
+                Ok(None),
                 "segments: {segments:?}"
             );
         }
@@ -381,7 +374,7 @@ mod tests {
         let kept: &[&[u8]] = &[b"src", b"main.rs"];
         assert_eq!(
             classify_path_segments(kept.iter().copied(), &exclude),
-            Ok(PathStatus::Valid("src/main.rs".into()))
+            Ok(Some(CandidatePath::Valid("src/main.rs".into())))
         );
     }
 
@@ -395,7 +388,7 @@ mod tests {
         let exclude = ExcludePatterns::new(["build/"]).unwrap();
         assert_eq!(
             classify_path_segments(deep.iter().copied(), &exclude),
-            Ok(PathStatus::Ignored)
+            Ok(None)
         );
         assert_eq!(
             classify_path_segments(deep, &ExcludePatterns::default()),
@@ -428,22 +421,25 @@ mod tests {
         let exclude = ExcludePatterns::new(["*.log"]).unwrap();
         assert_eq!(
             classify_path_segments(segments.iter().copied(), &exclude),
-            Ok(PathStatus::Ignored)
+            Ok(None)
         );
         assert!(matches!(
             classify_path_segments(segments.iter().copied(), &ExcludePatterns::default()),
-            Ok(PathStatus::Valid(_))
+            Ok(Some(CandidatePath::Valid(_)))
         ));
     }
 
     #[test]
     fn classify_path_segments_drops_empty_and_dot_segments() {
-        let cases: [(&[&[u8]], PathStatus); 5] = [
-            (&[b"a", b"", b"b"], PathStatus::Valid("a/b".into())),
-            (&[b"a", b".", b"b"], PathStatus::Valid("a/b".into())),
-            (&[b"", b""], PathStatus::Ignored),
-            (&[b"."], PathStatus::Ignored),
-            (&[b"a", b"", b""], PathStatus::Valid("a".into())),
+        let cases: [(&[&[u8]], Option<CandidatePath>); 5] = [
+            (&[b"a", b"", b"b"], Some(CandidatePath::Valid("a/b".into()))),
+            (
+                &[b"a", b".", b"b"],
+                Some(CandidatePath::Valid("a/b".into())),
+            ),
+            (&[b"", b""], None),
+            (&[b"."], None),
+            (&[b"a", b"", b""], Some(CandidatePath::Valid("a".into()))),
         ];
         for (segments, expected) in cases {
             assert_eq!(
@@ -506,13 +502,15 @@ mod tests {
                 .chain(std::iter::once(tail))
                 .collect()
         }
-        let valid =
-            |p: &str| -> Result<PathStatus, DepthExceededError> { Ok(PathStatus::Valid(p.into())) };
-        let nonutf8 = |p: &str| -> Result<PathStatus, DepthExceededError> {
-            Ok(PathStatus::NonUtf8Candidate(p.into()))
+        let valid = |p: &str| -> Result<Option<CandidatePath>, DepthExceededError> {
+            Ok(Some(CandidatePath::Valid(p.into())))
         };
-        let ignored = || -> Result<PathStatus, DepthExceededError> { Ok(PathStatus::Ignored) };
-        let depth_err = || -> Result<PathStatus, DepthExceededError> { Err(DepthExceededError) };
+        let nonutf8 = |p: &str| -> Result<Option<CandidatePath>, DepthExceededError> {
+            Ok(Some(CandidatePath::NonUtf8(p.into())))
+        };
+        let ignored = || -> Result<Option<CandidatePath>, DepthExceededError> { Ok(None) };
+        let depth_err =
+            || -> Result<Option<CandidatePath>, DepthExceededError> { Err(DepthExceededError) };
 
         let exclude = ExcludePatterns::new(["build/", "*.log", "/top"]).unwrap();
         let none = ExcludePatterns::default();

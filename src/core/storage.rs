@@ -138,7 +138,7 @@ impl FileStorage {
 
     /// Sorts `spans` (16-byte records) hierarchically by path components in-place, without modifying string arenas.
     #[must_use]
-    pub(crate) fn sort_by_path(mut self) -> Self {
+    fn sort_by_path(mut self) -> Self {
         let path_arena = &self.path_arena;
         self.spans
             .sort_by(|a, b| cmp_path(a.path(path_arena), b.path(path_arena)));
@@ -156,7 +156,7 @@ impl FileStorage {
         path: &NormalizedPath,
         content: &str,
     ) -> Result<Self, DomainError> {
-        let path = path.as_str();
+        let path: &str = path;
         if (self.total_bytes() + path.len() + content.len()) as u64 > MAX_OUTPUT_SIZE {
             let candidate = FileRecord { path, content };
             return Err(DomainError::output_too_large(

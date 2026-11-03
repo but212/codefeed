@@ -14,7 +14,7 @@ use std::vec;
 use ignore::gitignore::Gitignore;
 
 use super::gitignore::read_rules;
-use crate::core::path::{AdmittedDir, DepthExceededError, PathStatus, admit_dir, classify_leaf};
+use crate::core::path::{AdmittedDir, CandidatePath, DepthExceededError, admit_dir, classify_leaf};
 use crate::core::policy::{ExcludePatterns, is_hidden_segment};
 use crate::shell::IngestError;
 use crate::shell::error::io_error_at;
@@ -149,14 +149,14 @@ fn is_ignored(frames: &[Frame], path: &Path, is_dir: bool) -> bool {
         .is_some_and(|found| found.is_ignore())
 }
 
-/// Classifies one regular file on the producer thread. `Ignored` covers the output file.
+/// Classifies one regular file on the producer thread. `None` covers the output file and ignored files.
 pub(super) fn classify_entry(
     output: Option<&Path>,
     exclude: &ExcludePatterns,
     file: &RegularFile,
-) -> Result<PathStatus, IngestError> {
+) -> Result<Option<CandidatePath>, IngestError> {
     if output.is_some_and(|target| file.path.as_path() == target) {
-        return Ok(PathStatus::Ignored);
+        return Ok(None);
     }
     classify_leaf(&file.parent, file.name.as_encoded_bytes(), exclude)
         .map_err(|_| DepthExceededError::domain_error("local path").into())

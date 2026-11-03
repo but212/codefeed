@@ -26,12 +26,12 @@ pub(super) enum Candidate {
     File(NormalizedPath, Body),
 }
 
-/// Worker reply for one job: a candidate, `None` when the entry is no longer a regular file, or the
-/// error that aborts the run.
-pub(super) type WorkerMsg = Result<Option<Candidate>, IngestError>;
-
-/// Reads one regular file's metadata and body. `Ok(None)` when the entry is a symlink or non-file.
-pub(super) fn read_candidate(entry_path: &Path, path: NormalizedPath) -> WorkerMsg {
+/// Reads one regular file's metadata and body. `Ok(None)` when the entry is a symlink or non-file
+/// (no longer a regular file); `Err` aborts the run.
+pub(super) fn read_candidate(
+    entry_path: &Path,
+    path: NormalizedPath,
+) -> Result<Option<Candidate>, IngestError> {
     let meta = match fs::symlink_metadata(entry_path) {
         Ok(m) => m,
         // Unlinked or locked after discovery: the selector counts it as skipped.
@@ -77,7 +77,7 @@ fn read_bounded(path: &Path, file_len: u64) -> Result<Option<Vec<u8>>, IngestErr
         Err(err) if is_unavailable_file(&err) => return Ok(None),
         Err(err) => return Err(io_error_at(path, &err)),
     };
-    let mut buf = Vec::with_capacity(file_len as usize);
+    let mut buf = Vec::with_capacity(usize::try_from(file_len).unwrap_or(usize::MAX));
     match file.take(MAX_FILE_SIZE + 1).read_to_end(&mut buf) {
         Ok(_) => Ok(Some(buf)),
         Err(err) if is_unavailable_file(&err) => Ok(None),
