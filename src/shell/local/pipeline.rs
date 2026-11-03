@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
-use super::read::{Candidate, WorkerMsg, read_candidate};
+use super::read::{Candidate, read_candidate};
 use super::walk::{RegularFile, Walk, classify_entry};
 use crate::core::path::{CandidatePath, NormalizedPath};
 use crate::core::policy::{ExcludePatterns, LOCAL_CHANNEL_CAPACITY, MAX_LOCAL_WORKERS};
@@ -29,13 +29,13 @@ use crate::shell::IngestError;
 struct Job {
     path: NormalizedPath,
     entry_path: PathBuf,
-    reply: SyncSender<WorkerMsg>,
+    reply: SyncSender<Result<Option<Candidate>, IngestError>>,
 }
 
 /// One walk entry in walk order: decided on the producer thread, or waiting for a worker.
 enum Slot {
-    Ready(WorkerMsg),
-    Pending(Receiver<WorkerMsg>),
+    Ready(Result<Option<Candidate>, IngestError>),
+    Pending(Receiver<Result<Option<Candidate>, IngestError>>),
 }
 
 /// Walks `root` in sorted order and folds each candidate through `step` in that order.

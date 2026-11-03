@@ -26,12 +26,12 @@ pub(super) enum Candidate {
     File(NormalizedPath, Body),
 }
 
-/// Worker reply for one job: a candidate, `None` when the entry is no longer a regular file, or the
-/// error that aborts the run.
-pub(super) type WorkerMsg = Result<Option<Candidate>, IngestError>;
-
-/// Reads one regular file's metadata and body. `Ok(None)` when the entry is a symlink or non-file.
-pub(super) fn read_candidate(entry_path: &Path, path: NormalizedPath) -> WorkerMsg {
+/// Reads one regular file's metadata and body. `Ok(None)` when the entry is a symlink or non-file
+/// (no longer a regular file); `Err` aborts the run.
+pub(super) fn read_candidate(
+    entry_path: &Path,
+    path: NormalizedPath,
+) -> Result<Option<Candidate>, IngestError> {
     let meta = match fs::symlink_metadata(entry_path) {
         Ok(m) => m,
         // Unlinked or locked after discovery: the selector counts it as skipped.
