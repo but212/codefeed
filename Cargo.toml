@@ -28,8 +28,12 @@ bench = false
 name = "codefeed"
 bench = false
 
-# Thin LTO and one codegen unit for release builds. `panic` stays `unwind` on
-# purpose: `TempPath` and `Zeroizing` rely on Drop during unwinding for cleanup.
 [profile.release]
-lto = "thin"
+lto = true
 codegen-units = 1
+opt-level = "s"
+incremental = true
+panic = "abort"
+debug = "full"
+split-debuginfo = "packed"
+strip = "symbols"

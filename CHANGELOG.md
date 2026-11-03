@@ -41,6 +41,7 @@ Internal change. No consumer action required.
 
 #### Changed
 
+- **Release profile optimized for binary size**: `[profile.release]` adopts full LTO (`lto = true`), size optimization (`opt-level = "s"`), abort on panic (`panic = "abort"`), symbol stripping (`strip = "symbols"`), and packed split debuginfo (`split-debuginfo = "packed"`, `debug = "full"`), with incremental compilation enabled (`Cargo.toml`). Reduces Windows release executable size from 3,661 KB to 2,131 KB (~41.8% reduction), preserving full symbols in the external PDB.
 - **Token estimate counts in chunks**: `estimate_tokens_from_bytes` (`src/core/render/budget.rs`) uses chunked `u32` counters instead of an index loop and is no longer `const fn`. Output and `estimated_tokens` unchanged. A reference test covers every byte value at boundary lengths.
 - **Path sort compares bytes**: `cmp_path` (`src/core/storage.rs`) compares bytes, not `split('/')` components. Order and output unchanged; an exhaustive small-alphabet test pins it.
 - **Pure helpers take owned values**: `push_match_segment` (`src/core/policy/exclude.rs`) and `admit_dir` (`src/core/policy/classify.rs`) take and return owned values, not `&mut` (coding convention sec. 3). No behavior change.
