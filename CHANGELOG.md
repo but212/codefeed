@@ -8,12 +8,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Library consumers and CLI users
+
+Observable behavior. **Action** = code or config change required.
+
+#### Changed
+
+- **`GithubName` drops `#[repr(transparent)]`**: The struct no longer promises identical memory layout to `String` (`src/core/source.rs`).
+  - **Action:** Code relying on transmuting or FFI-passing `GithubName` as `String` must use `GithubName::as_str` or `to_string`.
+
 ### Contributors
 
 Internal change. No consumer action required.
 
 #### Changed
 
+- **Invariant enforcement narrowed to the boundary**: `GithubClient` fields made private (`src/shell/github/client.rs`). `FileStorage::sort_by_path` made private to `storage.rs`. `NormalizedPath::as_str` removed in favor of `Deref` (`src/core/path.rs`, `src/core/storage.rs`). `classify_path_segments` doc comment clarified to match the depth-window invariant.
 - **`FormatRenderer` trait and renderer unit structs eliminated**: Replaced the hollow `FormatRenderer` trait, `TextRenderer`, and `XmlRenderer` with direct dispatch on `DigestFormat` inside `render_digest` (`src/core/render/formats.rs`, `src/core/render/mod.rs`). Output and behavior unchanged.
 - **`PathStatus` replaced with `Option<CandidatePath>`**: Replaced `PathStatus` with `CandidatePath` (`Valid` or `NonUtf8`), representing ignored paths as `None` at classification boundaries (`classify_path_segments`, `classify_leaf`, `normalize_tar_entry_path`). Eliminated the impossible `Ignored` candidate branch from `Selector::observe` (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/github/archive.rs`).
 

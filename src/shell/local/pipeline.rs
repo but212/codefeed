@@ -214,7 +214,7 @@ mod tests {
             Vec::new(),
             |mut paths, candidate| {
                 if let Candidate::File(path, _) = candidate {
-                    paths.push(path.as_str().to_string());
+                    paths.push(path.to_string());
                 }
                 Ok(paths)
             },

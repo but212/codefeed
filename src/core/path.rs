@@ -9,14 +9,6 @@ use crate::core::policy::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NormalizedPath(String);
 
-impl NormalizedPath {
-    /// Borrows the normalized path as a string slice.
-    #[must_use]
-    pub(crate) const fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
 impl std::ops::Deref for NormalizedPath {
     type Target = str;
 
@@ -71,10 +63,11 @@ impl DepthExceededError {
 /// Classifies a sequence of raw path segment bytes into [`Option<CandidatePath>`].
 ///
 /// Checks run in this order: hidden segment, user exclusion, noise or sensitive name, depth. Each
-/// check that matches returns `None` before the later ones run, so an excluded path is never
-/// reported as a depth error. Builds a normalized UTF-8 path string for valid candidates or prefix
-/// strings for non-UTF-8 candidates. Empty and `.` segments are dropped, so a [`NormalizedPath`]
-/// never contains them.
+/// check that matches returns `None` before the later ones run, so a path excluded within the first
+/// `MAX_PATH_DEPTH + 1` segments is never reported as a depth error. A match past that window is not
+/// seen, and the path fails its depth limit. Builds a normalized UTF-8 path string for valid
+/// candidates or prefix strings for non-UTF-8 candidates. Empty and `.` segments are dropped, so a
+/// [`NormalizedPath`] never contains them.
 pub(crate) fn classify_path_segments<'a, I>(
     segments: I,
     exclude: &ExcludePatterns,
@@ -220,8 +213,8 @@ mod tests {
 
     #[test]
     fn normalized_path_accepts_a_relative_path_with_non_empty_segments() {
-        assert_eq!(NormalizedPath::from("a/b.txt").as_str(), "a/b.txt");
-        assert_eq!(NormalizedPath::from(String::from("c")).as_str(), "c");
+        assert_eq!(&*NormalizedPath::from("a/b.txt"), "a/b.txt");
+        assert_eq!(&*NormalizedPath::from(String::from("c")), "c");
     }
 
     #[test]
@@ -355,7 +348,6 @@ mod tests {
         let Some(CandidatePath::Valid(path)) = status else {
             panic!("expected CandidatePath::Valid");
         };
-        assert_eq!(path.as_str(), "src/core/model.rs");
         assert_eq!(&*path, "src/core/model.rs");
     }
 

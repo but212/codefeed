@@ -14,8 +14,8 @@ use crate::core::policy::{ARCHIVE_MAX_SECS, GITHUB_TIMEOUT_SECS, TOKEN_ENV_VARS}
 pub(super) const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 
 pub(super) struct GithubClient {
-    pub(super) agent: Agent,
-    pub(super) auth_header: Option<Zeroizing<String>>,
+    agent: Agent,
+    auth_header: Option<Zeroizing<String>>,
 }
 
 impl GithubClient {
