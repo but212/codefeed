@@ -106,7 +106,11 @@ impl<R: Read> Read for Metered<'_, R> {
                 "tar entry header exceeds ARCHIVE_MAX_HEADER_BYTES",
             ));
         }
-        let cap = usize::try_from(remaining).map_or(buf.len(), |left| left.min(buf.len()));
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "remaining <= ARCHIVE_MAX_HEADER_BYTES, which policy/limits.rs asserts fits in usize"
+        )]
+        let cap = (remaining as usize).min(buf.len());
         let read = self.inner.read(&mut buf[..cap])?;
         self.budget.remaining.set(Some(remaining - read as u64));
         Ok(read)

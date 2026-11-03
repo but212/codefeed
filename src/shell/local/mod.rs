@@ -34,7 +34,7 @@ pub(super) fn collect(
     exclude: &ExcludePatterns,
 ) -> Result<CollectionResult, IngestError> {
     let canonical_root = validate_root(root)?;
-    let label = local_label(&canonical_root);
+    let label = repository_name(&canonical_root).to_string();
     let selector = fold_candidates(
         &canonical_root,
         output.file(),
@@ -69,10 +69,6 @@ fn validate_root(root: &Path) -> Result<PathBuf, DomainError> {
         )));
     }
     Ok(canonical)
-}
-
-fn local_label(root: &Path) -> String {
-    repository_name(root.file_name().and_then(|name| name.to_str())).to_string()
 }
 
 #[cfg(test)]
@@ -624,9 +620,9 @@ mod tests {
 
     #[test]
     fn label_handles_filesystem_root() {
-        assert_eq!(local_label(Path::new("/")), "root");
+        assert_eq!(repository_name(Path::new("/")), "root");
         #[cfg(windows)]
-        assert_eq!(local_label(Path::new("C:\\")), "root");
+        assert_eq!(repository_name(Path::new("C:\\")), "root");
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]

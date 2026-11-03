@@ -86,6 +86,7 @@ const _: () = {
     assert!(MAX_FILE_SIZE as usize as u64 == MAX_FILE_SIZE);
     assert!(MAX_OUTPUT_SIZE as usize as u64 == MAX_OUTPUT_SIZE);
     assert!(MAX_PATH_BYTES as usize as u64 == MAX_PATH_BYTES);
+    assert!(ARCHIVE_MAX_HEADER_BYTES as usize as u64 == ARCHIVE_MAX_HEADER_BYTES);
 };
 
 #[cfg(test)]
