@@ -21,7 +21,7 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use super::read::{Candidate, WorkerMsg, read_candidate};
 use super::walk::{RegularFile, Walk, classify_entry};
-use crate::core::path::{NormalizedPath, PathStatus};
+use crate::core::path::{CandidatePath, NormalizedPath};
 use crate::core::policy::{ExcludePatterns, LOCAL_CHANNEL_CAPACITY, MAX_LOCAL_WORKERS};
 use crate::shell::IngestError;
 
@@ -80,11 +80,11 @@ fn dispatch(
         Err(err) => return Some(Slot::Ready(Err(err))),
     };
     let path = match classify_entry(output, exclude, &file) {
-        Ok(PathStatus::Ignored) => return None,
-        Ok(PathStatus::NonUtf8Candidate(prefix)) => {
+        Ok(None) => return None,
+        Ok(Some(CandidatePath::NonUtf8(prefix))) => {
             return Some(Slot::Ready(Ok(Some(Candidate::NonUtf8(prefix)))));
         }
-        Ok(PathStatus::Valid(path)) => path,
+        Ok(Some(CandidatePath::Valid(path))) => path,
         Err(err) => return Some(Slot::Ready(Err(err))),
     };
 

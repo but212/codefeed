@@ -13,14 +13,14 @@ mod formats;
 mod tree;
 
 pub(crate) use budget::{BoundedBuffer, OutputLimitExceeded, RenderedDigest};
-pub(crate) use formats::{FormatRenderer, TextRenderer, XmlRenderer};
 
-pub(crate) fn render_with<R: FormatRenderer>(
+pub(crate) fn render_digest(
     mut buf: BoundedBuffer,
     collection: &CollectionResult,
-    renderer: R,
+    format: DigestFormat,
 ) -> Result<BoundedBuffer, OutputLimitExceeded> {
-    buf = renderer.write_header(
+    buf = formats::write_header(
+        format,
         buf,
         &collection.label,
         collection.revision.as_deref(),
@@ -28,13 +28,13 @@ pub(crate) fn render_with<R: FormatRenderer>(
         collection.skipped,
     )?;
     buf = tree::render_tree(buf, &collection.files, |b, name| {
-        renderer.write_tree_name(b, name)
+        formats::write_tree_name(format, b, name)
     })?;
-    buf = renderer.close_tree_section(buf)?;
+    buf = formats::close_tree_section(format, buf)?;
     for file in collection.files.iter() {
-        buf = renderer.write_file_entry(buf, file.path, file.content)?;
+        buf = formats::write_file_entry(format, buf, file.path, file.content)?;
     }
-    renderer.write_footer(buf)
+    formats::write_footer(format, buf)
 }
 
 impl CollectionResult {
@@ -61,11 +61,7 @@ impl CollectionResult {
         let buf = BoundedBuffer::with_capacity(self.files.total_bytes() + 4096);
         let included = self.files.len();
         let skipped = self.skipped;
-        let rendered = match format {
-            DigestFormat::Text => render_with(buf, &self, TextRenderer),
-            DigestFormat::Xml => render_with(buf, &self, XmlRenderer),
-        };
-        match rendered {
+        match render_digest(buf, &self, format) {
             Ok(buf) => Ok(buf.finish_with_counts(included, skipped)),
             Err(OutputLimitExceeded) => Err(self.files.output_too_large_error()),
         }
@@ -170,17 +166,8 @@ mod tests {
         };
 
         for format in [DigestFormat::Text, DigestFormat::Xml] {
-            let render_at = |limit: u64| match format {
-                DigestFormat::Text => render_with(
-                    BoundedBuffer::with_limit(0, limit),
-                    &collection,
-                    TextRenderer,
-                ),
-                DigestFormat::Xml => render_with(
-                    BoundedBuffer::with_limit(0, limit),
-                    &collection,
-                    XmlRenderer,
-                ),
+            let render_at = |limit: u64| {
+                render_digest(BoundedBuffer::with_limit(0, limit), &collection, format)
             };
             let full = render_at(u64::MAX)
                 .expect("unlimited render succeeds")

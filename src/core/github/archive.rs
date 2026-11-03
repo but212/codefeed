@@ -1,5 +1,5 @@
 use crate::core::error::DomainError;
-use crate::core::path::{DepthExceededError, PathStatus, classify_path_segments};
+use crate::core::path::{CandidatePath, DepthExceededError, classify_path_segments};
 use crate::core::policy::ExcludePatterns;
 use memchr::{memchr, memmem};
 
@@ -9,13 +9,13 @@ use memchr::{memchr, memmem};
 /// User exclusions match the path after the root directory is stripped, so their patterns are relative to the source root.
 ///
 /// Returns `Err(DomainError)` if the path contains directory traversal, invalid root prefixes, or NUL bytes.
-/// Returns `Ok(PathStatus::Ignored)` if the entry is the root directory itself, empty, hidden, excluded, noise, or sensitive.
-/// Returns `Ok(PathStatus::NonUtf8Candidate(prefix))` if the entry path contains non-UTF-8 bytes and is not hidden.
-/// Returns `Ok(PathStatus::Valid(path))` on success.
+/// Returns `Ok(None)` if the entry is the root directory itself, empty, hidden, excluded, noise, or sensitive.
+/// Returns `Ok(Some(CandidatePath::NonUtf8(prefix)))` if the entry path contains non-UTF-8 bytes and is not hidden.
+/// Returns `Ok(Some(CandidatePath::Valid(path)))` on success.
 pub(crate) fn normalize_tar_entry_path(
     raw_bytes: &[u8],
     exclude: &ExcludePatterns,
-) -> Result<PathStatus, DomainError> {
+) -> Result<Option<CandidatePath>, DomainError> {
     if memchr(0, raw_bytes).is_some() {
         return Err(DomainError::invalid_metadata(
             "Tar entry path contains NUL byte",
@@ -40,7 +40,7 @@ pub(crate) fn normalize_tar_entry_path(
     }
 
     let Some(slash_index) = memchr(b'/', trimmed) else {
-        return Ok(PathStatus::Ignored);
+        return Ok(None);
     };
 
     if trimmed[..slash_index] == *b"." {
@@ -86,24 +86,24 @@ mod tests {
     use super::*;
     use crate::core::policy::MAX_PATH_DEPTH;
 
-    fn normalize(raw: &[u8]) -> Result<PathStatus, DomainError> {
+    fn normalize(raw: &[u8]) -> Result<Option<CandidatePath>, DomainError> {
         normalize_tar_entry_path(raw, &ExcludePatterns::default())
     }
 
     #[test]
     fn user_exclusions_are_relative_to_the_archive_root() {
         let exclude = ExcludePatterns::new(["build/", "/src/", "repo-root"]).unwrap();
-        let cases: [(&[u8], PathStatus); 4] = [
-            (b"repo-root/build/x.txt", PathStatus::Ignored),
-            (b"repo-root/src/main.rs", PathStatus::Ignored),
+        let cases: [(&[u8], Option<CandidatePath>); 4] = [
+            (b"repo-root/build/x.txt", None),
+            (b"repo-root/src/main.rs", None),
             (
                 b"repo-root/lib/src/x.rs",
-                PathStatus::Valid("lib/src/x.rs".into()),
+                Some(CandidatePath::Valid("lib/src/x.rs".into())),
             ),
             // The root directory itself is never matched, so the `repo-root` pattern keeps nothing out.
             (
                 b"repo-root/lib/main.rs",
-                PathStatus::Valid("lib/main.rs".into()),
+                Some(CandidatePath::Valid("lib/main.rs".into())),
             ),
         ];
         for (raw, expected) in cases {
@@ -119,35 +119,38 @@ mod tests {
     fn normalizes_archive_entry_path_correctly() {
         // (raw entry path, expected status). Covers root stripping, slash and `.` collapsing,
         // policy exclusion (noise lockfile, sensitive credential), and non-UTF-8 prefixes.
-        let ok_cases: [(&[u8], PathStatus); 14] = [
+        let ok_cases: [(&[u8], Option<CandidatePath>); 14] = [
             (
                 b"but212-codefeed-c1863c8/src/main.rs",
-                PathStatus::Valid("src/main.rs".into()),
+                Some(CandidatePath::Valid("src/main.rs".into())),
             ),
             (
                 b"repo-root//src/main.rs",
-                PathStatus::Valid("src/main.rs".into()),
+                Some(CandidatePath::Valid("src/main.rs".into())),
             ),
             (
                 b"repo-root///deep//nested/./file.txt",
-                PathStatus::Valid("deep/nested/file.txt".into()),
+                Some(CandidatePath::Valid("deep/nested/file.txt".into())),
             ),
-            (b"repo-root/././a.rs", PathStatus::Valid("a.rs".into())),
-            (b"but212-codefeed-c1863c8/", PathStatus::Ignored),
-            (b"but212-codefeed-c1863c8///", PathStatus::Ignored),
-            (b"but212-codefeed-c1863c8", PathStatus::Ignored),
-            (b"", PathStatus::Ignored),
-            (b"repo-root/Cargo.lock", PathStatus::Ignored),
-            (b"repo-root/id_rsa", PathStatus::Ignored),
-            (b"repo-root/secret.pem", PathStatus::Ignored),
-            (b"repo-root/.hidden/\xff\xfe", PathStatus::Ignored),
+            (
+                b"repo-root/././a.rs",
+                Some(CandidatePath::Valid("a.rs".into())),
+            ),
+            (b"but212-codefeed-c1863c8/", None),
+            (b"but212-codefeed-c1863c8///", None),
+            (b"but212-codefeed-c1863c8", None),
+            (b"", None),
+            (b"repo-root/Cargo.lock", None),
+            (b"repo-root/id_rsa", None),
+            (b"repo-root/secret.pem", None),
+            (b"repo-root/.hidden/\xff\xfe", None),
             (
                 b"repo-root/invalid/\xff\xfe",
-                PathStatus::NonUtf8Candidate("invalid/".into()),
+                Some(CandidatePath::NonUtf8("invalid/".into())),
             ),
             (
                 b"repo-root/\xff\xfe",
-                PathStatus::NonUtf8Candidate(String::new()),
+                Some(CandidatePath::NonUtf8(String::new())),
             ),
         ];
         for (raw, expected) in ok_cases {
@@ -155,10 +158,7 @@ mod tests {
         }
 
         // Sensitive name with an invalid-UTF-8 final segment is ignored, not counted as skipped.
-        assert_eq!(
-            normalize(b"repo-root/id_rsa\xff.key").unwrap(),
-            PathStatus::Ignored
-        );
+        assert_eq!(normalize(b"repo-root/id_rsa\xff.key").unwrap(), None);
 
         // Rejected: path traversal (`..`, `.` root) and embedded NUL
         let err_cases: [&[u8]; 7] = [
@@ -188,7 +188,9 @@ mod tests {
             format!("repo-root/{}/file.txt", vec!["d"; MAX_PATH_DEPTH].join("/"));
         assert_eq!(
             normalize(normal_depth_path.as_bytes()).unwrap(),
-            PathStatus::Valid(format!("{}/file.txt", vec!["d"; MAX_PATH_DEPTH].join("/")).into())
+            Some(CandidatePath::Valid(
+                format!("{}/file.txt", vec!["d"; MAX_PATH_DEPTH].join("/")).into()
+            ))
         );
 
         let excessive_depth_path = format!(
@@ -205,10 +207,7 @@ mod tests {
 
         // Deeply nested hidden path is ignored without triggering depth error
         let deep_hidden_path = format!("repo-root/.hidden/{}/file.txt", vec!["d"; 300].join("/"));
-        assert_eq!(
-            normalize(deep_hidden_path.as_bytes()).unwrap(),
-            PathStatus::Ignored
-        );
+        assert_eq!(normalize(deep_hidden_path.as_bytes()).unwrap(), None);
     }
 
     #[test]

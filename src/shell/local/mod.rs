@@ -20,7 +20,7 @@ use super::IngestError;
 use super::output::ResolvedOutput;
 use crate::core::collection::{CollectionResult, repository_name};
 use crate::core::error::DomainError;
-use crate::core::path::PathStatus;
+use crate::core::path::CandidatePath;
 use crate::core::policy::ExcludePatterns;
 use crate::core::selector::Selector;
 
@@ -47,13 +47,15 @@ pub(super) fn collect(
 }
 
 fn observe_candidate(selector: Selector, candidate: Candidate) -> Result<Selector, IngestError> {
-    let (status, size_hint, content) = match candidate {
-        Candidate::NonUtf8(prefix) => (PathStatus::NonUtf8Candidate(prefix), None, None),
-        Candidate::File(path, Body::Unavailable) => (PathStatus::Valid(path), None, None),
-        Candidate::File(path, Body::OverLimit(len)) => (PathStatus::Valid(path), Some(len), None),
-        Candidate::File(path, Body::Read(bytes)) => (PathStatus::Valid(path), None, Some(bytes)),
+    let (candidate, size_hint, content) = match candidate {
+        Candidate::NonUtf8(prefix) => (CandidatePath::NonUtf8(prefix), None, None),
+        Candidate::File(path, Body::Unavailable) => (CandidatePath::Valid(path), None, None),
+        Candidate::File(path, Body::OverLimit(len)) => {
+            (CandidatePath::Valid(path), Some(len), None)
+        }
+        Candidate::File(path, Body::Read(bytes)) => (CandidatePath::Valid(path), None, Some(bytes)),
     };
-    selector.observe(status, size_hint, || Ok(content))
+    selector.observe(candidate, size_hint, || Ok(content))
 }
 
 fn validate_root(root: &Path) -> Result<PathBuf, DomainError> {

@@ -1,6 +1,8 @@
 use super::budget::{BoundedBuffer, OutputLimitExceeded};
 use super::escape::{escape_header, escape_xml_body, escape_xml_single_line, write_escaped};
 
+use crate::core::model::DigestFormat;
+
 // Text format markers
 const REPOSITORY_PREFIX: &str = "Repository: ";
 const REVISION_PREFIX: &str = "Revision: ";
@@ -25,158 +27,111 @@ const XML_REPO_END: &str = "</repository>\n";
 const XML_FILE_START: &str = "<file path=\"";
 const FILE_TAILS: [&[u8]; 2] = [b"</file>\n", b"\n</file>\n"];
 
-/// Rendering strategy encapsulating format-specific framing, headers, and entity escaping.
-pub(crate) trait FormatRenderer: Copy {
-    fn write_header(
-        self,
-        buf: BoundedBuffer,
-        label: &str,
-        revision: Option<&str>,
-        file_count: usize,
-        skipped: usize,
-    ) -> Result<BoundedBuffer, OutputLimitExceeded>;
-
-    fn write_tree_name(
-        self,
-        buf: BoundedBuffer,
-        name: &str,
-    ) -> Result<BoundedBuffer, OutputLimitExceeded>;
-
-    fn close_tree_section(self, buf: BoundedBuffer) -> Result<BoundedBuffer, OutputLimitExceeded>;
-
-    fn write_file_entry(
-        self,
-        buf: BoundedBuffer,
-        path: &str,
-        content: &str,
-    ) -> Result<BoundedBuffer, OutputLimitExceeded>;
-
-    fn write_footer(self, buf: BoundedBuffer) -> Result<BoundedBuffer, OutputLimitExceeded>;
-}
-
-/// Plaintext delimiter-separated LLM digest renderer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TextRenderer;
-
-impl FormatRenderer for TextRenderer {
-    fn write_header(
-        self,
-        mut buf: BoundedBuffer,
-        label: &str,
-        revision: Option<&str>,
-        file_count: usize,
-        skipped: usize,
-    ) -> Result<BoundedBuffer, OutputLimitExceeded> {
-        buf = buf.push_bytes(REPOSITORY_PREFIX.as_bytes())?;
-        buf = write_escaped(buf, label, escape_header)?;
-        buf = buf.push_bytes(NEWLINE.as_bytes())?;
-        if let Some(rev) = revision {
-            buf = buf.push_bytes(REVISION_PREFIX.as_bytes())?;
-            buf = write_escaped(buf, rev, escape_header)?;
+pub(super) fn write_header(
+    format: DigestFormat,
+    mut buf: BoundedBuffer,
+    label: &str,
+    revision: Option<&str>,
+    file_count: usize,
+    skipped: usize,
+) -> Result<BoundedBuffer, OutputLimitExceeded> {
+    match format {
+        DigestFormat::Text => {
+            buf = buf.push_bytes(REPOSITORY_PREFIX.as_bytes())?;
+            buf = write_escaped(buf, label, escape_header)?;
             buf = buf.push_bytes(NEWLINE.as_bytes())?;
+            if let Some(rev) = revision {
+                buf = buf.push_bytes(REVISION_PREFIX.as_bytes())?;
+                buf = write_escaped(buf, rev, escape_header)?;
+                buf = buf.push_bytes(NEWLINE.as_bytes())?;
+            }
+            buf = buf.push_bytes(FILES_PREFIX.as_bytes())?;
+            buf = buf.push_usize(file_count)?;
+            buf = buf.push_bytes(SKIPPED_PREFIX.as_bytes())?;
+            buf = buf.push_usize(skipped)?;
+            buf = buf.push_bytes(METADATA_SUFFIX.as_bytes())?;
+            buf = buf.push_bytes(DIRECTORY_HEADER.as_bytes())?;
+            Ok(buf)
         }
-        buf = buf.push_bytes(FILES_PREFIX.as_bytes())?;
-        buf = buf.push_usize(file_count)?;
-        buf = buf.push_bytes(SKIPPED_PREFIX.as_bytes())?;
-        buf = buf.push_usize(skipped)?;
-        buf = buf.push_bytes(METADATA_SUFFIX.as_bytes())?;
-        buf = buf.push_bytes(DIRECTORY_HEADER.as_bytes())?;
-        Ok(buf)
-    }
-
-    fn write_tree_name(
-        self,
-        buf: BoundedBuffer,
-        name: &str,
-    ) -> Result<BoundedBuffer, OutputLimitExceeded> {
-        write_escaped(buf, name, escape_header)
-    }
-
-    fn close_tree_section(self, buf: BoundedBuffer) -> Result<BoundedBuffer, OutputLimitExceeded> {
-        buf.push_bytes(FILES_HEADER.as_bytes())
-    }
-
-    fn write_file_entry(
-        self,
-        mut buf: BoundedBuffer,
-        path: &str,
-        content: &str,
-    ) -> Result<BoundedBuffer, OutputLimitExceeded> {
-        const TAIL: [&[u8]; 2] = [b"\n", b"\n\n"];
-        let needs_extra_nl = usize::from(!content.ends_with('\n'));
-        buf = buf.push_bytes(FILE_BLOCK_PREFIX.as_bytes())?;
-        buf = write_escaped(buf, path, escape_header)?;
-        buf = buf.push_bytes(FILE_BLOCK_SUFFIX.as_bytes())?;
-        buf = buf.push_bytes(content.as_bytes())?;
-        buf = buf.push_bytes(TAIL[needs_extra_nl])?;
-        Ok(buf)
-    }
-
-    fn write_footer(self, buf: BoundedBuffer) -> Result<BoundedBuffer, OutputLimitExceeded> {
-        Ok(buf)
+        DigestFormat::Xml => {
+            buf = buf.push_bytes(XML_REPO_START.as_bytes())?;
+            buf = write_escaped(buf, label, escape_xml_single_line)?;
+            if let Some(rev) = revision {
+                buf = buf.push_bytes(XML_REVISION_ATTR.as_bytes())?;
+                buf = write_escaped(buf, rev, escape_xml_single_line)?;
+            }
+            buf = buf.push_bytes(XML_TAG_CLOSE.as_bytes())?;
+            buf = buf.push_bytes(XML_DIR_START.as_bytes())?;
+            Ok(buf)
+        }
     }
 }
 
-/// Anthropic and LLM-optimized XML structured digest renderer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct XmlRenderer;
+pub(super) fn write_tree_name(
+    format: DigestFormat,
+    buf: BoundedBuffer,
+    name: &str,
+) -> Result<BoundedBuffer, OutputLimitExceeded> {
+    match format {
+        DigestFormat::Text => write_escaped(buf, name, escape_header),
+        DigestFormat::Xml => write_escaped(buf, name, escape_xml_single_line),
+    }
+}
 
-impl FormatRenderer for XmlRenderer {
-    fn write_header(
-        self,
-        mut buf: BoundedBuffer,
-        label: &str,
-        revision: Option<&str>,
-        _file_count: usize,
-        _skipped: usize,
-    ) -> Result<BoundedBuffer, OutputLimitExceeded> {
-        buf = buf.push_bytes(XML_REPO_START.as_bytes())?;
-        buf = write_escaped(buf, label, escape_xml_single_line)?;
-        if let Some(rev) = revision {
-            buf = buf.push_bytes(XML_REVISION_ATTR.as_bytes())?;
-            buf = write_escaped(buf, rev, escape_xml_single_line)?;
+pub(super) fn close_tree_section(
+    format: DigestFormat,
+    mut buf: BoundedBuffer,
+) -> Result<BoundedBuffer, OutputLimitExceeded> {
+    match format {
+        DigestFormat::Text => buf.push_bytes(FILES_HEADER.as_bytes()),
+        DigestFormat::Xml => {
+            buf = buf.push_bytes(XML_DIR_END.as_bytes())?;
+            buf = buf.push_bytes(XML_FILES_START.as_bytes())?;
+            Ok(buf)
         }
-        buf = buf.push_bytes(XML_TAG_CLOSE.as_bytes())?;
-        buf = buf.push_bytes(XML_DIR_START.as_bytes())?;
-        Ok(buf)
     }
+}
 
-    fn write_tree_name(
-        self,
-        buf: BoundedBuffer,
-        name: &str,
-    ) -> Result<BoundedBuffer, OutputLimitExceeded> {
-        write_escaped(buf, name, escape_xml_single_line)
+pub(super) fn write_file_entry(
+    format: DigestFormat,
+    mut buf: BoundedBuffer,
+    path: &str,
+    content: &str,
+) -> Result<BoundedBuffer, OutputLimitExceeded> {
+    match format {
+        DigestFormat::Text => {
+            const TAIL: [&[u8]; 2] = [b"\n", b"\n\n"];
+            let needs_extra_nl = usize::from(!content.ends_with('\n'));
+            buf = buf.push_bytes(FILE_BLOCK_PREFIX.as_bytes())?;
+            buf = write_escaped(buf, path, escape_header)?;
+            buf = buf.push_bytes(FILE_BLOCK_SUFFIX.as_bytes())?;
+            buf = buf.push_bytes(content.as_bytes())?;
+            buf = buf.push_bytes(TAIL[needs_extra_nl])?;
+            Ok(buf)
+        }
+        DigestFormat::Xml => {
+            buf = buf.push_bytes(XML_FILE_START.as_bytes())?;
+            buf = write_escaped(buf, path, escape_xml_single_line)?;
+            buf = buf.push_bytes(XML_TAG_CLOSE.as_bytes())?;
+            buf = write_escaped(buf, content, escape_xml_body)?;
+            let needs_nl = usize::from(!content.ends_with('\n'));
+            buf = buf.push_bytes(FILE_TAILS[needs_nl])?;
+            Ok(buf)
+        }
     }
+}
 
-    fn close_tree_section(
-        self,
-        mut buf: BoundedBuffer,
-    ) -> Result<BoundedBuffer, OutputLimitExceeded> {
-        buf = buf.push_bytes(XML_DIR_END.as_bytes())?;
-        buf = buf.push_bytes(XML_FILES_START.as_bytes())?;
-        Ok(buf)
-    }
-
-    fn write_file_entry(
-        self,
-        mut buf: BoundedBuffer,
-        path: &str,
-        content: &str,
-    ) -> Result<BoundedBuffer, OutputLimitExceeded> {
-        buf = buf.push_bytes(XML_FILE_START.as_bytes())?;
-        buf = write_escaped(buf, path, escape_xml_single_line)?;
-        buf = buf.push_bytes(XML_TAG_CLOSE.as_bytes())?;
-        buf = write_escaped(buf, content, escape_xml_body)?;
-        let needs_nl = usize::from(!content.ends_with('\n'));
-        buf = buf.push_bytes(FILE_TAILS[needs_nl])?;
-        Ok(buf)
-    }
-
-    fn write_footer(self, mut buf: BoundedBuffer) -> Result<BoundedBuffer, OutputLimitExceeded> {
-        buf = buf.push_bytes(XML_FILES_END.as_bytes())?;
-        buf = buf.push_bytes(XML_REPO_END.as_bytes())?;
-        Ok(buf)
+pub(super) fn write_footer(
+    format: DigestFormat,
+    mut buf: BoundedBuffer,
+) -> Result<BoundedBuffer, OutputLimitExceeded> {
+    match format {
+        DigestFormat::Text => Ok(buf),
+        DigestFormat::Xml => {
+            buf = buf.push_bytes(XML_FILES_END.as_bytes())?;
+            buf = buf.push_bytes(XML_REPO_END.as_bytes())?;
+            Ok(buf)
+        }
     }
 }
 
@@ -184,11 +139,11 @@ impl FormatRenderer for XmlRenderer {
 mod tests {
     use super::*;
     use crate::core::collection::CollectionResult;
-    use crate::core::render::render_with;
+    use crate::core::render::render_digest;
     use crate::core::storage::{FileRecord, FileStorage, SortedFiles};
 
-    fn render_digest<R: FormatRenderer>(
-        renderer: R,
+    fn render_digest_str(
+        format: DigestFormat,
         label: &str,
         revision: Option<&str>,
         files: &[FileRecord<'_>],
@@ -201,7 +156,7 @@ mod tests {
             files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
             skipped,
         };
-        let buf = render_with(BoundedBuffer::default(), &collection, renderer)?;
+        let buf = render_digest(BoundedBuffer::default(), &collection, format)?;
         Ok(String::from_utf8(buf.finish().bytes).unwrap())
     }
 
@@ -211,7 +166,7 @@ mod tests {
         files: &[FileRecord<'_>],
         skipped: usize,
     ) -> Result<String, OutputLimitExceeded> {
-        render_digest(TextRenderer, label, revision, files, skipped)
+        render_digest_str(DigestFormat::Text, label, revision, files, skipped)
     }
 
     fn render_xml_digest(
@@ -220,7 +175,7 @@ mod tests {
         files: &[FileRecord<'_>],
         skipped: usize,
     ) -> Result<String, OutputLimitExceeded> {
-        render_digest(XmlRenderer, label, revision, files, skipped)
+        render_digest_str(DigestFormat::Xml, label, revision, files, skipped)
     }
 
     #[test]
@@ -254,7 +209,7 @@ mod tests {
             files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
             skipped: 2,
         };
-        let buf = render_with(BoundedBuffer::default(), &collection, TextRenderer).unwrap();
+        let buf = render_digest(BoundedBuffer::default(), &collection, DigestFormat::Text).unwrap();
         let digest = buf.finish();
         let streamed_str = std::str::from_utf8(&digest.bytes).unwrap();
 
@@ -311,7 +266,7 @@ hello\n\
             files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
             skipped: 1,
         };
-        let buf = render_with(BoundedBuffer::default(), &collection, TextRenderer).unwrap();
+        let buf = render_digest(BoundedBuffer::default(), &collection, DigestFormat::Text).unwrap();
         let digest = buf.finish();
         let rendered = std::str::from_utf8(&digest.bytes).unwrap();
         assert!(rendered.contains("Files: 2"));

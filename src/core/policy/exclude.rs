@@ -134,7 +134,7 @@ fn invalid_pattern(pattern: &str, reason: &str) -> DomainError {
 mod tests {
     use super::*;
     use crate::core::error::sanitize_error_detail;
-    use crate::core::path::{AdmittedDir, PathStatus, admit_dir, classify_path_segments};
+    use crate::core::path::{AdmittedDir, admit_dir, classify_path_segments};
     use crate::core::policy::{MAX_PATH_BYTES_USIZE, MAX_PATH_DEPTH};
 
     fn patterns(list: &[&str]) -> ExcludePatterns {
@@ -147,11 +147,10 @@ mod tests {
     }
 
     /// Whether `patterns` reject the path as the walk and the classifier apply it: a directory is
-    /// rejected when admitting it fails, and a file when it classifies as `Ignored`.
+    /// rejected when admitting it fails, and a file when it classifies as `None` (Ignored).
     fn rejected(patterns: &ExcludePatterns, segments: &[&[u8]], is_dir: bool) -> bool {
         if !is_dir {
-            return classify_path_segments(segments.iter().copied(), patterns)
-                == Ok(PathStatus::Ignored);
+            return classify_path_segments(segments.iter().copied(), patterns) == Ok(None);
         }
         let mut dir = AdmittedDir::root();
         for name in segments {

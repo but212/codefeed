@@ -6,6 +6,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Contributors
+
+Internal change. No consumer action required.
+
+#### Changed
+
+- **`FormatRenderer` trait and renderer unit structs eliminated**: Replaced the hollow `FormatRenderer` trait, `TextRenderer`, and `XmlRenderer` with direct dispatch on `DigestFormat` inside `render_digest` (`src/core/render/formats.rs`, `src/core/render/mod.rs`). Output and behavior unchanged.
+- **`PathStatus` replaced with `Option<CandidatePath>`**: Replaced `PathStatus` with `CandidatePath` (`Valid` or `NonUtf8`), representing ignored paths as `None` at classification boundaries (`classify_path_segments`, `classify_leaf`, `normalize_tar_entry_path`). Eliminated the impossible `Ignored` candidate branch from `Selector::observe` (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/github/archive.rs`).
+
 ## [0.7.0]
 
 ### Library consumers and CLI users

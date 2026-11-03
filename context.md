@@ -21,7 +21,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 ### Candidate collection
 
-- `PathStatus`: Result of path classification: `Valid(NormalizedPath)`, `Ignored`, or `NonUtf8Candidate(prefix)`.
+- `CandidatePath`: Valid candidate path (`Valid(NormalizedPath)` or `NonUtf8(prefix)`). Ignored entries are represented by `None` at the classification boundary and eliminated before selection.
 - `NormalizedPath`: Non-empty, slash-separated, UTF-8 relative path without empty or `.` segments.
 - `Selector`: Linear state managing arena storage, `CandidateBudget`, the seen-path set used for uniqueness, and skipped tally. Settles candidates via `observe` and completes via `finish`.
 - `CandidateBudget`: Candidate counter and per-directory tallies (`selector.rs` private).
@@ -130,7 +130,7 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 ### Core (`src/core/`)
 
 - `cli.rs`: CLI argument parsing (`parse`, `Parsed`), `HELP` constant, `CliAction`, `completion_message`.
-- `path.rs`: Path types and classification (`NormalizedPath`, `PathStatus`, `AdmittedDir`, `classify_path_segments`, `admit_dir`, `classify_leaf`). Depends on `policy/` and `error`.
+- `path.rs`: Path types and classification (`NormalizedPath`, `CandidatePath`, `AdmittedDir`, `classify_path_segments`, `admit_dir`, `classify_leaf`). Depends on `policy/` and `error`.
 - `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `exclude.rs` (`ExcludePatterns`), `auth.rs` (`TOKEN_ENV_VARS`).
 - `source.rs`: `Source`, `GitRef`, `GithubName`, source parsing (`Source::parse` delegates URL rules to `github/`).
 - `model.rs`: `RunConfig`, `OutputTarget`, `DigestFormat`, `IngestReport`.
