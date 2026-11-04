@@ -117,7 +117,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - **I-04 (`boundary`, `DomainError::usage`, `invalid_source`, `unsupported_source`, `invalid_metadata`):** These constructors pass the message through `sanitize_error_detail`, so the stored text has no control characters or line breaks, including text echoed from argv, `--exclude` patterns, or URLs. `DomainError`'s `Display` also passes the message of these four variants through `sanitize_error_detail`, so a library consumer that builds a variant directly still gets sanitized stderr text. The stored value stays as given to the variant.
 - **I-06 (`type`, `Auth`, `api_error`):** The token hint appears only in the message of an anonymous 403 or 429. `api_error` is the only place that builds that message and it takes an `Auth`, so a run whose API request carried a token cannot get the hint, including an error from a redirect target, which never receives the token.
 - **I-07 (`boundary`, `GithubClient::credentials`):** Only the GitHub API origin receives the token. The `Authorization` header and the `Auth` given to errors both derive from `credentials(url)`, so they cannot disagree. `GithubClient`'s fields are private to `client.rs`, so no other module reaches the token except through `credentials`.
-- **I-08 (`boundary`, `TOKEN_ENV_VARS`):** Token environment variable names exist only in `TOKEN_ENV_VARS` (`src/core/policy/auth.rs`). Lookup order and the token hint both read it. A type cannot hold a list of names, so one definition is the enforcement.
+- **I-08 (`boundary`, `TOKEN_ENV_VARS`):** Token environment variable names exist only in `TOKEN_ENV_VARS` (`src/core/policy/mod.rs`). Lookup order and the token hint both read it. A type cannot hold a list of names, so one definition is the enforcement.
 
 ## 4. Limits and Tunables
 
@@ -131,7 +131,7 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 
 - `cli.rs`: CLI argument parsing (`parse`, `Parsed`), `HELP` constant, `CliAction`, `completion_message`.
 - `path.rs`: Path types and classification (`NormalizedPath`, `CandidatePath`, `AdmittedDir`, `classify_path_segments`, `admit_dir`, `classify_leaf`). Depends on `policy/` and `error`.
-- `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `exclude.rs` (`ExcludePatterns`), `auth.rs` (`TOKEN_ENV_VARS`).
+- `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `exclude.rs` (`ExcludePatterns`), `mod.rs` (re-exports, `TOKEN_ENV_VARS`).
 - `source.rs`: `Source`, `GitRef`, `GithubName`, source parsing (`Source::parse` delegates URL rules to `github/`).
 - `model.rs`: `RunConfig`, `OutputTarget`, `DigestFormat`, `IngestReport`.
 - `collection.rs`: `CollectionResult`, `repository_name`.
@@ -147,7 +147,7 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 - `cli.rs`: `run_cli` (CLI orchestration, stream selection, exit codes).
 - `error.rs`: `IngestError`, `transport_error`.
 - `local/`: `mod.rs` (`collect`), `walk.rs`, `gitignore.rs` (`.gitignore` loading and compilation), `read.rs` (metadata/body read), `pipeline.rs` (producer/worker pipeline).
-- `github/`: `mod.rs` (`collect`), `archive.rs` (tarball/gzip streaming and admission), `client.rs` (HTTP/TLS client, token handling), `stream.rs` (HTTP retries, streaming).
+- `github/`: `mod.rs` (`collect`, HTTP retries, streaming), `archive.rs` (tarball/gzip streaming and admission), `client.rs` (HTTP/TLS client, token handling).
 - `atomic.rs`: `write_atomic`, `TempPath`.
 - `output.rs`: `resolve_output_target`, `deliver`.
 - `stdio.rs`: stdout/stderr diagnostic line writers.
