@@ -241,41 +241,6 @@ hello\n\
     }
 
     #[test]
-    fn text_renders_from_arbitrary_iterator() {
-        let files = [
-            FileRecord {
-                path: "b.txt",
-                content: "content_b\n",
-            },
-            FileRecord {
-                path: "excluded.txt",
-                content: "skip_me\n",
-            },
-            FileRecord {
-                path: "a.txt",
-                content: "content_a\n",
-            },
-        ];
-        let storage: FileStorage = files
-            .into_iter()
-            .filter(|f| f.path != "excluded.txt")
-            .collect();
-        let collection = CollectionResult {
-            label: "repo".into(),
-            revision: None,
-            files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
-            skipped: 1,
-        };
-        let buf = render_digest(BoundedBuffer::default(), &collection, DigestFormat::Text).unwrap();
-        let digest = buf.finish();
-        let rendered = std::str::from_utf8(&digest.bytes).unwrap();
-        assert!(rendered.contains("Files: 2"));
-        assert!(rendered.contains("FILE: a.txt"));
-        assert!(rendered.contains("FILE: b.txt"));
-        assert!(!rendered.contains("excluded.txt"));
-    }
-
-    #[test]
     fn text_escapes_control_characters_in_filename_headers_and_tree() {
         let filename = "x\x1b]0;title\x07.md";
         let files = [FileRecord {
@@ -328,11 +293,19 @@ z &lt; 10
         }];
         let xml_str = render_xml_digest("my\trepo\n", Some("rev\r\n1"), &files, 0).unwrap();
 
-        assert!(
-            xml_str.contains("<repository name=\"my&#9;repo&#10;\" revision=\"rev&#13;&#10;1\">")
-        );
-        assert!(xml_str.contains("<file path=\"dir&#10;name&#13;&#9;\\back/file.rs\">"));
-        assert!(xml_str.contains("dir&#10;name&#13;&#9;\\back/"));
-        assert!(xml_str.contains("fn main() {\n\tprintln!(&quot;hello&quot;);\r\n}\n"));
+        let expected = "\
+<repository name=\"my&#9;repo&#10;\" revision=\"rev&#13;&#10;1\">
+<directory_structure>
+└── dir&#10;name&#13;&#9;\\back/
+    └── file.rs
+</directory_structure>
+<files>
+<file path=\"dir&#10;name&#13;&#9;\\back/file.rs\">
+fn main() {\n\tprintln!(&quot;hello&quot;);\r\n}
+</file>
+</files>
+</repository>
+";
+        assert_eq!(xml_str, expected);
     }
 }

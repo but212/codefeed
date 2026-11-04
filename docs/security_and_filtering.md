@@ -166,7 +166,7 @@ Candidate budget overflow aborts the run without emitting partial output.
 
 ### 6.1 Authentication
 
-- Resolves the variables listed in `TOKEN_ENV_VARS` (`src/core/policy/auth.rs`) in order: `GITHUB_TOKEN` first, then `GH_TOKEN`. Empty or whitespace values are ignored.
+- Resolves the variables listed in `TOKEN_ENV_VARS` (`src/core/policy/mod.rs`) in order: `GITHUB_TOKEN` first, then `GH_TOKEN`. Empty or whitespace values are ignored.
 - Attaches `Authorization: Bearer <token>` strictly when `is_github_api_origin(url)` holds (`https://api.github.com`).
 - The error message for 403 and 429 names the token variables only for an anonymous request. A request that carried a token gets no hint. A redirect target is not sent the token; its error is classified by the original API request.
 - Enforces `RedirectAuthHeaders::Never`; redirects never transmit credentials.

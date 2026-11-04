@@ -216,7 +216,7 @@ mod tests {
     use super::*;
     use crate::core::error::DomainError;
     use crate::core::policy::MAX_FILE_SIZE_USIZE;
-    use crate::shell::testing::{gzip_archive, gzip_tarball};
+    use crate::shell::testing::{gzip_archive, gzip_single_entry_stream, gzip_tarball};
 
     fn collect_default(
         reader: &[u8],
@@ -714,18 +714,51 @@ mod tests {
         assert_header_budget_failure(&mock_data);
     }
 
+    /// Body length that makes the single-entry stream exactly `extra` bytes past the decompressed limit
+    /// (negative `extra` is short of it). The 512-byte tar header counts toward the limit.
+    fn body_len_for_stream_len(extra: i64) -> u64 {
+        ARCHIVE_MAX_DECOMPRESSED_BYTES
+            .checked_add_signed(extra - 512)
+            .expect("limit exceeds the header length")
+    }
+
     #[test]
-    fn decompressed_stream_beyond_the_limit_fails_the_run() {
-        use crate::core::policy::ARCHIVE_MAX_DECOMPRESSED_BYTES;
-
+    fn decompressed_stream_at_the_limit_is_accepted() {
         // One oversized entry is skipped, but its body is still drained from the stream.
-        let body = vec![b'x'; usize::try_from(ARCHIVE_MAX_DECOMPRESSED_BYTES).unwrap() + 1];
-        let mock_data = gzip_tarball(&[("repo-root/big.txt", &body, EntryType::Regular)]);
+        let stream = gzip_single_entry_stream(body_len_for_stream_len(0));
 
-        let err = collect_default(&mock_data, "label", None).unwrap_err();
+        let result = collect(stream, "label", None, &ExcludePatterns::default())
+            .expect("a stream of exactly the limit is accepted");
+
+        assert_eq!(result.files.len(), 0);
+        assert_eq!(result.skipped, 1);
+    }
+
+    #[test]
+    fn decompressed_stream_one_byte_beyond_the_limit_fails_the_run() {
+        let stream = gzip_single_entry_stream(body_len_for_stream_len(1));
+
+        let err = collect(stream, "label", None, &ExcludePatterns::default()).unwrap_err();
         assert!(
             matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(msg)) if msg.contains("ARCHIVE_MAX_DECOMPRESSED_BYTES")),
             "expected decompressed limit failure, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn file_of_exactly_the_size_limit_is_read_in_full() {
+        let mock_data = gzip_tarball(&[(
+            "repo-root/exact.txt",
+            &vec![b'x'; MAX_FILE_SIZE_USIZE],
+            EntryType::Regular,
+        )]);
+
+        let result = collect_default(&mock_data, "label", None).expect("collection succeeds");
+
+        let files: Vec<_> = result.files.iter().collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "exact.txt");
+        assert_eq!(files[0].content.len(), MAX_FILE_SIZE_USIZE);
+        assert_eq!(result.skipped, 0);
     }
 }

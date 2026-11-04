@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn xml_escape_and_streaming_consistency() {
+    fn xml_body_escaping_examples() {
         let cases: &[(&str, &str)] = &[
             ("", ""),
             ("plain text", "plain text"),
@@ -150,18 +150,10 @@ mod tests {
         ];
 
         for &(text, expected_escaped) in cases {
-            let escaped = xml_escape(text);
             assert_eq!(
-                escaped.as_str(),
+                xml_escape(text),
                 expected_escaped,
                 "escape mismatch for {text:?}"
-            );
-
-            let streamed = write_escaped(BoundedBuffer::default(), text, escape_xml_body).unwrap();
-            assert_eq!(
-                String::from_utf8(streamed.finish().bytes).unwrap(),
-                escaped.as_str(),
-                "streamed content mismatch for {text:?}"
             );
         }
     }
@@ -187,6 +179,110 @@ mod tests {
                     if matched.is_some() {
                         assert!(XML_BODY_START[usize::from(first)], "window {window:?}");
                     }
+                }
+            }
+        }
+    }
+
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        type SpecialAt = fn(&[u8], usize) -> Option<(usize, &'static str)>;
+
+        /// Characters that each escaper treats specially, mixed with arbitrary ones.
+        fn text() -> impl Strategy<Value = String> {
+            const SPECIAL: &[char] = &[
+                '<', '>', '&', '"', '\'', '\\', '\t', '\r', '\n', '\0', '\x08', '\x0b', '\x0c',
+                '\x0e', '\x1f', '\x7f', '\u{FFFD}', '\u{FFFE}', '\u{FFFF}',
+            ];
+            prop::collection::vec(
+                prop_oneof![
+                    3 => any::<char>(),
+                    2 => prop::sample::select(SPECIAL),
+                ],
+                0..48,
+            )
+            .prop_map(String::from_iter)
+        }
+
+        fn escape(value: &str, special_at: SpecialAt) -> String {
+            let buf = write_escaped(BoundedBuffer::default(), value, special_at).unwrap();
+            String::from_utf8(buf.finish().bytes).unwrap()
+        }
+
+        fn model_xml_body(c: char) -> String {
+            match c {
+                '"' => "&quot;".into(),
+                '&' => "&amp;".into(),
+                '\'' => "&apos;".into(),
+                '<' => "&lt;".into(),
+                '>' => "&gt;".into(),
+                '\0'..='\x08' | '\x0b' | '\x0c' | '\x0e'..='\x1f' | '\u{FFFE}' | '\u{FFFF}' => {
+                    "\u{FFFD}".into()
+                }
+                c => c.to_string(),
+            }
+        }
+
+        fn model_xml_single_line(c: char) -> String {
+            match c {
+                '\t' => "&#9;".into(),
+                '\n' => "&#10;".into(),
+                '\r' => "&#13;".into(),
+                c => model_xml_body(c),
+            }
+        }
+
+        fn model_header(c: char) -> String {
+            match c {
+                '\\' => "\\\\".into(),
+                '\r' => "\\r".into(),
+                '\n' => "\\n".into(),
+                '\0'..='\x08' | '\x0b' | '\x0c' | '\x0e'..='\x1f' | '\x7f' => "\u{FFFD}".into(),
+                c => c.to_string(),
+            }
+        }
+
+        type Escaper = (&'static str, SpecialAt, fn(char) -> String);
+
+        fn escapers() -> [Escaper; 3] {
+            [
+                ("header", escape_header, model_header),
+                ("xml body", escape_xml_body, model_xml_body),
+                (
+                    "xml single line",
+                    escape_xml_single_line,
+                    model_xml_single_line,
+                ),
+            ]
+        }
+
+        proptest! {
+            #![proptest_config(crate::core::proptest_config())]
+
+            /// Each escaper maps every character independently, as its documented table says.
+            #[test]
+            fn escaping_matches_the_per_character_table(value in text()) {
+                for (name, special_at, model) in escapers() {
+                    let expected: String = value.chars().map(model).collect();
+                    prop_assert_eq!(escape(&value, special_at), expected, "{}", name);
+                }
+            }
+
+            /// Splitting a value at a character boundary and escaping the parts separately gives the
+            /// same bytes as escaping it whole, so the three-byte `U+FFFE`/`U+FFFF` match never
+            /// depends on chunking.
+            #[test]
+            fn escaping_commutes_with_concatenation(a in text(), b in text()) {
+                let joined = format!("{a}{b}");
+                for (name, special_at, _) in escapers() {
+                    prop_assert_eq!(
+                        escape(&joined, special_at),
+                        format!("{}{}", escape(&a, special_at), escape(&b, special_at)),
+                        "{}",
+                        name
+                    );
                 }
             }
         }

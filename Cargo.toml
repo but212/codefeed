@@ -37,3 +37,6 @@ panic = "abort"
 debug = "full"
 split-debuginfo = "packed"
 strip = "symbols"
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] } # Deterministic property tests for core invariants

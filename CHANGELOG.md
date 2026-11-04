@@ -30,6 +30,7 @@ Internal change. No consumer action required.
 - **Invariant enforcement narrowed to the boundary**: `GithubClient` fields made private (`src/shell/github/client.rs`). `FileStorage::sort_by_path` made private to `storage.rs`. `NormalizedPath::as_str` removed in favor of `Deref` (`src/core/path.rs`, `src/core/storage.rs`). `classify_path_segments` doc comment clarified to match the depth-window invariant.
 - **`FormatRenderer` trait and renderer unit structs eliminated**: Replaced the hollow `FormatRenderer` trait, `TextRenderer`, and `XmlRenderer` with direct dispatch on `DigestFormat` inside `render_digest` (`src/core/render/formats.rs`, `src/core/render/mod.rs`). Output and behavior unchanged.
 - **`PathStatus` replaced with `Option<CandidatePath>`**: Replaced `PathStatus` with `CandidatePath` (`Valid` or `NonUtf8`), representing ignored paths as `None` at classification boundaries (`classify_path_segments`, `classify_leaf`, `normalize_tar_entry_path`). Eliminated the impossible `Ignored` candidate branch from `Selector::observe` (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/github/archive.rs`).
+- **Tiny modules folded**: `TOKEN_ENV_VARS` moves from `src/core/policy/auth.rs` into `src/core/policy/mod.rs`, and the HTTP retry loop moves from `src/shell/github/stream.rs` into `src/shell/github/mod.rs`. Crate paths are unchanged. No behavior change.
 
 ## [0.7.0]
 

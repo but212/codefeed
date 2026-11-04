@@ -298,4 +298,45 @@ mod tests {
             )
         );
     }
+
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Arbitrary characters mixed with the C0 and C1 control ranges.
+        fn text() -> impl Strategy<Value = String> {
+            prop::collection::vec(
+                prop_oneof![
+                    3 => any::<char>(),
+                    2 => prop::char::range('\0', '\u{9f}'),
+                ],
+                0..64,
+            )
+            .prop_map(String::from_iter)
+        }
+
+        proptest! {
+            #![proptest_config(crate::core::proptest_config())]
+
+            /// The output is one line without control characters, the same length in characters, and
+            /// keeps every non-control character in place.
+            #[test]
+            fn sanitized_detail_has_no_control_characters(input in text()) {
+                let output = sanitize_error_detail(&input);
+                prop_assert!(!output.chars().any(char::is_control), "{:?}", output);
+                prop_assert_eq!(output.chars().count(), input.chars().count());
+                for (before, after) in input.chars().zip(output.chars()) {
+                    if !before.is_control() {
+                        prop_assert_eq!(before, after);
+                    }
+                }
+            }
+
+            #[test]
+            fn sanitizing_is_idempotent(input in text()) {
+                let once = sanitize_error_detail(&input);
+                prop_assert_eq!(sanitize_error_detail(&once), once);
+            }
+        }
+    }
 }

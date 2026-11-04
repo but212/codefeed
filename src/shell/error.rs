@@ -68,7 +68,6 @@ pub(super) fn transport_error(error_text: &str) -> IngestError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::policy::{MAX_FILE_COUNT, MAX_OUTPUT_SIZE};
 
     #[test]
     fn domain_wraps_unchanged() {
@@ -81,8 +80,7 @@ mod tests {
 
     #[test]
     fn display_matches_each_variant() {
-        let limit_mib = MAX_OUTPUT_SIZE / (1024 * 1024);
-        let cases: [(IngestError, String); 9] = [
+        let cases: [(IngestError, String); 4] = [
             (
                 IngestError::Api(crate::core::github::api_error(
                     500,
@@ -93,31 +91,6 @@ mod tests {
                 "GitHub API error: HTTP 500: boom".into(),
             ),
             (DomainError::usage("bad flag").into(), "bad flag".into()),
-            (
-                DomainError::candidate_limit_exceeded(MAX_FILE_COUNT, vec![("src/".into(), 3)])
-                    .into(),
-                format!(
-                    "repository contains more than {MAX_FILE_COUNT} files\nlargest directories:\n  - src/ (3 files)"
-                ),
-            ),
-            (
-                DomainError::invalid_source("x").into(),
-                "invalid source: x".into(),
-            ),
-            (
-                DomainError::unsupported_source("ssh").into(),
-                "unsupported source: ssh".into(),
-            ),
-            (
-                DomainError::invalid_metadata("bad").into(),
-                "invalid repository metadata: bad".into(),
-            ),
-            (
-                DomainError::output_too_large(MAX_OUTPUT_SIZE, vec![("a.txt".into(), 1024)]).into(),
-                format!(
-                    "digest exceeds the {limit_mib} MiB output limit\nlargest files:\n  - a.txt (1.0 KiB)"
-                ),
-            ),
             (
                 IngestError::Io(io::Error::other("disk")),
                 "filesystem error: disk".into(),

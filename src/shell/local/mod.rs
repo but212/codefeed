@@ -367,21 +367,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn non_utf8_gitignore_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("non_utf8_gitignore")?;
-        fs::write(root.join(".gitignore"), b"# caf\xe9\nsecret.txt\n")?;
-        fs::write(root.join("secret.txt"), "secret")?;
-
-        let err = collect_default(&root, &ResolvedOutput::STDOUT).unwrap_err();
-        assert!(
-            matches!(&err, IngestError::Io(io_err) if io_err.kind() == std::io::ErrorKind::InvalidData),
-            "expected IngestError::Io with ErrorKind::InvalidData, got: {err:?}"
-        );
-        assert!(err.to_string().contains(".gitignore"), "got: {err}");
-        Ok(())
-    }
-
     #[cfg(unix)]
     #[test]
     fn unreadable_gitignore_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
@@ -404,17 +389,31 @@ mod tests {
     }
 
     #[test]
-    fn oversized_gitignore_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("oversized_gitignore")?;
-        fs::write(root.join(".gitignore"), vec![b'#'; MAX_FILE_SIZE_USIZE + 1])?;
-        fs::write(root.join("a.txt"), "a")?;
+    fn invalid_gitignore_content_fails_the_run() -> Result<(), Box<dyn std::error::Error>> {
+        let cases: [(&str, Vec<u8>, std::io::ErrorKind); 2] = [
+            (
+                "non_utf8_gitignore",
+                b"# caf\xe9\nsecret.txt\n".to_vec(),
+                std::io::ErrorKind::InvalidData,
+            ),
+            (
+                "oversized_gitignore",
+                vec![b'#'; MAX_FILE_SIZE_USIZE + 1],
+                std::io::ErrorKind::FileTooLarge,
+            ),
+        ];
+        for (name, content, kind) in cases {
+            let root = temp_dir(name)?;
+            fs::write(root.join(".gitignore"), content)?;
+            fs::write(root.join("secret.txt"), "secret")?;
 
-        let err = collect_default(&root, &ResolvedOutput::STDOUT).unwrap_err();
-        assert!(
-            matches!(&err, IngestError::Io(io_err) if io_err.kind() == std::io::ErrorKind::FileTooLarge),
-            "expected IngestError::Io with ErrorKind::FileTooLarge, got: {err:?}"
-        );
-        assert!(err.to_string().contains(".gitignore"), "got: {err}");
+            let err = collect_default(&root, &ResolvedOutput::STDOUT).unwrap_err();
+            assert!(
+                matches!(&err, IngestError::Io(io_err) if io_err.kind() == kind),
+                "{name}: expected IngestError::Io with {kind:?}, got: {err:?}"
+            );
+            assert!(err.to_string().contains(".gitignore"), "{name}: {err}");
+        }
         Ok(())
     }
 
