@@ -7,6 +7,8 @@
 [![MSRV](https://img.shields.io/badge/rustc-1.88%2B-orange.svg)](Cargo.toml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/but212/codefeed)
 
+[English](README.md) | [한국어](docs/README.ko.md)
+
 `codefeed` is a fast CLI converting a local directory or public GitHub repository into a single text digest for LLMs.
 
 ## Sources
@@ -20,7 +22,7 @@ Unsupported protocols (`git@`, `ssh://`, `http://`) and non-GitHub hosts must be
 git clone --depth 1 <URL> ./repo && codefeed ./repo
 ```
 
-`codefeed` never executes `git` or clones repositories.
+`codefeed` never runs `git` or clones repositories.
 
 ## Install
 
@@ -35,7 +37,7 @@ cargo build --release
 ./target/release/codefeed ./my-repo
 ```
 
-Requires Rust 1.88 or newer.
+Requires Rust 1.88+.
 
 ## Usage
 
@@ -51,7 +53,7 @@ Options may appear before or after `<SOURCE>`. Short flags accept `=` syntax (`-
 - `-r`, `--ref <BRANCH|TAG|COMMIT>`: GitHub revision (default: default branch). Rejects empty, whitespace-only, `.`, and `..`.
 - `-f`, `--format <text|xml>`: Digest format (default: `text`).
 - `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to the source root (e.g. `build/`, `*.log`, `/vendor`). Repeatable, applied in order, for local and GitHub sources. Unescaped trailing whitespace is trimmed, as in `.gitignore` (`'! '` is a bare `!`). Invalid patterns and patterns matching nothing (blank, comment, bare `!`) are usage errors. See [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 3.6.
-- `-h`, `--help`: Print usage and exit with 0.
+- `-h`, `--help`: Print usage and exit 0.
 - `--`: Treat subsequent arguments as positionals (for directories starting with `-`).
 
 Inline values (`--flag=value`) may start with `-` (e.g. `--output=-notes.txt`). Separate argument values may not, except `-o -`.
@@ -120,24 +122,24 @@ Limits either skip an entry or abort the run. Limit values and enforcement detai
 | `MAX_PATH_DEPTH` | Run fails. Hidden and noise entries are dropped before this check. |
 | `MAX_FILE_COUNT` | Run fails; error lists largest directories. |
 | `MAX_OUTPUT_SIZE` | Run fails; no digest written; error lists largest files. |
-| `ARCHIVE_MAX_HEADER_BYTES` | Run fails. A tar header, including long-name or PAX data, exceeds the budget. |
-| `ARCHIVE_MAX_DECOMPRESSED_BYTES` | Run fails. The decompressed archive stream exceeds the limit. |
-| `MAX_DIR_ENTRIES` | Run fails. A local directory lists more entries than the limit. |
+| `ARCHIVE_MAX_HEADER_BYTES` | Run fails; tar header (including long-name or PAX) exceeds budget. |
+| `ARCHIVE_MAX_DECOMPRESSED_BYTES` | Run fails; decompressed archive exceeds limit. |
+| `MAX_DIR_ENTRIES` | Run fails; local directory entry count exceeds limit. |
 | `ARCHIVE_MAX_SECS`, `GITHUB_TIMEOUT_SECS` | Request times out. Header timeouts retry per [sec. 6.5-6.6](docs/security_and_filtering.md#6-github-network-safety). |
 | `MAX_ATTEMPTS`, `RETRY_INITIAL_DELAY_MS`, `RETRY_MAX_DELAY_MS` | Transient failures retried with backoff. Waits longer than the cap abort the run. See [sec. 6.5](docs/security_and_filtering.md#6-github-network-safety). |
 
 ## Authentication
 
-Public repositories require no credentials. Private repositories or higher rate limits read credentials from:
+Public repositories require no credentials. Private access or higher rate limits read credentials from:
 
 - `GITHUB_TOKEN` (checked first).
 - `GH_TOKEN` (fallback when `GITHUB_TOKEN` is unset, empty, or whitespace-only).
 
-Tokens are sent as `Authorization: Bearer <token>` strictly to `https://api.github.com`. Redirects never receive credentials.
+Tokens are sent as `Authorization: Bearer <token>` strictly to `https://api.github.com`; redirects never receive credentials.
 
 ## Network Trust
 
-GitHub TLS certificates are validated strictly against Mozilla root certificates bundled in the binary. OS certificate stores and custom proxy CAs are rejected.
+GitHub TLS certificates validate strictly against bundled Mozilla root certificates. OS certificate stores and custom proxy CAs are rejected.
 
 ## Documentation
 
