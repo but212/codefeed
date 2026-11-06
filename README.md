@@ -7,7 +7,7 @@
 [![MSRV](https://img.shields.io/badge/rustc-1.88%2B-orange.svg)](Cargo.toml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/but212/codefeed)
 
-[English](README.md) | [한국어](docs/README.ko.md)
+**English** | [한국어](docs/README.ko.md)
 
 `codefeed` is a fast CLI converting a local directory or public GitHub repository into a single text digest for LLMs.
 

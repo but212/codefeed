@@ -7,7 +7,7 @@
 [![MSRV](https://img.shields.io/badge/rustc-1.88%2B-orange.svg)](../Cargo.toml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/but212/codefeed)
 
-[English](../README.md) | [한국어](README.ko.md)
+[English](../README.md) | **한국어**
 
 `codefeed`는 로컬 디렉터리나 공개 GitHub 저장소를 LLM을 위한 단일 텍스트 다이제스트로 변환하는 빠른 CLI 도구입니다.
 
