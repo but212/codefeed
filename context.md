@@ -21,9 +21,10 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 ### Candidate collection
 
-- `CandidatePath`: Valid candidate path (`Valid(NormalizedPath)` or `NonUtf8(prefix)`). Ignored entries are represented by `None` at the classification boundary and eliminated before selection.
-- `NormalizedPath`: Non-empty, slash-separated, UTF-8 relative path without empty or `.` segments.
+- `CandidatePath`: Candidate path (`Valid(NormalizedPath)` or `Unstorable(prefix)` for a non-UTF-8 path or a path over `MAX_PATH_BYTES`). Ignored entries are represented by `None` at the classification boundary and eliminated before selection.
+- `NormalizedPath`: Non-empty, slash-separated, UTF-8 relative path without empty or `.` segments, within `MAX_PATH_BYTES` (I-10).
 - `Selector`: Linear state managing arena storage, `CandidateBudget`, the seen-path set used for uniqueness, and skipped tally. Settles candidates via `observe` and completes via `finish`.
+- `Observation`: Sole input of `Selector::observe`: `Unstorable(prefix)`, or `File(NormalizedPath, Body)` with `Body` one of `Unavailable`, `OverLimit`, or `Bytes`.
 - `CandidateBudget`: Candidate counter and per-directory tallies (`selector.rs` private).
 - `CollectionResult`: Struct containing `label`, optional `revision`, `files: SortedFiles`, and `skipped`.
 
@@ -37,13 +38,14 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 ### Rendering and results
 
 - `BoundedBuffer`: In-memory writer aborting when output would exceed `MAX_OUTPUT_SIZE`.
-- `RenderedDigest`: Struct of `bytes`, `included_files`, `skipped_files`, and `estimated_tokens`. It knows no delivery target.
-- `IngestReport`: Struct of `output` (the destination as requested in `RunConfig`, not canonicalized), `included_files`, `skipped_files`, and `estimated_tokens` (`#[non_exhaustive]`). `ingest` fills it from `RunConfig` and `RenderedDigest`.
+- `RenderedDigest`: Struct of `bytes` and `estimated_tokens`. It knows no delivery target.
+- `IngestReport`: Struct of `output` (the destination as requested in `RunConfig`, not canonicalized), `included_files`, `skipped_files`, and `estimated_tokens` (`#[non_exhaustive]`). `ingest` fills it from `RunConfig`, the file and skipped counts of `CollectionResult`, and `RenderedDigest`.
 
 ### Errors
 
-- `DomainError`: Core failures re-exported from crate root (`Usage`, `CandidateLimitExceeded`, `InvalidSource`, `UnsupportedSource`, `InvalidMetadata`, `OutputTooLarge(OutputTooLargeError)`).
-- `IngestError`: Shell error re-exported from crate root wrapping `DomainError`, `Io`, `Http`, and `Api(GithubApiError)`.
+- `ErrorDetail`: Sanitized error text. Its only constructor, `ErrorDetail::new`, runs `sanitize_error_detail`. Implements `Deref<Target = str>`.
+- `DomainError`: Core failures re-exported from crate root (`Usage`, `InvalidSource`, `UnsupportedSource`, and `InvalidMetadata` carrying an `ErrorDetail`; `CandidateLimitExceeded`; `OutputTooLarge(OutputTooLargeError)`).
+- `IngestError`: Shell error re-exported from crate root wrapping `DomainError`, `Io`, `Http(ErrorDetail)`, and `Api(GithubApiError)`.
 
 ## 3. Invariants
 
@@ -59,14 +61,16 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - Order: [security sec. 2](docs/security_and_filtering.md#2-evaluation-order). Tar streams classify each path with `classify_path_segments`. The local walk admits each directory once with `admit_dir` and classifies each file with `classify_leaf`, which checks only the file itself.
 - `Ignored` entries consume no candidate slot and are omitted from skipped counts.
 - Run-aborting checks (depth, tar path normalization, oversized tar headers) are specified in [security sec. 2](docs/security_and_filtering.md#2-evaluation-order); the header budget is I-03 ([sec. 3.9](#39-network)).
-- Non-UTF-8 candidates record their valid prefix (`"a/b/"` or `""`), charged to the budget under the first segment (`"a/"`) or root (`"./"`).
-- **I-02 (`boundary`, `admit_dir`, `classify_leaf`):** No classified path or non-UTF-8 prefix has a first segment starting with `.`, since hidden directories are never admitted, hidden files are `Ignored`, and empty or `.` segments are dropped. The budget therefore keys root-level entries as `"./"`, which no real directory can produce.
+- Unstorable candidates record their valid prefix (`"a/b/"` or `""`), charged to the budget under the first segment (`"a/"`) or root (`"./"`).
+- **I-10 (`type`, `NormalizedPath`, `classify_leaf`):** A `Valid` path is at most `MAX_PATH_BYTES` bytes. The `NormalizedPath` field is private and `classify_leaf` is its only non-test constructor; it returns `Unstorable` for a longer path, so `Selector` checks no path length.
+- **I-02 (`boundary`, `admit_dir`, `classify_leaf`):** No classified path or unstorable prefix has a first segment starting with `.`, since hidden directories are never admitted, hidden files are `Ignored`, and empty or `.` segments are dropped. The budget therefore keys root-level entries as `"./"`, which no real directory can produce.
 
 ### 3.3 Accounting
 
 - Slot allocation and skipped rules are detailed in [security sec. 4](docs/security_and_filtering.md#4-candidate-and-skipped-accounting).
 - `Selector::observe` charges a candidate slot prior to inspecting content.
-- Read timing: GitHub streams admit candidates before reading bodies. Local workers read bounded bodies concurrently before main thread settlement.
+- Read timing: Both sources read a bounded body before `Selector::observe`, except when the declared size is over the limit (`OverLimit`, not read). Local workers read concurrently before main thread settlement. The archive stream reads each body in place, and the stream is drained to the next header either way.
+- **I-11 (`type`, `Observation`):** An unstorable path carries no body, and a storable path always carries one `Body`, so neither a body for an unstorable path nor a storable path without a read outcome can be built.
 
 ### 3.4 Storage and Ordering
 
@@ -95,7 +99,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - Overflow diagnostics generate only on error paths. Which limit fails the run: [README Limits](README.md#limits).
 - `MAX_OUTPUT_SIZE` overflow lists `OVERFLOW_LARGEST_FILES` files, sorted by size descending, then path.
 - `MAX_FILE_COUNT` overflow lists `OVERFLOW_LARGEST_DIRECTORIES` directories, sorted by candidate count descending, then name.
-- Names in both overflow lists are passed through `sanitize_error_detail` by `DomainError`'s `Display`. The stored values stay raw.
+- Names in both overflow lists are stored as `ErrorDetail`, so they are sanitized when the error is built. The sort runs on the raw names first.
 - Local runs produce identical diagnostics deterministically.
 
 ### 3.8 Local Traversal Pipeline
@@ -113,7 +117,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - Revision SHA extracts from the first `ARCHIVE_PAX_GLOBAL_BYTES` of the PAX global header, falling back to the requested ref.
 - Stream/gzip/tar read failures map to `IngestError::Http`.
 - **I-03 (`runtime`, `shell/github/archive.rs`):** One `Entries::next` call reads at most `ARCHIVE_MAX_HEADER_BYTES`. tar reads extension bodies internally, so no type or boundary can express the bound. A byte budget on the shared reader enforces it, and each entry body is drained before the next call so only headers are metered. Behavior: [security sec. 2 and 6.4](docs/security_and_filtering.md#64-streaming).
-- **I-04 (`boundary`, `DomainError::usage`, `invalid_source`, `unsupported_source`, `invalid_metadata`):** These constructors pass the message through `sanitize_error_detail`, and `DomainError`'s `Display` does the same for these four variants, so a library consumer that builds a variant directly still gets sanitized stderr text. The stored value stays as given to the variant. Behavior: [security sec. 7](docs/security_and_filtering.md#7-output-sanitization).
+- **I-04 (`type`, `ErrorDetail::new`):** Every error text that may echo user input or a remote payload is an `ErrorDetail`, whose only constructor sanitizes. A library consumer that builds a `DomainError` variant directly therefore cannot store unsanitized text, and `Display` does not sanitize again. Effect text that is not a `DomainError` variant (`io::Error` messages, `GithubApiError`, retry warnings) is sanitized by its shell constructor with `sanitize_error_detail`. Behavior: [security sec. 7](docs/security_and_filtering.md#7-output-sanitization).
 - **I-06 (`type`, `Auth`, `api_error`):** `api_error` is the only place that builds the token hint and it takes an `Auth`, so a run whose API request carried a token cannot get the hint, including an error from a redirect target. Behavior: [security sec. 6.1](docs/security_and_filtering.md#61-authentication).
 - **I-07 (`boundary`, `GithubClient::credentials`):** Only the GitHub API origin receives the token. The `Authorization` header and the `Auth` given to errors both derive from `credentials(url)`, so they cannot disagree. `GithubClient`'s fields are private to `client.rs`, so no other module reaches the token except through `credentials`.
 - **I-08 (`boundary`, `TOKEN_ENV_VARS`):** Token environment variable names exist only in `TOKEN_ENV_VARS` (`src/core/policy/mod.rs`). Lookup order and the token hint both read it. A type cannot hold a list of names, so one definition is the enforcement.
@@ -131,13 +135,13 @@ Purity rules and the one-way Shell-to-Core dependency: [coding convention sec. 3
 - `cli.rs`: CLI argument parsing (`parse`, `Parsed`), `HELP` and `VERSION` constants, `CliAction` (`Help`, `Version`, `Run`), `completion_message`.
 - `path.rs`: Path types and classification (`NormalizedPath`, `CandidatePath`, `AdmittedDir`, `classify_path_segments`, `admit_dir`, `classify_leaf`). Depends on `policy/` and `error`.
 - `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `exclude.rs` (`ExcludePatterns`), `mod.rs` (re-exports, `TOKEN_ENV_VARS`).
-- `source.rs`: `Source`, `GitRef`, `GithubName`, source parsing (`Source::parse` delegates URL rules to `github/`).
+- `source.rs`: `Source`, `GitRef`, source parsing (`Source::parse` delegates URL rules to `github/`).
 - `model.rs`: `RunConfig`, `OutputTarget`, `DigestFormat`, `IngestReport`.
 - `collection.rs`: `CollectionResult`, `repository_name`.
 - `selector.rs`: `Selector`, `CandidateBudget`, `exceeds_size_limits`.
 - `storage.rs`: `FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, `largest_files`.
-- `error.rs`: `DomainError`, `CandidateLimitExceededError`, `OutputTooLargeError`, `sanitize_error_detail`. Depends on no other core module, so the policy-to-error edge is one-way.
-- `github/`: `url.rs` (URL parsing, origin check), `archive.rs` (PAX parsing, tar path normalization), `retry.rs` (header parsing, delay calculation, attempt state machine), `mod.rs` (`GithubApiError`, `Auth`, error formatting).
+- `error.rs`: `DomainError`, `ErrorDetail`, `CandidateLimitExceededError`, `OutputTooLargeError`, `sanitize_error_detail`. Depends on no other core module, so the policy-to-error edge is one-way.
+- `github/`: `url.rs` (`GithubName`, URL parsing, origin check), `archive.rs` (PAX parsing, tar path normalization), `retry.rs` (header parsing, delay calculation, attempt state machine), `mod.rs` (`GithubApiError`, `Auth`, error formatting).
 - `render/`: `formats.rs` (text/XML formats), `tree.rs`, `escape.rs`, `budget.rs` (`BoundedBuffer`, `RenderedDigest`, token estimate).
 
 ### Shell (`src/shell/`)
@@ -154,4 +158,4 @@ Purity rules and the one-way Shell-to-Core dependency: [coding convention sec. 3
 
 ### Public API (`src/lib.rs`)
 
-Exports: `ingest`, `RunConfig`, `ExcludePatterns`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, `CandidateLimitExceededError`, `OutputTooLargeError`, `GithubApiError`, and the `#[doc(hidden)]` `cli::run_cli` used by `main.rs`. All other items are `pub(crate)`.
+Exports: `ingest`, `RunConfig`, `ExcludePatterns`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, `ErrorDetail`, `CandidateLimitExceededError`, `OutputTooLargeError`, `GithubApiError`, and the `#[doc(hidden)]` `cli::run_cli` used by `main.rs`. All other items are `pub(crate)`.

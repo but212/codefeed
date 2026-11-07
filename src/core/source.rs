@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::core::error::DomainError;
-use crate::core::github::{parse_github_url, valid_github_name};
+use crate::core::github::{GithubName, parse_github_url};
 
 /// Validated non-empty Git revision reference (branch, tag, or commit SHA).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -27,36 +27,6 @@ impl GitRef {
 }
 
 impl std::ops::Deref for GitRef {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// Validated GitHub owner or repository name.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct GithubName(String);
-
-impl GithubName {
-    /// Creates a new `GithubName`, rejecting empty strings, `.`, `..`, and invalid characters.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DomainError::InvalidSource`] if `value` is empty, `.`, `..`, or contains
-    /// characters other than ASCII alphanumerics, `-`, `.`, and `_`.
-    pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
-        let string = value.into();
-        if !valid_github_name(&string) {
-            return Err(DomainError::invalid_source(
-                "owner and repository names contain invalid characters",
-            ));
-        }
-        Ok(Self(string))
-    }
-}
-
-impl std::ops::Deref for GithubName {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
@@ -111,7 +81,11 @@ impl Source {
     fn parse(value: &str) -> Result<Self, DomainError> {
         if value.starts_with("http://") || value.starts_with("https://") {
             let (owner, repo) = parse_github_url(value)?;
-            return Self::github(owner, repo, None);
+            return Ok(Self::Github {
+                owner,
+                repo,
+                reference: None,
+            });
         }
         if value.starts_with("git@") || value.starts_with("ssh://") {
             return Err(DomainError::unsupported_source(
@@ -171,21 +145,6 @@ mod tests {
         assert!(
             matches!(GitRef::new(".."), Err(DomainError::InvalidSource(m)) if m.contains("--ref cannot be '.' or '..'"))
         );
-    }
-
-    #[test]
-    fn github_name_validates_and_provides_slice_access() {
-        let name = GithubName::new("rust-lang").unwrap();
-        assert_eq!(&*name, "rust-lang");
-
-        let repo = GithubName::new("codefeed-2.0").unwrap();
-        assert_eq!(&*repo, "codefeed-2.0");
-
-        assert!(GithubName::new("").is_err());
-        assert!(GithubName::new(".").is_err());
-        assert!(GithubName::new("..").is_err());
-        assert!(GithubName::new("bad name").is_err());
-        assert!(GithubName::new("bad/name").is_err());
     }
 
     #[test]

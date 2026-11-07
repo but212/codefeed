@@ -15,12 +15,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use self::pipeline::fold_candidates;
-use self::read::{Body, Candidate};
 use super::error::IngestError;
 use super::output::ResolvedOutput;
 use crate::core::collection::{CollectionResult, repository_name};
 use crate::core::error::DomainError;
-use crate::core::path::CandidatePath;
 use crate::core::policy::ExcludePatterns;
 use crate::core::selector::Selector;
 
@@ -40,22 +38,10 @@ pub(super) fn collect(
         output.file(),
         exclude,
         Selector::new(),
-        observe_candidate,
+        |selector, observation| Ok(selector.observe(observation)?),
     )?;
 
     Ok(selector.finish(label, None)?)
-}
-
-fn observe_candidate(selector: Selector, candidate: Candidate) -> Result<Selector, IngestError> {
-    let (candidate, size_hint, content) = match candidate {
-        Candidate::NonUtf8(prefix) => (CandidatePath::NonUtf8(prefix), None, None),
-        Candidate::File(path, Body::Unavailable) => (CandidatePath::Valid(path), None, None),
-        Candidate::File(path, Body::OverLimit(len)) => {
-            (CandidatePath::Valid(path), Some(len), None)
-        }
-        Candidate::File(path, Body::Read(bytes)) => (CandidatePath::Valid(path), None, Some(bytes)),
-    };
-    selector.observe(candidate, size_hint, || Ok(content))
 }
 
 fn validate_root(root: &Path) -> Result<PathBuf, DomainError> {
@@ -667,17 +653,6 @@ mod tests {
         fs::write(&file, "hello")?;
         let err = validate_root(&file).unwrap_err();
         assert!(err.to_string().contains("is not a directory"));
-        Ok(())
-    }
-
-    #[test]
-    fn observe_candidate_handles_non_utf8() -> Result<(), Box<dyn std::error::Error>> {
-        let selector = Selector::new();
-        let candidate = Candidate::NonUtf8("invalid/utf8".to_string());
-        let updated = observe_candidate(selector, candidate)?;
-        let result = updated.finish("repo".to_string(), None)?;
-        assert_eq!(result.skipped, 1);
-        assert_eq!(result.files.len(), 0);
         Ok(())
     }
 }

@@ -4,7 +4,8 @@
 //! core in `crate::core`.
 
 use crate::core::github::GITHUB_API_BASE_URL;
-use crate::{IngestReport, RunConfig, Source};
+use crate::core::model::{IngestReport, RunConfig};
+use crate::core::source::Source;
 
 mod atomic;
 pub(crate) mod cli;
@@ -51,13 +52,15 @@ fn ingest_from(config: &RunConfig, github_api_base: &str) -> Result<IngestReport
         )?,
     };
 
+    let included_files = collection.files.len();
+    let skipped_files = collection.skipped;
     let rendered = collection.render(config.format)?;
     output::deliver(&resolved_output, &rendered.bytes)?;
 
     Ok(IngestReport {
         output: config.output.clone(),
-        included_files: rendered.included_files,
-        skipped_files: rendered.skipped_files,
+        included_files,
+        skipped_files,
         estimated_tokens: rendered.estimated_tokens,
     })
 }

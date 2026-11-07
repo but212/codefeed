@@ -31,13 +31,11 @@ pub(super) fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OutputLimitExceeded;
 
-/// Rendered digest: the bytes to deliver and the counts that describe them.
+/// Rendered digest: the bytes to deliver and their token estimate.
 #[derive(Debug)]
 #[must_use]
 pub(crate) struct RenderedDigest {
     pub(crate) bytes: Vec<u8>,
-    pub(crate) included_files: usize,
-    pub(crate) skipped_files: usize,
     pub(crate) estimated_tokens: usize,
 }
 
@@ -94,23 +92,12 @@ impl BoundedBuffer {
         self.push_str(&val.to_string())
     }
 
-    pub(crate) fn finish_with_counts(
-        self,
-        included_files: usize,
-        skipped_files: usize,
-    ) -> RenderedDigest {
+    pub(crate) fn finish(self) -> RenderedDigest {
         let estimated_tokens = estimate_tokens_from_bytes(&self.bytes);
         RenderedDigest {
             bytes: self.bytes,
-            included_files,
-            skipped_files,
             estimated_tokens,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn finish(self) -> RenderedDigest {
-        self.finish_with_counts(0, 0)
     }
 }
 
@@ -209,14 +196,12 @@ mod tests {
     }
 
     #[test]
-    fn finish_with_counts_reports_output_counts_and_tokens() {
+    fn finish_reports_bytes_and_tokens() {
         let digest = BoundedBuffer::default()
             .push_str("test output")
             .expect("fixture fits the output limit")
-            .finish_with_counts(10, 3);
+            .finish();
         assert_eq!(digest.bytes, b"test output");
-        assert_eq!(digest.included_files, 10);
-        assert_eq!(digest.skipped_files, 3);
         assert_eq!(
             digest.estimated_tokens,
             estimate_tokens_from_bytes(b"test output")

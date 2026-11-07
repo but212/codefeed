@@ -19,23 +19,27 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
-use super::read::{Candidate, read_candidate};
+use super::read::read_candidate;
 use super::walk::{RegularFile, Walk, classify_entry};
 use crate::core::path::{CandidatePath, NormalizedPath};
 use crate::core::policy::{ExcludePatterns, LOCAL_CHANNEL_CAPACITY, MAX_LOCAL_WORKERS};
+use crate::core::selector::Observation;
 use crate::shell::error::IngestError;
 
 /// One regular file queued for a worker. The worker answers once on `reply`.
 struct Job {
     path: NormalizedPath,
     entry_path: PathBuf,
-    reply: SyncSender<Result<Option<Candidate>, IngestError>>,
+    reply: SyncSender<Settled>,
 }
+
+/// The outcome for one walk entry: `None` when it is not a candidate after all.
+type Settled = Result<Option<Observation<Vec<u8>>>, IngestError>;
 
 /// One walk entry in walk order: decided on the producer thread, or waiting for a worker.
 enum Slot {
-    Ready(Result<Option<Candidate>, IngestError>),
-    Pending(Receiver<Result<Option<Candidate>, IngestError>>),
+    Ready(Settled),
+    Pending(Receiver<Settled>),
 }
 
 /// Walks `root` in sorted order and folds each candidate through `step` in that order.
@@ -44,7 +48,7 @@ pub(super) fn fold_candidates<T>(
     output: Option<&Path>,
     exclude: &ExcludePatterns,
     init: T,
-    step: impl FnMut(T, Candidate) -> Result<T, IngestError>,
+    step: impl FnMut(T, Observation<Vec<u8>>) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
     let walker = Walk::new(root, exclude)?;
 
@@ -81,8 +85,8 @@ fn dispatch(
     };
     let path = match classify_entry(output, exclude, &file) {
         Ok(None) => return None,
-        Ok(Some(CandidatePath::NonUtf8(prefix))) => {
-            return Some(Slot::Ready(Ok(Some(Candidate::NonUtf8(prefix)))));
+        Ok(Some(CandidatePath::Unstorable(prefix))) => {
+            return Some(Slot::Ready(Ok(Some(Observation::Unstorable(prefix)))));
         }
         Ok(Some(CandidatePath::Valid(path))) => path,
         Err(err) => return Some(Slot::Ready(Err(err))),
@@ -127,7 +131,7 @@ fn worker_stopped() -> IngestError {
 fn settle<T>(
     slot: Slot,
     acc: T,
-    step: &mut impl FnMut(T, Candidate) -> Result<T, IngestError>,
+    step: &mut impl FnMut(T, Observation<Vec<u8>>) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
     let msg = match slot {
         Slot::Ready(msg) => msg,
@@ -171,7 +175,7 @@ fn produce_slots(
 fn settle_slots<T>(
     slots: Receiver<Slot>,
     init: T,
-    mut step: impl FnMut(T, Candidate) -> Result<T, IngestError>,
+    mut step: impl FnMut(T, Observation<Vec<u8>>) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
     slots
         .iter()
@@ -213,7 +217,7 @@ mod tests {
             &ExcludePatterns::default(),
             Vec::new(),
             |mut paths, candidate| {
-                if let Candidate::File(path, _) = candidate {
+                if let Observation::File(path, _) = candidate {
                     paths.push(path.to_string());
                 }
                 Ok(paths)
@@ -299,7 +303,7 @@ mod tests {
         // 5. settle with Slot::Pending where candidate is Some
         let (reply_tx, reply_rx) = sync_channel(1);
         reply_tx
-            .send(Ok(Some(Candidate::NonUtf8("bad".into()))))
+            .send(Ok(Some(Observation::Unstorable("bad".into()))))
             .unwrap();
         let res = settle(Slot::Pending(reply_rx), 42, &mut |acc, _c| Ok(acc + 1)).unwrap();
         assert_eq!(res, 43);

@@ -10,7 +10,7 @@ use memchr::{memchr, memmem};
 ///
 /// Returns `Err(DomainError)` if the path contains directory traversal, invalid root prefixes, or NUL bytes.
 /// Returns `Ok(None)` if the entry is the root directory itself, empty, hidden, excluded, noise, or sensitive.
-/// Returns `Ok(Some(CandidatePath::NonUtf8(prefix)))` if the entry path contains non-UTF-8 bytes and is not hidden.
+/// Returns `Ok(Some(CandidatePath::Unstorable(prefix)))` if the entry path contains non-UTF-8 bytes or exceeds `MAX_PATH_BYTES`, and is not hidden.
 /// Returns `Ok(Some(CandidatePath::Valid(path)))` on success.
 pub(crate) fn normalize_tar_entry_path(
     raw_bytes: &[u8],
@@ -146,11 +146,11 @@ mod tests {
             (b"repo-root/.hidden/\xff\xfe", None),
             (
                 b"repo-root/invalid/\xff\xfe",
-                Some(CandidatePath::NonUtf8("invalid/".into())),
+                Some(CandidatePath::Unstorable("invalid/".into())),
             ),
             (
                 b"repo-root/\xff\xfe",
-                Some(CandidatePath::NonUtf8(String::new())),
+                Some(CandidatePath::Unstorable(String::new())),
             ),
         ];
         for (raw, expected) in ok_cases {

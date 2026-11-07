@@ -6,8 +6,8 @@
 use std::fmt::Display;
 
 use crate::core::cli::{CliAction, HELP, VERSION, completion_message, parse};
-use crate::shell::stdio;
-use crate::{OutputTarget, ingest};
+use crate::core::model::OutputTarget;
+use crate::shell::{ingest, stdio};
 
 /// Executes the command-line interface entry point.
 ///

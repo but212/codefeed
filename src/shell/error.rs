@@ -4,7 +4,7 @@ use std::fmt::{Display, Formatter, Result};
 use std::io;
 use std::path::Path;
 
-use crate::core::error::{DomainError, sanitize_error_detail};
+use crate::core::error::{DomainError, ErrorDetail, sanitize_error_detail};
 use crate::core::github::GithubApiError;
 
 /// Error returned by ingestion. Domain rule failures stay in [`DomainError`]; effect failures
@@ -17,7 +17,7 @@ pub enum IngestError {
     /// Local filesystem I/O failure.
     Io(io::Error),
     /// Network transport or connection failure contacting GitHub.
-    Http(String),
+    Http(ErrorDetail),
     /// GitHub returned a non-success HTTP status.
     Api(GithubApiError),
 }
@@ -62,7 +62,7 @@ pub(super) fn io_error_at(path: &Path, err: &io::Error) -> IngestError {
 
 /// Error for a transport failure. `error_text` is the transport error's `Display`.
 pub(super) fn transport_error(error_text: &str) -> IngestError {
-    IngestError::Http(sanitize_error_detail(error_text))
+    IngestError::Http(ErrorDetail::new(error_text))
 }
 
 #[cfg(test)]
@@ -96,7 +96,7 @@ mod tests {
                 "filesystem error: disk".into(),
             ),
             (
-                IngestError::Http("timeout".into()),
+                IngestError::Http(ErrorDetail::new("timeout")),
                 "GitHub request failed: timeout".into(),
             ),
         ];
@@ -109,7 +109,7 @@ mod tests {
     fn transport_error_sanitizes_and_wraps_as_http() {
         assert_eq!(
             transport_error("bad\nhost").to_string(),
-            IngestError::Http("bad host".into()).to_string()
+            IngestError::Http(ErrorDetail::new("bad host")).to_string()
         );
     }
 

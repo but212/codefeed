@@ -2,10 +2,11 @@
 
 use crate::core::error::DomainError;
 use crate::core::policy::{
-    ExcludePatterns, MAX_PATH_DEPTH, is_hidden_segment, is_ignored_filename, push_match_segment,
+    ExcludePatterns, MAX_PATH_BYTES_USIZE, MAX_PATH_DEPTH, is_hidden_segment, is_ignored_filename,
+    push_match_segment,
 };
 
-/// Non-empty, normalized slash-separated relative UTF-8 path.
+/// Non-empty, normalized slash-separated relative UTF-8 path of at most `MAX_PATH_BYTES` bytes (I-10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NormalizedPath(String);
 
@@ -31,20 +32,25 @@ impl From<String> for NormalizedPath {
             !s.is_empty() && s.split('/').all(|segment| !segment.is_empty()),
             "NormalizedPath requires non-empty segments and no trailing slash"
         );
+        assert!(
+            s.len() <= MAX_PATH_BYTES_USIZE,
+            "NormalizedPath requires at most MAX_PATH_BYTES bytes"
+        );
         Self(s)
     }
 }
 
 /// Candidate path outcome from a single-pass policy evaluation.
 ///
-/// An entry is either a valid UTF-8 path or a non-UTF-8 candidate carrying its valid prefix.
+/// An entry is either a storable path or an unstorable candidate carrying its valid directory prefix.
 /// Ignored entries (hidden, conventional noise, sensitive patterns, or empty/root) are represented by `None`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CandidatePath {
-    /// Normalized valid relative UTF-8 path.
+    /// Normalized relative UTF-8 path within `MAX_PATH_BYTES`.
     Valid(NormalizedPath),
-    /// Non-UTF-8 path that is not hidden and must be counted against candidate budget as skipped.
-    NonUtf8(String),
+    /// Path that is not hidden but cannot be stored, because it is non-UTF-8 or longer than
+    /// `MAX_PATH_BYTES`. It is counted against the candidate budget as skipped.
+    Unstorable(String),
 }
 
 /// Error indicating that a path's directory nesting depth exceeds [`MAX_PATH_DEPTH`].
@@ -104,7 +110,7 @@ pub(crate) struct AdmittedDir {
 
 /// Output prefix of an admitted directory. Both variants hold the valid prefix ending in `/`, or empty at
 /// the root, so a path below extends it with a bare segment. `NonUtf8` holds the prefix before the first
-/// non-UTF-8 segment, which every path below reports as its candidate prefix.
+/// non-UTF-8 segment, which every path below reports as its unstorable prefix.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DirPrefix {
     Utf8(String),
@@ -171,7 +177,8 @@ pub(crate) fn admit_dir(
 /// Classifies file `name` directly under `parent`. The checks on `parent`'s ancestors already ran in
 /// [`admit_dir`], so only the file itself is matched here.
 ///
-/// Check order: hidden segment, user exclusion, noise or sensitive name, depth, then non-UTF-8 prefixing.
+/// Check order: hidden segment, user exclusion, noise or sensitive name, depth, then non-UTF-8 and
+/// length prefixing.
 pub(crate) fn classify_leaf(
     parent: &AdmittedDir,
     name: &[u8],
@@ -198,11 +205,15 @@ pub(crate) fn classify_leaf(
     }
 
     match (&parent.output, std::str::from_utf8(name)) {
-        (DirPrefix::Utf8(prefix), Ok(segment)) => Ok(Some(CandidatePath::Valid(NormalizedPath(
-            format!("{prefix}{segment}"),
-        )))),
+        (DirPrefix::Utf8(prefix), Ok(segment))
+            if prefix.len() + segment.len() <= MAX_PATH_BYTES_USIZE =>
+        {
+            Ok(Some(CandidatePath::Valid(NormalizedPath(format!(
+                "{prefix}{segment}"
+            )))))
+        }
         (DirPrefix::Utf8(prefix) | DirPrefix::NonUtf8(prefix), _) => {
-            Ok(Some(CandidatePath::NonUtf8(prefix.clone())))
+            Ok(Some(CandidatePath::Unstorable(prefix.clone())))
         }
     }
 }
@@ -229,18 +240,18 @@ mod tests {
             Ok(None)
         );
 
-        // non-UTF-8 directory segment with valid candidate filename (main.rs) -> NonUtf8
+        // non-UTF-8 directory segment with valid candidate filename (main.rs) -> Unstorable
         let segments: &[&[u8]] = &[b"\xff\xfe", b"main.rs"];
         assert_eq!(
             classify_path_segments(segments.iter().copied(), &ExcludePatterns::default()),
-            Ok(Some(CandidatePath::NonUtf8(String::new())))
+            Ok(Some(CandidatePath::Unstorable(String::new())))
         );
 
-        // non-UTF-8 directory segment + valid dir + valid candidate filename -> NonUtf8 with prefix
+        // non-UTF-8 directory segment + valid dir + valid candidate filename -> Unstorable with prefix
         let segments: &[&[u8]] = &[b"src", b"\xff\xfe", b"main.rs"];
         assert_eq!(
             classify_path_segments(segments.iter().copied(), &ExcludePatterns::default()),
-            Ok(Some(CandidatePath::NonUtf8("src/".to_string())))
+            Ok(Some(CandidatePath::Unstorable("src/".to_string())))
         );
 
         // C-01: sensitive prefix or extension on an invalid-UTF-8 final segment -> Ignored (None)
@@ -257,13 +268,13 @@ mod tests {
             );
         }
 
-        // C-02: invalid-UTF-8 final segment with no sensitive match -> NonUtf8
+        // C-02: invalid-UTF-8 final segment with no sensitive match -> Unstorable
         let plain: [&[&[u8]]; 2] = [&[b"notes\xff.txt"], &[b"src", b"\xff.rs"]];
         for segments in plain {
             assert!(
                 matches!(
                     classify_path_segments(segments.iter().copied(), &ExcludePatterns::default()),
-                    Ok(Some(CandidatePath::NonUtf8(_)))
+                    Ok(Some(CandidatePath::Unstorable(_)))
                 ),
                 "segments: {segments:?}"
             );
@@ -273,7 +284,7 @@ mod tests {
         let noise_suffix: &[&[u8]] = &[b"Cargo.lock\xff"];
         assert!(matches!(
             classify_path_segments(noise_suffix.iter().copied(), &ExcludePatterns::default()),
-            Ok(Some(CandidatePath::NonUtf8(_)))
+            Ok(Some(CandidatePath::Unstorable(_)))
         ));
     }
 
@@ -382,10 +393,40 @@ mod tests {
             classify_path_segments(segments.iter().copied(), &exclude),
             Ok(None)
         );
+        // Without the exclusion the path is over `MAX_PATH_BYTES`, so it is unstorable (I-10).
         assert!(matches!(
             classify_path_segments(segments.iter().copied(), &ExcludePatterns::default()),
-            Ok(Some(CandidatePath::Valid(_)))
+            Ok(Some(CandidatePath::Unstorable(_)))
         ));
+    }
+
+    #[test]
+    fn leaf_over_max_path_bytes_is_unstorable_with_its_directory_prefix() {
+        // I-10: a `Valid` path is at most `MAX_PATH_BYTES` bytes. One byte more is `Unstorable`
+        // and carries the directory prefix, like a non-UTF-8 path.
+        for prefix in ["", "src/"] {
+            let classify = |total: usize| {
+                let leaf = "f".repeat(total - prefix.len());
+                let mut segments: Vec<&[u8]> = Vec::new();
+                if !prefix.is_empty() {
+                    segments.push(b"src");
+                }
+                segments.push(leaf.as_bytes());
+                classify_path_segments(segments, &ExcludePatterns::default())
+            };
+            assert!(
+                matches!(
+                    classify(MAX_PATH_BYTES_USIZE),
+                    Ok(Some(CandidatePath::Valid(path))) if path.len() == MAX_PATH_BYTES_USIZE
+                ),
+                "prefix {prefix:?}: at the limit"
+            );
+            assert_eq!(
+                classify(MAX_PATH_BYTES_USIZE + 1),
+                Ok(Some(CandidatePath::Unstorable(prefix.to_string()))),
+                "prefix {prefix:?}: one byte over the limit"
+            );
+        }
     }
 
     #[test]
@@ -465,7 +506,7 @@ mod tests {
             Ok(Some(CandidatePath::Valid(p.into())))
         };
         let nonutf8 = |p: &str| -> Result<Option<CandidatePath>, DepthExceededError> {
-            Ok(Some(CandidatePath::NonUtf8(p.into())))
+            Ok(Some(CandidatePath::Unstorable(p.into())))
         };
         let ignored = || -> Result<Option<CandidatePath>, DepthExceededError> { Ok(None) };
         let depth_err =
@@ -580,7 +621,7 @@ mod tests {
                         prop_assert!(!path.is_empty());
                         prop_assert!(path.split('/').all(|seg| !seg.is_empty() && seg != "."));
                     }
-                    Ok(Some(CandidatePath::NonUtf8(prefix))) => {
+                    Ok(Some(CandidatePath::Unstorable(prefix))) => {
                         prop_assert!(prefix.is_empty() || prefix.ends_with('/'));
                         prop_assert!(!prefix.contains("//") && !prefix.starts_with('/'));
                     }

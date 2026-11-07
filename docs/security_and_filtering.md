@@ -60,15 +60,15 @@ Entry (local walk or tar stream)
  |     |     `-- Ignored. Dropped silently. Omitted from count.
  |     +-- Depth > MAX_PATH_DEPTH
  |     |     `-- Run fails (InvalidMetadata).
- |     +-- Non-UTF-8 segment
+ |     +-- Non-UTF-8 segment, or path > MAX_PATH_BYTES
  |     |     `-- Candidate with prefix (valid segments or "").
  |     `-- Valid UTF-8 path
  |           `-- Candidate.
  |
  +-- Candidate (Selector::observe)
  |     +-- Charges candidate slot. Overflowing MAX_FILE_COUNT fails the run.
- |     +-- Path <= MAX_PATH_BYTES equal to an earlier candidate's path (skipped ones included) -> Run fails (InvalidMetadata). Longer paths are skipped before this check.
- |     +-- Exceeds MAX_PATH_BYTES or declared MAX_FILE_SIZE: skipped; body not read.
+ |     +-- Path equal to an earlier candidate's path (skipped ones included) -> Run fails (InvalidMetadata).
+ |     +-- Declared size > MAX_FILE_SIZE: skipped; body not read.
  |     +-- Body read (bounded by worker or archive stream).
  |     `-- Content check passes -> Included. Otherwise skipped.
  |
@@ -112,8 +112,8 @@ Exact matches against the final path segment:
 | Rule | Effect |
 | :--- | :--- |
 | Depth > `MAX_PATH_DEPTH` | Run fails with `InvalidMetadata`. Hidden/noise items dropped prior to check. |
-| Path > `MAX_PATH_BYTES` | Consumes candidate slot; counted as skipped; body not read. Its first-segment budget key is truncated to `MAX_PATH_BYTES` on a char boundary (I-05). |
-| Path <= `MAX_PATH_BYTES` equal to another candidate's path | Run fails with `InvalidMetadata`. Applies to skipped candidates too. Longer duplicates are skipped and not compared. |
+| Path > `MAX_PATH_BYTES` | Consumes candidate slot; counted as skipped; body not read. Its directory prefix keys the budget, truncated to `MAX_PATH_BYTES` on a char boundary (I-05). |
+| Path equal to another candidate's path | Run fails with `InvalidMetadata`. Applies to skipped candidates too. |
 | Stored path is a directory prefix of another stored path (`a` and `a/…`) | Run fails with `InvalidMetadata` at digest assembly. Skipped candidates are not compared. |
 
 ### 3.5 Ignore Files (Local Only)
@@ -211,8 +211,8 @@ Sanitization runs in a single pass via `write_escaped`:
    - Attribute whitespace (`\t`, `\n`, `\r`) encoded as character references (`&#9;`, `&#10;`, `&#13;`).
    - Disallowed XML 1.0 control codes map to `\u{FFFD}`.
 3. **Tree Labels:** Escaped for control characters and XML entities to prevent output corruption.
-4. **Error and Warning Diagnostics (`sanitize_error_detail`, I-04):**
-   - Single-line diagnostics emitted to stderr (filesystem paths in I/O errors, root validation errors, HTTP status messages, transport error text, usage, invalid-source, unsupported-source, and invalid-metadata messages (sanitized in `DomainError` `Display`, since they echo arguments, patterns, or URLs), each path and directory name in the `MAX_OUTPUT_SIZE` and `MAX_FILE_COUNT` overflow lists) convert `\t`, `\r`, `\n` to space `' '` and all other Unicode control characters to `\u{FFFD}` to prevent terminal escape injection or log forgery. The file-target completion summary (`Wrote <PATH>`) goes to stdout, and its destination path is sanitized the same way.
+4. **Error and Warning Diagnostics (`ErrorDetail`, `sanitize_error_detail`, I-04):**
+   - Single-line diagnostics emitted to stderr (filesystem paths in I/O errors, root validation errors, HTTP status messages, transport error text, usage, invalid-source, unsupported-source, and invalid-metadata messages (held as `ErrorDetail`, sanitized when built, since they echo arguments, patterns, or URLs), each path and directory name in the `MAX_OUTPUT_SIZE` and `MAX_FILE_COUNT` overflow lists) convert `\t`, `\r`, `\n` to space `' '` and all other Unicode control characters to `\u{FFFD}` to prevent terminal escape injection or log forgery. The file-target completion summary (`Wrote <PATH>`) goes to stdout, and its destination path is sanitized the same way.
 
 ---
 

@@ -36,11 +36,11 @@
 pub(crate) mod core;
 pub(crate) mod shell;
 
-pub use core::error::{CandidateLimitExceededError, DomainError, OutputTooLargeError};
-pub use core::github::GithubApiError;
+pub use core::error::{CandidateLimitExceededError, DomainError, ErrorDetail, OutputTooLargeError};
+pub use core::github::{GithubApiError, GithubName};
 pub use core::model::{DigestFormat, IngestReport, OutputTarget, RunConfig};
 pub use core::policy::ExcludePatterns;
-pub use core::source::{GitRef, GithubName, Source};
+pub use core::source::{GitRef, Source};
 pub use shell::{IngestError, ingest};
 
 #[doc(hidden)]
