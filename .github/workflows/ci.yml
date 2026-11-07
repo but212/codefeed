@@ -69,6 +69,24 @@ jobs:
       - name: Run tests on musl
         run: cargo test --lib --bins --tests --locked --target x86_64-unknown-linux-musl
 
+  macos-x86_64:
+    name: Test (x86_64-apple-darwin)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Run tests on x86_64 (Rosetta)
+        run: cargo test --lib --bins --tests --locked --target x86_64-apple-darwin
+
   lint:
     name: Lint (fmt and docs)
     runs-on: ubuntu-latest
