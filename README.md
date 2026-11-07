@@ -58,7 +58,7 @@ Options may appear before or after `<SOURCE>`. Short flags accept `=` syntax (`-
 - `-o`, `--output <PATH|->`: Output destination (default: `digest.txt`). `-` streams to stdout.
 - `-r`, `--ref <BRANCH|TAG|COMMIT>`: GitHub revision (default: default branch). Rejects empty, whitespace-only, `.`, and `..`.
 - `-f`, `--format <text|xml>`: Digest format (default: `text`).
-- `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to the source root (e.g. `build/`, `*.log`, `/vendor`). Repeatable, applied in order, for local and GitHub sources. Invalid patterns and patterns matching nothing are usage errors. Syntax details are in [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 3.6.
+- `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to the source root (e.g. `build/`, `*.log`, `/vendor`). Repeatable, applied in order, for local and GitHub sources. Invalid patterns and patterns yielding no rule (blank, comment, bare `!`) are usage errors. Syntax details are in [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 3.6.
 - `-h`, `--help`: Print usage and exit 0.
 - `-V`, `--version`: Print `codefeed <version>` and exit 0.
 - `--`: Treat subsequent arguments as positionals (for directories starting with `-`).
@@ -126,7 +126,7 @@ Limits either skip an entry or abort the run. Limit values and enforcement detai
 
 | Limit | On Reach |
 | :--- | :--- |
-| `MAX_FILE_SIZE` | File skipped and counted in summary. |
+| `MAX_FILE_SIZE` | File skipped and counted in summary; an oversized `.gitignore` fails the run. |
 | `MAX_PATH_BYTES` | File skipped and counted in summary. |
 | `MAX_PATH_DEPTH` | Run fails. |
 | `MAX_FILE_COUNT` | Run fails; error lists largest directories. |

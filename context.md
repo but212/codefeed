@@ -52,11 +52,11 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - CLI arguments and URLs parse into value types at the boundary (`cli::parse`, `Source::parse`, `GitRef::new`, `GithubName::new`). Core logic assumes validity without re-validation.
 - `--ref` is rejected for local sources.
 - `-x`/`--exclude` values accumulate in argument order and are compiled once by `ExcludePatterns::new`. An invalid pattern is a usage error.
-- GitHub URLs must match `https://github.com/{owner}/{repo}` (optional `.git`). Port must be empty or `443`; user credentials (`user@`) are rejected.
+- GitHub URL grammar: [README Sources](README.md#sources). `Source::parse` enforces it at the boundary.
 
 ### 3.2 Path Classification
 
-- Order: hidden -> user exclusion -> noise/sensitive entries -> depth check -> non-UTF-8 prefixing -> valid path ([security sec. 2](docs/security_and_filtering.md#2-evaluation-order)). Tar streams classify each path with `classify_path_segments`. The local walk admits each directory once with `admit_dir` (hidden and user-exclusion checks) and classifies each file with `classify_leaf`, which checks only the file itself.
+- Order: [security sec. 2](docs/security_and_filtering.md#2-evaluation-order). Tar streams classify each path with `classify_path_segments`. The local walk admits each directory once with `admit_dir` and classifies each file with `classify_leaf`, which checks only the file itself.
 - `Ignored` entries consume no candidate slot and are omitted from skipped counts.
 - Run-aborting checks (depth, tar path normalization, oversized tar headers) are specified in [security sec. 2](docs/security_and_filtering.md#2-evaluation-order); the header budget is I-03 ([sec. 3.9](#39-network)).
 - Non-UTF-8 candidates record their valid prefix (`"a/b/"` or `""`), charged to the budget under the first segment (`"a/"`) or root (`"./"`).
@@ -73,7 +73,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - `FileStorage::push` rejects candidates before allocation if raw arena bytes would exceed `MAX_OUTPUT_SIZE`.
 - `SortedFiles::new` sorts spans via `cmp_path` (component-by-component comparison), guaranteeing deterministic output regardless of concurrency timing.
 - **I-01 (`runtime`, `SortedFiles::new`):** No stored path is a directory prefix of another stored path. Enforced after sorting by checking adjacent pairs. A schema, type, or boundary check cannot express this because the rule relates separate entries, and a per-entry parse cannot see the others. Behavior: [security sec. 3.4](docs/security_and_filtering.md#34-path-limits).
-- **Path uniqueness (`runtime`, `Selector::observe`):** No two candidates share a path. The seen-path set relates separate entries, so no per-entry type can express it. Behavior: [security sec. 3.4](docs/security_and_filtering.md#34-path-limits).
+- **I-09 (`runtime`, `Selector::observe`):** No two candidates share a path. The seen-path set relates separate entries, so no per-entry type can express it. Behavior: [security sec. 3.4](docs/security_and_filtering.md#34-path-limits).
 - **I-05 (`boundary`, `extract_dir_slice`):** Every candidate budget key is at most `MAX_PATH_BYTES` bytes and ends on a UTF-8 char boundary. Keys are cut from the first segment at the single point where they are built, so the key store holds at most candidate count times `MAX_PATH_BYTES` bytes. A `type` or `schema` cannot express a length cap on a `&str` key, and `CandidateBudget::add` needs no separate check.
 - Arena indices are `u32`. Compile-time assertions in `policy/limits.rs` ensure `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX` ([coding convention sec. 3.3](docs/coding_convention.md#33-type-invariants)).
 
@@ -86,16 +86,15 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 ### 3.6 Output Delivery
 
-- File destinations resolve at startup; directory targets are rejected; canonical destination is excluded from traversal to prevent self-ingest.
-- Writes are atomic: temporary file -> sync -> rename -> parent directory sync (Unix). Prior output remains untouched on failure. Details: [security sec. 5](docs/security_and_filtering.md#5-local-filesystem-safety).
-- Stdout buffers the complete digest in memory, emitting only on success. Broken pipe on stdout exits with code `0`.
-- Completion summary emits to stdout for file targets, stderr for stdout targets. The file target's path in the summary passes through `sanitize_error_detail`.
+- `resolve_output_target` resolves the destination once at startup and excludes it from traversal. `write_atomic` writes it atomically: [security sec. 5](docs/security_and_filtering.md#5-local-filesystem-safety).
+- `deliver` buffers the complete digest in memory and emits only on success. Summary streams and broken-pipe exit: [README Output](README.md#output).
+- The file target's path in the summary passes through `sanitize_error_detail`.
 
 ### 3.7 Diagnostics
 
-- Overflow diagnostics generate only on error paths.
-- `MAX_OUTPUT_SIZE` overflow lists the `OVERFLOW_LARGEST_FILES` largest files (sorted by size descending, then path).
-- `MAX_FILE_COUNT` overflow lists the `OVERFLOW_LARGEST_DIRECTORIES` largest directories (sorted by candidate count descending, then name).
+- Overflow diagnostics generate only on error paths. Which limit fails the run: [README Limits](README.md#limits).
+- `MAX_OUTPUT_SIZE` overflow lists `OVERFLOW_LARGEST_FILES` files, sorted by size descending, then path.
+- `MAX_FILE_COUNT` overflow lists `OVERFLOW_LARGEST_DIRECTORIES` directories, sorted by candidate count descending, then name.
 - Names in both overflow lists are passed through `sanitize_error_detail` by `DomainError`'s `Display`. The stored values stay raw.
 - Local runs produce identical diagnostics deterministically.
 

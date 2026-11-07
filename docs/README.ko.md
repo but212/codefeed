@@ -60,7 +60,7 @@ codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>] [--exc
 - `-o`, `--output <PATH|->`: 출력 대상 (기본값: `digest.txt`). `-`는 stdout으로 스트리밍합니다.
 - `-r`, `--ref <BRANCH|TAG|COMMIT>`: GitHub 리비전 (기본값: 기본 브랜치). 빈 문자열, 공백만 있는 문자열, `.`, `..`은 거부됩니다.
 - `-f`, `--format <text|xml>`: 다이제스트 형식 (기본값: `text`).
-- `-x`, `--exclude <PATTERN>`: 소스 루트 기준 `.gitignore` 스타일 패턴과 일치하는 경로를 제외합니다(예: `build/`, `*.log`, `/vendor`). 여러 번 지정할 수 있으며, 지정된 순서대로 로컬 및 GitHub 소스에 적용됩니다. 유효하지 않은 패턴이나 아무것도 매치하지 않는 패턴은 사용법 오류입니다. 문법 세부 사항은 [`security_and_filtering.md`](security_and_filtering.md) 3.6절을 참조하세요.
+- `-x`, `--exclude <PATTERN>`: 소스 루트 기준 `.gitignore` 스타일 패턴과 일치하는 경로를 제외합니다(예: `build/`, `*.log`, `/vendor`). 여러 번 지정할 수 있으며, 지정된 순서대로 로컬 및 GitHub 소스에 적용됩니다. 유효하지 않은 패턴이나 규칙을 만들지 않는 패턴(빈 줄, 주석, 단독 `!`)은 사용법 오류입니다. 문법 세부 사항은 [`security_and_filtering.md`](security_and_filtering.md) 3.6절을 참조하세요.
 - `-h`, `--help`: 사용법 출력 후 0으로 종료.
 - `-V`, `--version`: `codefeed <버전>` 출력 후 0으로 종료.
 - `--`: 이후 인수를 위치 인수로 처리(`-`로 시작하는 디렉터리 경로용).
@@ -126,9 +126,9 @@ codefeed -- -my-directory
 
 제한 기준에 도달하면 해당 항목을 건너뛰거나 전체 실행을 중단합니다. 구체적인 제한 수치와 적용 세부사항은 [`security_and_filtering.md`](security_and_filtering.md) 8절을 참조하세요.
 
-| Limit | On Reach |
+| 제한 | 도달 시 |
 | :--- | :--- |
-| `MAX_FILE_SIZE` | 파일을 건너뛰고 요약의 건너뛴 수에 집계. |
+| `MAX_FILE_SIZE` | 파일을 건너뛰고 요약의 건너뛴 수에 집계. 제한을 넘는 `.gitignore`는 실행을 중단. |
 | `MAX_PATH_BYTES` | 파일을 건너뛰고 요약의 건너뛴 수에 집계. |
 | `MAX_PATH_DEPTH` | 실행 실패. |
 | `MAX_FILE_COUNT` | 실행 실패; 가장 큰 디렉터리 목록 출력. |

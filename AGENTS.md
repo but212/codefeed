@@ -31,7 +31,7 @@ Before changing code, read these documents:
 ## 4. Hard Rules
 
 - **Core Purity & `#[must_use]`:** Follow [coding convention sec. 3](docs/coding_convention.md#3-architecture-functional-core-imperative-shell).
-- **Limits and Lists:** Defined only in `src/core/policy/` (authority). Code reads constants directly; never copy values. In documentation, numerical limit values appear exclusively in [security sec. 8](docs/security_and_filtering.md#8-limit-values) as a mirror; never copy limit values across other markdown documents. Synchronize `src/core/policy/` edits with [security sec. 3-4 and sec. 8](docs/security_and_filtering.md#3-exclusion-lists).
+- **Limits and Lists:** Defined only in `src/core/policy/` (authority). Code reads constants directly; never copy values. In documentation, numerical limit values appear exclusively in [security sec. 8](docs/security_and_filtering.md#8-limit-values) as a mirror; never copy limit values across other markdown documents. Synchronize `src/core/policy/` edits with [security sec. 3.2-3.3 and sec. 8](docs/security_and_filtering.md#32-noise-lockfiles).
 - **Filesystem & Network:** Mandatory per [security sec. 5-6](docs/security_and_filtering.md).
 - **Changelog:** Log all behavior changes under `## [Unreleased]` in `CHANGELOG.md`.
 
@@ -51,7 +51,7 @@ Before changing code, read these documents:
 
 | Change | Update |
 | :--- | :--- |
-| Limit or exclusion list | `src/core/policy/` (authority), `docs/security_and_filtering.md` sec. 3-4 and sec. 8 |
+| Limit or exclusion list | `src/core/policy/` (authority), `docs/security_and_filtering.md` sec. 3.2-3.3 and sec. 8 |
 | Path type or path classification | `src/core/path.rs`, `docs/security_and_filtering.md` sec. 2 |
 | CLI flag or option-value rule | `src/core/cli.rs`, `tests/cli.rs`, `README.md`, `docs/README.ko.md` |
 | Exit code | `src/shell/cli.rs` (`run_cli`), `tests/cli.rs`, `README.md`, `docs/README.ko.md` |

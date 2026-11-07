@@ -22,7 +22,7 @@
 ### 1.2 Non-Goals
 
 - **No secret/entropy scanning:** Filtering matches paths and extensions only. Hard-coded secrets in source files are not redacted.
-- **In-memory token lifetime:** Tokens held by HTTP client internals, process environment, or error formatters are not zeroized (sec. 6.2).
+- **In-memory token lifetime:** Zeroization is limited to the scope in sec. 6.2.
 - **Text format delimiter and ANSI isolation:** In `--format text`, file bodies are emitted verbatim UTF-8 without delimiter rewriting or ANSI escape stripping. Downstream systems or LLM prompts requiring strict delimiter or boundary isolation must use `--format xml`.
 
 ---
@@ -121,16 +121,17 @@ Exact matches against the final path segment:
 - Applies `.gitignore` files within source tree (Git binary not required).
 - `.ignore`, global gitignore, `.git/info/exclude`, and parent-directory `.gitignore` files are ignored.
 - The local walk reads a directory's `.gitignore` once, when it enters that directory. The bytes that validate the file are the bytes that compile its rules, so no later read can change them.
-- A `.gitignore` that is a symlink, is neither a regular file nor a directory (such as a FIFO), exceeds `MAX_FILE_SIZE`, is unreadable, or is not valid UTF-8 fails the run (`IngestError::Io`, path named). The symlink is not followed. A directory named `.gitignore` contributes no rules. A rule set that fails to compile fails the run too. Invalid glob lines are skipped, as before.
+- A `.gitignore` that is a symlink, is neither a regular file nor a directory (such as a FIFO), exceeds `MAX_FILE_SIZE`, is unreadable, or is not valid UTF-8 fails the run (`IngestError::Io`, path named). The symlink is not followed. A directory named `.gitignore` contributes no rules. A rule set that fails to compile fails the run too. Invalid glob lines are skipped.
 
 ### 3.6 User Exclusions (`--exclude`)
 
 - Patterns use `.gitignore` syntax and are relative to the source root. Matching is case-sensitive, as in git. Each pattern must yield exactly one rule. Unescaped trailing whitespace is trimmed before parsing, as in `.gitignore`, so `'! '` is a bare `!`. A blank line, a comment, a bare `!`, or an invalid glob fails at parse time with `DomainError::Usage`. An unclosed `[` is an error here, though a `.gitignore` file accepts it.
-- A `\` in a path segment is matched as U+FFFD on every platform, so it is never a separator and never matches a `\` in a pattern. On Unix, a pattern that matched a name containing `\` (such as `a\\b` for `a\b`) no longer matches it. Results are the same on Windows and Unix.
+- A `\` in a path segment is matched as U+FFFD on every platform, so it is never a separator and never matches a `\` in a pattern. Results are the same on Windows and Unix.
 - The rule applies to local and GitHub sources in the same way. It is independent of `.gitignore` (sec. 3.5): a path is dropped when either one drops it. A `!` pattern re-includes only paths that other user patterns exclude.
 - A path is excluded when it or any ancestor directory matches. Ancestors are tested as directories, from the top down. A `!` pattern cannot re-include a file under an excluded directory.
 - Excluded local directories are pruned, so their `.gitignore` is never read. Excluded entries are not candidates and are omitted from the skipped count.
-- Matching tests the first `MAX_PATH_DEPTH + 1` segments of a path, whatever its byte length, so a match on a path longer than `MAX_PATH_BYTES` still excludes it. The matching cost is at most that many tests, each linear in its prefix. This bounds the matching work for attacker-controlled archive paths (threat T2, sec. 1). Classifying one path takes time linear in its byte length: each admitted directory extends its prefixes in place, and the match prefix stops growing past the window.
+- Matching tests the first `MAX_PATH_DEPTH + 1` segments of a path, whatever its byte length, so a match on a path longer than `MAX_PATH_BYTES` still excludes it. This caps the tests per path and bounds matching work for attacker-controlled archive paths (threat T2, sec. 1).
+- Classifying one path takes time linear in its byte length: each admitted directory extends its prefixes in place, and the match prefix stops growing past the window.
 - A match beyond the first `MAX_PATH_DEPTH + 1` segments is not seen. Such an entry is not excluded and fails its depth limit (sec. 3.4), as any other deep entry does.
 
 ---
@@ -173,7 +174,7 @@ Candidate budget overflow aborts the run without emitting partial output.
 
 ### 6.2 Memory
 
-- Resolved tokens, environment buffers, and error responses use `zeroize::Zeroizing` to erase memory on drop.
+- Resolved tokens, environment buffers, and error responses use `zeroize::Zeroizing` to erase memory on drop. Copies held by HTTP client internals, the process environment, or error formatters are not zeroized.
 
 ### 6.3 Transport and TLS
 
@@ -217,28 +218,28 @@ Sanitization runs in a single pass via `write_escaped`:
 
 ## 8. Limit Values
 
-Sole documentation mirror for numerical limits (authoritative definitions reside in `src/core/policy/limits.rs`):
+Sole documentation mirror for numerical limits (authoritative definitions reside in `src/core/policy/limits.rs`). Outcomes at each limit are in [`README.md`](../README.md#limits).
 
-| Constant | Value | Enforced By | On Overflow |
-| :--- | :--- | :--- | :--- |
-| `MAX_FILE_SIZE` | 1 MiB | Declared size, bounded read, and `.gitignore` read | Skipped, counted in summary; `.gitignore`: run fails |
-| `MAX_PATH_BYTES` | 4,096 B | Path classification | Skipped, counted in summary |
-| `MAX_PATH_DEPTH` | 256 levels | Path classification | Run fails (`InvalidMetadata`) |
-| `MAX_FILE_COUNT` | 10,000 files | Candidate budget | Run fails; lists `OVERFLOW_LARGEST_DIRECTORIES` largest dirs |
-| `MAX_OUTPUT_SIZE` | 20 MiB | Storage check & buffer | Run fails; lists `OVERFLOW_LARGEST_FILES` largest files |
-| `ARCHIVE_BUFFER_BYTES` | 64 KiB | Archive read buffer | Buffering parameter (no overflow) |
-| `ARCHIVE_MAX_HEADER_BYTES` | 64 KiB | Archive header read budget | Run fails (`InvalidMetadata`) |
-| `ARCHIVE_MAX_DECOMPRESSED_BYTES` | 256 MiB | Decompressed archive stream meter | Run fails (`InvalidMetadata`) |
-| `MAX_DIR_ENTRIES` | 20,000 entries | Local directory listing | Run fails (`InvalidMetadata`) |
-| `ARCHIVE_PAX_GLOBAL_BYTES` | 1 KiB | PAX global header read | Revision falls back to the requested ref |
-| `GITHUB_ERROR_BODY_BYTES` | 4 KiB | GitHub API error body read | Rest of body left out of the message |
-| `LOCAL_CHANNEL_CAPACITY` | 64 messages | Channel bounds | Blocks sender (no overflow) |
-| `MAX_LOCAL_WORKERS` | 12 threads | Thread pool sizing | Worker concurrency limit |
-| `ARCHIVE_MAX_SECS` | 300 s | Archive stream timer | Fails with request error |
-| `GITHUB_TIMEOUT_SECS` | 30 s | Resolve, connect, header timeouts | Retried per sec. 6.5 |
-| `MAX_ATTEMPTS` | 3 attempts | Retry loop | Halts retries; run fails |
-| `RETRY_INITIAL_DELAY_MS` | 250 ms | Backoff initial delay | Initial retry sleep |
-| `RETRY_MAX_DELAY_MS` | 5,000 ms | Backoff cap & wait limit | Longer server wait fails run |
-| `ASCII_BYTES_PER_TOKEN` | 4 B | Token heuristic | Token estimate calculation |
-| `OVERFLOW_LARGEST_FILES` | 5 files | Overflow diagnostic | Lists this many largest files (no overflow) |
-| `OVERFLOW_LARGEST_DIRECTORIES` | 3 directories | Overflow diagnostic | Lists this many largest directories (no overflow) |
+| Constant | Value | Enforced By |
+| :--- | :--- | :--- |
+| `MAX_FILE_SIZE` | 1 MiB | Declared size, bounded read, and `.gitignore` read (a `.gitignore` over the limit fails the run) |
+| `MAX_PATH_BYTES` | 4,096 B | Path classification |
+| `MAX_PATH_DEPTH` | 256 levels | Path classification |
+| `MAX_FILE_COUNT` | 10,000 files | Candidate budget |
+| `MAX_OUTPUT_SIZE` | 20 MiB | Storage check & buffer |
+| `ARCHIVE_BUFFER_BYTES` | 64 KiB | Archive read buffer (buffering parameter) |
+| `ARCHIVE_MAX_HEADER_BYTES` | 64 KiB | Archive header read budget |
+| `ARCHIVE_MAX_DECOMPRESSED_BYTES` | 256 MiB | Decompressed archive stream meter |
+| `MAX_DIR_ENTRIES` | 20,000 entries | Local directory listing |
+| `ARCHIVE_PAX_GLOBAL_BYTES` | 1 KiB | PAX global header read (revision falls back to the requested ref) |
+| `GITHUB_ERROR_BODY_BYTES` | 4 KiB | GitHub API error body read (rest of body left out of the message) |
+| `LOCAL_CHANNEL_CAPACITY` | 64 messages | Channel bounds (blocks sender) |
+| `MAX_LOCAL_WORKERS` | 12 threads | Thread pool sizing |
+| `ARCHIVE_MAX_SECS` | 300 s | Archive stream timer |
+| `GITHUB_TIMEOUT_SECS` | 30 s | Resolve, connect, header timeouts |
+| `MAX_ATTEMPTS` | 3 attempts | Retry loop |
+| `RETRY_INITIAL_DELAY_MS` | 250 ms | Backoff initial delay |
+| `RETRY_MAX_DELAY_MS` | 5,000 ms | Backoff cap & wait limit |
+| `ASCII_BYTES_PER_TOKEN` | 4 B | Token heuristic |
+| `OVERFLOW_LARGEST_FILES` | 5 files | Overflow diagnostic (files listed) |
+| `OVERFLOW_LARGEST_DIRECTORIES` | 3 directories | Overflow diagnostic (directories listed) |
