@@ -4,7 +4,7 @@ use std::fmt::{Display, Formatter, Result};
 use std::io;
 use std::path::Path;
 
-use crate::core::error::{DomainError, ErrorDetail, sanitize_error_detail};
+use crate::core::error::{DomainError, ErrorDetail};
 use crate::core::github::GithubApiError;
 
 /// Error returned by ingestion. Domain rule failures stay in [`DomainError`]; effect failures
@@ -49,7 +49,7 @@ impl From<io::Error> for IngestError {
 
 /// Creates an `io::Error` with message sanitized of control characters.
 pub(super) fn sanitized_io_error(kind: io::ErrorKind, message: &str) -> io::Error {
-    io::Error::new(kind, sanitize_error_detail(message))
+    io::Error::new(kind, ErrorDetail::new(message).to_string())
 }
 
 /// I/O failure on `path`. Keeps the error kind and names the path, which a bare `io::Error` drops.

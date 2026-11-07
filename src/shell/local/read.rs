@@ -55,13 +55,19 @@ fn is_unavailable_file(err: &io::Error) -> bool {
 /// Reads at most `MAX_FILE_SIZE + 1` bytes; the extra byte lets the selector detect overflow.
 /// Returns `Ok(None)` when the file is unavailable at open or read (`is_unavailable_file`).
 /// `file_len` is the metadata length, which the caller has already checked against `MAX_FILE_SIZE`.
+///
+/// # Panics
+///
+/// Panics if `file_len` does not fit in `usize`, which the caller's size check rules out.
 fn read_bounded(path: &Path, file_len: u64) -> Result<Option<Vec<u8>>, IngestError> {
     let file = match fs::File::open(path) {
         Ok(f) => f,
         Err(err) if is_unavailable_file(&err) => return Ok(None),
         Err(err) => return Err(io_error_at(path, &err)),
     };
-    let mut buf = Vec::with_capacity(usize::try_from(file_len).unwrap_or(usize::MAX));
+    let capacity =
+        usize::try_from(file_len).expect("invariant: caller checked file_len <= MAX_FILE_SIZE");
+    let mut buf = Vec::with_capacity(capacity);
     match file.take(MAX_FILE_SIZE + 1).read_to_end(&mut buf) {
         Ok(_) => Ok(Some(buf)),
         Err(err) if is_unavailable_file(&err) => Ok(None),

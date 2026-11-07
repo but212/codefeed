@@ -132,7 +132,7 @@ fn sanitized_counts(entries: Vec<(String, usize)>) -> Vec<(ErrorDetail, usize)> 
 /// Note: Unlike digest header escaping which escapes `\n` and `\r` as `\n` / `\r` literals,
 /// error message formatting converts line breaks to spaces for compact single-line stderr diagnostics.
 #[must_use]
-pub(crate) fn sanitize_error_detail(input: &str) -> String {
+fn sanitize_error_detail(input: &str) -> String {
     input
         .chars()
         .map(|c| match c {

@@ -116,6 +116,27 @@ mod tests {
     }
 
     #[test]
+    fn trailing_separators_never_change_the_classification() {
+        let cases: [(&[u8], Option<CandidatePath>); 6] = [
+            (
+                b"repo-root/src/a.rs/",
+                Some(CandidatePath::Valid("src/a.rs".into())),
+            ),
+            (
+                b"repo-root/src/a.rs///",
+                Some(CandidatePath::Valid("src/a.rs".into())),
+            ),
+            (b"repo-root/", None),
+            (b"repo-root//", None),
+            (b"///", None),
+            (b"./", None),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(normalize(raw).unwrap(), expected, "{raw:?}");
+        }
+    }
+
+    #[test]
     fn normalizes_archive_entry_path_correctly() {
         // (raw entry path, expected status). Covers root stripping, slash and `.` collapsing,
         // policy exclusion (noise lockfile, sensitive credential), and non-UTF-8 prefixes.

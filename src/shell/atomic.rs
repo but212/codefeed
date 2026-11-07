@@ -76,9 +76,9 @@ impl Drop for TempPath {
 #[cfg(unix)]
 fn sync_warning(parent: &Path, synced: io::Result<()>) -> Option<String> {
     synced.err().map(|err| {
-        use crate::core::error::sanitize_error_detail;
+        use crate::core::error::ErrorDetail;
 
-        sanitize_error_detail(&format!("warning: {}: {err}", parent.display()))
+        ErrorDetail::new(format!("warning: {}: {err}", parent.display())).to_string()
     })
 }
 

@@ -92,7 +92,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 - `resolve_output_target` resolves the destination once at startup and excludes it from traversal. `write_atomic` writes it atomically: [security sec. 5](docs/security_and_filtering.md#5-local-filesystem-safety).
 - `deliver` buffers the complete digest in memory and emits only on success. Summary streams and broken-pipe exit: [README Output](README.md#output).
-- The file target's path in the summary passes through `sanitize_error_detail`.
+- The file target's path in the summary passes through `ErrorDetail::new`.
 
 ### 3.7 Diagnostics
 
@@ -117,7 +117,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - Revision SHA extracts from the first `ARCHIVE_PAX_GLOBAL_BYTES` of the PAX global header, falling back to the requested ref.
 - Stream/gzip/tar read failures map to `IngestError::Http`.
 - **I-03 (`runtime`, `shell/github/archive.rs`):** One `Entries::next` call reads at most `ARCHIVE_MAX_HEADER_BYTES`. tar reads extension bodies internally, so no type or boundary can express the bound. A byte budget on the shared reader enforces it, and each entry body is drained before the next call so only headers are metered. Behavior: [security sec. 2 and 6.4](docs/security_and_filtering.md#64-streaming).
-- **I-04 (`type`, `ErrorDetail::new`):** Every error text that may echo user input or a remote payload is an `ErrorDetail`, whose only constructor sanitizes. A library consumer that builds a `DomainError` variant directly therefore cannot store unsanitized text, and `Display` does not sanitize again. Effect text that is not a `DomainError` variant (`io::Error` messages, `GithubApiError`, retry warnings) is sanitized by its shell constructor with `sanitize_error_detail`. Behavior: [security sec. 7](docs/security_and_filtering.md#7-output-sanitization).
+- **I-04 (`type`, `ErrorDetail::new`):** Every error text that may echo user input or a remote payload is an `ErrorDetail`, whose only constructor sanitizes. A library consumer that builds a `DomainError` variant directly therefore cannot store unsanitized text, and `Display` does not sanitize again. Effect text that is not a `DomainError` variant (`io::Error` messages, `GithubApiError`, retry warnings) is sanitized through `ErrorDetail::new`, the only sanitizer entry point. Behavior: [security sec. 7](docs/security_and_filtering.md#7-output-sanitization).
 - **I-06 (`type`, `Auth`, `api_error`):** `api_error` is the only place that builds the token hint and it takes an `Auth`, so a run whose API request carried a token cannot get the hint, including an error from a redirect target. Behavior: [security sec. 6.1](docs/security_and_filtering.md#61-authentication).
 - **I-07 (`boundary`, `GithubClient::credentials`):** Only the GitHub API origin receives the token. The `Authorization` header and the `Auth` given to errors both derive from `credentials(url)`, so they cannot disagree. `GithubClient`'s fields are private to `client.rs`, so no other module reaches the token except through `credentials`.
 - **I-08 (`boundary`, `TOKEN_ENV_VARS`):** Token environment variable names exist only in `TOKEN_ENV_VARS` (`src/core/policy/mod.rs`). Lookup order and the token hint both read it. A type cannot hold a list of names, so one definition is the enforcement.
@@ -138,9 +138,9 @@ Purity rules and the one-way Shell-to-Core dependency: [coding convention sec. 3
 - `source.rs`: `Source`, `GitRef`, source parsing (`Source::parse` delegates URL rules to `github/`).
 - `model.rs`: `RunConfig`, `OutputTarget`, `DigestFormat`, `IngestReport`.
 - `collection.rs`: `CollectionResult`, `repository_name`.
-- `selector.rs`: `Selector`, `CandidateBudget`, `exceeds_size_limits`.
+- `selector.rs`: `Selector`, `CandidateBudget`, `exceeds_file_size`.
 - `storage.rs`: `FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, `largest_files`.
-- `error.rs`: `DomainError`, `ErrorDetail`, `CandidateLimitExceededError`, `OutputTooLargeError`, `sanitize_error_detail`. Depends on no other core module, so the policy-to-error edge is one-way.
+- `error.rs`: `DomainError`, `ErrorDetail`, `CandidateLimitExceededError`, `OutputTooLargeError`. Depends on no other core module, so the policy-to-error edge is one-way.
 - `github/`: `url.rs` (`GithubName`, URL parsing, origin check), `archive.rs` (PAX parsing, tar path normalization), `retry.rs` (header parsing, delay calculation, attempt state machine), `mod.rs` (`GithubApiError`, `Auth`, error formatting).
 - `render/`: `formats.rs` (text/XML formats), `tree.rs`, `escape.rs`, `budget.rs` (`BoundedBuffer`, `RenderedDigest`, token estimate).
 

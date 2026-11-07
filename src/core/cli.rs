@@ -1,7 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
-use crate::core::error::{DomainError, sanitize_error_detail};
+use crate::core::error::{DomainError, ErrorDetail};
 use crate::core::model::{DigestFormat, IngestReport, OutputTarget, RunConfig};
 use crate::core::policy::ExcludePatterns;
 use crate::core::source::Source;
@@ -19,7 +19,7 @@ pub(crate) fn completion_message(report: &IngestReport) -> String {
     let tokens = report.estimated_tokens;
     match &report.output {
         OutputTarget::File(path) => {
-            let path_display = sanitize_error_detail(&path.display().to_string());
+            let path_display = ErrorDetail::new(path.display().to_string());
             format!("Wrote {path_display} ({included} files, {skipped} skipped, ~{tokens} tokens)")
         }
         OutputTarget::Stdout => {
