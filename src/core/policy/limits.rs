@@ -1,51 +1,51 @@
 //! Numerical limits, timeouts, and compile-time boundary assertions.
 
-/// Maximum individual file size accepted (1 MiB in bytes). Larger files are skipped.
+/// Maximum individual file size accepted. Larger files are skipped.
 pub(crate) const MAX_FILE_SIZE: u64 = 1024 * 1024;
 /// Companion `usize` constant for [`MAX_FILE_SIZE`] used in buffer allocations and tests.
 #[cfg(test)]
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "MAX_FILE_SIZE (1 MiB) fits in usize on all supported targets"
+    reason = "MAX_FILE_SIZE fits in usize on all supported targets"
 )]
 pub(crate) const MAX_FILE_SIZE_USIZE: usize = MAX_FILE_SIZE as usize;
-/// Maximum rendered digest size (20 MiB in bytes). Overflows return [`DomainError::OutputTooLarge`](crate::core::error::DomainError::OutputTooLarge).
+/// Maximum rendered digest size. Overflows return [`DomainError::OutputTooLarge`](crate::core::error::DomainError::OutputTooLarge).
 pub(crate) const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
 /// Companion `usize` constant for [`MAX_OUTPUT_SIZE`] used in buffer allocations and tests.
 #[cfg(test)]
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "MAX_OUTPUT_SIZE (20 MiB) fits in usize on all supported targets"
+    reason = "MAX_OUTPUT_SIZE fits in usize on all supported targets"
 )]
 pub(crate) const MAX_OUTPUT_SIZE_USIZE: usize = MAX_OUTPUT_SIZE as usize;
-/// Maximum candidate files evaluated before candidate budget overflows (10,000 files).
+/// Maximum candidate files evaluated before candidate budget overflows.
 pub(crate) const MAX_FILE_COUNT: usize = 10_000;
-/// Largest files listed by the `MAX_OUTPUT_SIZE` overflow diagnostic (5 files).
+/// Largest files listed by the `MAX_OUTPUT_SIZE` overflow diagnostic.
 pub(crate) const OVERFLOW_LARGEST_FILES: usize = 5;
-/// Largest directories listed by the `MAX_FILE_COUNT` overflow diagnostic (3 directories).
+/// Largest directories listed by the `MAX_FILE_COUNT` overflow diagnostic.
 pub(crate) const OVERFLOW_LARGEST_DIRECTORIES: usize = 3;
-/// Maximum directory nesting depth permitted for archive entry paths (256 levels).
+/// Maximum directory nesting depth permitted for archive entry paths.
 pub(crate) const MAX_PATH_DEPTH: usize = 256;
-/// Maximum allowable path length in bytes (4,096 bytes). Paths exceeding this limit are skipped.
+/// Maximum allowable path length in bytes. Paths exceeding this limit are skipped.
 pub(crate) const MAX_PATH_BYTES: u64 = 4096;
 /// Companion `usize` constant for [`MAX_PATH_BYTES`] used in key caps, buffer allocations, and tests.
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "MAX_PATH_BYTES (4 KiB) fits in usize on all supported targets"
+    reason = "MAX_PATH_BYTES fits in usize on all supported targets"
 )]
 pub(crate) const MAX_PATH_BYTES_USIZE: usize = MAX_PATH_BYTES as usize;
-/// Maximum entries one local directory may list (20,000 entries), hidden and ignored ones included. Overflow fails the run.
+/// Maximum entries one local directory may list, hidden and ignored ones included. Overflow fails the run.
 pub(crate) const MAX_DIR_ENTRIES: usize = 20_000;
-/// Maximum decompressed archive stream length (256 MiB in bytes), entry bodies included. Overflow fails the run.
+/// Maximum decompressed archive stream length, entry bodies included. Overflow fails the run.
 pub(crate) const ARCHIVE_MAX_DECOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
-/// Capacity in bytes for buffering incoming archive decompression streams (64 KiB).
+/// Capacity in bytes for buffering incoming archive decompression streams.
 pub(crate) const ARCHIVE_BUFFER_BYTES: usize = 64 * 1024;
-/// Bytes one tar entry-header read may consume from the decompressed archive stream (64 KiB). Covers the
+/// Bytes one tar entry-header read may consume from the decompressed archive stream. Covers the
 /// previous entry's padding plus the GNU `L`/`K` and PAX `x` extension bodies and the header itself.
 pub(crate) const ARCHIVE_MAX_HEADER_BYTES: u64 = 64 * 1024;
-/// Bytes of a PAX global header read for its `comment=<sha>` revision record (1 KiB).
+/// Bytes of a PAX global header read for its `comment=<sha>` revision record.
 pub(crate) const ARCHIVE_PAX_GLOBAL_BYTES: u64 = 1024;
-/// Bytes of a non-success GitHub API response body kept for the error message (4 KiB).
+/// Bytes of a non-success GitHub API response body kept for the error message.
 pub(crate) const GITHUB_ERROR_BODY_BYTES: u64 = 4 * 1024;
 /// Capacity in messages of each local pipeline channel (jobs and slots). A full channel blocks its
 /// sender, which bounds the file bodies held at once to this value plus two (security §5, §8).
@@ -53,9 +53,9 @@ pub(crate) const LOCAL_CHANNEL_CAPACITY: usize = 64;
 /// Maximum local read workers. Fewer available cores use fewer workers (security §8).
 pub(crate) const MAX_LOCAL_WORKERS: usize = 12;
 
-/// Maximum duration in seconds allowed for whole-archive Tarball transfer (5 minutes).
+/// Maximum duration in seconds allowed for whole-archive Tarball transfer.
 pub(crate) const ARCHIVE_MAX_SECS: u64 = 300;
-/// Maximum total HTTP request attempts (1 initial + up to 2 retries).
+/// Maximum total HTTP request attempts.
 pub(crate) const MAX_ATTEMPTS: usize = 3;
 /// Fast byte-level token heuristic constant for English text and source code.
 pub(crate) const ASCII_BYTES_PER_TOKEN: usize = 4;
@@ -63,7 +63,7 @@ pub(crate) const ASCII_BYTES_PER_TOKEN: usize = 4;
 pub(crate) const RETRY_INITIAL_DELAY_MS: u64 = 250;
 /// Maximum delay cap in milliseconds for exponential backoff.
 pub(crate) const RETRY_MAX_DELAY_MS: u64 = 5_000;
-/// HTTP response headers timeout in seconds for GitHub API requests (30 seconds).
+/// HTTP response headers timeout in seconds for GitHub API requests.
 pub(crate) const GITHUB_TIMEOUT_SECS: u64 = 30;
 
 #[expect(

@@ -8,23 +8,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 ## [Unreleased]
 
+---
+
+## [0.8.0]
+
 ### Library consumers and CLI users
 
 Observable behavior. **Action** = code or config change required.
 
 #### Added
 
-- **`-V`, `--version` flag**: Prints `codefeed <version>` to stdout and exits 0. Like `--help`, the first of the two flags seen wins, and later argument errors are ignored (`src/core/cli.rs`, `src/shell/cli.rs`).
-- **Release targets and `cargo-binstall` support**: Releases add `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-gnu` archives. `Cargo.toml` gains `[package.metadata.binstall]` so `cargo binstall codefeed` installs the prebuilt binary (`.github/workflows/release.yml`, `Cargo.toml`).
+- **`-V`, `--version`**: Prints `codefeed <version>` to stdout, exits 0. As with `--help`, the first of the two flags wins and later argument errors are ignored (`src/core/cli.rs`, `src/shell/cli.rs`).
+- **Release targets, `cargo-binstall`**: Releases add `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-gnu` archives. `[package.metadata.binstall]` lets `cargo binstall codefeed` install the prebuilt binary (`.github/workflows/release.yml`, `Cargo.toml`).
 
 #### Changed
 
-- **`GithubName` drops `#[repr(transparent)]`**: The struct no longer promises identical memory layout to `String` (`src/core/source.rs`).
-  - **Action:** Code relying on transmuting or FFI-passing `GithubName` as `String` must use `GithubName::as_str` or `to_string`.
+- **`GithubName` drops `#[repr(transparent)]`**: No layout promise identical to `String` (`src/core/source.rs`).
+  - **Action:** Replace transmute or FFI use of `GithubName` as `String` with `GithubName::as_str` or `to_string`.
 
 #### Fixed
 
-- **Unbounded directory listing and decompressed archive stream**: A local directory with more than `MAX_DIR_ENTRIES` entries (hidden and ignored included) and a GitHub archive whose decompressed stream exceeds `ARCHIVE_MAX_DECOMPRESSED_BYTES` now fail the run with `InvalidMetadata` (`src/shell/local/walk.rs`, `src/shell/github/archive.rs`, `src/core/policy/limits.rs`).
+- **Unbounded listing and decompressed stream**: A local directory with more than `MAX_DIR_ENTRIES` entries (hidden and ignored included), or a GitHub archive whose decompressed stream exceeds `ARCHIVE_MAX_DECOMPRESSED_BYTES`, now fails with `InvalidMetadata` (`src/shell/local/walk.rs`, `src/shell/github/archive.rs`, `src/core/policy/limits.rs`).
 
 ### Contributors
 
@@ -32,10 +36,9 @@ Internal change. No consumer action required.
 
 #### Changed
 
-- **Invariant enforcement narrowed to the boundary**: `GithubClient` fields made private (`src/shell/github/client.rs`). `FileStorage::sort_by_path` made private to `storage.rs`. `NormalizedPath::as_str` removed in favor of `Deref` (`src/core/path.rs`, `src/core/storage.rs`). `classify_path_segments` doc comment clarified to match the depth-window invariant.
-- **`FormatRenderer` trait and renderer unit structs eliminated**: Replaced the hollow `FormatRenderer` trait, `TextRenderer`, and `XmlRenderer` with direct dispatch on `DigestFormat` inside `render_digest` (`src/core/render/formats.rs`, `src/core/render/mod.rs`). Output and behavior unchanged.
-- **`PathStatus` replaced with `Option<CandidatePath>`**: Replaced `PathStatus` with `CandidatePath` (`Valid` or `NonUtf8`), representing ignored paths as `None` at classification boundaries (`classify_path_segments`, `classify_leaf`, `normalize_tar_entry_path`). Eliminated the impossible `Ignored` candidate branch from `Selector::observe` (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/github/archive.rs`).
-- **Tiny modules folded**: `TOKEN_ENV_VARS` moves from `src/core/policy/auth.rs` into `src/core/policy/mod.rs`, and the HTTP retry loop moves from `src/shell/github/stream.rs` into `src/shell/github/mod.rs`. Crate paths are unchanged. No behavior change.
+- **Invariants enforced at the boundary**: `GithubClient` fields and `FileStorage::sort_by_path` are private. `NormalizedPath::as_str` is removed in favor of `Deref`. `classify_path_segments` doc matches the depth-window invariant (`src/shell/github/client.rs`, `src/core/storage.rs`, `src/core/path.rs`).
+- **Hollow abstractions removed**: `FormatRenderer`, `TextRenderer`, and `XmlRenderer` give way to direct dispatch on `DigestFormat` in `render_digest` (`src/core/render/formats.rs`, `src/core/render/mod.rs`). `PathStatus` becomes `Option<CandidatePath>` (`Valid` or `NonUtf8`), with ignored paths as `None` at `classify_path_segments`, `classify_leaf`, and `normalize_tar_entry_path`, which removes the impossible `Ignored` branch from `Selector::observe` (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/github/archive.rs`). Output unchanged.
+- **Tiny modules folded**: `TOKEN_ENV_VARS` moves from `src/core/policy/auth.rs` to `src/core/policy/mod.rs`. The HTTP retry loop moves from `src/shell/github/stream.rs` to `src/shell/github/mod.rs`. Crate paths unchanged.
 
 ## [0.7.0]
 
@@ -584,6 +587,9 @@ Documentation, build, and removals.
 
 - Initial CLI converting local directories (`.gitignore`-aware, skipping hidden files and symlinks) and GitHub repositories (`--ref <BRANCH|TAG|COMMIT>`, no local `git`) into plain-text or XML digests (`--format <text|xml>`) written atomically to files or stdout (`--output -`), with streaming token estimation, sensitive/lockfile filtering (`.env*`, `*.key`, `*.pem`, `id_rsa*`), and candidate/output size budgets.
 
+[Unreleased]: https://github.com/but212/codefeed/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/but212/codefeed/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/but212/codefeed/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/but212/codefeed/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/but212/codefeed/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/but212/codefeed/compare/v0.3.2...v0.4.0
