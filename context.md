@@ -58,7 +58,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 - Order: hidden -> user exclusion -> noise/sensitive entries -> depth check -> non-UTF-8 prefixing -> valid path ([security sec. 2](docs/security_and_filtering.md#2-evaluation-order)). Tar streams classify each path with `classify_path_segments`. The local walk admits each directory once with `admit_dir` (hidden and user-exclusion checks) and classifies each file with `classify_leaf`, which checks only the file itself.
 - `Ignored` entries consume no candidate slot and are omitted from skipped counts.
-- Depth limit violation is the only path check aborting the entire run during classification. Hidden and noise entries are dropped before depth evaluation. For GitHub tar archives, `normalize_tar_entry_path` also aborts the run with `DomainError::InvalidMetadata` upon encountering embedded NUL bytes, traversal segments (`..`), or a `.` root segment, for regular-file entries. Non-regular tar entries are dropped before normalization runs. Oversized tar headers abort the run under I-03 ([sec. 3.9](#39-network)).
+- Run-aborting checks (depth, tar path normalization, oversized tar headers) are specified in [security sec. 2](docs/security_and_filtering.md#2-evaluation-order); the header budget is I-03 ([sec. 3.9](#39-network)).
 - Non-UTF-8 candidates record their valid prefix (`"a/b/"` or `""`), charged to the budget under the first segment (`"a/"`) or root (`"./"`).
 - **I-02 (`boundary`, `admit_dir`, `classify_leaf`):** No classified path or non-UTF-8 prefix has a first segment starting with `.`, since hidden directories are never admitted, hidden files are `Ignored`, and empty or `.` segments are dropped. The budget therefore keys root-level entries as `"./"`, which no real directory can produce.
 
@@ -72,10 +72,10 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 - `FileStorage::push` rejects candidates before allocation if raw arena bytes would exceed `MAX_OUTPUT_SIZE`.
 - `SortedFiles::new` sorts spans via `cmp_path` (component-by-component comparison), guaranteeing deterministic output regardless of concurrency timing.
-- **I-01 (`runtime`, `SortedFiles::new`):** No stored path is a directory prefix of another stored path (`p` and `p/…`). `DomainError::InvalidMetadata` otherwise. Enforced after sorting by checking adjacent pairs. A schema, type, or boundary check cannot express this because the rule relates separate entries, and a per-entry parse cannot see the others. Skipped candidates are not stored and are not compared, so the digest tree shows each name as either a file or a directory.
-- `Selector::observe` rejects a candidate whose path (at most `MAX_PATH_BYTES`) equals an earlier candidate's path, with `DomainError::InvalidMetadata`. The check covers skipped candidates, so no path names two candidates. Longer paths are skipped before the check.
+- **I-01 (`runtime`, `SortedFiles::new`):** No stored path is a directory prefix of another stored path. Enforced after sorting by checking adjacent pairs. A schema, type, or boundary check cannot express this because the rule relates separate entries, and a per-entry parse cannot see the others. Behavior: [security sec. 3.4](docs/security_and_filtering.md#34-path-limits).
+- **Path uniqueness (`runtime`, `Selector::observe`):** No two candidates share a path. The seen-path set relates separate entries, so no per-entry type can express it. Behavior: [security sec. 3.4](docs/security_and_filtering.md#34-path-limits).
 - **I-05 (`boundary`, `extract_dir_slice`):** Every candidate budget key is at most `MAX_PATH_BYTES` bytes and ends on a UTF-8 char boundary. Keys are cut from the first segment at the single point where they are built, so the key store holds at most candidate count times `MAX_PATH_BYTES` bytes. A `type` or `schema` cannot express a length cap on a `&str` key, and `CandidateBudget::add` needs no separate check.
-- Arena indices are `u32`. Compile-time assertions in `policy/limits.rs` ensure `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX`.
+- Arena indices are `u32`. Compile-time assertions in `policy/limits.rs` ensure `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX` ([coding convention sec. 3.3](docs/coding_convention.md#33-type-invariants)).
 
 ### 3.5 Rendering
 
@@ -87,7 +87,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 ### 3.6 Output Delivery
 
 - File destinations resolve at startup; directory targets are rejected; canonical destination is excluded from traversal to prevent self-ingest.
-- Writes are atomic: temporary file -> sync -> rename -> parent directory sync (Unix). Prior output remains untouched on failure. Parent sync failure logs a warning without failing.
+- Writes are atomic: temporary file -> sync -> rename -> parent directory sync (Unix). Prior output remains untouched on failure. Details: [security sec. 5](docs/security_and_filtering.md#5-local-filesystem-safety).
 - Stdout buffers the complete digest in memory, emitting only on success. Broken pipe on stdout exits with code `0`.
 - Completion summary emits to stdout for file targets, stderr for stdout targets. The file target's path in the summary passes through `sanitize_error_detail`.
 
@@ -101,7 +101,7 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 
 ### 3.8 Local Traversal Pipeline
 
-1. Producer walks depth-first in file-name order without following links (`Walk`, `walk.rs`). A directory matched by a user exclusion is pruned before its `.gitignore` is read. Entering any other directory reads its `.gitignore` once and compiles its rules from those bytes (a symlink, a non-regular file, an oversized, unreadable, or non-UTF-8 file fails the run, [security sec. 3.5](docs/security_and_filtering.md#35-ignore-files-local-only)). Rules match through `ignore::gitignore`. Jobs go out for regular files in walk order.
+1. Producer walks depth-first in file-name order without following links (`Walk`, `walk.rs`). A directory matched by a user exclusion is pruned before its `.gitignore` is read. Entering any other directory reads its `.gitignore` once and compiles its rules from those bytes (failure conditions: [security sec. 3.5](docs/security_and_filtering.md#35-ignore-files-local-only)). Rules match through `ignore::gitignore`. Jobs go out for regular files in walk order.
 2. Up to `MAX_LOCAL_WORKERS` workers check metadata, read bounded bodies, and reply on bounded slots.
 3. Main thread settles slots in walk order into `Selector::observe`. The first error halts traversal.
 4. Channel capacities are bounded by `LOCAL_CHANNEL_CAPACITY` ([security sec. 8](docs/security_and_filtering.md#8-limit-values)).
@@ -113,19 +113,19 @@ Defines domain terms, core invariants, and the functional-core / imperative-shel
 - Archive entries stream through `Selector::observe` without disk writes.
 - Revision SHA extracts from the first `ARCHIVE_PAX_GLOBAL_BYTES` of the PAX global header, falling back to the requested ref.
 - Stream/gzip/tar read failures map to `IngestError::Http`.
-- **I-03 (`runtime`, `shell/github/archive.rs`):** One `Entries::next` call reads at most `ARCHIVE_MAX_HEADER_BYTES` from the decompressed stream, covering the previous entry's padding, GNU `L`/`K` and PAX `x` bodies, GNU sparse extension blocks, and the header. An overrun fails the run with `DomainError::InvalidMetadata`; it is never a skip, because the path is not parsed. The budget runs before path classification, so an entry that classification would drop (hidden, excluded, non-regular) also fails the run when its header is over budget. tar reads extension bodies internally, so no type or boundary can express the bound. A byte budget on the shared reader enforces it, and each entry body is drained before the next call so only headers are metered.
-- **I-04 (`boundary`, `DomainError::usage`, `invalid_source`, `unsupported_source`, `invalid_metadata`):** These constructors pass the message through `sanitize_error_detail`, so the stored text has no control characters or line breaks, including text echoed from argv, `--exclude` patterns, or URLs. `DomainError`'s `Display` also passes the message of these four variants through `sanitize_error_detail`, so a library consumer that builds a variant directly still gets sanitized stderr text. The stored value stays as given to the variant.
-- **I-06 (`type`, `Auth`, `api_error`):** The token hint appears only in the message of an anonymous 403 or 429. `api_error` is the only place that builds that message and it takes an `Auth`, so a run whose API request carried a token cannot get the hint, including an error from a redirect target, which never receives the token.
+- **I-03 (`runtime`, `shell/github/archive.rs`):** One `Entries::next` call reads at most `ARCHIVE_MAX_HEADER_BYTES`. tar reads extension bodies internally, so no type or boundary can express the bound. A byte budget on the shared reader enforces it, and each entry body is drained before the next call so only headers are metered. Behavior: [security sec. 2 and 6.4](docs/security_and_filtering.md#64-streaming).
+- **I-04 (`boundary`, `DomainError::usage`, `invalid_source`, `unsupported_source`, `invalid_metadata`):** These constructors pass the message through `sanitize_error_detail`, and `DomainError`'s `Display` does the same for these four variants, so a library consumer that builds a variant directly still gets sanitized stderr text. The stored value stays as given to the variant. Behavior: [security sec. 7](docs/security_and_filtering.md#7-output-sanitization).
+- **I-06 (`type`, `Auth`, `api_error`):** `api_error` is the only place that builds the token hint and it takes an `Auth`, so a run whose API request carried a token cannot get the hint, including an error from a redirect target. Behavior: [security sec. 6.1](docs/security_and_filtering.md#61-authentication).
 - **I-07 (`boundary`, `GithubClient::credentials`):** Only the GitHub API origin receives the token. The `Authorization` header and the `Auth` given to errors both derive from `credentials(url)`, so they cannot disagree. `GithubClient`'s fields are private to `client.rs`, so no other module reaches the token except through `credentials`.
 - **I-08 (`boundary`, `TOKEN_ENV_VARS`):** Token environment variable names exist only in `TOKEN_ENV_VARS` (`src/core/policy/mod.rs`). Lookup order and the token hint both read it. A type cannot hold a list of names, so one definition is the enforcement.
 
 ## 4. Limits and Tunables
 
-All limits and exclusion lists are defined in `src/core/policy/`. Code reads constants directly. Limit values are stated exclusively in [security sec. 8](docs/security_and_filtering.md#8-limit-values). Invariant relations are enforced by compile-time assertions in `policy/limits.rs` and `github/retry.rs`.
+Limits and exclusion lists are defined in `src/core/policy/`; values are mirrored only in [security sec. 8](docs/security_and_filtering.md#8-limit-values). Relations between limits are enforced by compile-time assertions in `policy/limits.rs` and `github/retry.rs` ([coding convention sec. 3.3](docs/coding_convention.md#33-type-invariants)).
 
 ## 5. Functional Core and Imperative Shell
 
-Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends on Core in one direction only ([coding convention sec. 3](docs/coding_convention.md#3-architecture-functional-core-imperative-shell)).
+Purity rules and the one-way Shell-to-Core dependency: [coding convention sec. 3](docs/coding_convention.md#3-architecture-functional-core-imperative-shell).
 
 ### Core (`src/core/`)
 

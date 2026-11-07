@@ -1,6 +1,6 @@
 # Security and Filtering Specification
 
-**Authority:** `src/core/policy/` is the single source of truth for all lists and limits. This document mirrors it; updates to `src/core/policy/` must synchronize this document in the same commit.
+**Authority:** `src/core/policy/` is the single source of truth for all lists and limits. Sec. 3.2-3.3 and sec. 8 mirror it; updates to `src/core/policy/` must synchronize them in the same commit. All other sections are the canonical behavior specification. Invariant enforcement (`I-xx`) is in [`context.md`](../context.md) sec. 3.
 
 ---
 
@@ -40,7 +40,7 @@ Entry (local walk or tar stream)
  |     `-- Matched by a user exclusion (sec. 3.6) -> Pruned, not entered; its `.gitignore` is never read.
  |
  +-- Tar header read (`Entries::next`, GNU `L`/`K` and PAX `x` bodies included). Runs before path classification and applies to every entry type.
- |     `-- Over `ARCHIVE_MAX_HEADER_BYTES` for one read -> Run fails (InvalidMetadata), even for entries that would be dropped.
+ |     `-- Over `ARCHIVE_MAX_HEADER_BYTES` for one read -> Run fails (InvalidMetadata), even for entries that would be dropped (I-03).
  +-- Decompressed archive stream over `ARCHIVE_MAX_DECOMPRESSED_BYTES` -> Run fails (InvalidMetadata), entry bodies included.
  |
  +-- Non-regular file (symlink, FIFO, socket, device, non-file tar header)
@@ -67,13 +67,13 @@ Entry (local walk or tar stream)
  |
  +-- Candidate (Selector::observe)
  |     +-- Charges candidate slot. Overflowing MAX_FILE_COUNT fails the run.
- |     +-- Path <= MAX_PATH_BYTES equal to an earlier candidate's path (skipped ones included) -> Run fails (InvalidMetadata).
+ |     +-- Path <= MAX_PATH_BYTES equal to an earlier candidate's path (skipped ones included) -> Run fails (InvalidMetadata). Longer paths are skipped before this check.
  |     +-- Exceeds MAX_PATH_BYTES or declared MAX_FILE_SIZE: skipped; body not read.
  |     +-- Body read (bounded by worker or archive stream).
  |     `-- Content check passes -> Included. Otherwise skipped.
  |
  `-- Digest assembly (SortedFiles::new)
-       `-- Stored path is a directory prefix of another stored path -> Run fails (InvalidMetadata). Skipped candidates are not compared.
+       `-- Stored path is a directory prefix of another stored path -> Run fails (InvalidMetadata) (I-01). Skipped candidates are not compared, so the digest tree shows each name as either a file or a directory.
 ```
 
 ---
@@ -157,7 +157,7 @@ Candidate budget overflow aborts the run without emitting partial output.
 - **No Symlinks:** The walk classifies entries with `DirEntry::file_type()`, which does not follow links, and drops entries that are neither directories nor regular files. Workers call `fs::symlink_metadata` before open, rejecting symlinks to files, directories, or special devices. The root path is canonicalized first, so a symlinked root is followed; the no-symlink rule applies to every entry beneath it.
 - **Output Exclusion:** Canonical destination is resolved upfront (`resolve_output_target`) and excluded from traversal to prevent self-ingest.
 - **Atomic Writes:** Destination written via temporary file `.codefeed.{nanos}.{counter}.tmp` in target directory, flushed, and renamed. The name does not depend on the target name. Unix preserves permissions and syncs parent directory. Parent sync failure logs a warning without aborting. `write_atomic` drops the file handle before `TempPath` unlinks the temporary file on `Drop`.
-- **Unavailable vs. Fatal:** `NotFound`, `PermissionDenied`, or Windows sharing (32) / locking (33) errors mark files unavailable (skipped). Other I/O errors or unreadable directories abort the run. A directory's `.gitignore` is not a file candidate: any read failure, symlink, non-regular file, oversize file, or non-UTF-8 content aborts the run (sec. 3.5). First error in walk order is deterministically reported.
+- **Unavailable vs. Fatal:** `NotFound`, `PermissionDenied`, or Windows sharing (32) / locking (33) errors mark files unavailable (skipped). Other I/O errors or unreadable directories abort the run. A directory's `.gitignore` is not a file candidate and follows sec. 3.5. First error in walk order is deterministically reported.
 - **Bounded Concurrency:** Producer and workers communicate across bounded `sync_channel` queues (`LOCAL_CHANNEL_CAPACITY`). Memory holds at most `LOCAL_CHANNEL_CAPACITY + 2` concurrent file bodies, each bounded to `MAX_FILE_SIZE + 1`. Abort signals set an `AtomicBool` halting worker reads.
 
 ---
@@ -167,8 +167,8 @@ Candidate budget overflow aborts the run without emitting partial output.
 ### 6.1 Authentication
 
 - Resolves the variables listed in `TOKEN_ENV_VARS` (`src/core/policy/mod.rs`) in order: `GITHUB_TOKEN` first, then `GH_TOKEN`. Empty or whitespace values are ignored.
-- Attaches `Authorization: Bearer <token>` strictly when `is_github_api_origin(url)` holds (`https://api.github.com`).
-- The error message for 403 and 429 names the token variables only for an anonymous request. A request that carried a token gets no hint. A redirect target is not sent the token; its error is classified by the original API request.
+- Attaches `Authorization: Bearer <token>` strictly when `is_github_api_origin(url)` holds (`https://api.github.com`) (I-07).
+- The error message for 403 and 429 names the token variables only for an anonymous request (I-06). A request that carried a token gets no hint. A redirect target is not sent the token; its error is classified by the original API request.
 - Enforces `RedirectAuthHeaders::Never`; redirects never transmit credentials.
 
 ### 6.2 Memory
@@ -182,7 +182,7 @@ Candidate budget overflow aborts the run without emitting partial output.
 ### 6.4 Streaming
 
 - Fetches tarball in a single HTTP request (`/repos/{owner}/{repo}/tarball/{ref}`). Streams via gzip/tar directly into `Selector::observe` without disk spooling.
-- Each tar header read is metered against `ARCHIVE_MAX_HEADER_BYTES`, so an extension body cannot allocate past that budget before its path is checked. Entry bodies are not metered by the header budget; the whole decompressed stream is metered against `ARCHIVE_MAX_DECOMPRESSED_BYTES`.
+- Each tar header read is metered against `ARCHIVE_MAX_HEADER_BYTES` (I-03), so an extension body cannot allocate past that budget before its path is checked. One read covers the previous entry's padding, GNU `L`/`K` and PAX `x` bodies, GNU sparse extension blocks, and the header. An overrun is never a skip, because the path is not parsed. Entry bodies are not metered by the header budget; the whole decompressed stream is metered against `ARCHIVE_MAX_DECOMPRESSED_BYTES`.
 
 ### 6.5 Retries
 
@@ -210,7 +210,7 @@ Sanitization runs in a single pass via `write_escaped`:
    - Attribute whitespace (`\t`, `\n`, `\r`) encoded as character references (`&#9;`, `&#10;`, `&#13;`).
    - Disallowed XML 1.0 control codes map to `\u{FFFD}`.
 3. **Tree Labels:** Escaped for control characters and XML entities to prevent output corruption.
-4. **Error and Warning Diagnostics (`sanitize_error_detail`):**
+4. **Error and Warning Diagnostics (`sanitize_error_detail`, I-04):**
    - Single-line diagnostics emitted to stderr (filesystem paths in I/O errors, root validation errors, HTTP status messages, transport error text, usage, invalid-source, unsupported-source, and invalid-metadata messages (sanitized in `DomainError` `Display`, since they echo arguments, patterns, or URLs), each path and directory name in the `MAX_OUTPUT_SIZE` and `MAX_FILE_COUNT` overflow lists) convert `\t`, `\r`, `\n` to space `' '` and all other Unicode control characters to `\u{FFFD}` to prevent terminal escape injection or log forgery. The file-target completion summary (`Wrote <PATH>`) goes to stdout, and its destination path is sanitized the same way.
 
 ---
