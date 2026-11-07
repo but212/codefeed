@@ -5,7 +5,7 @@
 
 use std::fmt::Display;
 
-use crate::core::cli::{CliAction, HELP, completion_message, parse};
+use crate::core::cli::{CliAction, HELP, VERSION, completion_message, parse};
 use crate::shell::stdio;
 use crate::{OutputTarget, ingest};
 
@@ -26,6 +26,10 @@ where
     let config = match action {
         CliAction::Help => {
             stdio::write_stdout_line(HELP);
+            return 0;
+        }
+        CliAction::Version => {
+            stdio::write_stdout_line(VERSION);
             return 0;
         }
         CliAction::Run(config) => config,
@@ -62,6 +66,10 @@ mod tests {
 
         // --help returns 0
         let exit_code = run_cli(["codefeed", "--help"]);
+        assert_eq!(exit_code, 0);
+
+        // --version returns 0
+        let exit_code = run_cli(["codefeed", "--version"]);
         assert_eq!(exit_code, 0);
 
         // Non-existent local path returns 1

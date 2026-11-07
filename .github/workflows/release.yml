@@ -49,6 +49,14 @@ jobs:
             os: ubuntu-latest
             artifact_name: codefeed
             archive_ext: tar.gz
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            artifact_name: codefeed
+            archive_ext: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-26.04-arm
+            artifact_name: codefeed
+            archive_ext: tar.gz
           - target: x86_64-apple-darwin
             os: macos-14
             artifact_name: codefeed
@@ -72,6 +80,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Install musl toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}

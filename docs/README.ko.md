@@ -30,6 +30,12 @@ git clone --depth 1 <URL> ./repo && codefeed ./repo
 cargo install --path .
 ```
 
+또는 [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall)로 GitHub Releases의 사전 빌드 바이너리를 설치합니다:
+
+```bash
+cargo binstall codefeed
+```
+
 또는 릴리스 바이너리를 빌드합니다:
 
 ```bash
@@ -54,6 +60,7 @@ codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>] [--exc
 - `-f`, `--format <text|xml>`: 다이제스트 형식 (기본값: `text`).
 - `-x`, `--exclude <PATTERN>`: 소스 루트 기준 `.gitignore` 스타일 패턴과 일치하는 경로를 제외합니다(예: `build/`, `*.log`, `/vendor`). 여러 번 지정할 수 있으며, 지정된 순서대로 로컬 및 GitHub 소스에 적용됩니다. `.gitignore`와 마찬가지로 이스케이프되지 않은 후행 공백은 제거됩니다(`'! '`는 순수 `!`). 유효하지 않은 패턴이나 아무것도 매치하지 않는 패턴(빈 줄, 주석, 순수 `!`)은 사용법 오류입니다. [`security_and_filtering.md`](security_and_filtering.md) 3.6절을 참조하세요.
 - `-h`, `--help`: 사용법 출력 후 0으로 종료.
+- `-V`, `--version`: `codefeed <버전>` 출력 후 0으로 종료.
 - `--`: 이후 인수를 위치 인수로 처리(`-`로 시작하는 디렉터리 경로용).
 
 인라인 값(`--flag=value`)은 `-`로 시작할 수 있습니다(예: `--output=-notes.txt`). `-o -`를 제외하고 별도 분리된 인수 값은 `-`로 시작할 수 없습니다.
@@ -88,7 +95,7 @@ codefeed -- -my-directory
 - **텍스트 형식** (`text`): UTF-8 파일 내용이 그대로 포함되며, 바이너리(NUL 바이트 포함) 파일이나 잘못된 UTF-8 파일은 건너뜁니다. 헤더 레이블과 경로는 이스케이프 처리되며 ANSI 시퀀스는 유지됩니다.
 - **XML 형식** (`xml`): 구조화된 `<repository>`, `<directory_structure>`, `<files>` 요소로 구성됩니다. 엔티티는 이스케이프 처리되며 XML 1.0에서 허용되지 않는 문자는 `\u{FFFD}`로 대체됩니다.
 - **토큰 수**: 휴리스틱 추정치(ASCII 바이트 / `ASCII_BYTES_PER_TOKEN` + 비-ASCII 문자 수)이며, 정밀한 토크나이저 계산 결과가 아닙니다.
-- **종료 상태 코드**: 성공 또는 도움말 출력 시 `0`, 사용법 오류 또는 수집(ingest) 오류 시 `1`.
+- **종료 상태 코드**: 성공, 도움말 또는 버전 출력 시 `0`, 사용법 오류 또는 수집(ingest) 오류 시 `1`.
 - **파이프 중단(Broken pipe)**: stdout 리더가 일찍 닫힌 경우 `0`으로 정상 종료합니다.
 
 ## 포함 및 제외 기준

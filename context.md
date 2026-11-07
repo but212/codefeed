@@ -129,7 +129,7 @@ Core is referentially pure (no I/O, clock, env, or shell imports). Shell depends
 
 ### Core (`src/core/`)
 
-- `cli.rs`: CLI argument parsing (`parse`, `Parsed`), `HELP` constant, `CliAction`, `completion_message`.
+- `cli.rs`: CLI argument parsing (`parse`, `Parsed`), `HELP` and `VERSION` constants, `CliAction` (`Help`, `Version`, `Run`), `completion_message`.
 - `path.rs`: Path types and classification (`NormalizedPath`, `CandidatePath`, `AdmittedDir`, `classify_path_segments`, `admit_dir`, `classify_leaf`). Depends on `policy/` and `error`.
 - `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `exclude.rs` (`ExcludePatterns`), `mod.rs` (re-exports, `TOKEN_ENV_VARS`).
 - `source.rs`: `Source`, `GitRef`, `GithubName`, source parsing (`Source::parse` delegates URL rules to `github/`).

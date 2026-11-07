@@ -12,6 +12,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 Observable behavior. **Action** = code or config change required.
 
+#### Added
+
+- **`-V`, `--version` flag**: Prints `codefeed <version>` to stdout and exits 0. Like `--help`, the first of the two flags seen wins, and later argument errors are ignored (`src/core/cli.rs`, `src/shell/cli.rs`).
+- **Release targets and `cargo-binstall` support**: Releases add `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-gnu` archives. `Cargo.toml` gains `[package.metadata.binstall]` so `cargo binstall codefeed` installs the prebuilt binary (`.github/workflows/release.yml`, `Cargo.toml`).
+
 #### Changed
 
 - **`GithubName` drops `#[repr(transparent)]`**: The struct no longer promises identical memory layout to `String` (`src/core/source.rs`).

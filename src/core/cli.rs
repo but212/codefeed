@@ -8,6 +8,9 @@ use crate::core::source::Source;
 
 pub(crate) const HELP: &str = "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>] [--exclude <PATTERN>]...";
 
+/// Text printed for `-V` and `--version`.
+pub(crate) const VERSION: &str = concat!(env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"));
+
 /// One-line summary of a finished run, naming where the digest went.
 #[must_use]
 pub(crate) fn completion_message(report: &IngestReport) -> String {
@@ -30,6 +33,8 @@ pub(crate) fn completion_message(report: &IngestReport) -> String {
 pub(crate) enum CliAction {
     /// Print help text and exit successfully.
     Help,
+    /// Print the version and exit successfully.
+    Version,
     /// Execute ingestion using the resolved [`RunConfig`]. Boxed so that `Help` does not pay for the config's size.
     Run(Box<RunConfig>),
 }
@@ -124,6 +129,8 @@ enum Arg<'a> {
     Separator,
     /// `-h` or `--help`.
     Help,
+    /// `-V` or `--version`.
+    Version,
     /// A known flag, with its inline `=value` when one is given.
     Flag(Flag, &'static str, Option<&'a str>),
     /// An option-like argument that is not a known flag.
@@ -132,7 +139,7 @@ enum Arg<'a> {
     Positional,
 }
 
-/// Classifies one argument. Checks run in order: separator, help, known flag, unknown option.
+/// Classifies one argument. Checks run in order: separator, help, version, known flag, unknown option.
 fn classify_arg(arg: &OsStr) -> Arg<'_> {
     let Some(s) = arg.to_str() else {
         return Arg::Positional;
@@ -142,6 +149,9 @@ fn classify_arg(arg: &OsStr) -> Arg<'_> {
     }
     if s == "-h" || s == "--help" {
         return Arg::Help;
+    }
+    if s == "-V" || s == "--version" {
+        return Arg::Version;
     }
     if let Some((flag, flag_str, inline)) = match_flag(s) {
         return Arg::Flag(flag, flag_str, inline);
@@ -185,6 +195,7 @@ where
             ParseState::Normal => match classify_arg(&arg) {
                 Arg::Separator => state = ParseState::PositionalOnly,
                 Arg::Help => return Ok(CliAction::Help),
+                Arg::Version => return Ok(CliAction::Version),
                 Arg::Flag(flag, _, Some(inline)) => {
                     parsed = parsed.with_value(flag, OsString::from(inline))?;
                 }
@@ -283,7 +294,7 @@ mod tests {
     fn parse_run<'a>(args: impl IntoIterator<Item = &'a str>) -> RunConfig {
         match parse(args).expect("expected parse to succeed") {
             CliAction::Run(config) => *config,
-            CliAction::Help => panic!("expected Run action, got Help"),
+            other => panic!("expected Run action, got {other:?}"),
         }
     }
 
@@ -474,6 +485,29 @@ mod tests {
         ] {
             assert_eq!(parse(args.iter().copied()).unwrap(), CliAction::Help);
         }
+    }
+
+    #[test]
+    fn cli_version_flag_returns_version_action() {
+        for args in [
+            &["codefeed", "--version"][..],
+            &["codefeed", ".", "-V"][..],
+            // Version takes precedence over later argument errors.
+            &["codefeed", "--ref", "", "-V"][..],
+            // The first of `-h` and `-V` wins.
+            &["codefeed", "-V", "-h"][..],
+        ] {
+            assert_eq!(
+                parse(args.iter().copied()).unwrap(),
+                CliAction::Version,
+                "{args:?}"
+            );
+        }
+        assert_eq!(parse(["codefeed", "-h", "-V"]).unwrap(), CliAction::Help);
+
+        // After `--`, `-V` is a positional.
+        let config = parse_run(["codefeed", "--", "-V"]);
+        assert_eq!(config.source, Source::Local(PathBuf::from("-V")));
     }
 
     #[test]

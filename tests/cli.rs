@@ -65,6 +65,30 @@ fn help_exits_successfully_without_ingesting() {
 }
 
 #[test]
+fn version_exits_successfully_without_ingesting() {
+    let expected = format!("codefeed {}\n", env!("CARGO_PKG_VERSION"));
+    for args in [&["--version"][..], &[".", "-V"][..]] {
+        let dir = TempDir::new("version");
+        let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+            .args(args)
+            .current_dir(&dir.path)
+            .output()
+            .expect("CLI process should start");
+        assert!(
+            output.status.success(),
+            "args: {args:?}, output: {output:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            expected,
+            "args: {args:?}"
+        );
+        assert!(output.stderr.is_empty(), "args: {args:?}");
+        assert!(!dir.path.join("digest.txt").exists(), "args: {args:?}");
+    }
+}
+
+#[test]
 fn invalid_arguments_exit_nonzero() {
     for args in [&[][..], &[".", "--format"][..]] {
         let output = run(args);

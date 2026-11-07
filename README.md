@@ -30,6 +30,12 @@ git clone --depth 1 <URL> ./repo && codefeed ./repo
 cargo install --path .
 ```
 
+Or install a prebuilt binary from GitHub Releases with [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall):
+
+```bash
+cargo binstall codefeed
+```
+
 Or build a release binary:
 
 ```bash
@@ -54,6 +60,7 @@ Options may appear before or after `<SOURCE>`. Short flags accept `=` syntax (`-
 - `-f`, `--format <text|xml>`: Digest format (default: `text`).
 - `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to the source root (e.g. `build/`, `*.log`, `/vendor`). Repeatable, applied in order, for local and GitHub sources. Unescaped trailing whitespace is trimmed, as in `.gitignore` (`'! '` is a bare `!`). Invalid patterns and patterns matching nothing (blank, comment, bare `!`) are usage errors. See [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 3.6.
 - `-h`, `--help`: Print usage and exit 0.
+- `-V`, `--version`: Print `codefeed <version>` and exit 0.
 - `--`: Treat subsequent arguments as positionals (for directories starting with `-`).
 
 Inline values (`--flag=value`) may start with `-` (e.g. `--output=-notes.txt`). Separate argument values may not, except `-o -`.
@@ -88,7 +95,7 @@ codefeed -- -my-directory
 - **Text format** (`text`): Verbatim UTF-8 file contents; binary (NUL) or invalid UTF-8 files are skipped. Header labels and paths are escaped; ANSI sequences are kept.
 - **XML format** (`xml`): Structured `<repository>`, `<directory_structure>`, and `<files>` elements. Entities are escaped; disallowed XML 1.0 characters become `\u{FFFD}`.
 - **Token count**: Heuristic estimate (ASCII bytes / `ASCII_BYTES_PER_TOKEN` + non-ASCII characters), not an exact tokenizer count.
-- **Exit status**: `0` on success or help; `1` on usage or ingest error.
+- **Exit status**: `0` on success, help, or version; `1` on usage or ingest error.
 - **Broken pipe**: Exits `0` when the stdout reader closes early.
 
 ## What Is Included

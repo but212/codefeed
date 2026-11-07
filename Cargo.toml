@@ -20,6 +20,15 @@ zeroize = "1" # Secure clearing of GitHub authorization tokens from process memo
 memchr = "2" # SIMD-accelerated byte searching for delimiters, NUL byte detection, and fast path scanning
 
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.zip"
+pkg-fmt = "zip"
+
 [lib]
 path = "src/lib.rs"
 bench = false

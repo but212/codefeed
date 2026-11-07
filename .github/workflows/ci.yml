@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-26.04-arm, macos-latest, windows-latest]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -47,6 +47,27 @@ jobs:
 
       - name: Run doc tests
         run: cargo test --doc --locked
+
+  musl:
+    name: Test (x86_64-unknown-linux-musl)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Run tests on musl
+        run: cargo test --lib --bins --tests --locked --target x86_64-unknown-linux-musl
 
   lint:
     name: Lint (fmt and docs)
