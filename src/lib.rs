@@ -1,5 +1,9 @@
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(unreachable_pub)]
+#![warn(clippy::unwrap_used)]
+#![warn(clippy::missing_errors_doc)]
+#![warn(clippy::missing_panics_doc)]
 
 //! Fast, memory-efficient repository ingestion and prompt generation for LLMs.
 //!
