@@ -23,7 +23,7 @@ use super::read::{Candidate, read_candidate};
 use super::walk::{RegularFile, Walk, classify_entry};
 use crate::core::path::{CandidatePath, NormalizedPath};
 use crate::core::policy::{ExcludePatterns, LOCAL_CHANNEL_CAPACITY, MAX_LOCAL_WORKERS};
-use crate::shell::IngestError;
+use crate::shell::error::IngestError;
 
 /// One regular file queued for a worker. The worker answers once on `reply`.
 struct Job {

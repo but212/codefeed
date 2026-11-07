@@ -4,12 +4,11 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
-use super::IngestError;
 use super::atomic::{parent_dir, write_atomic};
 use super::stdio::ignore_broken_pipe;
 use crate::core::error::DomainError;
 use crate::core::model::OutputTarget;
-use crate::shell::error::sanitized_io_error;
+use crate::shell::error::{IngestError, sanitized_io_error};
 
 /// Output target resolved against the filesystem. Only [`resolve_output_target`] constructs it,
 /// so collection and delivery never receive an unresolved request.

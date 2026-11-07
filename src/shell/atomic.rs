@@ -5,8 +5,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::IngestError;
-use super::error::io_error_at;
+use super::error::{IngestError, io_error_at};
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 

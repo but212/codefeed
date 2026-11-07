@@ -73,6 +73,33 @@
 - **Invariant wrappers:** Encapsulate ordering or invariants in types with immutable interfaces (`SortedFiles`).
 - **Compile-time assertions:** Enforce limit relations via `const _: () = { assert!(...); };`.
 
+### 3.4 Cohesion and Coupling
+
+A module is a file or a directory directly below `src/core/` or `src/shell/`. The root `mod.rs` of each is a module of its own. When rules conflict, precedence is: purity (sec. 3.1), coupling, cohesion, size.
+
+**Coupling**
+
+- **Direction:** `src/core/` imports nothing from `crate::shell`.
+- **Acyclic:** The module dependency graph has no cycles. An import through a parent re-export is a dependency on the parent.
+- **Import the definition:** Import an item from the module that defines it, not from a parent re-export. A re-export in a root `mod.rs` exists for the public API only.
+- **No `super::super`:** Reach other modules by `crate::` path.
+- **Single owner:** Each rule or limit is defined in one module. Limits are defined in `src/core/policy/` only.
+- **Hub stability:** A module imported by many files holds data, constants, and pure functions, and imports only modules at the same or lower level.
+- **Fan-out (review threshold):** More than 5 internal modules imported by one file in `src/core/`, or more than 6 in `src/shell/`, counting non-test code. Exceeding it prompts a review; it is not a defect by itself.
+
+**Cohesion**
+
+- **One responsibility:** A module's entry in [`context.md`](../context.md) sec. 5 describes it without joining unrelated nouns. Split test: the public items fall into two groups whose caller sets are disjoint and which do not reference each other.
+- **Invariant with its type:** A type's constructor and validation are in the type's module (sec. 3.3).
+- **Single-caller items:** A `pub(crate)` or `pub(super)` item with exactly one external caller file is a candidate to move to that caller. Exempt: items in `src/core/policy/`, items used only within the same directory, core items used by shell, and public API re-exports in `src/lib.rs`.
+- **Minimal visibility:** An item referenced only within its own file is private.
+- **Size (review threshold):** More than 400 non-test lines in one file prompts a review.
+
+**Checks**
+
+- Direction, `super::super`, and visibility: `grep` over `src/`.
+- Cycles and fan-out: import graph built from `use` paths, `mod` declarations, and relative-path calls (`local::collect`). Name matching alone yields false positives.
+
 ---
 
 ## 4. Memory, Layout, and Dependencies

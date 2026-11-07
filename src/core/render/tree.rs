@@ -78,7 +78,7 @@ where
 /// [`SortedFiles`] shares its parent prefix up to `offset`, ends in a non-empty segment
 /// (`NormalizedPath`), and is never the directory prefix of another (I-01), so this cannot happen.
 #[must_use]
-pub(super) fn component_at_offset(path: &str, offset: usize) -> (&str, bool) {
+fn component_at_offset(path: &str, offset: usize) -> (&str, bool) {
     let remainder = &path[offset..];
     assert!(
         !remainder.is_empty(),

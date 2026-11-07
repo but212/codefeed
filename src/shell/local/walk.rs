@@ -16,8 +16,7 @@ use super::gitignore::read_rules;
 use crate::core::error::DomainError;
 use crate::core::path::{AdmittedDir, CandidatePath, DepthExceededError, admit_dir, classify_leaf};
 use crate::core::policy::{ExcludePatterns, MAX_DIR_ENTRIES, is_hidden_segment};
-use crate::shell::IngestError;
-use crate::shell::error::io_error_at;
+use crate::shell::error::{IngestError, io_error_at};
 
 /// A regular file found by the walk. The walk yields no other entry kind, so classification never sees one.
 /// `parent` is the admitted directory that holds the file, so classification checks only the file itself.

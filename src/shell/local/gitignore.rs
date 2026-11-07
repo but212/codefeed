@@ -7,8 +7,7 @@ use std::path::Path;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::core::policy::MAX_FILE_SIZE;
-use crate::shell::IngestError;
-use crate::shell::error::io_error_at;
+use crate::shell::error::{IngestError, io_error_at};
 
 /// Byte order mark that Git ignores at the start of a `.gitignore`.
 const UTF8_BOM: &str = "\u{feff}";

@@ -14,8 +14,7 @@ use crate::core::policy::{
     ARCHIVE_PAX_GLOBAL_BYTES, ExcludePatterns, MAX_FILE_SIZE,
 };
 use crate::core::selector::Selector;
-use crate::shell::IngestError;
-use crate::shell::error::transport_error;
+use crate::shell::error::{IngestError, transport_error};
 
 /// Collects files from a tarball reader directly into a [`CollectionResult`].
 ///

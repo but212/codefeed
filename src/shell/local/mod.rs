@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use self::pipeline::fold_candidates;
 use self::read::{Body, Candidate};
-use super::IngestError;
+use super::error::IngestError;
 use super::output::ResolvedOutput;
 use crate::core::collection::{CollectionResult, repository_name};
 use crate::core::error::DomainError;
@@ -615,13 +615,6 @@ mod tests {
         let expected_basename = root.file_name().unwrap().to_str().unwrap();
         assert!(digest.starts_with(&format!("Repository: {expected_basename}\n")));
         Ok(())
-    }
-
-    #[test]
-    fn label_handles_filesystem_root() {
-        assert_eq!(repository_name(Path::new("/")), "root");
-        #[cfg(windows)]
-        assert_eq!(repository_name(Path::new("C:\\")), "root");
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]

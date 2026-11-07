@@ -7,8 +7,7 @@ use std::path::Path;
 use crate::core::path::NormalizedPath;
 use crate::core::policy::MAX_FILE_SIZE;
 use crate::core::selector::exceeds_size_limits;
-use crate::shell::IngestError;
-use crate::shell::error::io_error_at;
+use crate::shell::error::{IngestError, io_error_at};
 
 /// What a worker learned about one regular-file candidate.
 pub(super) enum Body {

@@ -29,6 +29,8 @@ mod tests {
     fn repository_name_falls_back_to_root() {
         assert_eq!(repository_name(Path::new("a/codefeed")), "codefeed");
         assert_eq!(repository_name(Path::new("/")), "root");
+        #[cfg(windows)]
+        assert_eq!(repository_name(Path::new("C:\\")), "root");
         assert_eq!(repository_name(Path::new("a/..")), "root");
         assert_eq!(repository_name(Path::new("")), "root");
     }
