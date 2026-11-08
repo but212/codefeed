@@ -8,19 +8,8 @@ pub(super) fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
     if bytes.is_empty() {
         return 0;
     }
-    // Chunks of 4096 bytes keep the per-chunk `u32` counters far below overflow.
-    let mut ascii_bytes = 0usize;
-    let mut non_ascii_chars = 0usize;
-    for chunk in bytes.chunks(4096) {
-        let mut ascii = 0u32;
-        let mut lead = 0u32;
-        for &b in chunk {
-            ascii += u32::from(b < 0x80);
-            lead += u32::from(b >= 0xC0);
-        }
-        ascii_bytes += ascii as usize;
-        non_ascii_chars += lead as usize;
-    }
+    let ascii_bytes = bytes.iter().filter(|&&b| b < 0x80).count();
+    let non_ascii_chars = bytes.iter().filter(|&&b| b >= 0xC0).count();
 
     let ascii_tokens = ascii_bytes / ASCII_BYTES_PER_TOKEN;
     let total = ascii_tokens + non_ascii_chars;
