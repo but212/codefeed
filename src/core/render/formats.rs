@@ -24,7 +24,8 @@ const XML_FILES_START: &str = "<files>\n";
 const XML_FILES_END: &str = "</files>\n";
 const XML_REPO_END: &str = "</repository>\n";
 const XML_FILE_START: &str = "<file path=\"";
-const FILE_TAILS: [&[u8]; 2] = [b"</file>\n", b"\n</file>\n"];
+const XML_FILE_TAILS: [&[u8]; 2] = [b"</file>\n", b"\n</file>\n"];
+const TEXT_FILE_TAILS: [&[u8]; 2] = [b"\n", b"\n\n"];
 
 pub(super) fn write_header(
     format: DigestFormat,
@@ -36,31 +37,31 @@ pub(super) fn write_header(
 ) -> Result<BoundedBuffer, OutputLimitExceeded> {
     match format {
         DigestFormat::Text => {
-            buf = buf.push_bytes(REPOSITORY_PREFIX.as_bytes())?;
+            buf = buf.push_str(REPOSITORY_PREFIX)?;
             buf = write_escaped(buf, label, escape_header)?;
-            buf = buf.push_bytes(NEWLINE.as_bytes())?;
+            buf = buf.push_str(NEWLINE)?;
             if let Some(rev) = revision {
-                buf = buf.push_bytes(REVISION_PREFIX.as_bytes())?;
+                buf = buf.push_str(REVISION_PREFIX)?;
                 buf = write_escaped(buf, rev, escape_header)?;
-                buf = buf.push_bytes(NEWLINE.as_bytes())?;
+                buf = buf.push_str(NEWLINE)?;
             }
-            buf = buf.push_bytes(FILES_PREFIX.as_bytes())?;
+            buf = buf.push_str(FILES_PREFIX)?;
             buf = buf.push_usize(file_count)?;
-            buf = buf.push_bytes(SKIPPED_PREFIX.as_bytes())?;
+            buf = buf.push_str(SKIPPED_PREFIX)?;
             buf = buf.push_usize(skipped)?;
-            buf = buf.push_bytes(METADATA_SUFFIX.as_bytes())?;
-            buf = buf.push_bytes(DIRECTORY_HEADER.as_bytes())?;
+            buf = buf.push_str(METADATA_SUFFIX)?;
+            buf = buf.push_str(DIRECTORY_HEADER)?;
             Ok(buf)
         }
         DigestFormat::Xml => {
-            buf = buf.push_bytes(XML_REPO_START.as_bytes())?;
+            buf = buf.push_str(XML_REPO_START)?;
             buf = write_escaped(buf, label, escape_xml_single_line)?;
             if let Some(rev) = revision {
-                buf = buf.push_bytes(XML_REVISION_ATTR.as_bytes())?;
+                buf = buf.push_str(XML_REVISION_ATTR)?;
                 buf = write_escaped(buf, rev, escape_xml_single_line)?;
             }
-            buf = buf.push_bytes(XML_TAG_CLOSE.as_bytes())?;
-            buf = buf.push_bytes(XML_DIR_START.as_bytes())?;
+            buf = buf.push_str(XML_TAG_CLOSE)?;
+            buf = buf.push_str(XML_DIR_START)?;
             Ok(buf)
         }
     }
@@ -82,10 +83,10 @@ pub(super) fn close_tree_section(
     mut buf: BoundedBuffer,
 ) -> Result<BoundedBuffer, OutputLimitExceeded> {
     match format {
-        DigestFormat::Text => buf.push_bytes(FILES_HEADER.as_bytes()),
+        DigestFormat::Text => buf.push_str(FILES_HEADER),
         DigestFormat::Xml => {
-            buf = buf.push_bytes(XML_DIR_END.as_bytes())?;
-            buf = buf.push_bytes(XML_FILES_START.as_bytes())?;
+            buf = buf.push_str(XML_DIR_END)?;
+            buf = buf.push_str(XML_FILES_START)?;
             Ok(buf)
         }
     }
@@ -97,24 +98,22 @@ pub(super) fn write_file_entry(
     path: &str,
     content: &str,
 ) -> Result<BoundedBuffer, OutputLimitExceeded> {
+    let missing_nl = usize::from(!content.ends_with('\n'));
     match format {
         DigestFormat::Text => {
-            const TAIL: [&[u8]; 2] = [b"\n", b"\n\n"];
-            let needs_extra_nl = usize::from(!content.ends_with('\n'));
-            buf = buf.push_bytes(FILE_BLOCK_PREFIX.as_bytes())?;
+            buf = buf.push_str(FILE_BLOCK_PREFIX)?;
             buf = write_escaped(buf, path, escape_header)?;
-            buf = buf.push_bytes(FILE_BLOCK_SUFFIX.as_bytes())?;
+            buf = buf.push_str(FILE_BLOCK_SUFFIX)?;
             buf = buf.push_bytes(content.as_bytes())?;
-            buf = buf.push_bytes(TAIL[needs_extra_nl])?;
+            buf = buf.push_bytes(TEXT_FILE_TAILS[missing_nl])?;
             Ok(buf)
         }
         DigestFormat::Xml => {
-            buf = buf.push_bytes(XML_FILE_START.as_bytes())?;
+            buf = buf.push_str(XML_FILE_START)?;
             buf = write_escaped(buf, path, escape_xml_single_line)?;
-            buf = buf.push_bytes(XML_TAG_CLOSE.as_bytes())?;
+            buf = buf.push_str(XML_TAG_CLOSE)?;
             buf = write_escaped(buf, content, escape_xml_body)?;
-            let needs_nl = usize::from(!content.ends_with('\n'));
-            buf = buf.push_bytes(FILE_TAILS[needs_nl])?;
+            buf = buf.push_bytes(XML_FILE_TAILS[missing_nl])?;
             Ok(buf)
         }
     }
@@ -127,8 +126,8 @@ pub(super) fn write_footer(
     match format {
         DigestFormat::Text => Ok(buf),
         DigestFormat::Xml => {
-            buf = buf.push_bytes(XML_FILES_END.as_bytes())?;
-            buf = buf.push_bytes(XML_REPO_END.as_bytes())?;
+            buf = buf.push_str(XML_FILES_END)?;
+            buf = buf.push_str(XML_REPO_END)?;
             Ok(buf)
         }
     }

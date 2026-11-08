@@ -30,7 +30,7 @@ pub(crate) struct RenderedDigest {
 
 /// In-memory buffer with value-passing operations, bounded by a byte `limit`.
 ///
-/// Invariant I-B1 (`runtime`): `bytes.len() <= limit`. `push_bytes` is the only growth path and checks it.
+/// `bytes.len() <= limit` always holds: `push_bytes` is the only growth path and checks it.
 /// Outside tests the limit is always [`MAX_OUTPUT_SIZE`](crate::core::policy::MAX_OUTPUT_SIZE): [`BoundedBuffer::with_capacity`]
 /// is the only constructor, and the arbitrary-limit constructor exists only under `cfg(test)` so tests can sweep every boundary.
 #[derive(Debug)]

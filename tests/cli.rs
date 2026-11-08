@@ -392,18 +392,19 @@ fn closed_output_pipes_do_not_panic() {
     std::fs::write(fixture.path.join("a.txt"), "hello\n").expect("fixture should be written");
     let fixture_arg = fixture.path.to_str().expect("temp path should be UTF-8");
 
-    // Each run closes both pipes before the CLI writes, so every write sees a broken pipe.
+    // The read ends are dropped before spawn, so every child write sees a broken pipe.
     let cases: [(&[&str], i32); 2] = [(&[fixture_arg, "-o", "-"], 0), (&["--bogus"], 1)];
     for (args, expected_code) in cases {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+        let (stdout_reader, stdout_writer) = std::io::pipe().expect("stdout pipe");
+        let (stderr_reader, stderr_writer) = std::io::pipe().expect("stderr pipe");
+        drop(stdout_reader);
+        drop(stderr_reader);
+        let status = Command::new(env!("CARGO_BIN_EXE_codefeed"))
             .args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("CLI process should start");
-        drop(child.stdout.take());
-        drop(child.stderr.take());
-        let status = child.wait().expect("CLI process should exit");
+            .stdout(Stdio::from(stdout_writer))
+            .stderr(Stdio::from(stderr_writer))
+            .status()
+            .expect("CLI process should run");
         assert_eq!(status.code(), Some(expected_code), "args={args:?}");
     }
 }

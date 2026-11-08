@@ -286,7 +286,7 @@ mod tests {
             (format!("{accented}/file.rs"), accented_cut),
         ];
         for (path, expected) in cases {
-            assert_eq!(extract_dir_slice(&path), expected, "{:.40}", path);
+            assert_eq!(extract_dir_slice(&path), expected, "{path:.40}");
         }
         assert_eq!(
             extract_dir_slice(&format!("{}/file.rs", "é".repeat(MAX_PATH_BYTES_USIZE))).len(),

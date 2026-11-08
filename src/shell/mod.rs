@@ -71,7 +71,7 @@ mod tests {
     use crate::OutputTarget;
     use crate::core::model::DigestFormat;
     use crate::core::source::GitRef;
-    use crate::shell::testing::{MockServer, gzip_tarball, temp_dir};
+    use crate::shell::testing::{MockServer, gzip_tarball, tarball_response, temp_dir};
     use std::fs;
     use tar::EntryType;
 
@@ -96,14 +96,7 @@ mod tests {
     #[test]
     fn ingest_github_source_succeeds() {
         let gz = gzip_tarball(&[("repo-root/main.rs", b"fn main() {}", EntryType::Regular)]);
-        let server = MockServer::spawn(1, move |_index, _req, _port| {
-            let mut resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/x-gzip\r\nConnection: close\r\nContent-Length: "
-                .to_vec();
-            resp.extend_from_slice(gz.len().to_string().as_bytes());
-            resp.extend_from_slice(b"\r\n\r\n");
-            resp.extend_from_slice(&gz);
-            resp
-        });
+        let server = MockServer::spawn(1, move |_index, _req, _port| tarball_response(&gz));
 
         let source = Source::github("owner", "repo", Some(GitRef::new("v1.0.0").unwrap())).unwrap();
 

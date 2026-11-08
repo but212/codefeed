@@ -16,6 +16,15 @@ Observable behavior. **Action** = code or config change required.
 
 - **Error text is `ErrorDetail`**: The payload of `DomainError::{Usage, InvalidSource, UnsupportedSource, InvalidMetadata}` and `IngestError::Http`, and the names in `CandidateLimitExceededError::largest_directories` and `OutputTooLargeError::largest_files`, were `String`. They are now `ErrorDetail`, a new exported type whose only constructor sanitizes control characters. `Display` no longer sanitizes again, and the rendered messages are unchanged (`src/core/error.rs`, `src/shell/error.rs`).
   - **Action:** Read the text with `&*detail`, `detail.to_string()`, or `detail == *"text"`. Build a variant with `ErrorDetail::new(text)`. Code that matched `DomainError::Usage(String)` and similar patterns on the payload type must use `ErrorDetail`.
+- **`DomainError::usage` is crate-private**: No external caller existed (`src/core/error.rs`).
+  - **Action:** Build `DomainError::Usage(ErrorDetail::new(text))` explicitly.
+- **`From<io::Error> for IngestError` removed**: No code path used it, and it admitted unsanitized `io::Error` text (`src/shell/error.rs`).
+  - **Action:** Build `IngestError::Io(err)` explicitly.
+
+#### Fixed
+
+- **`-h` and `-V` win over any other argument error**: An invalid `--format`, `--exclude`, unknown option, or extra positional placed before `-h` or `-V` used to fail with a usage error; now the help or version text prints and the exit code is 0. Only a `-h` or `-V` taken as a flag value or placed after `--` is ignored (`src/core/cli.rs`).
+- **URL schemes are case-insensitive**: `HTTPS://github.com/owner/repo` used to be treated as a local path and failed with a filesystem error; it now resolves as a GitHub source. `Git@…` and `SSH://…` are now rejected as unsupported like their lowercase forms (`src/core/source.rs`, `src/core/github/url.rs`).
 
 ### Contributors
 

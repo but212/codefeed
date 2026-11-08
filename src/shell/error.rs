@@ -41,12 +41,6 @@ impl From<DomainError> for IngestError {
     }
 }
 
-impl From<io::Error> for IngestError {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error)
-    }
-}
-
 /// Creates an `io::Error` with message sanitized of control characters.
 pub(super) fn sanitized_io_error(kind: io::ErrorKind, message: &str) -> io::Error {
     io::Error::new(kind, ErrorDetail::new(message).to_string())

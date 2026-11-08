@@ -63,7 +63,7 @@ impl ExcludePatterns {
     /// directory excludes everything below it, and a `!` pattern cannot re-include such an entry.
     #[must_use]
     pub(crate) fn excludes_prefix(&self, prefix: &str, is_dir: bool) -> bool {
-        !self.rules.is_empty() && self.rules.matched(prefix, is_dir).is_ignore()
+        self.rules.matched(prefix, is_dir).is_ignore()
     }
 }
 

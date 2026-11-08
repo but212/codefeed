@@ -73,7 +73,7 @@ pub enum DomainError {
 impl DomainError {
     /// Constructs a [`Usage`](Self::Usage) error. The message is sanitized because it may echo user input.
     #[cold]
-    pub fn usage(message: impl Into<String>) -> Self {
+    pub(crate) fn usage(message: impl Into<String>) -> Self {
         Self::Usage(ErrorDetail::new(message))
     }
 

@@ -179,40 +179,18 @@ where
     let mut args_iter = args.into_iter().map(Into::into);
     let _bin = args_iter.next(); // Skip binary name
 
-    let mut parsed = Parsed::default();
     let mut state = ParseState::Normal;
-
-    for arg in args_iter {
-        match state {
-            ParseState::ExpectValue(flag, flag_str) => {
-                reject_option_like(flag, flag_str, &arg)?;
-                parsed = parsed.with_value(flag, arg)?;
-                state = ParseState::Normal;
-            }
-            ParseState::PositionalOnly => {
-                parsed = parsed.with_positional(arg)?;
-            }
-            ParseState::Normal => match classify_arg(&arg) {
-                Arg::Separator => state = ParseState::PositionalOnly,
-                Arg::Help => return Ok(CliAction::Help),
-                Arg::Version => return Ok(CliAction::Version),
-                Arg::Flag(flag, _, Some(inline)) => {
-                    parsed = parsed.with_value(flag, OsString::from(inline))?;
-                }
-                Arg::Flag(flag, flag_str, None) => {
-                    state = ParseState::ExpectValue(flag, flag_str);
-                }
-                Arg::Unknown(s) => {
-                    return Err(DomainError::usage(format!("unknown option: {s}")));
-                }
-                Arg::Positional => parsed = parsed.with_positional(arg)?,
-            },
+    let parsed = match fold_args(&mut args_iter, &mut state) {
+        Ok(Folded::Early(action)) => return Ok(action),
+        Ok(Folded::Parsed(parsed)) => parsed,
+        Err(err) => {
+            // `-h` and `-V` win over an earlier error, unless that error came after `--`.
+            return match state {
+                ParseState::PositionalOnly => Err(err),
+                _ => scan_for_early_action(args_iter).ok_or(err),
+            };
         }
-    }
-
-    if let ParseState::ExpectValue(_, flag_str) = state {
-        return Err(missing_value(flag_str));
-    }
+    };
 
     let Parsed {
         source,
@@ -238,6 +216,69 @@ where
         format,
         exclude: ExcludePatterns::new(exclude)?,
     })))
+}
+
+/// Result of folding the arguments: either option values, or `-h`/`-V` seen first.
+enum Folded {
+    Parsed(Parsed),
+    Early(CliAction),
+}
+
+/// Folds arguments left to right, stopping at the first error. `state` is left at the point of failure.
+fn fold_args(
+    args: &mut impl Iterator<Item = OsString>,
+    state: &mut ParseState,
+) -> Result<Folded, DomainError> {
+    let mut parsed = Parsed::default();
+    for arg in args {
+        match *state {
+            ParseState::ExpectValue(flag, flag_str) => {
+                *state = ParseState::Normal;
+                reject_option_like(flag, flag_str, &arg)?;
+                parsed = parsed.with_value(flag, arg)?;
+            }
+            ParseState::PositionalOnly => {
+                parsed = parsed.with_positional(arg)?;
+            }
+            ParseState::Normal => match classify_arg(&arg) {
+                Arg::Separator => *state = ParseState::PositionalOnly,
+                Arg::Help => return Ok(Folded::Early(CliAction::Help)),
+                Arg::Version => return Ok(Folded::Early(CliAction::Version)),
+                Arg::Flag(flag, _, Some(inline)) => {
+                    parsed = parsed.with_value(flag, OsString::from(inline))?;
+                }
+                Arg::Flag(flag, flag_str, None) => {
+                    *state = ParseState::ExpectValue(flag, flag_str);
+                }
+                Arg::Unknown(s) => {
+                    return Err(DomainError::usage(format!("unknown option: {s}")));
+                }
+                Arg::Positional => parsed = parsed.with_positional(arg)?,
+            },
+        }
+    }
+    if let ParseState::ExpectValue(_, flag_str) = *state {
+        return Err(missing_value(flag_str));
+    }
+    Ok(Folded::Parsed(parsed))
+}
+
+/// Finds the first `-h` or `-V` among the arguments left after an error, stopping at `--`.
+fn scan_for_early_action(args: impl Iterator<Item = OsString>) -> Option<CliAction> {
+    let mut skip_value = false;
+    for arg in args {
+        if std::mem::take(&mut skip_value) {
+            continue;
+        }
+        match classify_arg(&arg) {
+            Arg::Separator => return None,
+            Arg::Help => return Some(CliAction::Help),
+            Arg::Version => return Some(CliAction::Version),
+            Arg::Flag(_, _, None) => skip_value = true,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Rejects a separate-argument flag value that starts with `-`, so `-o -x` cannot
@@ -482,6 +523,11 @@ mod tests {
         for args in [
             &["codefeed", "--ref", "", "--help"][..],
             &["codefeed", "--help", "--ref", ""][..],
+            // Eagerly detected errors before the flag do not mask it either.
+            &["codefeed", "-f", "yaml", "--help"][..],
+            &["codefeed", "--bogus", "--help"][..],
+            &["codefeed", "a", "b", "--help"][..],
+            &["codefeed", "-x", "[", "-h"][..],
         ] {
             assert_eq!(parse(args.iter().copied()).unwrap(), CliAction::Help);
         }
@@ -504,6 +550,20 @@ mod tests {
             );
         }
         assert_eq!(parse(["codefeed", "-h", "-V"]).unwrap(), CliAction::Help);
+        assert_eq!(
+            parse(["codefeed", "--bogus", "-V"]).unwrap(),
+            CliAction::Version
+        );
+
+        // A `-h` taken as a flag value is not an early action.
+        let err = parse(["codefeed", "--bogus", "-o", "-h"]).unwrap_err();
+        assert!(err.to_string().contains("unknown option: --bogus"));
+
+        // After `--`, `-h` is a positional, so the earlier error stands.
+        let err = parse(["codefeed", "--", "a", "-h"]).unwrap_err();
+        assert!(err.to_string().contains("unexpected argument '-h'"));
+        let err = parse(["codefeed", "--bogus", "--", "-h"]).unwrap_err();
+        assert!(err.to_string().contains("unknown option: --bogus"));
 
         // After `--`, `-V` is a positional.
         let config = parse_run(["codefeed", "--", "-V"]);

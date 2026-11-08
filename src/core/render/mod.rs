@@ -40,7 +40,6 @@ impl CollectionResult {
     /// Renders the collected files into [`RenderedDigest`] using the specified format.
     ///
     /// Binds output generation to [`MAX_OUTPUT_SIZE`](crate::core::policy::MAX_OUTPUT_SIZE) and calculates the estimated token count.
-    /// Consumes `self` as part of the linear ingestion pipeline.
     ///
     /// # Output Size Invariant
     ///
@@ -56,9 +55,9 @@ impl CollectionResult {
     /// # Errors
     ///
     /// Returns [`DomainError::OutputTooLarge`] if output exceeds the maximum size limit.
-    pub(crate) fn render(self, format: DigestFormat) -> Result<RenderedDigest, DomainError> {
+    pub(crate) fn render(&self, format: DigestFormat) -> Result<RenderedDigest, DomainError> {
         let buf = BoundedBuffer::with_capacity(self.files.total_bytes() + 4096);
-        match render_digest(buf, &self, format) {
+        match render_digest(buf, self, format) {
             Ok(buf) => Ok(buf.finish()),
             Err(OutputLimitExceeded) => Err(self.files.output_too_large_error()),
         }
@@ -113,7 +112,7 @@ mod tests {
             };
 
             for format in [DigestFormat::Text, DigestFormat::Xml] {
-                let digest = collection.clone().render(format)?;
+                let digest = collection.render(format)?;
                 assert!(
                     digest.bytes.len() >= raw_bytes,
                     "Format {format:?} output length ({}) must be >= raw arena bytes ({raw_bytes}) for {label}",
@@ -220,7 +219,7 @@ mod tests {
             skipped: 0,
         };
 
-        let text_digest = collection.clone().render(DigestFormat::Text)?;
+        let text_digest = collection.render(DigestFormat::Text)?;
         let text_rendered = std::str::from_utf8(&text_digest.bytes)?;
         assert!(
             text_rendered.contains(raw_ansi),
