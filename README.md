@@ -16,7 +16,7 @@
 - **Local directory**: `./path/to/project`
 - **GitHub repository**: `https://github.com/{owner}/{repo}` (trailing `.git` accepted; queries, fragments, user credentials `user@`, and non-443 ports rejected).
 
-Unsupported protocols (`git@`, `ssh://`, `http://`) and non-GitHub hosts must be cloned locally first:
+Unsupported protocols (`git@`, `ssh://`, `http://`) and non-GitHub hosts (e.g. GitLab, Bitbucket, self-hosted Git servers) must be cloned locally first:
 
 ```bash
 git clone --depth 1 <URL> ./repo && codefeed ./repo

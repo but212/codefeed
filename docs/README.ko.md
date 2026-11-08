@@ -18,7 +18,7 @@
 - **로컬 디렉터리**: `./path/to/project`
 - **GitHub 저장소**: `https://github.com/{owner}/{repo}` (끝의 `.git` 허용; 쿼리, 프래그먼트, 사용자 자격 증명 `user@`, 443 이외의 포트는 거부됨).
 
-지원되지 않는 프로토콜(`git@`, `ssh://`, `http://`) 및 GitHub 이외 호스트는 먼저 로컬로 클론해야 합니다:
+지원되지 않는 프로토콜(`git@`, `ssh://`, `http://`) 및 GitHub 이외 호스트(예: GitLab, Bitbucket, 자체 호스팅 Git 서버)는 먼저 로컬로 클론해야 합니다:
 
 ```bash
 git clone --depth 1 <URL> ./repo && codefeed ./repo
