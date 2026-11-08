@@ -135,7 +135,9 @@ impl AdmittedDir {
 ///
 /// Only the new prefix is matched. The prefixes of `dir`'s ancestors were matched when `dir` was
 /// admitted, and a match there would have returned `None` already. Matching stops after the first
-/// `MAX_PATH_DEPTH + 1` segments: deeper, the match prefix stops growing and is not matched.
+/// `MAX_PATH_DEPTH + 1` segments: deeper, the match prefix stops growing and is not matched. The
+/// output prefix stops growing at the same depth, because [`classify_leaf`] fails the depth limit
+/// before it reads it.
 #[must_use]
 pub(crate) fn admit_dir(
     dir: AdmittedDir,
@@ -157,8 +159,7 @@ pub(crate) fn admit_dir(
         }
     }
     let output = match output {
-        DirPrefix::NonUtf8(prefix) => DirPrefix::NonUtf8(prefix),
-        DirPrefix::Utf8(mut prefix) => match std::str::from_utf8(name) {
+        DirPrefix::Utf8(mut prefix) if depth <= MAX_PATH_DEPTH => match std::str::from_utf8(name) {
             Ok(segment) => {
                 prefix.push_str(segment);
                 prefix.push('/');
@@ -166,6 +167,7 @@ pub(crate) fn admit_dir(
             }
             Err(_) => DirPrefix::NonUtf8(prefix),
         },
+        unchanged => unchanged,
     };
     Some(AdmittedDir {
         depth: depth + 1,
@@ -338,6 +340,23 @@ mod tests {
             "the match prefix grows only inside the window"
         );
         assert_eq!(dir.depth, depth + 8);
+    }
+
+    #[test]
+    fn admit_dir_stops_growing_output_prefix_past_window() {
+        let exclude = ExcludePatterns::default();
+        let mut dir = AdmittedDir::root();
+        for _ in 0..=MAX_PATH_DEPTH {
+            dir = admit_dir(dir, b"d", &exclude).expect("d is not excluded");
+        }
+        let window_output = dir.output.clone();
+        for _ in 0..8 {
+            dir = admit_dir(dir, b"d", &exclude).expect("d is not excluded");
+        }
+        assert_eq!(
+            dir.output, window_output,
+            "no leaf below the window reads the output prefix"
+        );
     }
 
     #[test]

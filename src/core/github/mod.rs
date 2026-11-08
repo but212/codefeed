@@ -15,7 +15,8 @@ pub(crate) use archive::{normalize_tar_entry_path, parse_pax_comment};
 pub(crate) use retry::{AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind};
 pub use url::GithubName;
 pub(crate) use url::{
-    GITHUB_API_BASE_URL, is_github_api_origin, parse_github_url, repository_url, tarball_url,
+    GITHUB_API_BASE_URL, is_github_api_origin, parse_github_url, repository_url,
+    strip_prefix_ignore_case, tarball_url,
 };
 
 /// Non-success GitHub API response. `Display` renders the message without the error-kind prefix.

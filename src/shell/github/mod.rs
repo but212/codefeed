@@ -161,17 +161,8 @@ fn unix_now_secs() -> u64 {
 mod tests {
     use super::*;
     use crate::core::policy::{MAX_ATTEMPTS, TOKEN_ENV_VARS};
-    use crate::shell::testing::{MockServer, gzip_tarball};
+    use crate::shell::testing::{MockServer, gzip_tarball, tarball_response};
     use tar::EntryType;
-
-    fn tarball_response(gz: &[u8]) -> Vec<u8> {
-        let mut resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/x-gzip\r\nConnection: close\r\nContent-Length: "
-            .to_vec();
-        resp.extend_from_slice(gz.len().to_string().as_bytes());
-        resp.extend_from_slice(b"\r\n\r\n");
-        resp.extend_from_slice(gz);
-        resp
-    }
 
     #[test]
     fn collect_fetches_and_parses_remote_tarball() {
@@ -237,13 +228,6 @@ mod tests {
         server.join();
     }
 
-    fn epoch_now_secs() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_secs()
-    }
-
     #[test]
     fn reads_rate_limit_headers_from_response() {
         let mut headers = ureq::http::HeaderMap::new();
@@ -257,7 +241,7 @@ mod tests {
 
     #[test]
     fn server_error_is_retried_until_success() {
-        let reset = (epoch_now_secs() + 2400).to_string();
+        let reset = (unix_now_secs() + 2400).to_string();
         // (case, first response): each failure is retried once and the second attempt succeeds.
         let cases = [
             (
@@ -295,7 +279,7 @@ mod tests {
 
     #[test]
     fn client_error_is_not_retried() {
-        let reset = (epoch_now_secs() + 2400).to_string();
+        let reset = (unix_now_secs() + 2400).to_string();
         // (case, response, status, exact message): a 4xx is terminal, with or without remaining quota.
         let token_hint = format!(
             "(set {} to authenticate or increase rate limits)",

@@ -6,13 +6,13 @@ use crate::core::policy::{MAX_ATTEMPTS, RETRY_INITIAL_DELAY_MS, RETRY_MAX_DELAY_
 
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429, 5xx, or rate-limited 403).
 #[must_use]
-pub(super) const fn is_retryable_http_status(status_code: u16, is_rate_limit: bool) -> bool {
+const fn is_retryable_http_status(status_code: u16, is_rate_limit: bool) -> bool {
     matches!(status_code, 429 | 500..=599) || (status_code == 403 && is_rate_limit)
 }
 
 /// Calculates bounded exponential backoff duration for the given attempt.
 #[must_use]
-pub(super) const fn retry_delay(attempt: usize) -> Duration {
+const fn retry_delay(attempt: usize) -> Duration {
     let bounded_attempt = if attempt < 16 { attempt } else { 16 };
     #[expect(
         clippy::cast_possible_truncation,
@@ -250,6 +250,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines, reason = "one table of retry transitions")]
     fn decides_retry_correctly() {
         let retry = |attempt, delay| Transition::Retry { attempt, delay };
         let cases = [

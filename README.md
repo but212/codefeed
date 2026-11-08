@@ -16,7 +16,7 @@
 - **Local directory**: `./path/to/project`
 - **GitHub repository**: `https://github.com/{owner}/{repo}` (trailing `.git` accepted; queries, fragments, user credentials `user@`, and non-443 ports rejected).
 
-Unsupported protocols (`git@`, `ssh://`, `http://`) and non-GitHub hosts must be cloned locally first:
+Unsupported protocols (`git@`, `ssh://`, `http://`) and non-GitHub hosts (e.g. GitLab, Bitbucket, self-hosted Git servers) must be cloned locally first:
 
 ```bash
 git clone --depth 1 <URL> ./repo && codefeed ./repo
@@ -59,8 +59,8 @@ Options may appear before or after `<SOURCE>`. Short flags accept `=` syntax (`-
 - `-r`, `--ref <BRANCH|TAG|COMMIT>`: GitHub revision (default: default branch). Rejects empty, whitespace-only, `.`, and `..`.
 - `-f`, `--format <text|xml>`: Digest format (default: `text`).
 - `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to the source root (e.g. `build/`, `*.log`, `/vendor`). Repeatable, applied in order, for local and GitHub sources. Invalid patterns and patterns yielding no rule (blank, comment, bare `!`) are usage errors. Syntax details are in [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 3.6.
-- `-h`, `--help`: Print usage and exit 0.
-- `-V`, `--version`: Print `codefeed <version>` and exit 0.
+- `-h`, `--help`: Print usage and exit 0. Wins over other argument errors.
+- `-V`, `--version`: Print `codefeed <version>` and exit 0. Wins over other argument errors.
 - `--`: Treat subsequent arguments as positionals (for directories starting with `-`).
 
 Inline values (`--flag=value`) may start with `-` (e.g. `--output=-notes.txt`). Separate argument values may not, except `-o -`.

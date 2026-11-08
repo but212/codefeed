@@ -65,7 +65,7 @@ impl GithubClient {
         if !is_github_api_origin(url) {
             return request;
         }
-        let request = match self.credentials(url) {
+        let request = match &self.auth_header {
             Some(auth) => request.header("Authorization", auth.as_str()),
             None => request,
         };

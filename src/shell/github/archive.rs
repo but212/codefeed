@@ -124,7 +124,7 @@ impl StreamMeter {
             Some(remaining) => remaining,
             None => u64::MAX,
         };
-        let total = ARCHIVE_MAX_DECOMPRESSED_BYTES - self.total.get() + 1;
+        let total = ARCHIVE_MAX_DECOMPRESSED_BYTES.saturating_sub(self.total.get()) + 1;
         let allowed = header.min(total).min(requested as u64);
         // `allowed <= requested`, so it fits in `usize`.
         Ok(usize::try_from(allowed).unwrap_or(requested))
@@ -221,6 +221,14 @@ mod tests {
     use crate::core::error::DomainError;
     use crate::core::policy::MAX_FILE_SIZE_USIZE;
     use crate::shell::testing::{gzip_archive, gzip_single_entry_stream, gzip_tarball};
+
+    #[test]
+    fn read_cap_after_overrun_does_not_underflow() {
+        let meter = StreamMeter::new();
+        let cap = meter.read_cap(usize::MAX).unwrap();
+        assert!(meter.record(cap).is_err());
+        assert!(meter.read_cap(1).is_ok());
+    }
 
     fn collect_default(
         reader: &[u8],

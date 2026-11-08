@@ -130,6 +130,16 @@ pub(super) fn gzip_tarball(entries: &[(&str, &[u8], EntryType)]) -> Vec<u8> {
     })
 }
 
+/// Wraps gzipped tarball bytes in an HTTP 200 response.
+pub(super) fn tarball_response(gz: &[u8]) -> Vec<u8> {
+    let mut resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/x-gzip\r\nConnection: close\r\nContent-Length: "
+        .to_vec();
+    resp.extend_from_slice(gz.len().to_string().as_bytes());
+    resp.extend_from_slice(b"\r\n\r\n");
+    resp.extend_from_slice(gz);
+    resp
+}
+
 pub(super) struct MockServer {
     pub(super) port: u16,
     handle: thread::JoinHandle<(Vec<String>, usize)>,

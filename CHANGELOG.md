@@ -16,6 +16,15 @@ Observable behavior. **Action** = code or config change required.
 
 - **Error text is `ErrorDetail`**: The payload of `DomainError::{Usage, InvalidSource, UnsupportedSource, InvalidMetadata}` and `IngestError::Http`, and the names in `CandidateLimitExceededError::largest_directories` and `OutputTooLargeError::largest_files`, were `String`. They are now `ErrorDetail`, a new exported type whose only constructor sanitizes control characters. `Display` no longer sanitizes again, and the rendered messages are unchanged (`src/core/error.rs`, `src/shell/error.rs`).
   - **Action:** Read the text with `&*detail`, `detail.to_string()`, or `detail == *"text"`. Build a variant with `ErrorDetail::new(text)`. Code that matched `DomainError::Usage(String)` and similar patterns on the payload type must use `ErrorDetail`.
+- **`DomainError::usage` is crate-private**: No external caller existed (`src/core/error.rs`).
+  - **Action:** Build `DomainError::Usage(ErrorDetail::new(text))` explicitly.
+- **`From<io::Error> for IngestError` removed**: No code path used it, and it admitted unsanitized `io::Error` text (`src/shell/error.rs`).
+  - **Action:** Build `IngestError::Io(err)` explicitly.
+
+#### Fixed
+
+- **`-h` and `-V` win over any other argument error**: An invalid `--format`, `--exclude`, unknown option, or extra positional placed before `-h` or `-V` used to fail with a usage error; now the help or version text prints and the exit code is 0. Only a `-h` or `-V` taken as a flag value or placed after `--` is ignored (`src/core/cli.rs`).
+- **URL schemes are case-insensitive**: `HTTPS://github.com/owner/repo` used to be treated as a local path and failed with a filesystem error; it now resolves as a GitHub source. `Git@…` and `SSH://…` are now rejected as unsupported like their lowercase forms (`src/core/source.rs`, `src/core/github/url.rs`).
 
 ### Contributors
 
@@ -35,6 +44,7 @@ Internal change. No consumer action required.
 - **Path length enforced at classification (I-10)**: `CandidatePath::NonUtf8` becomes `Unstorable` and also holds a path over `MAX_PATH_BYTES`, so `NormalizedPath` is within the limit by construction. `Selector::observe` drops its path-length check, and `exceeds_size_limits` becomes `exceeds_file_size` (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/local/read.rs`). Output unchanged.
 - **Coding convention trimmed**: `docs/coding_convention.md` links the Rust API Guidelines for naming and conversions, drops rules that duplicate `AGENTS.md`, `context.md`, or `docs/security_and_filtering.md` (OS and network rules, memory layout, limit ownership), and tags rules with the lint that enforces them. `AGENTS.md` points filesystem and network rules to security sec. 5-6 only.
 - **Test consolidation**: Tests already covered by an exhaustive oracle, a model property, or a corpus table are merged or removed, keeping one literal anchor per oracle. `classification_corpus_is_stable` in `src/core/path.rs` now holds the classification rows of the archive and path tests; `src/core/github/{mod,url,archive}.rs`, `src/core/render/formats.rs`, `src/core/selector.rs`, and `src/core/error.rs` drop covered examples. `src/core/policy/exclusions.rs` checks `NOISE`, `SENSITIVE_PREFIXES`, and `SENSITIVE_EXTENSIONS` against `docs/security_and_filtering.md` sec. 3.2-3.3 instead of copying the lists. `is_retryable_http_status` is checked for every status from 100 to 599. The `src/shell/cli.rs` tests move to `tests/cli.rs` (non-existent source exits with code 1). Output unchanged.
+- **Redundant fast paths removed**: The `memmem` prefilters in `src/core/github/archive.rs`, the chunked `u32` counters in `src/core/render/budget.rs`, and the `XML_BODY_START` table with its exhaustive test in `src/core/render/formats.rs` are dropped. Output unchanged.
 - **Lints added**: `forbid(unsafe_code)` in `src/lib.rs` and `src/main.rs`; clippy `unwrap_used` (tests exempt via `clippy.toml`), `missing_errors_doc`, and `missing_panics_doc` in `src/lib.rs`. No code change was needed.
 
 ---

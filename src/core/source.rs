@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::core::error::DomainError;
-use crate::core::github::{GithubName, parse_github_url};
+use crate::core::github::{GithubName, parse_github_url, strip_prefix_ignore_case};
 
 /// Validated non-empty Git revision reference (branch, tag, or commit SHA).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -79,7 +79,8 @@ impl Source {
 
     /// Parses a string slice into either a [`Source::Local`] or [`Source::Github`].
     fn parse(value: &str) -> Result<Self, DomainError> {
-        if value.starts_with("http://") || value.starts_with("https://") {
+        let has_scheme = |scheme| strip_prefix_ignore_case(value, scheme).is_some();
+        if has_scheme("http://") || has_scheme("https://") {
             let (owner, repo) = parse_github_url(value)?;
             return Ok(Self::Github {
                 owner,
@@ -87,7 +88,7 @@ impl Source {
                 reference: None,
             });
         }
-        if value.starts_with("git@") || value.starts_with("ssh://") {
+        if has_scheme("git@") || has_scheme("ssh://") {
             return Err(DomainError::unsupported_source(
                 "only local paths and public HTTPS GitHub URLs are supported",
             ));
@@ -196,6 +197,29 @@ mod tests {
             expected_repo
         );
         Ok(())
+    }
+
+    #[test]
+    fn parse_scheme_is_case_insensitive() {
+        let expected = Source::github("owner", "repo", None).unwrap();
+        assert_eq!(
+            Source::parse("HTTPS://github.com/owner/repo").unwrap(),
+            expected
+        );
+        assert_eq!(
+            Source::parse("Https://GitHub.com/owner/repo").unwrap(),
+            expected
+        );
+        for url in [
+            "HTTP://github.com/owner/repo",
+            "Git@github.com:o/r",
+            "SSH://git@github.com/o/r",
+        ] {
+            assert!(
+                matches!(Source::parse(url), Err(DomainError::UnsupportedSource(_))),
+                "expected unsupported source for: {url}"
+            );
+        }
     }
 
     #[test]

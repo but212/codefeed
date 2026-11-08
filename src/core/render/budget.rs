@@ -8,19 +8,8 @@ pub(super) fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
     if bytes.is_empty() {
         return 0;
     }
-    // Chunks of 4096 bytes keep the per-chunk `u32` counters far below overflow.
-    let mut ascii_bytes = 0usize;
-    let mut non_ascii_chars = 0usize;
-    for chunk in bytes.chunks(4096) {
-        let mut ascii = 0u32;
-        let mut lead = 0u32;
-        for &b in chunk {
-            ascii += u32::from(b < 0x80);
-            lead += u32::from(b >= 0xC0);
-        }
-        ascii_bytes += ascii as usize;
-        non_ascii_chars += lead as usize;
-    }
+    let ascii_bytes = bytes.iter().filter(|&&b| b < 0x80).count();
+    let non_ascii_chars = bytes.iter().filter(|&&b| b >= 0xC0).count();
 
     let ascii_tokens = ascii_bytes / ASCII_BYTES_PER_TOKEN;
     let total = ascii_tokens + non_ascii_chars;
@@ -41,7 +30,7 @@ pub(crate) struct RenderedDigest {
 
 /// In-memory buffer with value-passing operations, bounded by a byte `limit`.
 ///
-/// Invariant I-B1 (`runtime`): `bytes.len() <= limit`. `push_bytes` is the only growth path and checks it.
+/// `bytes.len() <= limit` always holds: `push_bytes` is the only growth path and checks it.
 /// Outside tests the limit is always [`MAX_OUTPUT_SIZE`](crate::core::policy::MAX_OUTPUT_SIZE): [`BoundedBuffer::with_capacity`]
 /// is the only constructor, and the arbitrary-limit constructor exists only under `cfg(test)` so tests can sweep every boundary.
 #[derive(Debug)]

@@ -13,21 +13,9 @@ pub(crate) fn is_github_api_origin(url: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
-const GITHUB_NAME_CHAR_TABLE: [bool; 256] = {
-    let mut table = [false; 256];
-    let mut b = 0u8;
-    loop {
-        table[b as usize] = (b.wrapping_sub(b'0') < 10) | ((b | 32).wrapping_sub(b'a') < 26)
-            || (b == b'-')
-            || (b == b'.')
-            || (b == b'_');
-        if b == 255 {
-            break;
-        }
-        b += 1;
-    }
-    table
-};
+const fn is_name_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_')
+}
 
 /// Validated GitHub owner or repository name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -74,7 +62,7 @@ const fn valid_github_name(value: &str) -> bool {
     }
     let mut i = 0;
     while i < bytes.len() {
-        if !GITHUB_NAME_CHAR_TABLE[bytes[i] as usize] {
+        if !is_name_byte(bytes[i]) {
             return false;
         }
         i += 1;
@@ -82,9 +70,17 @@ const fn valid_github_name(value: &str) -> bool {
     true
 }
 
+/// Strips an ASCII `prefix` from `value`, ignoring ASCII case (URL schemes are case-insensitive).
+pub(crate) fn strip_prefix_ignore_case<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = value.as_bytes().get(..prefix.len())?;
+    // A match means the first `prefix.len()` bytes are ASCII, so the split is on a char boundary.
+    head.eq_ignore_ascii_case(prefix.as_bytes())
+        .then(|| &value[prefix.len()..])
+}
+
 /// Parses a GitHub repository URL into a validated `(owner, repo)` pair.
 pub(crate) fn parse_github_url(value: &str) -> Result<(GithubName, GithubName), DomainError> {
-    let remainder = value.strip_prefix("https://").ok_or_else(|| {
+    let remainder = strip_prefix_ignore_case(value, "https://").ok_or_else(|| {
         DomainError::unsupported_source("only https://github.com/{owner}/{repo} is supported")
     })?;
     let (authority, path) = memchr(b'/', remainder.as_bytes()).map_or((remainder, ""), |index| {
@@ -151,7 +147,7 @@ pub(crate) fn tarball_url(base: &str, owner: &str, repo: &str, reference: Option
 
 /// RFC 3986 unreserved bytes: the name alphabet plus `~`.
 const fn is_unreserved(b: u8) -> bool {
-    GITHUB_NAME_CHAR_TABLE[b as usize] || b == b'~'
+    is_name_byte(b) || b == b'~'
 }
 
 fn append_encoded_segment(mut url: String, segment: &str) -> String {

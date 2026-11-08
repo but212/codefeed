@@ -1,7 +1,7 @@
 use crate::core::error::DomainError;
 use crate::core::path::{CandidatePath, DepthExceededError, classify_path_segments};
 use crate::core::policy::ExcludePatterns;
-use memchr::{memchr, memmem};
+use memchr::memchr;
 
 /// Normalizes a raw tar entry path, stripping the root directory prefix,
 /// collapsing multiple slashes, removing `.` segments, and classifying against policy.
@@ -31,9 +31,7 @@ pub(crate) fn normalize_tar_entry_path(
         .map_or(start, |i| i + 1);
     let trimmed = &raw_bytes[start..end];
 
-    if memmem::find(trimmed, b"..").is_some()
-        && trimmed.split(|&b| b == b'/').any(|seg| seg == b"..")
-    {
+    if trimmed.split(|&b| b == b'/').any(|seg| seg == b"..") {
         return Err(DomainError::invalid_metadata(
             "Tar entry contains directory traversal (..)",
         ));
@@ -58,7 +56,6 @@ pub(crate) fn normalize_tar_entry_path(
 /// Parses a 40- or 64-hex-character commit SHA from a `comment=<sha>` PAX record.
 #[must_use]
 pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
-    memmem::find(bytes, b"comment=")?;
     let text = std::str::from_utf8(bytes).ok()?;
     text.lines().find_map(|line| {
         let trimmed = line.trim_ascii();

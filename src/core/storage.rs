@@ -150,8 +150,9 @@ impl FileStorage {
     ///
     /// # Errors
     ///
-    /// Returns [`DomainError::OutputTooLarge`] without modifying storage when the raw arena bytes
-    /// would exceed `MAX_OUTPUT_SIZE`. The rejected candidate is included in the largest-file diagnostics.
+    /// Returns [`DomainError::OutputTooLarge`] before appending anything when the raw arena bytes
+    /// would exceed `MAX_OUTPUT_SIZE`; the storage is consumed on error.
+    /// The rejected candidate is included in the largest-file diagnostics.
     pub(crate) fn push(
         mut self,
         path: &NormalizedPath,
@@ -251,9 +252,7 @@ pub(crate) fn cmp_path(a: &str, b: &str) -> Ordering {
 /// Called only on output limit exceeded error paths to format error diagnostics.
 /// Sorts by descending file size, tie-breaking by hierarchical path order (`cmp_path`).
 #[must_use]
-pub(crate) fn largest_files<'a>(
-    files: impl IntoIterator<Item = FileRecord<'a>>,
-) -> Vec<(String, usize)> {
+fn largest_files<'a>(files: impl IntoIterator<Item = FileRecord<'a>>) -> Vec<(String, usize)> {
     let mut sized: Vec<(&str, usize)> = files
         .into_iter()
         .map(|f| (f.path, f.content.len()))
