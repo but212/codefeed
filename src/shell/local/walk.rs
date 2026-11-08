@@ -557,4 +557,17 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn gitignore_metadata_error_other_than_not_found_fails_the_run() {
+        // A NUL byte makes std reject the path before the syscall, on every platform.
+        let err = read_rules(Path::new("dir\0name")).expect_err("only NotFound means no rules");
+        match err {
+            IngestError::Io(err) => {
+                assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+                assert!(err.to_string().contains(".gitignore"), "got: {err}");
+            }
+            other => panic!("expected IngestError::Io, got {other:?}"),
+        }
+    }
 }
