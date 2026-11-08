@@ -123,8 +123,8 @@ pub(super) fn write_atomic(output: &Path, bytes: &[u8]) -> Result<(), IngestErro
 
 #[cfg(test)]
 mod tests {
-    use super::super::testing::temp_dir;
     use super::*;
+    use crate::shell::testing::temp_dir;
 
     #[test]
     fn atomic_write_ignores_stale_temporary_file() -> Result<(), Box<dyn std::error::Error>> {

@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 
 use memchr::memchr;
 
-use crate::core::collection::CollectionResult;
 use crate::core::error::DomainError;
 use crate::core::path::NormalizedPath;
 use crate::core::policy::{
@@ -200,6 +199,17 @@ impl Selector {
             skipped: self.skipped,
         })
     }
+}
+
+/// Raw files and metadata collected by the shell before digest rendering.
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
+#[must_use]
+pub(crate) struct CollectionResult {
+    pub(crate) label: String,
+    pub(crate) revision: Option<String>,
+    pub(crate) files: SortedFiles,
+    pub(crate) skipped: usize,
 }
 
 #[cfg(test)]

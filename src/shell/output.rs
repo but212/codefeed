@@ -93,9 +93,9 @@ fn render_stdout_to<W: Write>(out: &mut W, bytes: &[u8]) -> Result<(), IngestErr
 mod tests {
     use std::path::PathBuf;
 
-    use super::super::stdio::BrokenPipeWriter;
-    use super::super::testing::temp_dir;
     use super::*;
+    use crate::shell::stdio::BrokenPipeWriter;
+    use crate::shell::testing::temp_dir;
 
     /// Resolves a file target and returns the canonical path it will be written to.
     fn resolve_file(path: PathBuf) -> Result<PathBuf, IngestError> {

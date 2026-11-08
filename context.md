@@ -137,19 +137,18 @@ Purity rules and the one-way Shell-to-Core dependency: [coding convention sec. 3
 - `policy/`: `limits.rs` (limits and compile-time assertions), `exclusions.rs` (lockfiles, sensitive patterns), `exclude.rs` (`ExcludePatterns`), `mod.rs` (re-exports, `TOKEN_ENV_VARS`).
 - `source.rs`: `Source`, `GitRef`, source parsing (`Source::parse` delegates URL rules to `github/`).
 - `model.rs`: `RunConfig`, `OutputTarget`, `DigestFormat`, `IngestReport`.
-- `collection.rs`: `CollectionResult`, `repository_name`.
-- `selector.rs`: `Selector`, `CandidateBudget`, `exceeds_file_size`.
+- `selector.rs`: `Selector`, `CollectionResult`, `CandidateBudget`, `exceeds_file_size`.
 - `storage.rs`: `FileStorage`, `SortedFiles`, `FileSpan`, `FileRecord`, `cmp_path`, `largest_files`.
 - `error.rs`: `DomainError`, `ErrorDetail`, `CandidateLimitExceededError`, `OutputTooLargeError`. Depends on no other core module, so the policy-to-error edge is one-way.
 - `github/`: `url.rs` (`GithubName`, URL parsing, origin check), `archive.rs` (PAX parsing, tar path normalization), `retry.rs` (header parsing, delay calculation, attempt state machine), `mod.rs` (`GithubApiError`, `Auth`, error formatting).
-- `render/`: `formats.rs` (text/XML formats), `tree.rs`, `escape.rs`, `budget.rs` (`BoundedBuffer`, `RenderedDigest`, token estimate).
+- `render/`: `formats.rs` (text/XML formats, escaping), `tree.rs`, `budget.rs` (`BoundedBuffer`, `RenderedDigest`, token estimate).
 
 ### Shell (`src/shell/`)
 
 - `mod.rs`: `ingest` pipeline.
 - `cli.rs`: `run_cli` (CLI orchestration, stream selection, exit codes).
 - `error.rs`: `IngestError`, `transport_error`.
-- `local/`: `mod.rs` (`collect`), `walk.rs`, `gitignore.rs` (`.gitignore` loading and compilation), `read.rs` (metadata/body read), `pipeline.rs` (producer/worker pipeline).
+- `local/`: `mod.rs` (`collect`, `repository_name`), `walk.rs` (`.gitignore` loading, candidate traversal), `pipeline.rs` (producer/worker pipeline, candidate reading).
 - `github/`: `mod.rs` (`collect`, HTTP retries, streaming), `archive.rs` (tarball/gzip streaming and admission), `client.rs` (HTTP/TLS client, token handling).
 - `atomic.rs`: `write_atomic`, `TempPath`.
 - `output.rs`: `resolve_output_target`, `deliver`.

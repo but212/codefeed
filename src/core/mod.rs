@@ -21,7 +21,6 @@ pub(crate) fn proptest_config() -> proptest::test_runner::Config {
 }
 
 pub(crate) mod cli;
-pub(crate) mod collection;
 pub(crate) mod error;
 pub(crate) mod github;
 pub(crate) mod model;

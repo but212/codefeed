@@ -1,8 +1,7 @@
 //! Candidate discovery: a sorted, gitignore-aware walk and per-entry path classification.
 //!
-//! The walk loads `.gitignore` rules through `gitignore.rs`. Each directory's file is read once,
-//! when the walk enters it, and the same bytes both validate the file and compile its rules.
-//! No later step reads it again.
+//! The walk loads each directory's `.gitignore` rules once, when entering it, and the same bytes
+//! both validate the file and compile its rules. No later step reads it again.
 
 use std::ffi::OsString;
 use std::fs;
@@ -10,12 +9,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::vec;
 
-use ignore::gitignore::Gitignore;
+use std::io::{self, BufRead, Read};
 
-use super::gitignore::read_rules;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
+
 use crate::core::error::DomainError;
 use crate::core::path::{AdmittedDir, CandidatePath, DepthExceededError, admit_dir, classify_leaf};
-use crate::core::policy::{ExcludePatterns, MAX_DIR_ENTRIES, is_hidden_segment};
+use crate::core::policy::{ExcludePatterns, MAX_DIR_ENTRIES, MAX_FILE_SIZE, is_hidden_segment};
 use crate::shell::error::{IngestError, io_error_at};
 
 /// A regular file found by the walk. The walk yields no other entry kind, so classification never sees one.
@@ -176,11 +176,87 @@ pub(super) fn classify_entry(
         .map_err(|_| DepthExceededError::domain_error("local path").into())
 }
 
+/// Byte order mark that Git ignores at the start of a `.gitignore`.
+const UTF8_BOM: &str = "\u{feff}";
+
+/// Reads `dir`'s `.gitignore`. A missing file, or a directory, contributes no rules. A symlink, a path
+/// that is neither a regular file nor a directory (such as a FIFO), a file over `MAX_FILE_SIZE`, or
+/// content that fails to parse fails the run, so no rule is skipped silently.
+fn read_rules(dir: &Path) -> Result<Gitignore, IngestError> {
+    let gitignore = dir.join(".gitignore");
+    let meta = match fs::symlink_metadata(&gitignore) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Gitignore::empty()),
+        Err(err) => return Err(io_error_at(&gitignore, &err)),
+    };
+    if meta.is_symlink() {
+        let err = io::Error::new(io::ErrorKind::InvalidInput, "symbolic link is not followed");
+        return Err(io_error_at(&gitignore, &err));
+    }
+    if meta.is_dir() {
+        return Ok(Gitignore::empty());
+    }
+    if !meta.is_file() {
+        let err = io::Error::new(io::ErrorKind::InvalidInput, "not a regular file");
+        return Err(io_error_at(&gitignore, &err));
+    }
+    let file = fs::File::open(&gitignore).map_err(|err| io_error_at(&gitignore, &err))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_SIZE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| io_error_at(&gitignore, &err))?;
+    if bytes.len() as u64 > MAX_FILE_SIZE {
+        let err = io::Error::new(io::ErrorKind::FileTooLarge, "file exceeds the size limit");
+        return Err(io_error_at(&gitignore, &err));
+    }
+    parse_rules(dir, bytes.as_slice()).map_err(|err| io_error_at(&gitignore, &err))
+}
+
+/// Compiles `reader` as the `.gitignore` rules of `dir`. Like `ignore`, it strips a leading BOM and
+/// skips lines that are not valid globs. Unlike `ignore`, a line that is not UTF-8, or a rule set that
+/// fails to compile, is an error, so no rule is dropped silently.
+fn parse_rules<R: BufRead>(dir: &Path, reader: R) -> io::Result<Gitignore> {
+    let mut builder = GitignoreBuilder::new(dir);
+    for (index, line) in reader.lines().enumerate() {
+        let line = line?;
+        let line = if index == 0 {
+            line.trim_start_matches(UTF8_BOM)
+        } else {
+            line.as_str()
+        };
+        // An invalid glob line is skipped; the other lines still apply.
+        let _ = builder.add_line(None, line);
+    }
+    builder
+        .build()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::validate_root;
+    #[test]
+    fn parse_rules_strips_bom_skips_invalid_globs_and_rejects_non_utf8() {
+        use std::io::Cursor;
+
+        let dir = Path::new("root");
+        let bom = parse_rules(dir, Cursor::new("\u{feff}*.bak\n")).expect("BOM line parses");
+        assert!(bom.matched("root/x.bak", false).is_ignore());
+
+        let invalid =
+            parse_rules(dir, Cursor::new("[\n*.dat\n")).expect("invalid glob line is skipped");
+        assert!(invalid.matched("root/z.dat", false).is_ignore());
+
+        let err = parse_rules(dir, Cursor::new(b"ok\n\xff\n".to_vec()))
+            .expect_err("non-UTF-8 line is an I/O error");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        let empty = parse_rules(dir, Cursor::new("")).expect("empty file parses");
+        assert!(empty.matched("root/a.txt", false).is_none());
+    }
+
     use super::*;
     use crate::core::policy::MAX_PATH_DEPTH;
+    use crate::shell::local::validate_root;
     use crate::shell::testing::temp_dir;
     use ignore::WalkBuilder;
 
