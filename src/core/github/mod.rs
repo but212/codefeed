@@ -121,66 +121,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn api_error_message_keeps_status_detail_and_token_hint() {
+    fn api_error_message_keeps_literal_contract_text() {
+        // Literal anchors for the oracle in `api_error_message_is_exact_for_every_http_status_code_and_auth`.
         const TOKEN_HINT: &str =
             "(set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)";
-        // (status, body, retry-after, auth, expected message)
-        type Row<'a> = (u16, &'a [u8], Option<Duration>, Auth, String);
-        let cases: [Row<'_>; 7] = [
-            (
-                429,
-                &b"rate limit"[..],
-                None,
-                Auth::Anonymous,
-                format!("HTTP 429: rate limit {TOKEN_HINT}"),
-            ),
-            (
-                403,
-                &b"forbidden"[..],
-                Some(Duration::from_secs(30)),
-                Auth::Anonymous,
-                format!("HTTP 403: forbidden (retry available in 30s) {TOKEN_HINT}"),
-            ),
-            (
-                403,
-                &b"forbidden"[..],
-                None,
-                Auth::Token,
-                "HTTP 403: forbidden".into(),
-            ),
-            (
-                429,
-                &b"rate limit"[..],
-                Some(Duration::from_secs(30)),
-                Auth::Token,
-                "HTTP 429: rate limit (retry available in 30s)".into(),
-            ),
-            (
-                404,
-                &b"not found"[..],
-                None,
-                Auth::Anonymous,
-                "HTTP 404: not found".into(),
-            ),
-            (
-                404,
-                &b"not found"[..],
-                Some(Duration::from_secs(5)),
-                Auth::Anonymous,
-                "HTTP 404: not found (retry available in 5s)".into(),
-            ),
-            (
-                400,
-                &b"error\twith\nnewlines\r\nand\x1b[31mANSI\x07bell\x7fdel\x80c1"[..],
-                None,
-                Auth::Anonymous,
-                "HTTP 400: error with newlines  and\u{FFFD}[31mANSI\u{FFFD}bell\u{FFFD}del\u{FFFD}c1".into(),
-            ),
-        ];
-        for (status, body, retry_after, auth, expected) in cases {
-            let message = api_error(status, body, retry_after, auth);
-            assert_eq!(message.to_string(), expected, "status {status} {auth:?}");
-        }
+        let err = api_error(
+            429,
+            b"rate limit",
+            Some(Duration::from_secs(7)),
+            Auth::Anonymous,
+        );
+        assert_eq!(
+            err.to_string(),
+            format!("HTTP 429: rate limit (retry available in 7s) {TOKEN_HINT}")
+        );
+
+        let err = api_error(
+            400,
+            b"error\twith\nnewlines\r\nand\x1b[31mANSI\x07bell\x7fdel\x80c1",
+            None,
+            Auth::Anonymous,
+        );
+        assert_eq!(
+            err.to_string(),
+            "HTTP 400: error with newlines  and\u{FFFD}[31mANSI\u{FFFD}bell\u{FFFD}del\u{FFFD}c1"
+        );
     }
 
     #[test]
@@ -190,22 +155,6 @@ mod tests {
         for var in TOKEN_ENV_VARS {
             assert!(message.contains(var), "{var} missing from: {message}");
         }
-    }
-
-    #[test]
-    fn api_error_exposes_status_and_retry_after_separately_from_message() {
-        let err = api_error(
-            429,
-            b"rate limit",
-            Some(Duration::from_secs(7)),
-            Auth::Anonymous,
-        );
-        assert_eq!(err.status(), 429);
-        assert_eq!(err.retry_after(), Some(Duration::from_secs(7)));
-        assert_eq!(
-            err.to_string(),
-            "HTTP 429: rate limit (retry available in 7s) (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
-        );
     }
 
     /// Exact message the contract requires. Only an anonymous 403 or 429 carries the token hint.

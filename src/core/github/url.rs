@@ -231,12 +231,6 @@ mod tests {
 
         let repo = GithubName::new("codefeed-2.0").unwrap();
         assert_eq!(&*repo, "codefeed-2.0");
-
-        assert!(GithubName::new("").is_err());
-        assert!(GithubName::new(".").is_err());
-        assert!(GithubName::new("..").is_err());
-        assert!(GithubName::new("bad name").is_err());
-        assert!(GithubName::new("bad/name").is_err());
     }
 
     #[test]
@@ -254,13 +248,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_owner_and_repo_names() {
+    fn rejects_malformed_repository_urls() {
         for value in [
             "https://github.com/bad name/repo",
             "https://github.com/owner/re%70o",
             "https://github.com/../repo",
             "https://github.com/owner/..",
             "https://github.com/owner/.git",
+            "https://github.com/owner/repo?tab=readme",
+            "https://github.com/owner/repo#readme",
         ] {
             let err = parse_github_url(value).unwrap_err();
             assert!(matches!(err, DomainError::InvalidSource(_)), "{value}");
@@ -274,17 +270,6 @@ mod tests {
 
         let empty_authority = parse_github_url("https:///owner/repo").unwrap_err();
         assert!(matches!(empty_authority, DomainError::InvalidSource(_)));
-    }
-
-    #[test]
-    fn rejects_query_and_fragment_in_repository_url() {
-        for value in [
-            "https://github.com/owner/repo?tab=readme",
-            "https://github.com/owner/repo#readme",
-        ] {
-            let err = parse_github_url(value).unwrap_err();
-            assert!(matches!(err, DomainError::InvalidSource(_)), "{value}");
-        }
     }
 
     #[test]

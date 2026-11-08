@@ -65,8 +65,96 @@ pub(crate) fn is_ignored_filename(file_name: &str) -> bool {
 mod tests {
     use super::*;
 
+    const SPEC: &str = include_str!("../../../docs/security_and_filtering.md");
+
+    /// Text between two headings of the specification.
+    fn section(from: &str, to: &str) -> &'static str {
+        let rest = &SPEC[SPEC.find(from).expect("heading exists")..];
+        &rest[..rest.find(to).expect("next heading exists")]
+    }
+
+    /// The code spans of `text`, sorted.
+    fn code_spans(text: &str) -> Vec<&str> {
+        let mut spans: Vec<&str> = text.split('`').skip(1).step_by(2).collect();
+        spans.sort_unstable();
+        spans
+    }
+
+    /// The code spans of the list that follows `label` on its bullet, up to the first `. Matches`.
+    fn bullet_list(section: &'static str, label: &str) -> Vec<&'static str> {
+        let line = section
+            .lines()
+            .find(|line| line.starts_with(label))
+            .expect("bullet exists");
+        let list = line.split_once(":** ").expect("bullet has a list").1;
+        code_spans(list.split(". Matches").next().expect("split yields a part"))
+    }
+
+    fn sorted(list: &[&'static str]) -> Vec<&'static str> {
+        let mut list = list.to_vec();
+        list.sort_unstable();
+        list
+    }
+
     #[test]
-    fn test_is_hidden_segment() {
+    fn lists_match_security_specification() {
+        let mut noise: Vec<&str> = section("### 3.2", "### 3.3")
+            .lines()
+            .filter(|line| line.starts_with("| `"))
+            .flat_map(code_spans)
+            .collect();
+        noise.sort_unstable();
+        assert_eq!(noise, sorted(NOISE), "sec. 3.2 noise lockfiles");
+
+        let sensitive = section("### 3.3", "### 3.4");
+        assert_eq!(
+            bullet_list(sensitive, "- **Prefixes"),
+            sorted(SENSITIVE_PREFIXES),
+            "sec. 3.3 prefixes"
+        );
+        assert_eq!(
+            bullet_list(sensitive, "- **Extensions"),
+            sorted(SENSITIVE_EXTENSIONS),
+            "sec. 3.3 extensions"
+        );
+    }
+
+    #[test]
+    fn is_ignored_filename_applies_each_rule() {
+        // Noise names match the whole final segment, case-sensitively.
+        for name in NOISE {
+            assert!(is_ignored_filename(name), "{name}");
+            assert!(!is_ignored_filename(&name.to_ascii_uppercase()), "{name}");
+            assert!(!is_ignored_filename(&format!("{name}.orig")), "{name}");
+        }
+        // Sensitive prefixes match the start of the name, ignoring ASCII case.
+        for prefix in SENSITIVE_PREFIXES {
+            for name in [
+                (*prefix).to_string(),
+                prefix.to_ascii_uppercase(),
+                format!("{prefix}.pub"),
+            ] {
+                assert!(is_ignored_filename(&name), "{name}");
+            }
+            assert!(!is_ignored_filename(&format!("x{prefix}")), "x{prefix}");
+        }
+        // Sensitive extensions match after the final dot, ignoring ASCII case.
+        for ext in SENSITIVE_EXTENSIONS {
+            for name in [
+                format!("x.{ext}"),
+                format!("X.{}", ext.to_ascii_uppercase()),
+            ] {
+                assert!(is_ignored_filename(&name), "{name}");
+            }
+            assert!(!is_ignored_filename(&format!("x.{ext}s")), "x.{ext}s");
+        }
+        for name in ["Cargo.toml", "main.rs", "Makefile", "environment.rs"] {
+            assert!(!is_ignored_filename(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn is_hidden_segment_is_leading_dot() {
         assert!(is_hidden_segment(b".git"));
         assert!(is_hidden_segment(b".env"));
         assert!(is_hidden_segment(b"."));
@@ -74,52 +162,5 @@ mod tests {
         assert!(!is_hidden_segment(b"src"));
         assert!(!is_hidden_segment(b""));
         assert!(!is_hidden_segment(b"file.txt"));
-    }
-
-    #[test]
-    fn test_is_ignored_filename() {
-        let ignored = [
-            "Cargo.lock",
-            "package-lock.json",
-            "yarn.lock",
-            "pnpm-lock.yaml",
-            "go.sum",
-            "poetry.lock",
-            "Pipfile.lock",
-            "composer.lock",
-            "Gemfile.lock",
-            "bun.lock",
-            "bun.lockb",
-            "server.key",
-            "cert.pem",
-            "client.p12",
-            "cert.pkcs12",
-            "identity.pfx",
-            "credentials.json",
-            "aws.credentials",
-            "credentials",
-            "id_rsa",
-            "id_rsa.pub",
-            "id_ed25519",
-            "id_ed25519.pub",
-            "id_ecdsa",
-            "id_ecdsa.pub",
-            "id_dsa",
-            "id_dsa.pub",
-        ];
-        for filename in ignored {
-            assert!(
-                is_ignored_filename(filename),
-                "expected {filename} to be ignored"
-            );
-        }
-
-        let kept = ["Cargo.toml", "main.rs", "Makefile", "environment.rs"];
-        for filename in kept {
-            assert!(
-                !is_ignored_filename(filename),
-                "expected {filename} not to be ignored"
-            );
-        }
     }
 }

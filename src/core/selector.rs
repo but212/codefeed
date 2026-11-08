@@ -266,32 +266,32 @@ mod tests {
     }
 
     #[test]
-    fn extracts_dir_slice_from_paths() {
-        assert_eq!(extract_dir_slice("src/core/decide.rs"), "src/");
-        assert_eq!(extract_dir_slice("root_file.txt"), "./");
-        assert_eq!(extract_dir_slice(""), "./");
-        assert_eq!(extract_dir_slice("vendor/"), "vendor/");
-        assert_eq!(extract_dir_slice("<root>/x.rs"), "<root>/");
-    }
-
-    #[test]
-    fn extract_dir_slice_caps_overlong_first_segment() {
-        let overlong = format!("{}/file.rs", "a".repeat(MAX_PATH_BYTES_USIZE + 10));
-        assert_eq!(
-            extract_dir_slice(&overlong),
-            "a".repeat(MAX_PATH_BYTES_USIZE)
-        );
-    }
-
-    #[test]
-    fn extract_dir_slice_cuts_overlong_segment_at_char_boundary() {
+    fn extract_dir_slice_takes_the_first_segment_capped_at_a_char_boundary() {
         // `a` followed by two-byte `é` puts every character start at an odd offset, so byte
         // `MAX_PATH_BYTES` lands inside a character and the cut moves back one byte.
-        let overlong = format!("a{}/file.rs", "é".repeat(MAX_PATH_BYTES_USIZE));
-        let dir = extract_dir_slice(&overlong);
-        assert_eq!(dir.len(), MAX_PATH_BYTES_USIZE - 1);
-        assert!(dir.starts_with('a'));
-        assert!(dir.chars().skip(1).all(|c| c == 'é'));
+        let accented = format!("a{}", "é".repeat(MAX_PATH_BYTES_USIZE));
+        let accented_cut = format!("a{}", "é".repeat((MAX_PATH_BYTES_USIZE - 2) / 2));
+        let overlong = "a".repeat(MAX_PATH_BYTES_USIZE + 10);
+
+        let cases = [
+            ("src/core/decide.rs".to_string(), "src/".to_string()),
+            ("root_file.txt".to_string(), "./".to_string()),
+            (String::new(), "./".to_string()),
+            ("vendor/".to_string(), "vendor/".to_string()),
+            ("<root>/x.rs".to_string(), "<root>/".to_string()),
+            (
+                format!("{overlong}/file.rs"),
+                "a".repeat(MAX_PATH_BYTES_USIZE),
+            ),
+            (format!("{accented}/file.rs"), accented_cut),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(extract_dir_slice(&path), expected, "{:.40}", path);
+        }
+        assert_eq!(
+            extract_dir_slice(&format!("{}/file.rs", "é".repeat(MAX_PATH_BYTES_USIZE))).len(),
+            MAX_PATH_BYTES_USIZE
+        );
     }
 
     #[test]

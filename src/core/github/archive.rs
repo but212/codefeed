@@ -140,7 +140,7 @@ mod tests {
     fn normalizes_archive_entry_path_correctly() {
         // (raw entry path, expected status). Covers root stripping, slash and `.` collapsing,
         // policy exclusion (noise lockfile, sensitive credential), and non-UTF-8 prefixes.
-        let ok_cases: [(&[u8], Option<CandidatePath>); 14] = [
+        let ok_cases: [(&[u8], Option<CandidatePath>); 10] = [
             (
                 b"but212-codefeed-c1863c8/src/main.rs",
                 Some(CandidatePath::Valid("src/main.rs".into())),
@@ -161,14 +161,9 @@ mod tests {
             (b"but212-codefeed-c1863c8///", None),
             (b"but212-codefeed-c1863c8", None),
             (b"", None),
+            // Classification itself is pinned by `path::classification_corpus_is_stable`; one
+            // ignored and one unstorable row show that the archive delegates to it.
             (b"repo-root/Cargo.lock", None),
-            (b"repo-root/id_rsa", None),
-            (b"repo-root/secret.pem", None),
-            (b"repo-root/.hidden/\xff\xfe", None),
-            (
-                b"repo-root/invalid/\xff\xfe",
-                Some(CandidatePath::Unstorable("invalid/".into())),
-            ),
             (
                 b"repo-root/\xff\xfe",
                 Some(CandidatePath::Unstorable(String::new())),
@@ -177,9 +172,6 @@ mod tests {
         for (raw, expected) in ok_cases {
             assert_eq!(normalize(raw).unwrap(), expected, "{raw:?}");
         }
-
-        // Sensitive name with an invalid-UTF-8 final segment is ignored, not counted as skipped.
-        assert_eq!(normalize(b"repo-root/id_rsa\xff.key").unwrap(), None);
 
         // Rejected: path traversal (`..`, `.` root) and embedded NUL
         let err_cases: [&[u8]; 7] = [
@@ -204,16 +196,8 @@ mod tests {
 
     #[test]
     fn normalizes_archive_entry_depth_limit() {
-        // MAX_PATH_DEPTH directory levels permitted, one more rejected
-        let normal_depth_path =
-            format!("repo-root/{}/file.txt", vec!["d"; MAX_PATH_DEPTH].join("/"));
-        assert_eq!(
-            normalize(normal_depth_path.as_bytes()).unwrap(),
-            Some(CandidatePath::Valid(
-                format!("{}/file.txt", vec!["d"; MAX_PATH_DEPTH].join("/")).into()
-            ))
-        );
-
+        // The limit itself is pinned by `path::classification_corpus_is_stable`; this checks that
+        // the archive reports a depth failure as invalid metadata naming the entry kind.
         let excessive_depth_path = format!(
             "repo-root/{}/file.txt",
             vec!["d"; MAX_PATH_DEPTH + 1].join("/")
@@ -225,10 +209,6 @@ mod tests {
                 .contains("Tar entry path exceeds maximum directory depth"),
             "unexpected message: {err}"
         );
-
-        // Deeply nested hidden path is ignored without triggering depth error
-        let deep_hidden_path = format!("repo-root/.hidden/{}/file.txt", vec!["d"; 300].join("/"));
-        assert_eq!(normalize(deep_hidden_path.as_bytes()).unwrap(), None);
     }
 
     #[test]

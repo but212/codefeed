@@ -89,24 +89,45 @@ fn version_exits_successfully_without_ingesting() {
 }
 
 #[test]
-fn invalid_arguments_exit_nonzero() {
-    for args in [&[][..], &[".", "--format"][..]] {
+fn invalid_invocations_exit_one_with_an_error_line() {
+    // (args, fragment unique to the failing branch, fragment that must be absent)
+    let cases: [(&[&str], &str, Option<&str>); 3] = [
+        (&[], "error:", None),
+        (&[".", "--format"], "error:", None),
+        (
+            &[".", "--unknown"],
+            "error: unknown option: --unknown",
+            Some("error: invalid source: unknown option"),
+        ),
+    ];
+    for (args, expected, absent) in cases {
         let output = run(args);
-        assert!(!output.status.success(), "args: {args:?}");
-        assert!(String::from_utf8_lossy(&output.stderr).contains("error:"));
+        assert_eq!(output.status.code(), Some(1), "args: {args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(expected),
+            "args: {args:?}, stderr: {stderr}"
+        );
+        if let Some(absent) = absent {
+            assert!(!stderr.contains(absent), "args: {args:?}, stderr: {stderr}");
+        }
     }
 }
 
 #[test]
-fn usage_error_formatting_does_not_prefix_invalid_source() {
-    let output = run(&[".", "--unknown"]);
-    assert!(!output.status.success());
+fn nonexistent_local_source_exits_with_invalid_source() {
+    let root = TempDir::new("missing_source");
+    let missing = root.path.join("does_not_exist");
+
+    let output = run(&[missing.to_str().expect("temp path is UTF-8")]);
+
+    assert_eq!(output.status.code(), Some(1), "output: {output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("error: unknown option: --unknown"),
+        stderr.contains("error: invalid source:") && stderr.contains("does_not_exist"),
         "stderr: {stderr}"
     );
-    assert!(!stderr.contains("error: invalid source: unknown option"));
+    assert!(output.stdout.is_empty(), "output: {output:?}");
 }
 
 #[test]

@@ -163,26 +163,23 @@ mod tests {
 
     #[test]
     fn classifies_retryable_status_codes() {
-        for code in [429, 500, 502, 503, 504] {
-            assert!(
-                is_retryable_http_status(code, false),
-                "code {code} should be retryable"
-            );
+        // Retryable: 429, every 5xx, and 403 only when it signals a rate limit.
+        for code in 100..=599_u16 {
+            for is_rate_limit in [false, true] {
+                let expected =
+                    code == 429 || (500..=599).contains(&code) || (code == 403 && is_rate_limit);
+                assert_eq!(
+                    is_retryable_http_status(code, is_rate_limit),
+                    expected,
+                    "code {code} rate_limit {is_rate_limit}"
+                );
+            }
         }
-        assert!(
-            is_retryable_http_status(403, true),
-            "403 with rate limit should be retryable"
-        );
-        assert!(
-            !is_retryable_http_status(403, false),
-            "403 without rate limit should not be retryable"
-        );
-        for code in [200, 400, 401, 404] {
-            assert!(
-                !is_retryable_http_status(code, false),
-                "code {code} should not be retryable"
-            );
-        }
+        // Literal anchors for the boundaries of the model above.
+        assert!(is_retryable_http_status(403, true));
+        assert!(!is_retryable_http_status(403, false));
+        assert!(is_retryable_http_status(599, false));
+        assert!(!is_retryable_http_status(499, true));
     }
 
     #[test]

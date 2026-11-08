@@ -358,8 +358,14 @@ mod tests {
 
             /// The output is one line without control characters, the same length in characters, and
             /// keeps every non-control character in place.
+            ///
+            /// `ErrorDetail::new` stores exactly that text, and rebuilding one from its rendering
+            /// changes nothing.
             #[test]
             fn sanitized_detail_has_no_control_characters(input in text()) {
+                let detail = ErrorDetail::new(input.as_str());
+                prop_assert_eq!(&*detail, sanitize_error_detail(&input));
+                prop_assert_eq!(ErrorDetail::new(detail.to_string()), detail.clone());
                 let output = sanitize_error_detail(&input);
                 prop_assert!(!output.chars().any(char::is_control), "{:?}", output);
                 prop_assert_eq!(output.chars().count(), input.chars().count());
@@ -374,14 +380,6 @@ mod tests {
             fn sanitizing_is_idempotent(input in text()) {
                 let once = sanitize_error_detail(&input);
                 prop_assert_eq!(sanitize_error_detail(&once), once);
-            }
-
-            /// A detail holds no control character, and building one from a rendered detail changes nothing.
-            #[test]
-            fn error_detail_holds_no_control_characters(input in text()) {
-                let detail = ErrorDetail::new(input);
-                prop_assert!(!detail.chars().any(char::is_control), "{:?}", &*detail);
-                prop_assert_eq!(ErrorDetail::new(detail.to_string()), detail);
             }
         }
     }

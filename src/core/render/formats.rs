@@ -224,29 +224,15 @@ where
 mod tests {
     use super::*;
 
-    #[test]
-    fn write_header_escaped_preserves_clean_input() {
-        let buf = write_escaped(BoundedBuffer::default(), "clean_path", escape_header).unwrap();
-        assert_eq!(
-            std::str::from_utf8(&buf.finish().bytes).unwrap(),
-            "clean_path"
-        );
+    type SpecialAt = fn(&[u8], usize) -> Option<(usize, &'static str)>;
 
-        let buf = write_escaped(BoundedBuffer::default(), "", escape_header).unwrap();
-        assert_eq!(buf.finish().bytes.len(), 0);
-    }
-
-    #[test]
-    fn write_header_escaped_replaces_all_target_characters() {
-        let input = "a\\b\rc\nd\\\\e\r\n\x1b]0;title\x07\x7f\t";
-        let expected = "a\\\\b\\rc\\nd\\\\\\\\e\\r\\n\u{FFFD}]0;title\u{FFFD}\u{FFFD}\t";
-        let buf = write_escaped(BoundedBuffer::default(), input, escape_header).unwrap();
-        assert_eq!(std::str::from_utf8(&buf.finish().bytes).unwrap(), expected);
+    fn escape_with(special_at: SpecialAt, value: &str) -> String {
+        let buf = write_escaped(BoundedBuffer::default(), value, special_at).unwrap();
+        String::from_utf8(buf.finish().bytes).unwrap()
     }
 
     fn xml_escape(value: &str) -> String {
-        let buf = write_escaped(BoundedBuffer::default(), value, escape_xml_body).unwrap();
-        String::from_utf8(buf.finish().bytes).unwrap()
+        escape_with(escape_xml_body, value)
     }
 
     #[test]
@@ -288,11 +274,19 @@ mod tests {
     }
 
     #[test]
-    fn test_write_xml_attr_escaped_preserves_whitespace_char_refs() {
-        let input = "tab\tnewline\r\nquote\"amp&apos'<tag>";
-        let out = write_escaped(BoundedBuffer::default(), input, escape_xml_single_line).unwrap();
+    fn header_and_attribute_escaping_examples() {
+        // Literal anchors for the per-character models in `properties`.
+        assert_eq!(escape_with(escape_header, "clean_path"), "clean_path");
+        assert_eq!(escape_with(escape_header, ""), "");
         assert_eq!(
-            String::from_utf8(out.finish().bytes).unwrap(),
+            escape_with(escape_header, "a\\b\rc\nd\\\\e\r\n\x1b]0;title\x07\x7f\t"),
+            "a\\\\b\\rc\\nd\\\\\\\\e\\r\\n\u{FFFD}]0;title\u{FFFD}\u{FFFD}\t"
+        );
+        assert_eq!(
+            escape_with(
+                escape_xml_single_line,
+                "tab\tnewline\r\nquote\"amp&apos'<tag>"
+            ),
             "tab&#9;newline&#13;&#10;quote&quot;amp&amp;apos&apos;&lt;tag&gt;"
         );
     }
@@ -316,8 +310,6 @@ mod tests {
     mod properties {
         use super::*;
         use proptest::prelude::*;
-
-        type SpecialAt = fn(&[u8], usize) -> Option<(usize, &'static str)>;
 
         /// Characters that each escaper treats specially, mixed with arbitrary ones.
         fn text() -> impl Strategy<Value = String> {
