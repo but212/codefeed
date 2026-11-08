@@ -6,7 +6,7 @@ Guidelines for environment setup, contribution workflow, verification, and repos
 
 ## Code of Conduct
 
-Treat contributors with respect; focus on constructive feedback and collaborative problem-solving.
+All contributors must adhere to [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md). Focus on constructive feedback, technical debate, and collaborative problem-solving.
 
 ## Getting Started
 

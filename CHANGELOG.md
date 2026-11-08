@@ -22,6 +22,7 @@ Internal change. No consumer action required. Output is unchanged throughout.
 
 #### Added
 
+- **Code of conduct**: `CODE_OF_CONDUCT.md` and `docs/CODE_OF_CONDUCT.ko.md` define repository-scoped conduct rules, technical debate protections, and maintainer moderation.
 - **Contributor guidelines**: `CONTRIBUTING.md` and `docs/CONTRIBUTING.ko.md` provide contributor onboarding, workflow conventions, and verification checklists.
 - **Security policy**: `SECURITY.md` owns vulnerability reporting (private GitHub Security Advisories, latest release supported).
 
