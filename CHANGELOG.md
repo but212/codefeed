@@ -4,9 +4,30 @@ All notable changes are listed here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+Scope: `### Library consumers and CLI users` lists observable behavior. `### Contributors` lists contract changes (`pub` and `pub(crate)`), invariant (`I-xx`) changes, and contributor workflow changes only.
+
 ---
 
 ## [Unreleased]
+
+### Library consumers and CLI users
+
+#### Changed
+
+- **Install docs**: `README.md` and `docs/README.ko.md` lead with `cargo install codefeed` (source build); `cargo binstall codefeed` remains as an optional prebuilt-binary install. The `[package.metadata.binstall]` table is unchanged.
+
+### Contributors
+
+Internal change. No consumer action required. Output is unchanged throughout.
+
+#### Added
+
+- **Contributor guidelines**: `CONTRIBUTING.md` and `docs/CONTRIBUTING.ko.md` provide contributor onboarding, workflow conventions, and verification checklists.
+- **Security policy**: `SECURITY.md` owns vulnerability reporting (private GitHub Security Advisories, latest release supported).
+
+#### Changed
+
+- **Document ownership**: Output format (header, token estimate) is owned by `README.md` Output; limit authority is stated once in the `docs/security_and_filtering.md` header; `AGENTS.md` sec. 6 routes `CONTRIBUTING.md` and `SECURITY.md` changes. Contributor-facing documents no longer link to `AGENTS.md`: `CONTRIBUTING.md` owns the verification checklist, `AGENTS.md` links to it, and the pull request template mirrors the commands inline. `context.md` sec. 5 is reduced to module responsibilities, and `docs/security_and_filtering.md` no longer names implementation identifiers.
 
 ---
 

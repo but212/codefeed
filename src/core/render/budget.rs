@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn estimate_tokens_matches_reference_definition() {
-        // Reference: the per-byte definition from context.md sec. 3.5, written as a single loop.
+        // Reference: the heuristic from README.md (Output) with the ratio from src/core/policy/limits.rs, written as a single loop.
         fn reference(bytes: &[u8]) -> usize {
             if bytes.is_empty() {
                 return 0;
