@@ -8,14 +8,13 @@ use std::time::Duration;
 
 use zeroize::Zeroizing;
 
-use crate::core::collection::CollectionResult;
 use crate::core::github::{
     AttemptState, Auth, RateLimitHeaders, RequestOutcome, Transition, TransportKind, api_error,
     repository_url, status_retry_warning, tarball_url, transport_retry_warning,
 };
 use crate::core::policy::{ExcludePatterns, GITHUB_ERROR_BODY_BYTES};
-use crate::shell::IngestError;
-use crate::shell::error::transport_error;
+use crate::core::selector::CollectionResult;
+use crate::shell::error::{IngestError, transport_error};
 use crate::shell::stdio;
 use client::GithubClient;
 

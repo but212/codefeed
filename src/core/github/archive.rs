@@ -10,7 +10,7 @@ use memchr::{memchr, memmem};
 ///
 /// Returns `Err(DomainError)` if the path contains directory traversal, invalid root prefixes, or NUL bytes.
 /// Returns `Ok(None)` if the entry is the root directory itself, empty, hidden, excluded, noise, or sensitive.
-/// Returns `Ok(Some(CandidatePath::NonUtf8(prefix)))` if the entry path contains non-UTF-8 bytes and is not hidden.
+/// Returns `Ok(Some(CandidatePath::Unstorable(prefix)))` if the entry path contains non-UTF-8 bytes or exceeds `MAX_PATH_BYTES`, and is not hidden.
 /// Returns `Ok(Some(CandidatePath::Valid(path)))` on success.
 pub(crate) fn normalize_tar_entry_path(
     raw_bytes: &[u8],
@@ -116,6 +116,27 @@ mod tests {
     }
 
     #[test]
+    fn trailing_separators_never_change_the_classification() {
+        let cases: [(&[u8], Option<CandidatePath>); 6] = [
+            (
+                b"repo-root/src/a.rs/",
+                Some(CandidatePath::Valid("src/a.rs".into())),
+            ),
+            (
+                b"repo-root/src/a.rs///",
+                Some(CandidatePath::Valid("src/a.rs".into())),
+            ),
+            (b"repo-root/", None),
+            (b"repo-root//", None),
+            (b"///", None),
+            (b"./", None),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(normalize(raw).unwrap(), expected, "{raw:?}");
+        }
+    }
+
+    #[test]
     fn normalizes_archive_entry_path_correctly() {
         // (raw entry path, expected status). Covers root stripping, slash and `.` collapsing,
         // policy exclusion (noise lockfile, sensitive credential), and non-UTF-8 prefixes.
@@ -146,11 +167,11 @@ mod tests {
             (b"repo-root/.hidden/\xff\xfe", None),
             (
                 b"repo-root/invalid/\xff\xfe",
-                Some(CandidatePath::NonUtf8("invalid/".into())),
+                Some(CandidatePath::Unstorable("invalid/".into())),
             ),
             (
                 b"repo-root/\xff\xfe",
-                Some(CandidatePath::NonUtf8(String::new())),
+                Some(CandidatePath::Unstorable(String::new())),
             ),
         ];
         for (raw, expected) in ok_cases {

@@ -1,5 +1,9 @@
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(unreachable_pub)]
+#![warn(clippy::unwrap_used)]
+#![warn(clippy::missing_errors_doc)]
+#![warn(clippy::missing_panics_doc)]
 
 //! Fast, memory-efficient repository ingestion and prompt generation for LLMs.
 //!
@@ -32,11 +36,11 @@
 pub(crate) mod core;
 pub(crate) mod shell;
 
-pub use core::error::{CandidateLimitExceededError, DomainError, OutputTooLargeError};
-pub use core::github::GithubApiError;
+pub use core::error::{CandidateLimitExceededError, DomainError, ErrorDetail, OutputTooLargeError};
+pub use core::github::{GithubApiError, GithubName};
 pub use core::model::{DigestFormat, IngestReport, OutputTarget, RunConfig};
 pub use core::policy::ExcludePatterns;
-pub use core::source::{GitRef, GithubName, Source};
+pub use core::source::{GitRef, Source};
 pub use shell::{IngestError, ingest};
 
 #[doc(hidden)]

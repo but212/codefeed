@@ -33,8 +33,23 @@ jobs:
             echo "Error: Tag version ($TAG_VERSION) does not match Cargo.toml version ($MANIFEST_VERSION)"
             exit 1
           fi
-          if ! grep -Eq "^## (\[${TAG_VERSION}\]|${TAG_VERSION})([[:space:]]|$)" CHANGELOG.md; then
-            echo "Error: CHANGELOG.md does not contain an entry for version $TAG_VERSION"
+          awk -v ver="$TAG_VERSION" '
+            BEGIN {
+              target1 = ver
+              target2 = "[" ver "]"
+            }
+            /^## / {
+              if ($1 == "##" && ($2 == target1 || $2 == target2)) {
+                flag = 1
+                next
+              } else if (flag) {
+                flag = 0
+              }
+            }
+            flag { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if ! grep -q '[^[:space:]]' RELEASE_NOTES.md; then
+            echo "Error: CHANGELOG.md does not contain a non-empty entry for version $TAG_VERSION"
             exit 1
           fi
 
@@ -158,12 +173,22 @@ jobs:
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           awk -v ver="$TAG_VERSION" '
-            $0 ~ ("^## \\[" ver "\\]") || $0 ~ ("^## " ver "([ \t]|$)") { flag=1; next }
-            flag && /^## / { flag=0 }
+            BEGIN {
+              target1 = ver
+              target2 = "[" ver "]"
+            }
+            /^## / {
+              if ($1 == "##" && ($2 == target1 || $2 == target2)) {
+                flag = 1
+                next
+              } else if (flag) {
+                flag = 0
+              }
+            }
             flag { print }
           ' CHANGELOG.md > RELEASE_NOTES.md
 
-          if [ ! -s RELEASE_NOTES.md ]; then
+          if ! grep -q '[^[:space:]]' RELEASE_NOTES.md; then
             echo "Error: CHANGELOG.md section for $TAG_VERSION is empty"
             exit 1
           fi

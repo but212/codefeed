@@ -10,12 +10,12 @@ mod archive;
 mod retry;
 mod url;
 
-use crate::core::error::sanitize_error_detail;
+use crate::core::error::ErrorDetail;
 pub(crate) use archive::{normalize_tar_entry_path, parse_pax_comment};
 pub(crate) use retry::{AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind};
+pub use url::GithubName;
 pub(crate) use url::{
     GITHUB_API_BASE_URL, is_github_api_origin, parse_github_url, repository_url, tarball_url,
-    valid_github_name,
 };
 
 /// Non-success GitHub API response. `Display` renders the message without the error-kind prefix.
@@ -70,8 +70,7 @@ pub(crate) fn api_error(
     retry_after: Option<Duration>,
     auth: Auth,
 ) -> GithubApiError {
-    let raw_detail = String::from_utf8_lossy(body);
-    let detail = sanitize_error_detail(&raw_detail);
+    let detail = ErrorDetail::new(String::from_utf8_lossy(body));
     let retry_info = retry_after
         .map(|d| format!(" (retry available in {}s)", d.as_secs()))
         .unwrap_or_default();
@@ -113,7 +112,7 @@ pub(crate) fn transport_retry_warning(
 ) -> String {
     format!(
         "warning: GitHub transport error: {} on attempt {attempt}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}",
-        sanitize_error_detail(error_text)
+        ErrorDetail::new(error_text)
     )
 }
 

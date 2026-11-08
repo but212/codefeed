@@ -29,9 +29,39 @@ const GITHUB_NAME_CHAR_TABLE: [bool; 256] = {
     table
 };
 
+/// Validated GitHub owner or repository name.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GithubName(String);
+
+impl GithubName {
+    /// Creates a new `GithubName`, rejecting empty strings, `.`, `..`, and invalid characters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::InvalidSource`] if `value` is empty, `.`, `..`, or contains
+    /// characters other than ASCII alphanumerics, `-`, `.`, and `_`.
+    pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
+        let string = value.into();
+        if !valid_github_name(&string) {
+            return Err(DomainError::invalid_source(
+                "owner and repository names contain invalid characters",
+            ));
+        }
+        Ok(Self(string))
+    }
+}
+
+impl std::ops::Deref for GithubName {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// Validates whether the given string conforms to valid GitHub owner or repository name rules.
 #[must_use]
-pub(crate) const fn valid_github_name(value: &str) -> bool {
+const fn valid_github_name(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.is_empty() {
         return false;
@@ -52,8 +82,8 @@ pub(crate) const fn valid_github_name(value: &str) -> bool {
     true
 }
 
-/// Parses a GitHub repository URL into an `(owner, repo)` string pair.
-pub(crate) fn parse_github_url(value: &str) -> Result<(String, String), DomainError> {
+/// Parses a GitHub repository URL into a validated `(owner, repo)` pair.
+pub(crate) fn parse_github_url(value: &str) -> Result<(GithubName, GithubName), DomainError> {
     let remainder = value.strip_prefix("https://").ok_or_else(|| {
         DomainError::unsupported_source("only https://github.com/{owner}/{repo} is supported")
     })?;
@@ -97,7 +127,7 @@ pub(crate) fn parse_github_url(value: &str) -> Result<(String, String), DomainEr
     };
 
     let repo = repo_segment.strip_suffix(".git").unwrap_or(repo_segment);
-    Ok((owner.to_string(), repo.to_string()))
+    Ok((GithubName::new(owner)?, GithubName::new(repo)?))
 }
 
 /// Canonical public web URL for a repository, used as the digest label for remote sources.
@@ -119,25 +149,9 @@ pub(crate) fn tarball_url(base: &str, owner: &str, repo: &str, reference: Option
     url
 }
 
-const UNRESERVED_TABLE: [bool; 256] = {
-    let mut table = [false; 256];
-    let mut b = 0u8;
-    loop {
-        table[b as usize] = ((b | 32).wrapping_sub(b'a') < 26) | (b.wrapping_sub(b'0') < 10)
-            || (b == b'-')
-            || (b == b'.')
-            || (b == b'_')
-            || (b == b'~');
-        if b == 255 {
-            break;
-        }
-        b += 1;
-    }
-    table
-};
-
+/// RFC 3986 unreserved bytes: the name alphabet plus `~`.
 const fn is_unreserved(b: u8) -> bool {
-    UNRESERVED_TABLE[b as usize]
+    GITHUB_NAME_CHAR_TABLE[b as usize] || b == b'~'
 }
 
 fn append_encoded_segment(mut url: String, segment: &str) -> String {
@@ -211,17 +225,46 @@ mod tests {
     }
 
     #[test]
+    fn github_name_validates_and_provides_slice_access() {
+        let name = GithubName::new("rust-lang").unwrap();
+        assert_eq!(&*name, "rust-lang");
+
+        let repo = GithubName::new("codefeed-2.0").unwrap();
+        assert_eq!(&*repo, "codefeed-2.0");
+
+        assert!(GithubName::new("").is_err());
+        assert!(GithubName::new(".").is_err());
+        assert!(GithubName::new("..").is_err());
+        assert!(GithubName::new("bad name").is_err());
+        assert!(GithubName::new("bad/name").is_err());
+    }
+
+    #[test]
     fn parses_owner_and_repo() {
         let (owner, repo) = parse_github_url("https://github.com/rust-lang/cargo").unwrap();
-        assert_eq!(owner, "rust-lang");
-        assert_eq!(repo, "cargo");
+        assert_eq!(&*owner, "rust-lang");
+        assert_eq!(&*repo, "cargo");
 
         let (owner, repo) = parse_github_url("https://github.com/owner/repo.git").unwrap();
-        assert_eq!(owner, "owner");
-        assert_eq!(repo, "repo");
+        assert_eq!(&*owner, "owner");
+        assert_eq!(&*repo, "repo");
 
         assert!(parse_github_url("https://notgithub.com/a/b").is_err());
         assert!(parse_github_url("https://github.com/a/b/c").is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_owner_and_repo_names() {
+        for value in [
+            "https://github.com/bad name/repo",
+            "https://github.com/owner/re%70o",
+            "https://github.com/../repo",
+            "https://github.com/owner/..",
+            "https://github.com/owner/.git",
+        ] {
+            let err = parse_github_url(value).unwrap_err();
+            assert!(matches!(err, DomainError::InvalidSource(_)), "{value}");
+        }
     }
 
     #[test]

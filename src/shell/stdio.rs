@@ -10,7 +10,7 @@ pub(super) fn ignore_broken_pipe(result: io::Result<()>) -> io::Result<()> {
     }
 }
 
-pub(super) fn write_line_to<W: io::Write>(out: &mut W, line: &str) -> io::Result<()> {
+fn write_line_to<W: io::Write>(out: &mut W, line: &str) -> io::Result<()> {
     ignore_broken_pipe(writeln!(out, "{line}"))
 }
 

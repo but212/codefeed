@@ -6,16 +6,15 @@ use std::io::{self, BufReader, Read};
 use flate2::read::GzDecoder;
 use tar::{Archive, EntryType};
 
-use crate::core::collection::CollectionResult;
 use crate::core::error::DomainError;
 use crate::core::github::{normalize_tar_entry_path, parse_pax_comment};
+use crate::core::path::CandidatePath;
 use crate::core::policy::{
     ARCHIVE_BUFFER_BYTES, ARCHIVE_MAX_DECOMPRESSED_BYTES, ARCHIVE_MAX_HEADER_BYTES,
     ARCHIVE_PAX_GLOBAL_BYTES, ExcludePatterns, MAX_FILE_SIZE,
 };
-use crate::core::selector::Selector;
-use crate::shell::IngestError;
-use crate::shell::error::transport_error;
+use crate::core::selector::{Body, CollectionResult, Observation, Selector, exceeds_file_size};
+use crate::shell::error::{IngestError, transport_error};
 
 /// Collects files from a tarball reader directly into a [`CollectionResult`].
 ///
@@ -199,16 +198,21 @@ fn process_tar_entry<R: Read>(
         return Ok(selector);
     };
 
-    let size_hint = Some(entry.size());
-
-    // 3. Pre-I/O candidate admission: the body is read only if the candidate is admitted
-    selector.observe(candidate, size_hint, move || {
-        entry
-            .take(MAX_FILE_SIZE + 1)
-            .read_to_end(content_scratch)
-            .map_err(|err: io::Error| stream_error(&err, meter))?;
-        Ok(Some(content_scratch))
-    })
+    // 3. Bounded body read: a declared size over the limit is not read
+    let observation = match candidate {
+        CandidatePath::Unstorable(prefix) => Observation::Unstorable(prefix),
+        CandidatePath::Valid(path) if exceeds_file_size(entry.size()) => {
+            Observation::File(path, Body::OverLimit)
+        }
+        CandidatePath::Valid(path) => {
+            (&mut *entry)
+                .take(MAX_FILE_SIZE + 1)
+                .read_to_end(content_scratch)
+                .map_err(|err: io::Error| stream_error(&err, meter))?;
+            Observation::File(path, Body::Bytes(content_scratch.as_slice()))
+        }
+    };
+    Ok(selector.observe(observation)?)
 }
 
 #[cfg(test)]

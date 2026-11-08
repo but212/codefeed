@@ -11,7 +11,7 @@ use zeroize::Zeroizing;
 use crate::core::github::{Auth, is_github_api_origin};
 use crate::core::policy::{ARCHIVE_MAX_SECS, GITHUB_TIMEOUT_SECS, TOKEN_ENV_VARS};
 
-pub(super) const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
+const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
 
 pub(super) struct GithubClient {
     agent: Agent,
@@ -73,7 +73,7 @@ impl GithubClient {
     }
 }
 
-pub(super) fn resolve_token_with<F>(mut lookup: F) -> Option<Zeroizing<String>>
+fn resolve_token_with<F>(mut lookup: F) -> Option<Zeroizing<String>>
 where
     F: FnMut(&str) -> Result<String, std::env::VarError>,
 {

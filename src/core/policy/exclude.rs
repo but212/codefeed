@@ -133,7 +133,7 @@ fn invalid_pattern(pattern: &str, reason: &str) -> DomainError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::error::sanitize_error_detail;
+    use crate::core::error::ErrorDetail;
     use crate::core::path::{AdmittedDir, admit_dir, classify_path_segments};
     use crate::core::policy::{MAX_PATH_BYTES_USIZE, MAX_PATH_DEPTH};
 
@@ -178,7 +178,7 @@ mod tests {
             };
             let expected = format!(
                 "invalid value '{}' for '--exclude <PATTERN>': ",
-                sanitize_error_detail(pattern)
+                ErrorDetail::new(pattern)
             );
             assert!(
                 matches!(&err, DomainError::Usage(msg) if msg.starts_with(&expected)),

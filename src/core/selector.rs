@@ -4,12 +4,10 @@ use std::collections::{HashMap, HashSet};
 
 use memchr::memchr;
 
-use crate::core::collection::CollectionResult;
 use crate::core::error::DomainError;
-use crate::core::path::CandidatePath;
+use crate::core::path::NormalizedPath;
 use crate::core::policy::{
-    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, MAX_PATH_BYTES_USIZE,
-    OVERFLOW_LARGEST_DIRECTORIES,
+    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES_USIZE, OVERFLOW_LARGEST_DIRECTORIES,
 };
 use crate::core::storage::{FileStorage, SortedFiles};
 
@@ -21,10 +19,33 @@ fn classify_content(bytes: &[u8]) -> Option<&str> {
     std::str::from_utf8(bytes).ok()
 }
 
-/// Path-length and declared-size gate. Shared by [`Selector::observe`] and the shell worker that decides whether to read content.
+/// Declared-size gate. Shared by the shell readers that decide whether to read content, so both
+/// report an over-limit declaration as [`Body::OverLimit`].
 #[must_use]
-pub(crate) fn exceeds_size_limits(path_len: usize, size_hint: Option<u64>) -> bool {
-    path_len as u64 > MAX_PATH_BYTES || size_hint.is_some_and(|hint| hint > MAX_FILE_SIZE)
+pub(crate) const fn exceeds_file_size(declared: u64) -> bool {
+    declared > MAX_FILE_SIZE
+}
+
+/// What a shell reader learned about the content of one storable path.
+#[derive(Debug)]
+pub(crate) enum Body<B> {
+    /// Unavailable at metadata, open, or read.
+    Unavailable,
+    /// Declared size over `MAX_FILE_SIZE`; not read.
+    OverLimit,
+    /// Bounded read of at most `MAX_FILE_SIZE + 1` bytes.
+    Bytes(B),
+}
+
+/// One settled candidate, as the shell reports it to [`Selector::observe`] (I-11).
+///
+/// An unstorable path has no content, so the pair of an unstorable path and a body cannot be built.
+#[derive(Debug)]
+pub(crate) enum Observation<B> {
+    /// Non-UTF-8 or overlong path, identified by its valid directory prefix.
+    Unstorable(String),
+    /// Storable path with the outcome of reading its content.
+    File(NormalizedPath, Body<B>),
 }
 
 /// Candidate-count budget owned by the selector that consumes it.
@@ -105,12 +126,11 @@ impl Selector {
         }
     }
 
-    /// Claims `path` for uniqueness. Rejects it when a candidate within `MAX_PATH_BYTES` already holds the same path.
+    /// Claims `path` for uniqueness. Rejects it when an earlier candidate holds the same path.
     ///
     /// Skipped candidates count: two entries with one path are ambiguous even when one is skipped.
-    /// Longer paths are skipped before output and never reach the digest, so they are not tracked.
     fn claim_path(mut self, path: &str) -> Result<Self, DomainError> {
-        if path.len() as u64 <= MAX_PATH_BYTES && !self.paths.insert(path.to_string()) {
+        if !self.paths.insert(path.to_string()) {
             return Err(DomainError::invalid_metadata(format!(
                 "duplicate entry path: {path}"
             )));
@@ -120,33 +140,33 @@ impl Selector {
 
     /// Observes one candidate entry and settles it.
     ///
-    /// - [`CandidatePath::NonUtf8`] and paths over the size limits consume candidate budget and are skipped.
-    /// - [`CandidatePath::Valid`] consumes candidate budget and must not repeat an earlier valid path within `MAX_PATH_BYTES`,
-    ///   then, within the size limits, `read` runs; its bytes are stored when they are UTF-8 text, and skipped otherwise or when `None` (unavailable file).
+    /// - [`Observation::Unstorable`] consumes candidate budget and is skipped.
+    /// - [`Observation::File`] consumes candidate budget and must not repeat an earlier file path.
+    ///   [`Body::Bytes`] is stored when it is UTF-8
+    ///   text within the size limit, and skipped otherwise. [`Body::Unavailable`] and
+    ///   [`Body::OverLimit`] are skipped.
     ///
     /// # Errors
     ///
-    /// Returns budget, duplicate-path, or output-limit errors as `E`, and any error from `read` unchanged.
-    pub(crate) fn observe<B: AsRef<[u8]>, E: From<DomainError>>(
+    /// Returns [`DomainError::CandidateLimitExceeded`], [`DomainError::InvalidMetadata`] for a duplicate path, or
+    /// [`DomainError::OutputTooLarge`].
+    pub(crate) fn observe<B: AsRef<[u8]>>(
         mut self,
-        candidate: CandidatePath,
-        size_hint: Option<u64>,
-        read: impl FnOnce() -> Result<Option<B>, E>,
-    ) -> Result<Self, E> {
-        let path = match candidate {
-            CandidatePath::NonUtf8(prefix) => {
+        observation: Observation<B>,
+    ) -> Result<Self, DomainError> {
+        let (path, body) = match observation {
+            Observation::Unstorable(prefix) => {
                 self.candidates = self.candidates.add(&prefix)?;
                 return Ok(self.skip());
             }
-            CandidatePath::Valid(path) => path,
+            Observation::File(path, body) => (path, body),
         };
         self.candidates = self.candidates.add(&path)?;
         self = self.claim_path(&path)?;
-        if exceeds_size_limits(path.len(), size_hint) {
+        let Body::Bytes(bytes) = body else {
             return Ok(self.skip());
-        }
-        let bytes = read()?;
-        match bytes.as_ref().and_then(|b| classify_content(b.as_ref())) {
+        };
+        match classify_content(bytes.as_ref()) {
             Some(content) => {
                 // Raw arena bytes are a strict lower bound for the rendered digest size, so
                 // `push` rejects over-limit content before the final rendering pass.
@@ -181,6 +201,17 @@ impl Selector {
     }
 }
 
+/// Raw files and metadata collected by the shell before digest rendering.
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
+#[must_use]
+pub(crate) struct CollectionResult {
+    pub(crate) label: String,
+    pub(crate) revision: Option<String>,
+    pub(crate) files: SortedFiles,
+    pub(crate) skipped: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,16 +220,10 @@ mod tests {
     };
 
     #[test]
-    fn size_limits_admit_exactly_the_limit_and_reject_one_beyond() {
-        assert!(!exceeds_size_limits(0, None));
-        assert!(!exceeds_size_limits(MAX_PATH_BYTES_USIZE, None));
-        assert!(exceeds_size_limits(MAX_PATH_BYTES_USIZE + 1, None));
-        assert!(!exceeds_size_limits(0, Some(MAX_FILE_SIZE)));
-        assert!(exceeds_size_limits(0, Some(MAX_FILE_SIZE + 1)));
-        assert!(!exceeds_size_limits(
-            MAX_PATH_BYTES_USIZE,
-            Some(MAX_FILE_SIZE)
-        ));
+    fn file_size_gate_admits_exactly_the_limit_and_rejects_one_beyond() {
+        assert!(!exceeds_file_size(0));
+        assert!(!exceeds_file_size(MAX_FILE_SIZE));
+        assert!(exceeds_file_size(MAX_FILE_SIZE + 1));
     }
 
     #[test]
@@ -334,6 +359,14 @@ mod tests {
         assert_eq!(classify_content(&bytes_with_nul), None);
     }
 
+    fn file<'a>(path: &str, body: Body<&'a [u8]>) -> Observation<&'a [u8]> {
+        Observation::File(path.into(), body)
+    }
+
+    fn text(path: &str) -> Observation<&'static [u8]> {
+        file(path, Body::Bytes(b"content"))
+    }
+
     #[test]
     fn output_overflow_includes_largest_files_diagnostic() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -341,16 +374,13 @@ mod tests {
         let mut selector = Selector::new();
         // Fill the output to one file short of its limit; the next file overflows it.
         for i in 0..MAX_OUTPUT_SIZE_USIZE / MAX_FILE_SIZE_USIZE - 1 {
-            selector = selector.observe(
-                CandidatePath::Valid(format!("file_{i:02}.txt").into()),
-                None,
-                || Ok::<_, DomainError>(Some(chunk.as_slice())),
-            )?;
+            selector = selector.observe(file(
+                &format!("file_{i:02}.txt"),
+                Body::Bytes(chunk.as_slice()),
+            ))?;
         }
         let err = selector
-            .observe(CandidatePath::Valid("overflow.txt".into()), None, || {
-                Ok::<_, DomainError>(Some(chunk.as_slice()))
-            })
+            .observe(file("overflow.txt", Body::Bytes(chunk.as_slice())))
             .unwrap_err();
         let message = err.to_string();
         assert!(message.contains(&format!(
@@ -363,45 +393,26 @@ mod tests {
     }
 
     #[test]
-    fn observe_enforces_candidate_budget_before_read() -> Result<(), Box<dyn std::error::Error>> {
+    fn observe_enforces_candidate_budget() -> Result<(), DomainError> {
         let mut selector = Selector::new();
         for i in 0..MAX_FILE_COUNT {
-            let path = CandidatePath::Valid(format!("file_{i}.txt").into());
-            selector =
-                selector.observe(path, None, || Ok::<_, DomainError>(Some(&b"content"[..])))?;
+            selector = selector.observe(text(&format!("file_{i}.txt")))?;
         }
 
-        // The 10,001st candidate fails at admission, so its read closure must never run.
-        let err = selector
-            .observe(
-                CandidatePath::Valid("overflow.txt".into()),
-                None,
-                || -> Result<Option<Vec<u8>>, DomainError> {
-                    panic!("read must not run past the candidate budget")
-                },
-            )
-            .unwrap_err();
+        let err = selector.observe(text("overflow.txt")).unwrap_err();
         assert!(matches!(err, DomainError::CandidateLimitExceeded(..)));
         Ok(())
     }
 
     #[test]
-    fn non_utf8_candidate_consumes_budget_and_fails_when_exhausted() -> Result<(), DomainError> {
+    fn unstorable_candidate_consumes_budget_and_fails_when_exhausted() -> Result<(), DomainError> {
         let mut selector = Selector::new();
         for i in 0..MAX_FILE_COUNT {
-            let path = CandidatePath::Valid(format!("file_{i}.txt").into());
-            selector =
-                selector.observe(path, None, || Ok::<_, DomainError>(Some(&b"content"[..])))?;
+            selector = selector.observe(text(&format!("file_{i}.txt")))?;
         }
 
         let err = selector
-            .observe(
-                CandidatePath::NonUtf8("dir/".into()),
-                None,
-                || -> Result<Option<Vec<u8>>, DomainError> {
-                    panic!("non-UTF-8 candidates are never read")
-                },
-            )
+            .observe(Observation::<&[u8]>::Unstorable("dir/".into()))
             .unwrap_err();
         assert!(matches!(err, DomainError::CandidateLimitExceeded(..)));
         Ok(())
@@ -409,20 +420,29 @@ mod tests {
 
     #[test]
     fn observe_counts_candidates_by_content_outcome() -> Result<(), Box<dyn std::error::Error>> {
-        // (path, content, included, skipped); `None` content means the file was unavailable.
-        let cases: [(&str, Option<Vec<u8>>, usize, usize); 6] = [
-            ("a.txt", Some(b"hello".to_vec()), 1, 0),
-            ("bin.bin", Some(vec![0, 1]), 0, 1),
-            ("bad_utf8", Some(vec![0xff]), 0, 1),
-            ("exact.txt", Some(vec![b'x'; MAX_FILE_SIZE_USIZE]), 1, 0),
-            ("over.txt", Some(vec![b'x'; MAX_FILE_SIZE_USIZE + 1]), 0, 1),
-            ("gone.txt", None, 0, 1),
+        // (path, body, included, skipped)
+        let cases: [(&str, Body<Vec<u8>>, usize, usize); 8] = [
+            ("a.txt", Body::Bytes(b"hello".to_vec()), 1, 0),
+            ("bin.bin", Body::Bytes(vec![0, 1]), 0, 1),
+            ("bad_utf8", Body::Bytes(vec![0xff]), 0, 1),
+            (
+                "exact.txt",
+                Body::Bytes(vec![b'x'; MAX_FILE_SIZE_USIZE]),
+                1,
+                0,
+            ),
+            (
+                "over.txt",
+                Body::Bytes(vec![b'x'; MAX_FILE_SIZE_USIZE + 1]),
+                0,
+                1,
+            ),
+            ("declared_over.txt", Body::OverLimit, 0, 1),
+            ("gone.txt", Body::Unavailable, 0, 1),
+            ("empty.txt", Body::Bytes(Vec::new()), 1, 0),
         ];
-        for (path, content, included, skipped) in cases {
-            let selector =
-                Selector::new().observe(CandidatePath::Valid(path.into()), None, || {
-                    Ok::<_, DomainError>(content)
-                })?;
+        for (path, body, included, skipped) in cases {
+            let selector = Selector::new().observe(Observation::File(path.into(), body))?;
             let collection = selector.finish("test".into(), None)?;
             assert_eq!(collection.files.len(), included, "{path}");
             assert_eq!(collection.skipped, skipped, "{path}");
@@ -431,123 +451,36 @@ mod tests {
     }
 
     #[test]
-    fn observe_does_not_read_settled_candidates() -> Result<(), Box<dyn std::error::Error>> {
-        let overlong = format!("{}/file.rs", "a".repeat(MAX_PATH_BYTES_USIZE));
-        // (candidate, size_hint, candidates counted, skipped)
-        let cases: [(CandidatePath, Option<u64>, usize, usize); 4] = [
-            (CandidatePath::NonUtf8(String::new()), None, 1, 1),
-            (CandidatePath::NonUtf8("dir/sub/".into()), None, 1, 1),
-            (
-                CandidatePath::Valid("big.bin".into()),
-                Some(MAX_FILE_SIZE + 1),
-                1,
-                1,
-            ),
-            (CandidatePath::Valid(overlong.into()), None, 1, 1),
-        ];
-        for (status, size_hint, candidates, skipped) in cases {
-            let selector = Selector::new().observe(
-                status,
-                size_hint,
-                || -> Result<Option<Vec<u8>>, DomainError> {
-                    panic!("read must not run for settled candidates")
-                },
-            )?;
-            assert_eq!(selector.candidates.count, candidates);
+    fn unstorable_observation_is_counted_and_skipped() -> Result<(), DomainError> {
+        for prefix in ["", "dir/sub/"] {
+            let selector =
+                Selector::new().observe(Observation::<&[u8]>::Unstorable(prefix.into()))?;
+            assert_eq!(selector.candidates.count, 1);
             let collection = selector.finish("test".into(), None)?;
             assert_eq!(collection.files.len(), 0);
-            assert_eq!(collection.skipped, skipped);
+            assert_eq!(collection.skipped, 1);
         }
         Ok(())
     }
 
     #[test]
-    fn observe_propagates_read_errors() {
-        #[derive(Debug, PartialEq)]
-        enum TestError {
-            Read,
-            Domain,
-        }
-        impl From<DomainError> for TestError {
-            fn from(_: DomainError) -> Self {
-                Self::Domain
-            }
-        }
-
-        let err = Selector::new()
-            .observe(CandidatePath::Valid("a.txt".into()), None, || {
-                Err::<Option<Vec<u8>>, _>(TestError::Read)
-            })
-            .unwrap_err();
-        assert_eq!(err, TestError::Read);
-    }
-
-    fn assert_duplicate_path(err: &DomainError, message_path: &str) {
-        let DomainError::InvalidMetadata(message) = err else {
-            panic!("expected InvalidMetadata, got {err}");
-        };
-        assert_eq!(message, &format!("duplicate entry path: {message_path}"));
-    }
-
-    #[test]
-    fn observe_rejects_duplicate_valid_paths() {
-        // (path, expected diagnostic path): the diagnostic names the sanitized path.
-        for (path, expected) in [("a.txt", "a.txt"), ("a\x07.txt", "a\u{FFFD}.txt")] {
-            let selector = Selector::new()
-                .observe(CandidatePath::Valid(path.into()), None, || {
-                    Ok::<_, DomainError>(Some(&b"first"[..]))
-                })
-                .expect("first candidate is admitted");
-            let err = selector
-                .observe(CandidatePath::Valid(path.into()), None, || {
-                    Ok::<_, DomainError>(Some(&b"second"[..]))
-                })
-                .unwrap_err();
-            assert_duplicate_path(&err, expected);
-        }
-    }
-
-    #[test]
-    fn observe_rejects_duplicate_of_skipped_candidate() {
-        let oversized = Some(MAX_FILE_SIZE + 1);
+    fn observe_rejects_duplicate_paths_including_skipped() {
+        let stored = || Body::Bytes(&b"x"[..]);
         // A skipped candidate still names its path, so it collides with a stored one in either order.
-        for (first_hint, second_hint) in [(None, oversized), (oversized, None)] {
-            let selector = Selector::new()
-                .observe(CandidatePath::Valid("a.txt".into()), first_hint, || {
-                    Ok::<_, DomainError>(Some(&b"first"[..]))
-                })
-                .expect("first candidate is admitted");
-            let err = selector
-                .observe(CandidatePath::Valid("a.txt".into()), second_hint, || {
-                    Ok::<_, DomainError>(Some(&b"second"[..]))
-                })
+        let cases = [
+            (stored(), stored()),
+            (stored(), Body::OverLimit),
+            (Body::OverLimit, stored()),
+            (Body::Unavailable, Body::OverLimit),
+        ];
+        for (first, second) in cases {
+            let err = Selector::new()
+                .observe(file("a.txt", first))
+                .and_then(|selector| selector.observe(file("a.txt", second)))
                 .unwrap_err();
-            assert_duplicate_path(&err, "a.txt");
+            assert!(
+                matches!(&err, DomainError::InvalidMetadata(msg) if msg == "duplicate entry path: a.txt")
+            );
         }
-    }
-
-    #[test]
-    fn observe_allows_overlong_duplicate() {
-        // Paths over `MAX_PATH_BYTES` are skipped and never reach the digest, so they are not checked for uniqueness.
-        let overlong = format!("{}/file.rs", "a".repeat(MAX_PATH_BYTES_USIZE));
-        let selector = Selector::new()
-            .observe(
-                CandidatePath::Valid(overlong.clone().into()),
-                None,
-                || -> Result<Option<Vec<u8>>, DomainError> {
-                    panic!("read must not run for an overlong candidate")
-                },
-            )
-            .expect("first overlong candidate is skipped");
-        let selector = selector
-            .observe(
-                CandidatePath::Valid(overlong.into()),
-                None,
-                || -> Result<Option<Vec<u8>>, DomainError> {
-                    panic!("read must not run for an overlong candidate")
-                },
-            )
-            .expect("duplicate overlong candidate is skipped, not rejected");
-        assert_eq!(selector.skipped, 2);
     }
 }

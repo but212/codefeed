@@ -1,5 +1,7 @@
 //! Command-line binary entry point for codefeed.
 
+#![forbid(unsafe_code)]
+
 use std::env::args_os;
 use std::process;
 

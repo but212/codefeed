@@ -5,8 +5,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::IngestError;
-use super::error::io_error_at;
+use super::error::{IngestError, io_error_at};
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -77,9 +76,9 @@ impl Drop for TempPath {
 #[cfg(unix)]
 fn sync_warning(parent: &Path, synced: io::Result<()>) -> Option<String> {
     synced.err().map(|err| {
-        use crate::core::error::sanitize_error_detail;
+        use crate::core::error::ErrorDetail;
 
-        sanitize_error_detail(&format!("warning: {}: {err}", parent.display()))
+        ErrorDetail::new(format!("warning: {}: {err}", parent.display())).to_string()
     })
 }
 
@@ -124,8 +123,8 @@ pub(super) fn write_atomic(output: &Path, bytes: &[u8]) -> Result<(), IngestErro
 
 #[cfg(test)]
 mod tests {
-    use super::super::testing::temp_dir;
     use super::*;
+    use crate::shell::testing::temp_dir;
 
     #[test]
     fn atomic_write_ignores_stale_temporary_file() -> Result<(), Box<dyn std::error::Error>> {

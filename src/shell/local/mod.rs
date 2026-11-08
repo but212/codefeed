@@ -1,28 +1,21 @@
 //! Local directory collection: sorted walk, bounded reads, and in-order selection.
 //!
 //! The work is split by concern:
-//! - `walk`: which entries are candidates, and how their paths are classified.
-//! - `gitignore`: how each directory's `.gitignore` is read and compiled into rules.
-//! - `read`: how one candidate's metadata and bounded body are read.
-//! - `pipeline`: the sorted producer, the read workers, and settlement in walk order.
+//! - `walk`: which entries are candidates, how their paths are classified, and `.gitignore` loading.
+//! - `pipeline`: the sorted producer, worker reads, and settlement in walk order.
 
-mod gitignore;
 mod pipeline;
-mod read;
 mod walk;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use self::pipeline::fold_candidates;
-use self::read::{Body, Candidate};
-use super::IngestError;
+use super::error::IngestError;
 use super::output::ResolvedOutput;
-use crate::core::collection::{CollectionResult, repository_name};
 use crate::core::error::DomainError;
-use crate::core::path::CandidatePath;
 use crate::core::policy::ExcludePatterns;
-use crate::core::selector::Selector;
+use crate::core::selector::{CollectionResult, Selector};
 
 /// Collects files from a local directory root, excluding the output file if located inside it.
 ///
@@ -40,22 +33,19 @@ pub(super) fn collect(
         output.file(),
         exclude,
         Selector::new(),
-        observe_candidate,
+        |selector, observation| Ok(selector.observe(observation)?),
     )?;
 
     Ok(selector.finish(label, None)?)
 }
 
-fn observe_candidate(selector: Selector, candidate: Candidate) -> Result<Selector, IngestError> {
-    let (candidate, size_hint, content) = match candidate {
-        Candidate::NonUtf8(prefix) => (CandidatePath::NonUtf8(prefix), None, None),
-        Candidate::File(path, Body::Unavailable) => (CandidatePath::Valid(path), None, None),
-        Candidate::File(path, Body::OverLimit(len)) => {
-            (CandidatePath::Valid(path), Some(len), None)
-        }
-        Candidate::File(path, Body::Read(bytes)) => (CandidatePath::Valid(path), None, Some(bytes)),
-    };
-    selector.observe(candidate, size_hint, || Ok(content))
+/// Digest label for a local repository root: its final path segment, or `root` when that is
+/// missing or not UTF-8. `Path::file_name` never yields an empty name.
+#[must_use]
+fn repository_name(root: &Path) -> &str {
+    root.file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("root")
 }
 
 fn validate_root(root: &Path) -> Result<PathBuf, DomainError> {
@@ -73,6 +63,25 @@ fn validate_root(root: &Path) -> Result<PathBuf, DomainError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn repository_name_falls_back_to_root() {
+        assert_eq!(repository_name(Path::new("a/codefeed")), "codefeed");
+        assert_eq!(repository_name(Path::new("/")), "root");
+        #[cfg(windows)]
+        assert_eq!(repository_name(Path::new("C:\\")), "root");
+        assert_eq!(repository_name(Path::new("a/..")), "root");
+        assert_eq!(repository_name(Path::new("")), "root");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repository_name_falls_back_to_root_for_non_utf8_name() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = Path::new(std::ffi::OsStr::from_bytes(b"a/\xff"));
+        assert_eq!(repository_name(path), "root");
+    }
+
     use super::*;
     use crate::core::model::{DigestFormat, OutputTarget, RunConfig};
     use crate::core::policy::MAX_FILE_SIZE_USIZE;
@@ -617,13 +626,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn label_handles_filesystem_root() {
-        assert_eq!(repository_name(Path::new("/")), "root");
-        #[cfg(windows)]
-        assert_eq!(repository_name(Path::new("C:\\")), "root");
-    }
-
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn skips_non_utf8_paths() -> Result<(), Box<dyn std::error::Error>> {
@@ -674,17 +676,6 @@ mod tests {
         fs::write(&file, "hello")?;
         let err = validate_root(&file).unwrap_err();
         assert!(err.to_string().contains("is not a directory"));
-        Ok(())
-    }
-
-    #[test]
-    fn observe_candidate_handles_non_utf8() -> Result<(), Box<dyn std::error::Error>> {
-        let selector = Selector::new();
-        let candidate = Candidate::NonUtf8("invalid/utf8".to_string());
-        let updated = observe_candidate(selector, candidate)?;
-        let result = updated.finish("repo".to_string(), None)?;
-        assert_eq!(result.skipped, 1);
-        assert_eq!(result.files.len(), 0);
         Ok(())
     }
 }

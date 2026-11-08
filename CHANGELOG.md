@@ -8,6 +8,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Library consumers and CLI users
+
+Observable behavior. **Action** = code or config change required.
+
+#### Breaking
+
+- **Error text is `ErrorDetail`**: The payload of `DomainError::{Usage, InvalidSource, UnsupportedSource, InvalidMetadata}` and `IngestError::Http`, and the names in `CandidateLimitExceededError::largest_directories` and `OutputTooLargeError::largest_files`, were `String`. They are now `ErrorDetail`, a new exported type whose only constructor sanitizes control characters. `Display` no longer sanitizes again, and the rendered messages are unchanged (`src/core/error.rs`, `src/shell/error.rs`).
+  - **Action:** Read the text with `&*detail`, `detail.to_string()`, or `detail == *"text"`. Build a variant with `ErrorDetail::new(text)`. Code that matched `DomainError::Usage(String)` and similar patterns on the payload type must use `ErrorDetail`.
+
+### Contributors
+
+Internal change. No consumer action required.
+
+#### Changed
+
+- **Module consolidation and loose coupling**:
+  - `src/core/collection.rs` is dissolved; `CollectionResult` moves to `src/core/selector.rs` directly unifying the linear state transition (`Selector` -> `CollectionResult`), while `repository_name` moves to `src/shell/local/mod.rs` as a private helper.
+  - `src/shell/github/archive.rs` fan-out reduced from 7 to 6, satisfying the shell module fan-out threshold (<= 6).
+  - `src/shell/local/gitignore.rs` is absorbed into `src/shell/local/walk.rs`, and `src/shell/local/read.rs` into `src/shell/local/pipeline.rs`, reducing `shell/local` to 3 cohesive files (`mod.rs`, `pipeline.rs`, `walk.rs`).
+  - `src/core/render/escape.rs` is absorbed into `src/core/render/formats.rs`, making XML/text escaping private to formatting.
+  - Test modules replace all `super::super` paths with `crate::` paths, strictly adhering to coding convention sec. 3.4. Output unchanged.
+- **Invariant cleanups**: `sanitize_error_detail` is private to `src/core/error.rs`, so `ErrorDetail::new` is the only sanitizer entry point (I-04; callers in `src/core/cli.rs`, `src/core/github/mod.rs`, `src/shell/error.rs`, `src/shell/atomic.rs`). `read_bounded` states its size precondition with `expect` instead of a dead fallback. `FileSpan` shares one slice helper for path and content. `context.md` names `exceeds_file_size`. Output unchanged.
+- **Small consolidations**: `GithubName` moves to `src/core/github/url.rs` (public path `codefeed::GithubName` unchanged), `parse_github_url` returns validated `GithubName` values, and `valid_github_name` is private. The percent-encoding table derives from the name alphabet plus `~`. `RenderedDigest` drops its file counts, which `ingest` reads from `CollectionResult`. `src/core/mod.rs` links the purity rules in `docs/coding_convention.md` instead of restating them, and `src/shell/mod.rs` and `src/shell/cli.rs` import from the defining modules. Output unchanged.
+- **Single observation type (I-11)**: `Selector::observe` takes one `Observation` (`Unstorable(prefix)` or `File(path, Body)`) instead of a `CandidatePath`, a size hint, and a read closure. The local `Candidate` and `Body` types and `observe_candidate` are removed, and the archive reader now reads a body before observing it (a body over the declared limit is still not read). Output unchanged (`src/core/selector.rs`, `src/shell/local/`, `src/shell/github/archive.rs`).
+- **Path length enforced at classification (I-10)**: `CandidatePath::NonUtf8` becomes `Unstorable` and also holds a path over `MAX_PATH_BYTES`, so `NormalizedPath` is within the limit by construction. `Selector::observe` drops its path-length check, and `exceeds_size_limits` becomes `exceeds_file_size` (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/local/read.rs`). Output unchanged.
+- **Coding convention trimmed**: `docs/coding_convention.md` links the Rust API Guidelines for naming and conversions, drops rules that duplicate `AGENTS.md`, `context.md`, or `docs/security_and_filtering.md` (OS and network rules, memory layout, limit ownership), and tags rules with the lint that enforces them. `AGENTS.md` points filesystem and network rules to security sec. 5-6 only.
+- **Lints added**: `forbid(unsafe_code)` in `src/lib.rs` and `src/main.rs`; clippy `unwrap_used` (tests exempt via `clippy.toml`), `missing_errors_doc`, and `missing_panics_doc` in `src/lib.rs`. No code change was needed.
+
 ---
 
 ## [0.8.0]

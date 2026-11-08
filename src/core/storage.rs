@@ -32,9 +32,7 @@ impl FileSpan {
     ///
     /// Panics if the span's range is out of bounds for `arena`.
     fn path<'a>(&self, arena: &'a str) -> &'a str {
-        let start = self.path_offset as usize;
-        let end = start + self.path_len as usize;
-        &arena[start..end]
+        slice(arena, self.path_offset, self.path_len)
     }
 
     /// Slices this span's content out of `arena`.
@@ -43,10 +41,13 @@ impl FileSpan {
     ///
     /// Panics if the span's range is out of bounds for `arena`.
     fn content<'a>(&self, arena: &'a str) -> &'a str {
-        let start = self.content_offset as usize;
-        let end = start + self.content_len as usize;
-        &arena[start..end]
+        slice(arena, self.content_offset, self.content_len)
     }
+}
+
+fn slice(arena: &str, offset: u32, len: u32) -> &str {
+    let start = offset as usize;
+    &arena[start..start + len as usize]
 }
 
 /// Zero-copy borrowed view into a file record stored within [`FileStorage`].

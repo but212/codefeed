@@ -3,12 +3,11 @@
 //! Coordinates layout rendering across text and XML formats,
 //! token estimation, and output size cap enforcement.
 
-use crate::core::collection::CollectionResult;
 use crate::core::error::DomainError;
 use crate::core::model::DigestFormat;
+use crate::core::selector::CollectionResult;
 
 mod budget;
-mod escape;
 mod formats;
 mod tree;
 
@@ -59,10 +58,8 @@ impl CollectionResult {
     /// Returns [`DomainError::OutputTooLarge`] if output exceeds the maximum size limit.
     pub(crate) fn render(self, format: DigestFormat) -> Result<RenderedDigest, DomainError> {
         let buf = BoundedBuffer::with_capacity(self.files.total_bytes() + 4096);
-        let included = self.files.len();
-        let skipped = self.skipped;
         match render_digest(buf, &self, format) {
-            Ok(buf) => Ok(buf.finish_with_counts(included, skipped)),
+            Ok(buf) => Ok(buf.finish()),
             Err(OutputLimitExceeded) => Err(self.files.output_too_large_error()),
         }
     }
@@ -128,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn render_report_carries_output_counts_and_tokens() -> Result<(), DomainError> {
+    fn render_reports_tokens_of_the_rendered_bytes() -> Result<(), DomainError> {
         let storage = FileStorage::new().push(&NormalizedPath::from("a.txt"), "abc")?;
         let collection = CollectionResult {
             label: "repo".into(),
@@ -137,8 +134,6 @@ mod tests {
             skipped: 2,
         };
         let digest = collection.render(DigestFormat::Text)?;
-        assert_eq!(digest.included_files, 1);
-        assert_eq!(digest.skipped_files, 2);
         assert_eq!(
             digest.estimated_tokens,
             budget::estimate_tokens_from_bytes(&digest.bytes)
@@ -201,7 +196,7 @@ mod tests {
         match collection.render(DigestFormat::Text) {
             Err(DomainError::OutputTooLarge(err)) => {
                 assert_eq!(err.largest_files.len(), 1);
-                assert_eq!(err.largest_files[0].0, "large.txt");
+                assert_eq!(&*err.largest_files[0].0, "large.txt");
             }
             other => panic!("expected OutputTooLarge, got {other:?}"),
         }

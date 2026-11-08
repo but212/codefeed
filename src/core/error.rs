@@ -1,12 +1,46 @@
 use std::fmt::{Display, Formatter, Result};
 
+/// Error text that may echo user input or a remote payload. It holds no control character (I-04):
+/// the only constructor sanitizes, so every error that stores one renders safely.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorDetail(String);
+
+impl ErrorDetail {
+    /// Creates a detail from `text`, replacing line breaks with spaces and other control characters
+    /// with `U+FFFD`.
+    #[must_use]
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(sanitize_error_detail(&text.into()))
+    }
+}
+
+impl std::ops::Deref for ErrorDetail {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PartialEq<str> for ErrorDetail {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == other
+    }
+}
+
+impl Display for ErrorDetail {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Diagnostic details for exceeded candidate limits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateLimitExceededError {
     /// The candidate limit that was exceeded.
     pub limit: usize,
     /// Top directories contributing to the candidate overflow.
-    pub largest_directories: Vec<(String, usize)>,
+    pub largest_directories: Vec<(ErrorDetail, usize)>,
 }
 
 /// Diagnostic details for an exceeded output size limit.
@@ -15,7 +49,7 @@ pub struct OutputTooLargeError {
     /// The output size limit in bytes that was exceeded.
     pub limit: u64,
     /// Largest files contributing to the overflow, as `(path, size in bytes)`.
-    pub largest_files: Vec<(String, usize)>,
+    pub largest_files: Vec<(ErrorDetail, usize)>,
 }
 
 /// Pure domain rule failure. Core returns this type only; effect failures belong to the shell.
@@ -23,64 +57,73 @@ pub struct OutputTooLargeError {
 #[non_exhaustive]
 pub enum DomainError {
     /// CLI usage error or missing argument.
-    Usage(String),
+    Usage(ErrorDetail),
     /// Candidate file budget exceeded.
     CandidateLimitExceeded(CandidateLimitExceededError),
     /// Source string or CLI argument is syntactically invalid.
-    InvalidSource(String),
+    InvalidSource(ErrorDetail),
     /// Source scheme or host is unsupported (e.g. non-GitHub remote or SSH).
-    UnsupportedSource(String),
+    UnsupportedSource(ErrorDetail),
     /// Repository metadata or API response payload is malformed.
-    InvalidMetadata(String),
+    InvalidMetadata(ErrorDetail),
     /// Rendered digest exceeds the maximum allowed output size.
     OutputTooLarge(OutputTooLargeError),
 }
 
 impl DomainError {
-    /// Constructs a [`Usage`](Self::Usage) error. The message is sanitized here because it may echo user input.
+    /// Constructs a [`Usage`](Self::Usage) error. The message is sanitized because it may echo user input.
     #[cold]
     pub fn usage(message: impl Into<String>) -> Self {
-        Self::Usage(sanitize_error_detail(&message.into()))
+        Self::Usage(ErrorDetail::new(message))
     }
 
     /// Constructs a [`CandidateLimitExceeded`](Self::CandidateLimitExceeded) error with diagnostic directory counts.
+    /// The directory names are sanitized.
     #[cold]
-    pub(crate) const fn candidate_limit_exceeded(
+    pub(crate) fn candidate_limit_exceeded(
         limit: usize,
         largest_directories: Vec<(String, usize)>,
     ) -> Self {
         Self::CandidateLimitExceeded(CandidateLimitExceededError {
             limit,
-            largest_directories,
+            largest_directories: sanitized_counts(largest_directories),
         })
     }
 
-    /// Constructs an [`InvalidSource`](Self::InvalidSource) error. The message is sanitized here because it may echo user input.
+    /// Constructs an [`InvalidSource`](Self::InvalidSource) error. The message is sanitized because it may echo user input.
     #[cold]
     pub(crate) fn invalid_source(message: impl Into<String>) -> Self {
-        Self::InvalidSource(sanitize_error_detail(&message.into()))
+        Self::InvalidSource(ErrorDetail::new(message))
     }
 
-    /// Constructs an [`UnsupportedSource`](Self::UnsupportedSource) error. The message is sanitized here because it may echo user input.
+    /// Constructs an [`UnsupportedSource`](Self::UnsupportedSource) error. The message is sanitized because it may echo user input.
     #[cold]
     pub(crate) fn unsupported_source(message: impl Into<String>) -> Self {
-        Self::UnsupportedSource(sanitize_error_detail(&message.into()))
+        Self::UnsupportedSource(ErrorDetail::new(message))
     }
 
-    /// Constructs an [`InvalidMetadata`](Self::InvalidMetadata) error. The message is sanitized here because it may echo remote payload.
+    /// Constructs an [`InvalidMetadata`](Self::InvalidMetadata) error. The message is sanitized because it may echo remote payload.
     #[cold]
     pub(crate) fn invalid_metadata(message: impl Into<String>) -> Self {
-        Self::InvalidMetadata(sanitize_error_detail(&message.into()))
+        Self::InvalidMetadata(ErrorDetail::new(message))
     }
 
     /// Constructs an [`OutputTooLarge`](Self::OutputTooLarge) error with diagnostic largest file entries.
+    /// The file names are sanitized.
     #[cold]
-    pub(crate) const fn output_too_large(limit: u64, largest_files: Vec<(String, usize)>) -> Self {
+    pub(crate) fn output_too_large(limit: u64, largest_files: Vec<(String, usize)>) -> Self {
         Self::OutputTooLarge(OutputTooLargeError {
             limit,
-            largest_files,
+            largest_files: sanitized_counts(largest_files),
         })
     }
+}
+
+fn sanitized_counts(entries: Vec<(String, usize)>) -> Vec<(ErrorDetail, usize)> {
+    entries
+        .into_iter()
+        .map(|(name, count)| (ErrorDetail::new(name), count))
+        .collect()
 }
 
 /// Sanitizes control characters in error detail string.
@@ -89,7 +132,7 @@ impl DomainError {
 /// Note: Unlike digest header escaping which escapes `\n` and `\r` as `\n` / `\r` literals,
 /// error message formatting converts line breaks to spaces for compact single-line stderr diagnostics.
 #[must_use]
-pub(crate) fn sanitize_error_detail(input: &str) -> String {
+fn sanitize_error_detail(input: &str) -> String {
     input
         .chars()
         .map(|c| match c {
@@ -103,7 +146,7 @@ pub(crate) fn sanitize_error_detail(input: &str) -> String {
 impl Display for DomainError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
-            Self::Usage(message) => write!(f, "{}", sanitize_error_detail(message)),
+            Self::Usage(message) => write!(f, "{message}"),
             Self::CandidateLimitExceeded(err) => {
                 write!(
                     f,
@@ -111,21 +154,15 @@ impl Display for DomainError {
                     err.limit
                 )?;
                 for (dir, count) in &err.largest_directories {
-                    write!(f, "\n  - {} ({count} files)", sanitize_error_detail(dir))?;
+                    write!(f, "\n  - {dir} ({count} files)")?;
                 }
                 Ok(())
             }
-            Self::InvalidSource(message) => {
-                write!(f, "invalid source: {}", sanitize_error_detail(message))
+            Self::InvalidSource(message) => write!(f, "invalid source: {message}"),
+            Self::UnsupportedSource(message) => write!(f, "unsupported source: {message}"),
+            Self::InvalidMetadata(message) => {
+                write!(f, "invalid repository metadata: {message}")
             }
-            Self::UnsupportedSource(message) => {
-                write!(f, "unsupported source: {}", sanitize_error_detail(message))
-            }
-            Self::InvalidMetadata(message) => write!(
-                f,
-                "invalid repository metadata: {}",
-                sanitize_error_detail(message)
-            ),
             Self::OutputTooLarge(err) => {
                 let limit_mib = err.limit / (1024 * 1024);
                 write!(f, "digest exceeds the {limit_mib} MiB output limit")?;
@@ -133,11 +170,7 @@ impl Display for DomainError {
                     write!(f, "\nlargest files:")?;
                     for (path, size) in &err.largest_files {
                         let formatted_size = format_size(*size);
-                        write!(
-                            f,
-                            "\n  - {} ({formatted_size})",
-                            sanitize_error_detail(path)
-                        )?;
+                        write!(f, "\n  - {path} ({formatted_size})")?;
                     }
                 }
                 Ok(())
@@ -208,18 +241,23 @@ mod tests {
     }
 
     #[test]
-    fn sanitizes_control_characters_in_every_message_variant() {
+    fn error_detail_is_sanitized_at_construction() {
         let raw = "a\x1b[2J\nb";
-        // Constructors and directly built variants both render sanitized text through Display.
+        let detail = ErrorDetail::new(raw);
+        // The stored text, the `Deref` view, and the rendering are all the sanitized text.
+        assert_eq!(&*detail, "a\u{FFFD}[2J b");
+        assert_eq!(detail, *"a\u{FFFD}[2J b");
+        assert_eq!(detail.to_string(), "a\u{FFFD}[2J b");
+    }
+
+    #[test]
+    fn every_message_variant_renders_sanitized_text() {
+        let raw = "a\x1b[2J\nb";
         let cases = [
             DomainError::usage(raw),
             DomainError::invalid_source(raw),
             DomainError::unsupported_source(raw),
             DomainError::invalid_metadata(raw),
-            DomainError::Usage(raw.to_string()),
-            DomainError::InvalidSource(raw.to_string()),
-            DomainError::UnsupportedSource(raw.to_string()),
-            DomainError::InvalidMetadata(raw.to_string()),
         ];
         for err in cases {
             let rendered = err.to_string();
@@ -336,6 +374,14 @@ mod tests {
             fn sanitizing_is_idempotent(input in text()) {
                 let once = sanitize_error_detail(&input);
                 prop_assert_eq!(sanitize_error_detail(&once), once);
+            }
+
+            /// A detail holds no control character, and building one from a rendered detail changes nothing.
+            #[test]
+            fn error_detail_holds_no_control_characters(input in text()) {
+                let detail = ErrorDetail::new(input);
+                prop_assert!(!detail.chars().any(char::is_control), "{:?}", &*detail);
+                prop_assert_eq!(ErrorDetail::new(detail.to_string()), detail);
             }
         }
     }
