@@ -8,6 +8,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versioning: [S
 
 ## [Unreleased]
 
+---
+
+## [0.9.0]
+
 ### Library consumers and CLI users
 
 Observable behavior. **Action** = code or config change required.
@@ -24,28 +28,42 @@ Observable behavior. **Action** = code or config change required.
 #### Fixed
 
 - **`-h` and `-V` win over any other argument error**: An invalid `--format`, `--exclude`, unknown option, or extra positional placed before `-h` or `-V` used to fail with a usage error; now the help or version text prints and the exit code is 0. Only a `-h` or `-V` taken as a flag value or placed after `--` is ignored (`src/core/cli.rs`).
+- **Archive read cap no longer underflows after an overrun**: `StreamMeter::read_cap` subtracted the running total from `ARCHIVE_MAX_DECOMPRESSED_BYTES` without saturation, so a read request after the total passed the limit panicked in debug builds and wrapped in release builds (`src/shell/github/archive.rs`).
 - **URL schemes are case-insensitive**: `HTTPS://github.com/owner/repo` used to be treated as a local path and failed with a filesystem error; it now resolves as a GitHub source. `Git@…` and `SSH://…` are now rejected as unsupported like their lowercase forms (`src/core/source.rs`, `src/core/github/url.rs`).
 
 ### Contributors
 
-Internal change. No consumer action required.
+Internal change. No consumer action required. Output is unchanged throughout.
 
 #### Changed
 
-- **Module consolidation and loose coupling**:
-  - `src/core/collection.rs` is dissolved; `CollectionResult` moves to `src/core/selector.rs` directly unifying the linear state transition (`Selector` -> `CollectionResult`), while `repository_name` moves to `src/shell/local/mod.rs` as a private helper.
-  - `src/shell/github/archive.rs` fan-out reduced from 7 to 6, satisfying the shell module fan-out threshold (<= 6).
-  - `src/shell/local/gitignore.rs` is absorbed into `src/shell/local/walk.rs`, and `src/shell/local/read.rs` into `src/shell/local/pipeline.rs`, reducing `shell/local` to 3 cohesive files (`mod.rs`, `pipeline.rs`, `walk.rs`).
-  - `src/core/render/escape.rs` is absorbed into `src/core/render/formats.rs`, making XML/text escaping private to formatting.
-  - Test modules replace all `super::super` paths with `crate::` paths, strictly adhering to coding convention sec. 3.4. Output unchanged.
-- **Invariant cleanups**: `sanitize_error_detail` is private to `src/core/error.rs`, so `ErrorDetail::new` is the only sanitizer entry point (I-04; callers in `src/core/cli.rs`, `src/core/github/mod.rs`, `src/shell/error.rs`, `src/shell/atomic.rs`). `read_bounded` states its size precondition with `expect` instead of a dead fallback. `FileSpan` shares one slice helper for path and content. `context.md` names `exceeds_file_size`. Output unchanged.
-- **Small consolidations**: `GithubName` moves to `src/core/github/url.rs` (public path `codefeed::GithubName` unchanged), `parse_github_url` returns validated `GithubName` values, and `valid_github_name` is private. The percent-encoding table derives from the name alphabet plus `~`. `RenderedDigest` drops its file counts, which `ingest` reads from `CollectionResult`. `src/core/mod.rs` links the purity rules in `docs/coding_convention.md` instead of restating them, and `src/shell/mod.rs` and `src/shell/cli.rs` import from the defining modules. Output unchanged.
-- **Single observation type (I-11)**: `Selector::observe` takes one `Observation` (`Unstorable(prefix)` or `File(path, Body)`) instead of a `CandidatePath`, a size hint, and a read closure. The local `Candidate` and `Body` types and `observe_candidate` are removed, and the archive reader now reads a body before observing it (a body over the declared limit is still not read). Output unchanged (`src/core/selector.rs`, `src/shell/local/`, `src/shell/github/archive.rs`).
-- **Path length enforced at classification (I-10)**: `CandidatePath::NonUtf8` becomes `Unstorable` and also holds a path over `MAX_PATH_BYTES`, so `NormalizedPath` is within the limit by construction. `Selector::observe` drops its path-length check, and `exceeds_size_limits` becomes `exceeds_file_size` (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/local/read.rs`). Output unchanged.
-- **Coding convention trimmed**: `docs/coding_convention.md` links the Rust API Guidelines for naming and conversions, drops rules that duplicate `AGENTS.md`, `context.md`, or `docs/security_and_filtering.md` (OS and network rules, memory layout, limit ownership), and tags rules with the lint that enforces them. `AGENTS.md` points filesystem and network rules to security sec. 5-6 only.
-- **Test consolidation**: Tests already covered by an exhaustive oracle, a model property, or a corpus table are merged or removed, keeping one literal anchor per oracle. `classification_corpus_is_stable` in `src/core/path.rs` now holds the classification rows of the archive and path tests; `src/core/github/{mod,url,archive}.rs`, `src/core/render/formats.rs`, `src/core/selector.rs`, and `src/core/error.rs` drop covered examples. `src/core/policy/exclusions.rs` checks `NOISE`, `SENSITIVE_PREFIXES`, and `SENSITIVE_EXTENSIONS` against `docs/security_and_filtering.md` sec. 3.2-3.3 instead of copying the lists. `is_retryable_http_status` is checked for every status from 100 to 599. The `src/shell/cli.rs` tests move to `tests/cli.rs` (non-existent source exits with code 1). Output unchanged.
-- **Redundant fast paths removed**: The `memmem` prefilters in `src/core/github/archive.rs`, the chunked `u32` counters in `src/core/render/budget.rs`, and the `XML_BODY_START` table with its exhaustive test in `src/core/render/formats.rs` are dropped. Output unchanged.
-- **Lints added**: `forbid(unsafe_code)` in `src/lib.rs` and `src/main.rs`; clippy `unwrap_used` (tests exempt via `clippy.toml`), `missing_errors_doc`, and `missing_panics_doc` in `src/lib.rs`. No code change was needed.
+- **Module consolidation**:
+  - `src/core/collection.rs` is dissolved. `CollectionResult` moves to `src/core/selector.rs` (`Selector` -> `CollectionResult`); `repository_name` becomes a private helper in `src/shell/local/mod.rs`.
+  - `src/shell/local/gitignore.rs` folds into `walk.rs` and `read.rs` into `pipeline.rs`, leaving `mod.rs`, `pipeline.rs`, `walk.rs`.
+  - `src/core/render/escape.rs` folds into `formats.rs`; escaping is private to formatting.
+  - `src/shell/github/archive.rs` fan-out drops from 7 to 6 (threshold <= 6).
+  - `GithubName` moves to `src/core/github/url.rs` (`codefeed::GithubName` unchanged). `parse_github_url` returns validated `GithubName` values, `valid_github_name` is private, and the percent-encoding table derives from the name alphabet plus `~`.
+  - `src/core/mod.rs` links the purity rules in `docs/coding_convention.md`; `src/shell/mod.rs` and `src/shell/cli.rs` import from the defining modules.
+  - Test modules use `crate::` paths instead of `super::super` (coding convention sec. 3.4).
+- **Invariants**:
+  - **I-04**: `sanitize_error_detail` is private to `src/core/error.rs`, so `ErrorDetail::new` is the only sanitizer entry point (callers in `src/core/cli.rs`, `src/core/github/mod.rs`, `src/shell/error.rs`, `src/shell/atomic.rs`).
+  - **I-10**: `CandidatePath::NonUtf8` becomes `Unstorable` and also holds a path over `MAX_PATH_BYTES`, so `NormalizedPath` is within the limit by construction. `Selector::observe` drops its path-length check, and `exceeds_size_limits` becomes `exceeds_file_size` (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/local/read.rs`).
+  - **I-11**: `Selector::observe` takes one `Observation` (`Unstorable(prefix)` or `File(path, Body)`) instead of a `CandidatePath`, a size hint, and a read closure. The local `Candidate` and `Body` types and `observe_candidate` are removed. The archive reader reads a body before observing it; a body over the declared limit is still not read (`src/core/selector.rs`, `src/shell/local/`, `src/shell/github/archive.rs`).
+- **Small cleanups**:
+  - `read_bounded` states its size precondition with `expect` instead of a dead fallback.
+  - `FileSpan` shares one slice helper for path and content.
+  - `RenderedDigest` drops its file counts, which `ingest` reads from `CollectionResult`.
+  - The `memmem` prefilters in `src/core/github/archive.rs`, the chunked `u32` counters in `src/core/render/budget.rs`, and the `XML_BODY_START` table with its exhaustive test in `src/core/render/formats.rs` are removed.
+- **Tests**: Tests already covered by an exhaustive oracle, a model property, or a corpus table are merged or removed, keeping one literal anchor per oracle.
+  - `classification_corpus_is_stable` in `src/core/path.rs` holds the classification rows of the archive and path tests.
+  - `src/core/github/{mod,url,archive}.rs`, `src/core/render/formats.rs`, `src/core/selector.rs`, and `src/core/error.rs` drop covered examples.
+  - `src/core/policy/exclusions.rs` checks `NOISE`, `SENSITIVE_PREFIXES`, and `SENSITIVE_EXTENSIONS` against `docs/security_and_filtering.md` sec. 3.2-3.3 instead of copying the lists.
+  - `is_retryable_http_status` is checked for every status from 100 to 599.
+  - The `src/shell/cli.rs` tests move to `tests/cli.rs` (non-existent source exits with code 1).
+- **Docs and lints**:
+  - `docs/coding_convention.md` links the Rust API Guidelines for naming and conversions, drops rules that duplicate `AGENTS.md`, `context.md`, or `docs/security_and_filtering.md` (OS and network rules, memory layout, limit ownership), and tags rules with the lint that enforces them. `AGENTS.md` points filesystem and network rules to security sec. 5-6 only.
+  - `context.md` names `exceeds_file_size`.
+  - Added `forbid(unsafe_code)` in `src/lib.rs` and `src/main.rs`; clippy `unwrap_used` (tests exempt via `clippy.toml`), `missing_errors_doc`, and `missing_panics_doc` in `src/lib.rs`. No code change was needed.
 
 ---
 
@@ -626,7 +644,8 @@ Documentation, build, and removals.
 
 - Initial CLI converting local directories (`.gitignore`-aware, skipping hidden files and symlinks) and GitHub repositories (`--ref <BRANCH|TAG|COMMIT>`, no local `git`) into plain-text or XML digests (`--format <text|xml>`) written atomically to files or stdout (`--output -`), with streaming token estimation, sensitive/lockfile filtering (`.env*`, `*.key`, `*.pem`, `id_rsa*`), and candidate/output size budgets.
 
-[Unreleased]: https://github.com/but212/codefeed/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/but212/codefeed/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/but212/codefeed/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/but212/codefeed/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/but212/codefeed/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/but212/codefeed/compare/v0.5.0...v0.6.0
