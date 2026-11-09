@@ -1,0 +1,40 @@
+name: Dependency Audit
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - deny.toml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - deny.toml
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Run cargo deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --locked
