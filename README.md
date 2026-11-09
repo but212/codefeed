@@ -87,6 +87,8 @@ Excluded entries are dropped silently and omitted from skipped counts (exception
 - Files matched by in-tree `.gitignore` (local only; unsafe or unreadable `.gitignore` fails the run, sec. 3.5).
 - Paths matched by `--exclude` patterns (sec. 3.6).
 
+Filtering matches paths only; file contents are never scanned. Keep secrets in files with ordinary names out of the digest with `.gitignore` or `--exclude` ([`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 1.2).
+
 Skipped entries (counted in summary):
 
 - Files exceeding `MAX_FILE_SIZE`.
