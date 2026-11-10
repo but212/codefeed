@@ -31,9 +31,9 @@ Before changing code, review:
 
 ## 4. Hard Rules
 
-- **Core Purity & `#[must_use]`:** Follow [coding convention sec. 3](docs/coding_convention.md#3-architecture-functional-core-imperative-shell).
-- **Limits and Lists:** Authority and mirror rules are in [security header](docs/security_and_filtering.md). Code reads constants directly; never copy values. Never copy limit values into markdown documents. Synchronize `src/core/policy/` edits with [security sec. 3.2-3.3 and sec. 8](docs/security_and_filtering.md#32-noise-lockfiles).
-- **Filesystem & Network:** Mandatory per [security sec. 5-6](docs/security_and_filtering.md).
+- **Core Purity & `#[must_use]`:** Follow [coding convention § 3](docs/coding_convention.md#3-architecture-functional-core-imperative-shell).
+- **Limits and Lists:** Authority and mirror rules are in [security header](docs/security_and_filtering.md). Code reads constants directly; never copy values. Never copy limit values into markdown documents. Synchronize `src/core/policy/` edits with [security § 3.2-3.3 and § 8](docs/security_and_filtering.md#32-noise-lockfiles).
+- **Filesystem & Network:** Mandatory per [security § 5-6](docs/security_and_filtering.md).
 - **Changelog:** Log all behavior changes under `## [Unreleased]` in `CHANGELOG.md`.
 
 ## 5. Verification and TDD
@@ -47,8 +47,8 @@ Before changing code, review:
 
 | Change | Update |
 | :--- | :--- |
-| Limit or exclusion list | `src/core/policy/` (authority), `docs/security_and_filtering.md` sec. 3.2-3.3 and sec. 8 |
-| Path type or classification | `src/core/path.rs`, `docs/security_and_filtering.md` sec. 2 |
+| Limit or exclusion list | `src/core/policy/` (authority), `docs/security_and_filtering.md` § 3.2-3.3 and § 8 |
+| Path type or classification | `src/core/path.rs`, `docs/security_and_filtering.md` § 2 |
 | CLI flag or option rule | `src/core/cli.rs`, `tests/cli.rs`, `README.md`, `docs/README.ko.md` |
 | Exit code | `src/shell/cli.rs` (`run_cli`), `tests/cli.rs`, `README.md`, `docs/README.ko.md` |
 | Output format | `src/core/render/`, `README.md` (Output), `docs/README.ko.md` |

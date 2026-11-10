@@ -11,4 +11,4 @@ Only the latest release receives security fixes.
 
 ## Scope
 
-The threat model, non-goals, and mitigations are in [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 1.
+The threat model, non-goals, and mitigations are in [`docs/security_and_filtering.md`](docs/security_and_filtering.md) § 1.

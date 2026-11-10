@@ -1,6 +1,6 @@
 # Security and Filtering Specification
 
-**Authority:** `src/core/policy/` is the single source of truth for all lists and limits. Sec. 3.2-3.3 and sec. 8 mirror it; updates to `src/core/policy/` must synchronize them in the same commit. Sec. 8 mirrors every limit in `src/core/policy/limits.rs` (`*_USIZE` casts excluded). All other sections are canonical behavior specifications. Invariant enforcement (`I-xx`) is in [`context.md`](../context.md) sec. 3.
+**Authority:** `src/core/policy/` is the single source of truth for all lists and limits. § 3.2-3.3 and § 8 mirror it; updates to `src/core/policy/` must synchronize them in the same commit. § 8 mirrors every limit in `src/core/policy/limits.rs` (`*_USIZE` casts excluded). All other sections are canonical behavior specifications. Invariant enforcement (`I-xx`) is in [`context.md`](../context.md) § 3.
 
 ---
 
@@ -8,11 +8,11 @@
 
 | # | Threat | Mitigation | Implementation |
 | :--- | :--- | :--- | :--- |
-| T1 | Secret disclosure in digest | Path/name exclusion (sec. 3). Content is not scanned (sec. 1.2). | `policy/exclusions.rs`, `path.rs` |
-| T2 | Resource exhaustion | Size, count, depth, and path limits; bounded reads and channels; timeouts (sec. 5, sec. 6). | `policy/limits.rs`, `local/`, `github/` |
-| T3 | Credential forwarding across origins | Origin validation; redirects strip authorization headers (sec. 6). | `core/github/url.rs`, `shell/github/` |
-| T4 | Injection into terminals, XML, or LLM boundaries | Contextual output escaping (sec. 7). XML format isolates file bodies; text format isolates headers and paths while emitting bodies verbatim. | `core/render/formats.rs` |
-| T5 | Traversal outside source root | Symlinks ignored; metadata checked prior to open (sec. 5). | `shell/local/` |
+| T1 | Secret disclosure in digest | Path/name exclusion (§ 3). Content is not scanned (§ 1.2). | `policy/exclusions.rs`, `path.rs` |
+| T2 | Resource exhaustion | Size, count, depth, and path limits; bounded reads and channels; timeouts (§ 5, § 6). | `policy/limits.rs`, `local/`, `github/` |
+| T3 | Credential forwarding across origins | Origin validation; redirects strip authorization headers (§ 6). | `core/github/url.rs`, `shell/github/` |
+| T4 | Injection into terminals, XML, or LLM boundaries | Contextual output escaping (§ 7). XML format isolates file bodies; text format isolates headers and paths while emitting bodies verbatim. | `core/render/formats.rs` |
+| T5 | Traversal outside source root | Symlinks ignored; metadata checked prior to open (§ 5). | `shell/local/` |
 
 ### 1.1 Assumptions
 
@@ -22,7 +22,7 @@
 ### 1.2 Non-Goals
 
 - **No secret/entropy scanning:** Filtering matches paths and extensions only. Hard-coded secrets in source files are not redacted.
-- **In-memory token lifetime:** Zeroization is limited to sec. 6.2 scope.
+- **In-memory token lifetime:** Zeroization is limited to § 6.2 scope.
 - **Text format delimiter and ANSI isolation:** `--format text` emits file bodies as verbatim UTF-8 without delimiter rewriting or ANSI stripping. Boundaries requiring strict isolation must use `--format xml`.
 
 ---
@@ -34,10 +34,10 @@ Entry (local walk or tar stream)
  |
  +-- Directory (local walk only)
  |     +-- Entered: `.gitignore` read once; the same bytes validate and compile its rules.
- |     |     `-- Symlink, non-regular file, larger than `MAX_FILE_SIZE`, unreadable, or not valid UTF-8 -> Run fails (Io). Sec. 3.5.
+ |     |     `-- Symlink, non-regular file, larger than `MAX_FILE_SIZE`, unreadable, or not valid UTF-8 -> Run fails (Io). § 3.5.
  |     +-- Listing over `MAX_DIR_ENTRIES` entries (hidden and ignored included) -> Run fails (InvalidMetadata).
  |     +-- Hidden or ignored by a `.gitignore` -> Pruned, not entered; its `.gitignore` is never read.
- |     `-- Matched by a user exclusion (sec. 3.6) -> Pruned, not entered; its `.gitignore` is never read.
+ |     `-- Matched by a user exclusion (§ 3.6) -> Pruned, not entered; its `.gitignore` is never read.
  |
  +-- Tar header read (`Entries::next`, GNU `L`/`K` and PAX `x` bodies included). Runs before path classification and applies to every entry type.
  |     `-- Over `ARCHIVE_MAX_HEADER_BYTES` for one read -> Run fails (InvalidMetadata), even for entries that would be dropped (I-03).
@@ -54,7 +54,7 @@ Entry (local walk or tar stream)
  +-- Path classification
  |     +-- Hidden segment
  |     |     `-- Ignored. Dropped silently. Omitted from count.
- |     +-- Matched by a user exclusion (sec. 3.6)
+ |     +-- Matched by a user exclusion (§ 3.6)
  |     |     `-- Ignored. Dropped silently. Omitted from count.
  |     +-- Noise lockfile or sensitive pattern
  |     |     `-- Ignored. Dropped silently. Omitted from count.
@@ -103,7 +103,7 @@ Exact matches against final path segment:
 
 - **Prefixes (`SENSITIVE_PREFIXES`):** `id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`, `credentials`. Matches start of final segment (`id_rsa.pub`, `credentials.json`).
 - **Extensions (`SENSITIVE_EXTENSIONS`):** `pem`, `key`, `p12`, `pkcs12`, `pfx`, `credentials`. Matches characters following final dot (`server.key`, `aws.credentials`).
-- `.env` files are excluded by hidden entry rules (sec. 3.1).
+- `.env` files are excluded by hidden entry rules (§ 3.1).
 - Matches evaluate on ASCII bytes regardless of path UTF-8 validity (e.g. `id_rsa\xff.key` is ignored, not counted as skipped).
 
 ### 3.4 Path Limits
@@ -135,7 +135,7 @@ Exact matches against final path segment:
 
 | Outcome | Candidate Slot | Counted Skipped | Body Read |
 | :--- | :---: | :---: | :---: |
-| Ignored (sec. 3) | No | No | No |
+| Ignored (§ 3) | No | No | No |
 | Non-UTF-8 path | Yes | Yes | No |
 | Path > `MAX_PATH_BYTES` | Yes | Yes | No |
 | Declared size > `MAX_FILE_SIZE` | Yes | Yes | No |

@@ -13,7 +13,7 @@ Follow [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/naming.h
 - **Predicates:** Prefix with `is_` or `has_`; avoid negated names (`is_empty`, not `is_not_empty`).
 - **Abbreviations:** Standard only (`id`, `url`, `len`, `src`, `dst`, `err`). Spell out domain terms (`extension`, not `ext`).
 - **Scope Duplication:** Avoid redundant prefixes (`cli::parse`, not `cli::parse_cli`).
-- **Mutation:** `_mut`, `set_`, and `iter_mut` belong in `src/shell/`; `src/core/` has no `&mut` parameters outside sec. 3.1 exceptions.
+- **Mutation:** `_mut`, `set_`, and `iter_mut` belong in `src/shell/`; `src/core/` has no `&mut` parameters outside § 3.1 exceptions.
 
 ## 2. Conversions
 
@@ -47,11 +47,11 @@ Parse untrusted input into valid-by-construction types at the boundary; make inv
 - **Linear Typestates:** Transitions consume predecessor by value (`Selector` -> `CollectionResult` -> `RenderedDigest` -> `IngestReport`).
 - **`#[must_use]`:** Required on phase types (`Selector`, `CollectionResult`, `RenderedDigest`, `BoundedBuffer`, `SortedFiles`) and pure non-mutating query functions; omitted on `Result`-returning functions (clippy: `double_must_use`).
 - **Invariant Wrappers:** Encapsulate ordering or structural invariants in types with immutable interfaces (`SortedFiles`).
-- **Limit Relations:** Enforce with `const _: () = { assert!(...); };`, never runtime tests (exception: runtime comparison against mirrored table in [`security_and_filtering.md`](security_and_filtering.md) sec. 8).
+- **Limit Relations:** Enforce with `const _: () = { assert!(...); };`, never runtime tests (exception: runtime comparison against mirrored table in [`security_and_filtering.md`](security_and_filtering.md) § 8).
 
 ### 3.4 Cohesion and Coupling
 
-A module is a file or directory directly below `src/core/` or `src/shell/`. Precedence on conflict: purity (sec. 3.1) > coupling > cohesion > size.
+A module is a file or directory directly below `src/core/` or `src/shell/`. Precedence on conflict: purity (§ 3.1) > coupling > cohesion > size.
 
 #### Coupling
 
@@ -64,7 +64,7 @@ A module is a file or directory directly below `src/core/` or `src/shell/`. Prec
 
 #### Cohesion
 
-- **Single Responsibility:** A module's entry in [`context.md`](../context.md) sec. 5 describes it cleanly. Split when public items divide into disjoint caller sets with no cross-references.
+- **Single Responsibility:** A module's entry in [`context.md`](../context.md) § 5 describes it cleanly. Split when public items divide into disjoint caller sets with no cross-references.
 - **Invariants with Type:** Constructors and validations reside in the type's module.
 - **Single-Caller Items:** `pub(crate)`/`pub(super)` items with one caller file should move to that caller (exempt: `src/core/policy/`, same-directory helpers, shell calls to core, `src/lib.rs` exports).
 - **Minimal Visibility:** Private by default; unneeded `pub` caught by rustc `unreachable_pub`.
@@ -85,7 +85,7 @@ Prefer the standard library. Every `Cargo.toml` dependency requires an explanato
 
 ## 5. Errors and Panics
 
-- Structured domain errors ([`context.md`](../context.md) sec. 2); no stringly-typed errors on public APIs.
+- Structured domain errors ([`context.md`](../context.md) § 2); no stringly-typed errors on public APIs.
 - Shell decorates I/O errors with the associated path or operation.
 - No `unwrap()` (clippy: `unwrap_used`; tests exempt). `expect()` is permitted solely for provably unreachable invariant branches with explanatory messages.
 

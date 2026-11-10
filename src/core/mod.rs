@@ -4,7 +4,7 @@
 //! core in one direction.
 //!
 //! Purity rules, the closed list of mutation exceptions, and the one-way dependency are defined in
-//! `docs/coding_convention.md` sec. 3.1.
+//! `docs/coding_convention.md` § 3.1.
 
 /// Shared configuration for property tests: a fixed seed and no on-disk failure persistence, so runs
 /// are reproducible and leave no `proptest-regressions/` files behind.

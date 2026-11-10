@@ -104,18 +104,18 @@ mod tests {
             .flat_map(code_spans)
             .collect();
         noise.sort_unstable();
-        assert_eq!(noise, sorted(NOISE), "sec. 3.2 noise lockfiles");
+        assert_eq!(noise, sorted(NOISE), "§ 3.2 noise lockfiles");
 
         let sensitive = section("### 3.3", "### 3.4");
         assert_eq!(
             bullet_list(sensitive, "- **Prefixes"),
             sorted(SENSITIVE_PREFIXES),
-            "sec. 3.3 prefixes"
+            "§ 3.3 prefixes"
         );
         assert_eq!(
             bullet_list(sensitive, "- **Extensions"),
             sorted(SENSITIVE_EXTENSIONS),
-            "sec. 3.3 extensions"
+            "§ 3.3 extensions"
         );
     }
 

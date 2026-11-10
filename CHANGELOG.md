@@ -28,7 +28,7 @@ Internal change. No consumer action required. Output is unchanged throughout.
 
 #### Changed
 
-- **Document ownership**: Output format (header, token estimate) is owned by `README.md` Output; limit authority is stated once in the `docs/security_and_filtering.md` header; `AGENTS.md` sec. 6 routes `CONTRIBUTING.md` and `SECURITY.md` changes. Contributor-facing documents no longer link to `AGENTS.md`: `CONTRIBUTING.md` owns the verification checklist, `AGENTS.md` links to it, and the pull request template mirrors the commands inline. `context.md` sec. 5 is reduced to module responsibilities, and `docs/security_and_filtering.md` no longer names implementation identifiers.
+- **Document ownership**: Output format (header, token estimate) is owned by `README.md` Output; limit authority is stated once in the `docs/security_and_filtering.md` header; `AGENTS.md` § 6 routes `CONTRIBUTING.md` and `SECURITY.md` changes. Contributor-facing documents no longer link to `AGENTS.md`: `CONTRIBUTING.md` owns the verification checklist, `AGENTS.md` links to it, and the pull request template mirrors the commands inline. `context.md` § 5 is reduced to module responsibilities, and `docs/security_and_filtering.md` no longer names implementation identifiers.
 
 ---
 
@@ -66,7 +66,7 @@ Internal change. No consumer action required. Output is unchanged throughout.
   - `src/shell/github/archive.rs` fan-out drops from 7 to 6 (threshold <= 6).
   - `GithubName` moves to `src/core/github/url.rs` (`codefeed::GithubName` unchanged). `parse_github_url` returns validated `GithubName` values, `valid_github_name` is private, and the percent-encoding table derives from the name alphabet plus `~`.
   - `src/core/mod.rs` links the purity rules in `docs/coding_convention.md`; `src/shell/mod.rs` and `src/shell/cli.rs` import from the defining modules.
-  - Test modules use `crate::` paths instead of `super::super` (coding convention sec. 3.4).
+  - Test modules use `crate::` paths instead of `super::super` (coding convention § 3.4).
 - **Invariants**:
   - **I-04**: `sanitize_error_detail` is private to `src/core/error.rs`, so `ErrorDetail::new` is the only sanitizer entry point (callers in `src/core/cli.rs`, `src/core/github/mod.rs`, `src/shell/error.rs`, `src/shell/atomic.rs`).
   - **I-10**: `CandidatePath::NonUtf8` becomes `Unstorable` and also holds a path over `MAX_PATH_BYTES`, so `NormalizedPath` is within the limit by construction. `Selector::observe` drops its path-length check, and `exceeds_size_limits` becomes `exceeds_file_size` (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/local/read.rs`).
@@ -79,11 +79,11 @@ Internal change. No consumer action required. Output is unchanged throughout.
 - **Tests**: Tests already covered by an exhaustive oracle, a model property, or a corpus table are merged or removed, keeping one literal anchor per oracle.
   - `classification_corpus_is_stable` in `src/core/path.rs` holds the classification rows of the archive and path tests.
   - `src/core/github/{mod,url,archive}.rs`, `src/core/render/formats.rs`, `src/core/selector.rs`, and `src/core/error.rs` drop covered examples.
-  - `src/core/policy/exclusions.rs` checks `NOISE`, `SENSITIVE_PREFIXES`, and `SENSITIVE_EXTENSIONS` against `docs/security_and_filtering.md` sec. 3.2-3.3 instead of copying the lists.
+  - `src/core/policy/exclusions.rs` checks `NOISE`, `SENSITIVE_PREFIXES`, and `SENSITIVE_EXTENSIONS` against `docs/security_and_filtering.md` § 3.2-3.3 instead of copying the lists.
   - `is_retryable_http_status` is checked for every status from 100 to 599.
   - The `src/shell/cli.rs` tests move to `tests/cli.rs` (non-existent source exits with code 1).
 - **Docs and lints**:
-  - `docs/coding_convention.md` links the Rust API Guidelines for naming and conversions, drops rules that duplicate `AGENTS.md`, `context.md`, or `docs/security_and_filtering.md` (OS and network rules, memory layout, limit ownership), and tags rules with the lint that enforces them. `AGENTS.md` points filesystem and network rules to security sec. 5-6 only.
+  - `docs/coding_convention.md` links the Rust API Guidelines for naming and conversions, drops rules that duplicate `AGENTS.md`, `context.md`, or `docs/security_and_filtering.md` (OS and network rules, memory layout, limit ownership), and tags rules with the lint that enforces them. `AGENTS.md` points filesystem and network rules to security § 5-6 only.
   - `context.md` names `exceeds_file_size`.
   - Added `forbid(unsafe_code)` in `src/lib.rs` and `src/main.rs`; clippy `unwrap_used` (tests exempt via `clippy.toml`), `missing_errors_doc`, and `missing_panics_doc` in `src/lib.rs`. No code change was needed.
 
@@ -134,14 +134,14 @@ Observable behavior. **Action** = code or config change required.
 
 #### Fixed
 
-- **Completion summary sanitizes the destination**: `Wrote <PATH>` sanitizes the output path via `sanitize_error_detail` (`\t`, `\r`, `\n` become spaces; other control characters become `\u{FFFD}`). Before, control characters reached stdout raw (`src/core/cli.rs`, `docs/security_and_filtering.md` sec. 7).
+- **Completion summary sanitizes the destination**: `Wrote <PATH>` sanitizes the output path via `sanitize_error_detail` (`\t`, `\r`, `\n` become spaces; other control characters become `\u{FFFD}`). Before, control characters reached stdout raw (`src/core/cli.rs`, `docs/security_and_filtering.md` § 7).
   - **Action:** None for ordinary paths.
-- **Overlong directory names no longer grow the budget unbounded**: The per-directory budget key was the full first segment, including skipped paths over `MAX_PATH_BYTES`. It is now truncated to `MAX_PATH_BYTES` at a char boundary, so names sharing a prefix share a key. Overflow diagnostics show the truncated name (`src/core/selector.rs`, `docs/security_and_filtering.md` sec. 3.4).
+- **Overlong directory names no longer grow the budget unbounded**: The per-directory budget key was the full first segment, including skipped paths over `MAX_PATH_BYTES`. It is now truncated to `MAX_PATH_BYTES` at a char boundary, so names sharing a prefix share a key. Overflow diagnostics show the truncated name (`src/core/selector.rs`, `docs/security_and_filtering.md` § 3.4).
   - **Action:** None.
 
 #### Changed
 
-- **Non-regular `.gitignore` fails the run**: A local `.gitignore` that is a FIFO, socket, or device fails with `IngestError::Io` (`InvalidInput`, "not a regular file"); before, its rules were dropped silently. A directory named `.gitignore` still adds no rules (`src/shell/local/walk.rs`, `docs/security_and_filtering.md` sec. 3.5).
+- **Non-regular `.gitignore` fails the run**: A local `.gitignore` that is a FIFO, socket, or device fails with `IngestError::Io` (`InvalidInput`, "not a regular file"); before, its rules were dropped silently. A directory named `.gitignore` still adds no rules (`src/shell/local/walk.rs`, `docs/security_and_filtering.md` § 3.5).
   - **Action:** Remove or replace a non-regular `.gitignore` in the source tree.
 - **Token hint only for anonymous 403 and 429**: A 403 or 429 from a run whose GitHub API request sent a token no longer ends with the `set GITHUB_TOKEN or GH_TOKEN` hint: the token was not the missing step. Anonymous requests keep it. A redirect target gets no token; its error is classified by the API request (`src/core/github/mod.rs`).
   - **Action:** None.
@@ -157,8 +157,8 @@ Internal change. No consumer action required.
 - **Release profile optimized for binary size**: `[profile.release]` adopts full LTO (`lto = true`), size optimization (`opt-level = "s"`), abort on panic (`panic = "abort"`), symbol stripping (`strip = "symbols"`), and packed split debuginfo (`split-debuginfo = "packed"`, `debug = "full"`), with incremental compilation enabled (`Cargo.toml`). Reduces Windows release executable size from 3,661 KB to 2,131 KB (~41.8% reduction), preserving full symbols in the external PDB.
 - **Token estimate counts in chunks**: `estimate_tokens_from_bytes` (`src/core/render/budget.rs`) uses chunked `u32` counters instead of an index loop and is no longer `const fn`. Output and `estimated_tokens` unchanged. A reference test covers every byte value at boundary lengths.
 - **Path sort compares bytes**: `cmp_path` (`src/core/storage.rs`) compares bytes, not `split('/')` components. Order and output unchanged; an exhaustive small-alphabet test pins it.
-- **Pure helpers take owned values**: `push_match_segment` (`src/core/policy/exclude.rs`) and `admit_dir` (`src/core/policy/classify.rs`) take and return owned values, not `&mut` (coding convention sec. 3). No behavior change.
-- **Pure queries are `#[must_use]`**: Non-`Result` `pub(crate)` and `pub(super)` queries in `src/core` (coding convention sec. 3). No behavior change.
+- **Pure helpers take owned values**: `push_match_segment` (`src/core/policy/exclude.rs`) and `admit_dir` (`src/core/policy/classify.rs`) take and return owned values, not `&mut` (coding convention § 3). No behavior change.
+- **Pure queries are `#[must_use]`**: Non-`Result` `pub(crate)` and `pub(super)` queries in `src/core` (coding convention § 3). No behavior change.
 - **Tree rendering asserts its invariant**: `render_level` (`src/core/render/tree.rs`) panics on a path ending before the current tree offset instead of dropping the rest of the tree. `NormalizedPath` makes this unreachable; output is unchanged.
 - **Path types moved to `core/path.rs`**: `NormalizedPath`, `PathStatus`, `AdmittedDir`, and the classification functions move from `src/core/policy/classify.rs` to `src/core/path.rs`. `error.rs` no longer imports `policy`, removing the `error`/`policy` cycle. `push_match_segment` is `pub(crate)`. No behavior change.
 - **Report built in shell**: `RenderedDigest` carries bytes and counts. `CollectionResult::render` takes only the format; `ingest` builds `IngestReport` with the requested output. Output is unchanged (`src/core/render/`, `src/shell/mod.rs`).
@@ -182,11 +182,11 @@ Observable behavior. **Action** = code or config change required.
 
 #### Breaking
 
-- **`--exclude '! '` is a usage error, not a re-include-all**: Unescaped trailing whitespace is trimmed before parsing, as in `.gitignore`. Before, `! ` and `!<TAB>` were accepted and compiled to a whitelist rule matching every path, re-including all excluded files. `/ ` and `!/ ` were no-ops. All four are now usage errors (`src/core/policy/exclude.rs`, `docs/security_and_filtering.md` sec. 3.6).
+- **`--exclude '! '` is a usage error, not a re-include-all**: Unescaped trailing whitespace is trimmed before parsing, as in `.gitignore`. Before, `! ` and `!<TAB>` were accepted and compiled to a whitelist rule matching every path, re-including all excluded files. `/ ` and `!/ ` were no-ops. All four are now usage errors (`src/core/policy/exclude.rs`, `docs/security_and_filtering.md` § 3.6).
   - **Action:** Remove patterns that are only `!` or `/` plus trailing whitespace. `*.log ` matches as before.
-- **`--exclude` matches `\` the same on every platform**: A `\` in a path segment matches as U+FFFD everywhere. Before, Windows read `\` as `/`, so `--exclude secret.md` also dropped `docs\secret.md`. On Unix, a pattern matching a `\` in a file name (such as `a\\b` for `a\b`) no longer matches it (`src/core/policy/exclude.rs`, `docs/security_and_filtering.md` sec. 3.6).
+- **`--exclude` matches `\` the same on every platform**: A `\` in a path segment matches as U+FFFD everywhere. Before, Windows read `\` as `/`, so `--exclude secret.md` also dropped `docs\secret.md`. On Unix, a pattern matching a `\` in a file name (such as `a\\b` for `a\b`) no longer matches it (`src/core/policy/exclude.rs`, `docs/security_and_filtering.md` § 3.6).
   - **Action:** Rewrite Unix patterns that depended on a `\` in a file name.
-- **Root entries no longer merge with a directory named `<root>`**: The `MAX_FILE_COUNT` overflow list groups root-level entries under `./`, not `<root>/`. Before, a top-level `<root>` directory shared that key, and its count merged with the root files (`src/core/selector.rs`, `context.md` sec. 3.2).
+- **Root entries no longer merge with a directory named `<root>`**: The `MAX_FILE_COUNT` overflow list groups root-level entries under `./`, not `<root>/`. Before, a top-level `<root>` directory shared that key, and its count merged with the root files (`src/core/selector.rs`, `context.md` § 3.2).
   - **Action:** Library consumers comparing `CandidateLimitExceededError::largest_directories` names to `"<root>/"` must compare to `"./"`.
 
 #### Fixed
@@ -194,9 +194,9 @@ Observable behavior. **Action** = code or config change required.
 - **Overflow diagnostics sanitize names**: Paths and directory names in the `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` overflow lists are sanitized like other stderr diagnostics: `\t`, `\r`, `\n` become spaces; other control characters become `\u{FFFD}` (`src/core/error.rs`).
 - **Usage and source errors sanitize echoed input**: Messages that echo an argument, `--exclude` pattern, or URL now pass the same control-character sanitization as overflow lists. The sanitization runs in `DomainError`'s `Display`, so it also covers variants built directly. Before, an ESC in these values reached stderr raw. The required-arguments message is one line: `the following required arguments were not provided: <SOURCE>` (`src/core/error.rs`, `src/core/cli.rs`, `src/core/policy/exclude.rs`, `src/core/github/url.rs`).
   - **Action:** None for ordinary inputs. Scripts that matched the old two-line required-arguments text must match the one-line text.
-- **Archive file and directory at one path fail the run**: A tarball that stores `a` as a file and also has entries under `a/` fails with `InvalidMetadata`. Before, the digest listed `a` as both. A skipped `a` (binary, oversized, or non-text) does not trigger it (`src/core/storage.rs`, `docs/security_and_filtering.md` sec. 2 and 3.4).
+- **Archive file and directory at one path fail the run**: A tarball that stores `a` as a file and also has entries under `a/` fails with `InvalidMetadata`. Before, the digest listed `a` as both. A skipped `a` (binary, oversized, or non-text) does not trigger it (`src/core/storage.rs`, `docs/security_and_filtering.md` § 2 and 3.4).
   - **Action:** None for ordinary repositories.
-- **Oversized archive headers fail the run**: A GitHub tarball whose GNU long-name, GNU long-link, or PAX record exceeds the header read budget fails with `InvalidMetadata`, even if policy would drop the entry (hidden, excluded, non-regular). Before, tar read the whole record, then skipped or dropped the entry (`src/shell/archive.rs`, `docs/security_and_filtering.md` sec. 2, 6.4, 8).
+- **Oversized archive headers fail the run**: A GitHub tarball whose GNU long-name, GNU long-link, or PAX record exceeds the header read budget fails with `InvalidMetadata`, even if policy would drop the entry (hidden, excluded, non-regular). Before, tar read the whole record, then skipped or dropped the entry (`src/shell/archive.rs`, `docs/security_and_filtering.md` § 2, 6.4, 8).
   - **Action:** None for ordinary repositories. Headers within budget whose paths exceed `MAX_PATH_BYTES` still skip.
 
 ### Contributors
@@ -211,9 +211,9 @@ Internal refactors and test changes. No consumer action required.
 
 #### Changed
 
-- **Remaining read caps moved to policy**: GitHub API error body and PAX global header caps are `GITHUB_ERROR_BODY_BYTES` and `ARCHIVE_PAX_GLOBAL_BYTES` in `src/core/policy/limits.rs`, mirrored in `docs/security_and_filtering.md` sec. 8. Overflow and selector tests derive expected values from the constants. No observable change.
+- **Remaining read caps moved to policy**: GitHub API error body and PAX global header caps are `GITHUB_ERROR_BODY_BYTES` and `ARCHIVE_PAX_GLOBAL_BYTES` in `src/core/policy/limits.rs`, mirrored in `docs/security_and_filtering.md` § 8. Overflow and selector tests derive expected values from the constants. No observable change.
 - **Walk carries relative paths**: Walk frames and `RegularFile` hold root-relative paths; `classify_entry` and directory exclusion no longer call `strip_prefix` or its unreachable error branch. No behavior change (`src/shell/local/walk.rs`, `src/shell/local/pipeline.rs`).
-- **Docs match code**: Security spec sec. 2 shows tar header read before path normalization; sec. 5 describes the custom walk's symlink handling. README marks `.gitignore` as local-only. `IngestReport::skipped_files` rustdoc lists every skip reason (`docs/security_and_filtering.md`, `README.md`, `src/core/model.rs`).
+- **Docs match code**: Security spec § 2 shows tar header read before path normalization; § 5 describes the custom walk's symlink handling. README marks `.gitignore` as local-only. `IngestReport::skipped_files` rustdoc lists every skip reason (`docs/security_and_filtering.md`, `README.md`, `src/core/model.rs`).
 - **Rendered digest carries its report**: `RenderedDigest` holds `bytes` and `report: IngestReport`; `CollectionResult::render` takes the `OutputTarget`. Crate-internal, no observable change (`src/core/render/`, `src/shell/mod.rs`).
 - **Single tarball URL builder**: `tarball_url` takes the API base; the test-only GitHub URL uses it too, so tests exercise production path encoding (`src/core/github/url.rs`, `src/shell/github/mod.rs`).
 - **Path classifier without state enum**: `classify_path_segments` returns at the first non-UTF-8 segment instead of tracking `PathClassifierState` (`src/core/policy/classify.rs`).
@@ -232,7 +232,7 @@ Observable behavior. **Action** = code or config change required.
 
 #### Added
 
-- **`--exclude <PATTERN>` (`-x`)**: Drops paths matching a `.gitignore`-style pattern, relative to the source root. Repeatable; applied in order. Local and GitHub sources. Excluded entries are omitted from the digest and skipped count at any path length; excluded local directories are not entered. Matching examines only the first `MAX_PATH_DEPTH + 1` segments. Deeper entries are not excluded by a match past that point and still fail the depth limit. An invalid pattern, or one matching nothing, is a usage error (`src/core/policy/exclude.rs`, `src/core/cli.rs`, `src/shell/local/walk.rs`, `src/core/policy/classify.rs`). Help text and `docs/security_and_filtering.md` sec. 3.6 document the rules.
+- **`--exclude <PATTERN>` (`-x`)**: Drops paths matching a `.gitignore`-style pattern, relative to the source root. Repeatable; applied in order. Local and GitHub sources. Excluded entries are omitted from the digest and skipped count at any path length; excluded local directories are not entered. Matching examines only the first `MAX_PATH_DEPTH + 1` segments. Deeper entries are not excluded by a match past that point and still fail the depth limit. An invalid pattern, or one matching nothing, is a usage error (`src/core/policy/exclude.rs`, `src/core/cli.rs`, `src/shell/local/walk.rs`, `src/core/policy/classify.rs`). Help text and `docs/security_and_filtering.md` § 3.6 document the rules.
 
 #### Breaking
 
