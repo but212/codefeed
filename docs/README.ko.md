@@ -75,7 +75,7 @@ codefeed -- -my-directory
 - **헤더**: 로컬 다이제스트는 `Repository: <디렉터리 이름>`으로 시작하고, GitHub 다이제스트는 `Repository: https://github.com/{owner}/{repo}`로 시작합니다.
 - **텍스트 포맷** (`text`): UTF-8 파일 본문을 그대로 출력합니다. 바이너리(NUL) 또는 유효하지 않은 UTF-8 파일은 건너뜁니다. 헤더 레이블과 경로는 이스케이프되며, ANSI 시퀀스는 유지됩니다.
 - **XML 포맷** (`xml`): `<repository>`, `<directory_structure>`, `<files>` 요소로 구조화됩니다. 엔티티는 이스케이프되며, XML 1.0 미허용 문자는 `\u{FFFD}`로 변환됩니다.
-- **토큰 수**: 휴리스틱 추정치(토큰당 ASCII 바이트 비율([security 8절](security_and_filtering.md#8-limit-values)) + 비-ASCII 문자당 1토큰; 비어있지 않은 다이제스트는 최소 1, 빈 다이제스트는 0)이며 엄밀한 토크나이저 카운트가 아닙니다.
+- **토큰 수**: 휴리스틱 추정치(floor(ASCII 바이트 / 비율)([security 8절](security_and_filtering.md#8-limit-values)) + 비-ASCII 문자당 1토큰; 비어있지 않은 다이제스트는 최소 1, 빈 다이제스트는 0)이며 엄밀한 토크나이저 카운트가 아닙니다.
 - **종료 코드**: 성공, 도움말, 버전 출력 시 `0`; 사용법 또는 수집 실패 시 `1`. stdout 파이프가 닫히면(broken pipe) `0`으로 정상 종료합니다.
 
 ## 포함 및 제외 규칙
@@ -120,7 +120,7 @@ codefeed -- -my-directory
 공개 저장소는 인증이 필요하지 않습니다. 비공개 저장소 접근 또는 속도 제한 상향 시 자격 증명을 읽습니다:
 
 - `GITHUB_TOKEN` (우선 확인).
-- `GH_TOKEN` (`GITHUB_TOKEN`이 없거나 빈 값일 때 폴백).
+- `GH_TOKEN` (`GITHUB_TOKEN`이 없거나 빈 값 또는 공백만 있을 때 폴백).
 
 토큰은 `https://api.github.com`에만 `Authorization: Bearer <token>`으로 전송되며 리다이렉트 대상으로는 전송되지 않습니다.
 

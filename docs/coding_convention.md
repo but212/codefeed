@@ -33,6 +33,7 @@ Follow `C-CONV` and `C-CONV-TRAITS`. Prefer `From`, `TryFrom`, `AsRef`, `AsMut` 
   1. `Display::fmt(&self, f: &mut Formatter<'_>)`.
   2. Local `let mut` variables and owned value parameters (`mut self`, `mut val`).
   3. Internal dependency buffers unobservable through APIs (e.g. `ignore::gitignore::Gitignore` buffer pool in `policy/exclude.rs`).
+  4. Private module-internal helpers borrowing a caller's local `mut` state or iterator across an early-exit path (e.g. `cli::fold_args`).
 
 ### 3.2 `src/shell/` (Imperative Shell)
 
@@ -44,7 +45,7 @@ Follow `C-CONV` and `C-CONV-TRAITS`. Prefer `From`, `TryFrom`, `AsRef`, `AsMut` 
 Parse untrusted input into valid-by-construction types at the boundary; make invalid states unrepresentable:
 
 - **Types over Sentinels:** Enums and newtypes (`OutputTarget::Stdout`, not `"-"`). Parse CLI inputs, URLs, and headers once at ingress into `GitRef`, `Source`.
-- **Linear Typestates:** Transitions consume predecessor by value (`Selector` -> `CollectionResult` -> `RenderedDigest` -> `IngestReport`).
+- **Linear Typestates:** Accumulating transitions consume `self` by value (`Selector::observe` -> `Selector::finish` -> `CollectionResult`, `BoundedBuffer` -> `RenderedDigest`); subsequent phases (`CollectionResult::render(&self)`, `IngestReport`) read immutable outputs.
 - **`#[must_use]`:** Required on phase types (`Selector`, `CollectionResult`, `RenderedDigest`, `BoundedBuffer`, `SortedFiles`) and pure non-mutating query functions; omitted on `Result`-returning functions (clippy: `double_must_use`).
 - **Invariant Wrappers:** Encapsulate ordering or structural invariants in types with immutable interfaces (`SortedFiles`).
 - **Limit Relations:** Enforce with `const _: () = { assert!(...); };`, never runtime tests (exception: runtime comparison against mirrored table in [`security_and_filtering.md`](security_and_filtering.md) § 8).

@@ -18,7 +18,7 @@ pub(super) fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
 
 /// Error returned when rendered content exceeds the buffer's limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OutputLimitExceeded;
+pub(super) struct OutputLimitExceeded;
 
 /// Rendered digest: the bytes to deliver and their token estimate.
 #[derive(Debug)]
@@ -36,7 +36,7 @@ pub(crate) struct RenderedDigest {
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 #[must_use]
-pub(crate) struct BoundedBuffer {
+pub(super) struct BoundedBuffer {
     bytes: Vec<u8>,
     limit: u64,
 }
@@ -49,7 +49,7 @@ impl Default for BoundedBuffer {
 }
 
 impl BoundedBuffer {
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
+    pub(super) fn with_capacity(capacity: usize) -> Self {
         Self {
             bytes: Vec::with_capacity(capacity),
             limit: crate::core::policy::MAX_OUTPUT_SIZE,
@@ -57,14 +57,14 @@ impl BoundedBuffer {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_limit(capacity: usize, limit: u64) -> Self {
+    pub(super) fn with_limit(capacity: usize, limit: u64) -> Self {
         Self {
             limit,
             ..Self::with_capacity(capacity)
         }
     }
 
-    pub(crate) fn push_bytes(mut self, slice: &[u8]) -> Result<Self, OutputLimitExceeded> {
+    pub(super) fn push_bytes(mut self, slice: &[u8]) -> Result<Self, OutputLimitExceeded> {
         let new_len = self.bytes.len() + slice.len();
         if new_len as u64 > self.limit {
             return Err(OutputLimitExceeded);
@@ -73,15 +73,15 @@ impl BoundedBuffer {
         Ok(self)
     }
 
-    pub(crate) fn push_str(self, s: &str) -> Result<Self, OutputLimitExceeded> {
+    pub(super) fn push_str(self, s: &str) -> Result<Self, OutputLimitExceeded> {
         self.push_bytes(s.as_bytes())
     }
 
-    pub(crate) fn push_usize(self, val: usize) -> Result<Self, OutputLimitExceeded> {
+    pub(super) fn push_usize(self, val: usize) -> Result<Self, OutputLimitExceeded> {
         self.push_str(&val.to_string())
     }
 
-    pub(crate) fn finish(self) -> RenderedDigest {
+    pub(super) fn finish(self) -> RenderedDigest {
         let estimated_tokens = estimate_tokens_from_bytes(&self.bytes);
         RenderedDigest {
             bytes: self.bytes,

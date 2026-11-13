@@ -33,11 +33,12 @@
 Entry (local walk or tar stream)
  |
  +-- Directory (local walk only)
- |     +-- Entered: `.gitignore` read once; the same bytes validate and compile its rules.
- |     |     `-- Symlink, non-regular file, larger than `MAX_FILE_SIZE`, unreadable, or not valid UTF-8 -> Run fails (Io). § 3.5.
- |     +-- Listing over `MAX_DIR_ENTRIES` entries (hidden and ignored included) -> Run fails (InvalidMetadata).
  |     +-- Hidden or ignored by a `.gitignore` -> Pruned, not entered; its `.gitignore` is never read.
- |     `-- Matched by a user exclusion (§ 3.6) -> Pruned, not entered; its `.gitignore` is never read.
+ |     +-- Matched by a user exclusion (§ 3.6) -> Pruned, not entered; its `.gitignore` is never read.
+ |     `-- Entered:
+ |           +-- `.gitignore` read once; the same bytes validate and compile its rules.
+ |           |     `-- Symlink, non-regular file, larger than `MAX_FILE_SIZE`, unreadable, or not valid UTF-8 -> Run fails (Io). § 3.5.
+ |           `-- Listing over `MAX_DIR_ENTRIES` entries (hidden and ignored included) -> Run fails (InvalidMetadata).
  |
  +-- Tar header read (`Entries::next`, GNU `L`/`K` and PAX `x` bodies included). Runs before path classification and applies to every entry type.
  |     `-- Over `ARCHIVE_MAX_HEADER_BYTES` for one read -> Run fails (InvalidMetadata), even for entries that would be dropped (I-03).
@@ -201,8 +202,8 @@ Sanitization runs in a single pass:
    - Header labels and paths: escapes `\`, `\r`, `\n`. Controls (`0x00`-`0x08`, `0x0B`, `0x0C`, `0x0E`-`0x1F`, `0x7F`) map to `\u{FFFD}`.
    - File bodies: verbatim UTF-8; ANSI sequences preserved.
 2. **XML (`--format xml`):**
-   - Entities escaped (`&`, `<`, `>`, `"`, `'`). Attribute whitespace (`\t`, `\n`, `\r`) encoded as character references (`&#9;`, `&#10;`, `&#13;`). Disallowed XML 1.0 controls map to `\u{FFFD}`.
-3. **Tree Labels:** Escaped for control characters and XML entities.
+   - Entities escaped (`&`, `<`, `>`, `"`, `'`). Attribute whitespace (`\t`, `\n`, `\r`) encoded as character references (`&#9;`, `&#10;`, `&#13;`). Disallowed XML 1.0 characters (C0 controls and `U+FFFE`/`U+FFFF`) map to `\u{FFFD}`.
+3. **Tree Labels:** Follow the active format's single-line escaping (header backslash/control rules in text format; XML entity, attribute-whitespace, and disallowed-character rules in XML format).
 4. **Error and Warning Diagnostics (`ErrorDetail`, `sanitize_error_detail`, I-04):**
    - Single-line diagnostics emitted to stderr (paths in I/O errors, root validation errors, HTTP status messages, transport error text, domain messages, overflow lists) convert `\t`, `\r`, `\n` to space `' '` and other control characters to `\u{FFFD}` to prevent terminal injection or log forgery. Destination in stdout completion summary (`Wrote <PATH>`) is sanitized identically.
 

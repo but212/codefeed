@@ -11,9 +11,10 @@ mod budget;
 mod formats;
 mod tree;
 
-pub(crate) use budget::{BoundedBuffer, OutputLimitExceeded, RenderedDigest};
+pub(crate) use budget::RenderedDigest;
+use budget::{BoundedBuffer, OutputLimitExceeded};
 
-pub(crate) fn render_digest(
+fn render_digest(
     mut buf: BoundedBuffer,
     collection: &CollectionResult,
     format: DigestFormat,
