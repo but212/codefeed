@@ -38,11 +38,11 @@ pub(super) fn write_header(
     match format {
         DigestFormat::Text => {
             buf = buf.push_str(REPOSITORY_PREFIX)?;
-            buf = write_escaped(buf, label, escape_header)?;
+            buf = write_escaped(buf, label, &HEADER_ESCAPE)?;
             buf = buf.push_str(NEWLINE)?;
             if let Some(rev) = revision {
                 buf = buf.push_str(REVISION_PREFIX)?;
-                buf = write_escaped(buf, rev, escape_header)?;
+                buf = write_escaped(buf, rev, &HEADER_ESCAPE)?;
                 buf = buf.push_str(NEWLINE)?;
             }
             buf = buf.push_str(FILES_PREFIX)?;
@@ -55,10 +55,10 @@ pub(super) fn write_header(
         }
         DigestFormat::Xml => {
             buf = buf.push_str(XML_REPO_START)?;
-            buf = write_escaped(buf, label, escape_xml_single_line)?;
+            buf = write_escaped(buf, label, &XML_SINGLE_LINE_ESCAPE)?;
             if let Some(rev) = revision {
                 buf = buf.push_str(XML_REVISION_ATTR)?;
-                buf = write_escaped(buf, rev, escape_xml_single_line)?;
+                buf = write_escaped(buf, rev, &XML_SINGLE_LINE_ESCAPE)?;
             }
             buf = buf.push_str(XML_TAG_CLOSE)?;
             buf = buf.push_str(XML_DIR_START)?;
@@ -73,8 +73,8 @@ pub(super) fn write_tree_name(
     name: &str,
 ) -> Result<BoundedBuffer, OutputLimitExceeded> {
     match format {
-        DigestFormat::Text => write_escaped(buf, name, escape_header),
-        DigestFormat::Xml => write_escaped(buf, name, escape_xml_single_line),
+        DigestFormat::Text => write_escaped(buf, name, &HEADER_ESCAPE),
+        DigestFormat::Xml => write_escaped(buf, name, &XML_SINGLE_LINE_ESCAPE),
     }
 }
 
@@ -102,7 +102,7 @@ pub(super) fn write_file_entry(
     match format {
         DigestFormat::Text => {
             buf = buf.push_str(FILE_BLOCK_PREFIX)?;
-            buf = write_escaped(buf, path, escape_header)?;
+            buf = write_escaped(buf, path, &HEADER_ESCAPE)?;
             buf = buf.push_str(FILE_BLOCK_SUFFIX)?;
             if !content.is_empty() {
                 buf = buf.push_bytes(content.as_bytes())?;
@@ -112,12 +112,12 @@ pub(super) fn write_file_entry(
         }
         DigestFormat::Xml => {
             buf = buf.push_str(XML_FILE_START)?;
-            buf = write_escaped(buf, path, escape_xml_single_line)?;
+            buf = write_escaped(buf, path, &XML_SINGLE_LINE_ESCAPE)?;
             buf = buf.push_str(XML_TAG_CLOSE)?;
             if content.is_empty() {
                 buf = buf.push_bytes(XML_FILE_TAILS[0])?;
             } else {
-                buf = write_escaped(buf, content, escape_xml_body)?;
+                buf = write_escaped(buf, content, &XML_BODY_ESCAPE)?;
                 buf = buf.push_bytes(XML_FILE_TAILS[missing_nl])?;
             }
             Ok(buf)
@@ -139,65 +139,158 @@ pub(super) fn write_footer(
     }
 }
 
+const PASS: u8 = 0;
+const NONCHAR_TAG: u8 = u8::MAX;
+
+const REPLACEMENTS: [&str; 13] = [
+    "",         // 0: unused (PASS)
+    "\\\\",     // 1
+    "\\r",      // 2
+    "\\n",      // 3
+    "\u{FFFD}", // 4
+    "&quot;",   // 5
+    "&amp;",    // 6
+    "&apos;",   // 7
+    "&lt;",     // 8
+    "&gt;",     // 9
+    "&#9;",     // 10
+    "&#10;",    // 11
+    "&#13;",    // 12
+];
+
 #[must_use]
-const fn escape_header(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
-    match bytes[i] {
-        b'\\' => Some((1, "\\\\")),
-        b'\r' => Some((1, "\\r")),
-        b'\n' => Some((1, "\\n")),
-        0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F | 0x7F => Some((1, "\u{FFFD}")),
-        _ => None,
+const fn header_tag(b: u8) -> u8 {
+    match b {
+        b'\\' => 1,
+        b'\r' => 2,
+        b'\n' => 3,
+        0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F | 0x7F => 4,
+        _ => PASS,
     }
 }
 
 #[must_use]
-const fn escape_xml_body(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
-    match bytes[i] {
-        0..=8 | 11 | 12 | 14..=31 => Some((1, "\u{FFFD}")),
-        b'"' => Some((1, "&quot;")),
-        b'&' => Some((1, "&amp;")),
-        b'\'' => Some((1, "&apos;")),
-        b'<' => Some((1, "&lt;")),
-        b'>' => Some((1, "&gt;")),
-        0xEF if i + 2 < bytes.len()
-            && bytes[i + 1] == 0xBF
-            && (bytes[i + 2] == 0xBE || bytes[i + 2] == 0xBF) =>
-        {
-            Some((3, "\u{FFFD}"))
+const fn xml_body_tag(b: u8) -> u8 {
+    match b {
+        0..=8 | 11 | 12 | 14..=31 => 4,
+        b'"' => 5,
+        b'&' => 6,
+        b'\'' => 7,
+        b'<' => 8,
+        b'>' => 9,
+        0xEF => NONCHAR_TAG,
+        _ => PASS,
+    }
+}
+
+#[must_use]
+const fn xml_single_line_tag(b: u8) -> u8 {
+    match b {
+        b'\t' => 10,
+        b'\n' => 11,
+        b'\r' => 12,
+        _ => xml_body_tag(b),
+    }
+}
+
+struct EscapeSpec {
+    lut: [u8; 256],
+}
+
+macro_rules! escape_spec {
+    ($fn:ident) => {{
+        let mut lut = [PASS; 256];
+        let mut b = 0usize;
+        while b < 256 {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "loop index b is bounded to 0..256"
+            )]
+            {
+                lut[b] = $fn(b as u8);
+            }
+            b += 1;
         }
-        _ => None,
-    }
+        EscapeSpec { lut }
+    }};
 }
 
-#[must_use]
-const fn escape_xml_single_line(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
-    match bytes[i] {
-        b'\t' => Some((1, "&#9;")),
-        b'\n' => Some((1, "&#10;")),
-        b'\r' => Some((1, "&#13;")),
-        _ => escape_xml_body(bytes, i),
+const HEADER_ESCAPE: EscapeSpec = escape_spec!(header_tag);
+const XML_BODY_ESCAPE: EscapeSpec = escape_spec!(xml_body_tag);
+const XML_SINGLE_LINE_ESCAPE: EscapeSpec = escape_spec!(xml_single_line_tag);
+
+const _: () = {
+    let specs = [&HEADER_ESCAPE, &XML_BODY_ESCAPE, &XML_SINGLE_LINE_ESCAPE];
+    let mut s = 0;
+    while s < specs.len() {
+        let mut b = 0;
+        while b < 256 {
+            let tag = specs[s].lut[b];
+            assert!(
+                tag == PASS
+                    || (tag == NONCHAR_TAG && b == 0xEF)
+                    || (tag as usize) < REPLACEMENTS.len()
+            );
+            b += 1;
+        }
+        s += 1;
     }
+};
+
+#[inline]
+fn find_special(bytes: &[u8], mut i: usize, lut: &[u8; 256]) -> usize {
+    while i + 8 <= bytes.len() {
+        let mask = lut[bytes[i] as usize]
+            | lut[bytes[i + 1] as usize]
+            | lut[bytes[i + 2] as usize]
+            | lut[bytes[i + 3] as usize]
+            | lut[bytes[i + 4] as usize]
+            | lut[bytes[i + 5] as usize]
+            | lut[bytes[i + 6] as usize]
+            | lut[bytes[i + 7] as usize];
+        if mask != 0 {
+            break;
+        }
+        i += 8;
+    }
+    while i < bytes.len() && lut[bytes[i] as usize] == PASS {
+        i += 1;
+    }
+    i
 }
 
-fn write_escaped<F>(
+fn write_escaped(
     mut buf: BoundedBuffer,
     value: &str,
-    special_at: F,
-) -> Result<BoundedBuffer, OutputLimitExceeded>
-where
-    F: Fn(&[u8], usize) -> Option<(usize, &'static str)>,
-{
+    spec: &EscapeSpec,
+) -> Result<BoundedBuffer, OutputLimitExceeded> {
     let bytes = value.as_bytes();
+    buf = buf.reserve_bounded(bytes.len())?;
     let mut last = 0;
     let mut i = 0;
     while i < bytes.len() {
-        if let Some((consumed, esc)) = special_at(bytes, i) {
-            buf = buf.push_bytes(&bytes[last..i])?;
-            buf = buf.push_bytes(esc.as_bytes())?;
-            i += consumed;
-            last = i;
+        i = find_special(bytes, i, &spec.lut);
+        if i == bytes.len() {
+            break;
+        }
+        let tag = spec.lut[bytes[i] as usize];
+        if tag == NONCHAR_TAG {
+            if i + 2 < bytes.len()
+                && bytes[i + 1] == 0xBF
+                && (bytes[i + 2] == 0xBE || bytes[i + 2] == 0xBF)
+            {
+                buf = buf.push_bytes(&bytes[last..i])?;
+                buf = buf.push_str("\u{FFFD}")?;
+                i += 3;
+                last = i;
+            } else {
+                i += 1;
+            }
         } else {
+            buf = buf.push_bytes(&bytes[last..i])?;
+            buf = buf.push_str(REPLACEMENTS[tag as usize])?;
             i += 1;
+            last = i;
         }
     }
     buf.push_bytes(&bytes[last..])
@@ -207,15 +300,13 @@ where
 mod tests {
     use super::*;
 
-    type SpecialAt = fn(&[u8], usize) -> Option<(usize, &'static str)>;
-
-    fn escape_with(special_at: SpecialAt, value: &str) -> String {
-        let buf = write_escaped(BoundedBuffer::default(), value, special_at).unwrap();
+    fn escape_with(spec: &EscapeSpec, value: &str) -> String {
+        let buf = write_escaped(BoundedBuffer::default(), value, spec).unwrap();
         String::from_utf8(buf.finish().bytes).unwrap()
     }
 
     fn xml_escape(value: &str) -> String {
-        escape_with(escape_xml_body, value)
+        escape_with(&XML_BODY_ESCAPE, value)
     }
 
     #[test]
@@ -259,15 +350,15 @@ mod tests {
     #[test]
     fn header_and_attribute_escaping_examples() {
         // Literal anchors for the per-character models in `properties`.
-        assert_eq!(escape_with(escape_header, "clean_path"), "clean_path");
-        assert_eq!(escape_with(escape_header, ""), "");
+        assert_eq!(escape_with(&HEADER_ESCAPE, "clean_path"), "clean_path");
+        assert_eq!(escape_with(&HEADER_ESCAPE, ""), "");
         assert_eq!(
-            escape_with(escape_header, "a\\b\rc\nd\\\\e\r\n\x1b]0;title\x07\x7f\t"),
+            escape_with(&HEADER_ESCAPE, "a\\b\rc\nd\\\\e\r\n\x1b]0;title\x07\x7f\t"),
             "a\\\\b\\rc\\nd\\\\\\\\e\\r\\n\u{FFFD}]0;title\u{FFFD}\u{FFFD}\t"
         );
         assert_eq!(
             escape_with(
-                escape_xml_single_line,
+                &XML_SINGLE_LINE_ESCAPE,
                 "tab\tnewline\r\nquote\"amp&apos'<tag>"
             ),
             "tab&#9;newline&#13;&#10;quote&quot;amp&amp;apos&apos;&lt;tag&gt;"
@@ -294,8 +385,8 @@ mod tests {
             .prop_map(String::from_iter)
         }
 
-        fn escape(value: &str, special_at: SpecialAt) -> String {
-            let buf = write_escaped(BoundedBuffer::default(), value, special_at).unwrap();
+        fn escape(value: &str, spec: &EscapeSpec) -> String {
+            let buf = write_escaped(BoundedBuffer::default(), value, spec).unwrap();
             String::from_utf8(buf.finish().bytes).unwrap()
         }
 
@@ -332,15 +423,15 @@ mod tests {
             }
         }
 
-        type Escaper = (&'static str, SpecialAt, fn(char) -> String);
+        type Escaper = (&'static str, &'static EscapeSpec, fn(char) -> String);
 
         fn escapers() -> [Escaper; 3] {
             [
-                ("header", escape_header, model_header),
-                ("xml body", escape_xml_body, model_xml_body),
+                ("header", &HEADER_ESCAPE, model_header),
+                ("xml body", &XML_BODY_ESCAPE, model_xml_body),
                 (
                     "xml single line",
-                    escape_xml_single_line,
+                    &XML_SINGLE_LINE_ESCAPE,
                     model_xml_single_line,
                 ),
             ]
@@ -352,9 +443,9 @@ mod tests {
             /// Each escaper maps every character independently, as its documented table says.
             #[test]
             fn escaping_matches_the_per_character_table(value in text()) {
-                for (name, special_at, model) in escapers() {
+                for (name, spec, model) in escapers() {
                     let expected: String = value.chars().map(model).collect();
-                    prop_assert_eq!(escape(&value, special_at), expected, "{}", name);
+                    prop_assert_eq!(escape(&value, spec), expected, "{}", name);
                 }
             }
 
