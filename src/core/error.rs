@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt::{Display, Formatter, Result};
 
 /// Error text that may echo user input or a remote payload. It holds no control character (I-04):
@@ -9,8 +10,12 @@ impl ErrorDetail {
     /// Creates a detail from `text`, replacing line breaks with spaces and other control characters
     /// with `U+FFFD`.
     #[must_use]
-    pub fn new(text: impl Into<String>) -> Self {
-        Self(sanitize_error_detail(&text.into()))
+    pub fn new<'a>(text: impl Into<Cow<'a, str>>) -> Self {
+        let cow = text.into();
+        match sanitize_error_detail(&cow) {
+            Cow::Borrowed(_) => Self(cow.into_owned()),
+            Cow::Owned(sanitized) => Self(sanitized),
+        }
     }
 }
 
@@ -73,7 +78,7 @@ pub enum DomainError {
 impl DomainError {
     /// Constructs a [`Usage`](Self::Usage) error. The message is sanitized because it may echo user input.
     #[cold]
-    pub(crate) fn usage(message: impl Into<String>) -> Self {
+    pub(crate) fn usage<'a>(message: impl Into<Cow<'a, str>>) -> Self {
         Self::Usage(ErrorDetail::new(message))
     }
 
@@ -92,19 +97,19 @@ impl DomainError {
 
     /// Constructs an [`InvalidSource`](Self::InvalidSource) error. The message is sanitized because it may echo user input.
     #[cold]
-    pub(crate) fn invalid_source(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid_source<'a>(message: impl Into<Cow<'a, str>>) -> Self {
         Self::InvalidSource(ErrorDetail::new(message))
     }
 
     /// Constructs an [`UnsupportedSource`](Self::UnsupportedSource) error. The message is sanitized because it may echo user input.
     #[cold]
-    pub(crate) fn unsupported_source(message: impl Into<String>) -> Self {
+    pub(crate) fn unsupported_source<'a>(message: impl Into<Cow<'a, str>>) -> Self {
         Self::UnsupportedSource(ErrorDetail::new(message))
     }
 
     /// Constructs an [`InvalidMetadata`](Self::InvalidMetadata) error. The message is sanitized because it may echo remote payload.
     #[cold]
-    pub(crate) fn invalid_metadata(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid_metadata<'a>(message: impl Into<Cow<'a, str>>) -> Self {
         Self::InvalidMetadata(ErrorDetail::new(message))
     }
 
@@ -132,15 +137,20 @@ fn sanitized_counts(entries: Vec<(String, usize)>) -> Vec<(ErrorDetail, usize)> 
 /// Note: Unlike digest header escaping which escapes `\n` and `\r` as `\n` / `\r` literals,
 /// error message formatting converts line breaks to spaces for compact single-line stderr diagnostics.
 #[must_use]
-fn sanitize_error_detail(input: &str) -> String {
-    input
-        .chars()
-        .map(|c| match c {
-            '\t' | '\r' | '\n' => ' ',
-            c if c.is_control() => '\u{FFFD}',
-            c => c,
-        })
-        .collect()
+fn sanitize_error_detail(input: &str) -> Cow<'_, str> {
+    if !input.chars().any(char::is_control) {
+        return Cow::Borrowed(input);
+    }
+    Cow::Owned(
+        input
+            .chars()
+            .map(|c| match c {
+                '\t' | '\r' | '\n' => ' ',
+                c if c.is_control() => '\u{FFFD}',
+                c => c,
+            })
+            .collect(),
+    )
 }
 
 impl Display for DomainError {
@@ -232,8 +242,12 @@ mod tests {
 
     #[test]
     fn sanitize_error_detail_replaces_newlines_and_controls() {
+        let clean = sanitize_error_detail("plain error message");
+        assert!(matches!(clean, Cow::Borrowed("plain error message")));
+
         let input = "hello\tworld\r\nfoo\x1b[31mbar\x07baz\x7fdel\u{80}c1";
         let sanitized = sanitize_error_detail(input);
+        assert!(matches!(sanitized, Cow::Owned(_)));
         assert_eq!(
             sanitized,
             "hello world  foo\u{FFFD}[31mbar\u{FFFD}baz\u{FFFD}del\u{FFFD}c1"
@@ -379,7 +393,7 @@ mod tests {
             #[test]
             fn sanitizing_is_idempotent(input in text()) {
                 let once = sanitize_error_detail(&input);
-                prop_assert_eq!(sanitize_error_detail(&once), once);
+                prop_assert_eq!(&*sanitize_error_detail(&once), &*once);
             }
         }
     }
