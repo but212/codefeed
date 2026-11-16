@@ -139,74 +139,103 @@ pub(super) fn write_footer(
     }
 }
 
+const PASS: u8 = 0;
+const NONCHAR_TAG: u8 = u8::MAX;
+
+const REPLACEMENTS: [&str; 13] = [
+    "",         // 0: unused (PASS)
+    "\\\\",     // 1
+    "\\r",      // 2
+    "\\n",      // 3
+    "\u{FFFD}", // 4
+    "&quot;",   // 5
+    "&amp;",    // 6
+    "&apos;",   // 7
+    "&lt;",     // 8
+    "&gt;",     // 9
+    "&#9;",     // 10
+    "&#10;",    // 11
+    "&#13;",    // 12
+];
+
 #[must_use]
-const fn escape_header(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
-    match bytes[i] {
-        b'\\' => Some((1, "\\\\")),
-        b'\r' => Some((1, "\\r")),
-        b'\n' => Some((1, "\\n")),
-        0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F | 0x7F => Some((1, "\u{FFFD}")),
-        _ => None,
+const fn header_tag(b: u8) -> u8 {
+    match b {
+        b'\\' => 1,
+        b'\r' => 2,
+        b'\n' => 3,
+        0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F | 0x7F => 4,
+        _ => PASS,
     }
 }
 
 #[must_use]
-const fn escape_xml_body(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
-    match bytes[i] {
-        0..=8 | 11 | 12 | 14..=31 => Some((1, "\u{FFFD}")),
-        b'"' => Some((1, "&quot;")),
-        b'&' => Some((1, "&amp;")),
-        b'\'' => Some((1, "&apos;")),
-        b'<' => Some((1, "&lt;")),
-        b'>' => Some((1, "&gt;")),
-        0xEF if i + 2 < bytes.len()
-            && bytes[i + 1] == 0xBF
-            && (bytes[i + 2] == 0xBE || bytes[i + 2] == 0xBF) =>
-        {
-            Some((3, "\u{FFFD}"))
-        }
-        _ => None,
+const fn xml_body_tag(b: u8) -> u8 {
+    match b {
+        0..=8 | 11 | 12 | 14..=31 => 4,
+        b'"' => 5,
+        b'&' => 6,
+        b'\'' => 7,
+        b'<' => 8,
+        b'>' => 9,
+        0xEF => NONCHAR_TAG,
+        _ => PASS,
     }
 }
 
 #[must_use]
-const fn escape_xml_single_line(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
-    match bytes[i] {
-        b'\t' => Some((1, "&#9;")),
-        b'\n' => Some((1, "&#10;")),
-        b'\r' => Some((1, "&#13;")),
-        _ => escape_xml_body(bytes, i),
+const fn xml_single_line_tag(b: u8) -> u8 {
+    match b {
+        b'\t' => 10,
+        b'\n' => 11,
+        b'\r' => 12,
+        _ => xml_body_tag(b),
     }
 }
-
-type SpecialAt = fn(&[u8], usize) -> Option<(usize, &'static str)>;
 
 struct EscapeSpec {
     lut: [u8; 256],
-    special_at: SpecialAt,
 }
 
 macro_rules! escape_spec {
     ($fn:ident) => {{
-        let mut lut = [0u8; 256];
+        let mut lut = [PASS; 256];
         let mut b = 0usize;
         while b < 256 {
-            let single = [b as u8];
-            if $fn(&single, 0).is_some() || (b == 0xEF && $fn(&[0xEF, 0xBF, 0xBE], 0).is_some()) {
-                lut[b] = 1;
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "loop index b is bounded to 0..256"
+            )]
+            {
+                lut[b] = $fn(b as u8);
             }
             b += 1;
         }
-        EscapeSpec {
-            lut,
-            special_at: $fn,
-        }
+        EscapeSpec { lut }
     }};
 }
 
-const HEADER_ESCAPE: EscapeSpec = escape_spec!(escape_header);
-const XML_BODY_ESCAPE: EscapeSpec = escape_spec!(escape_xml_body);
-const XML_SINGLE_LINE_ESCAPE: EscapeSpec = escape_spec!(escape_xml_single_line);
+const HEADER_ESCAPE: EscapeSpec = escape_spec!(header_tag);
+const XML_BODY_ESCAPE: EscapeSpec = escape_spec!(xml_body_tag);
+const XML_SINGLE_LINE_ESCAPE: EscapeSpec = escape_spec!(xml_single_line_tag);
+
+const _: () = {
+    let specs = [&HEADER_ESCAPE, &XML_BODY_ESCAPE, &XML_SINGLE_LINE_ESCAPE];
+    let mut s = 0;
+    while s < specs.len() {
+        let mut b = 0;
+        while b < 256 {
+            let tag = specs[s].lut[b];
+            assert!(
+                tag == PASS
+                    || (tag == NONCHAR_TAG && b == 0xEF)
+                    || (tag as usize) < REPLACEMENTS.len()
+            );
+            b += 1;
+        }
+        s += 1;
+    }
+};
 
 #[inline]
 fn find_special(bytes: &[u8], mut i: usize, lut: &[u8; 256]) -> usize {
@@ -224,7 +253,7 @@ fn find_special(bytes: &[u8], mut i: usize, lut: &[u8; 256]) -> usize {
         }
         i += 8;
     }
-    while i < bytes.len() && lut[bytes[i] as usize] == 0 {
+    while i < bytes.len() && lut[bytes[i] as usize] == PASS {
         i += 1;
     }
     i
@@ -244,13 +273,24 @@ fn write_escaped(
         if i == bytes.len() {
             break;
         }
-        if let Some((consumed, esc)) = (spec.special_at)(bytes, i) {
-            buf = buf.push_bytes(&bytes[last..i])?;
-            buf = buf.push_str(esc)?;
-            i += consumed;
-            last = i;
+        let tag = spec.lut[bytes[i] as usize];
+        if tag == NONCHAR_TAG {
+            if i + 2 < bytes.len()
+                && bytes[i + 1] == 0xBF
+                && (bytes[i + 2] == 0xBE || bytes[i + 2] == 0xBF)
+            {
+                buf = buf.push_bytes(&bytes[last..i])?;
+                buf = buf.push_str("\u{FFFD}")?;
+                i += 3;
+                last = i;
+            } else {
+                i += 1;
+            }
         } else {
+            buf = buf.push_bytes(&bytes[last..i])?;
+            buf = buf.push_str(REPLACEMENTS[tag as usize])?;
             i += 1;
+            last = i;
         }
     }
     buf.push_bytes(&bytes[last..])
