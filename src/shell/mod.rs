@@ -68,8 +68,7 @@ fn ingest_from(config: &RunConfig, github_api_base: &str) -> Result<IngestReport
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::OutputTarget;
-    use crate::core::model::DigestFormat;
+    use crate::core::model::{DigestFormat, OutputTarget};
     use crate::core::source::GitRef;
     use crate::shell::testing::{MockServer, gzip_tarball, tarball_response, temp_dir};
     use std::fs;

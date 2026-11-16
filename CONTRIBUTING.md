@@ -58,7 +58,7 @@ All Pull Requests must pass all four checks in this exact order:
 ```bash
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
-cargo doc --no-deps --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
 cargo test --locked
 ```
 

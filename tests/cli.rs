@@ -48,7 +48,12 @@ fn run(args: &[&str]) -> std::process::Output {
 fn help_exits_successfully_without_ingesting() {
     let cases: &[&[&str]] = &[&["--help"], &[".", "--help"]];
     for args in cases {
-        let output = run(args);
+        let dir = TempDir::new("help");
+        let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+            .args(*args)
+            .current_dir(&dir.path)
+            .output()
+            .expect("CLI process should start");
         assert!(
             output.status.success(),
             "args: {args:?}, output: {output:?}"
@@ -61,6 +66,7 @@ fn help_exits_successfully_without_ingesting() {
             "args: {args:?}"
         );
         assert!(output.stderr.is_empty(), "args: {args:?}");
+        assert!(!dir.path.join("digest.txt").exists(), "args: {args:?}");
     }
 }
 
@@ -91,9 +97,10 @@ fn version_exits_successfully_without_ingesting() {
 #[test]
 fn invalid_invocations_exit_one_with_an_error_line() {
     // (args, fragment unique to the failing branch, fragment that must be absent)
-    let cases: [(&[&str], &str, Option<&str>); 3] = [
+    let cases: [(&[&str], &str, Option<&str>); 4] = [
         (&[], "error:", None),
         (&[".", "--format"], "error:", None),
+        (&[".", "--ref", "main"], "error:", None),
         (
             &[".", "--unknown"],
             "error: unknown option: --unknown",
@@ -112,6 +119,26 @@ fn invalid_invocations_exit_one_with_an_error_line() {
             assert!(!stderr.contains(absent), "args: {args:?}, stderr: {stderr}");
         }
     }
+}
+
+#[test]
+fn double_dash_treats_leading_dash_source_as_positional() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = TempDir::new("double_dash");
+    let dash_dir = root.path.join("-dash-dir");
+    std::fs::create_dir(&dash_dir)?;
+    std::fs::write(dash_dir.join("hello.txt"), "hello")?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+        .current_dir(&root.path)
+        .args(["-o", "-", "--", "-dash-dir"])
+        .output()
+        .expect("CLI process should start");
+
+    assert!(output.status.success(), "output: {output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("hello.txt"), "stdout: {stdout}");
+    Ok(())
 }
 
 #[test]
@@ -370,20 +397,32 @@ fn file_output_bytes_match_stdout_bytes() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
-fn ingest_fails_fast_on_directory_output_target() {
-    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .args(["--output", ".", "."])
-        .output()
-        .expect("CLI process should start");
+fn ingest_fails_fast_on_directory_output_target() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TempDir::new("dir_output");
+    let out_dir = root.path.join("out_dir");
+    std::fs::create_dir(&out_dir)?;
+    let missing_source = root.path.join("does_not_exist");
+    let missing_arg = missing_source.to_str().expect("temp path is UTF-8");
+    let out_dir_arg = out_dir.to_str().expect("temp path is UTF-8");
+    let suffixed_out = format!("{}/", root.path.join("out").display());
 
-    assert!(!output.status.success(), "output: {output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("output path has no filename")
-            || stderr.contains("output path is a directory")
-            || stderr.contains("Is a directory"),
-        "unexpected stderr: {stderr}"
-    );
+    for (output_arg, expected_msg) in [
+        (out_dir_arg, "output path is a directory"),
+        (suffixed_out.as_str(), "output path has no filename"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+            .args(["--output", output_arg, missing_arg])
+            .output()
+            .expect("CLI process should start");
+
+        assert_eq!(output.status.code(), Some(1), "output: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(expected_msg),
+            "expected {expected_msg:?} in stderr for {output_arg:?}, got: {stderr}"
+        );
+    }
+    Ok(())
 }
 
 #[test]

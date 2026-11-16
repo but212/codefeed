@@ -89,7 +89,7 @@ Converts a local directory or public GitHub repository into a single text digest
 ### 3.6 Output Delivery
 
 - `resolve_output_target` resolves destination once at startup, excluding it from traversal. `write_atomic` writes atomically: [security § 5](docs/security_and_filtering.md#5-local-filesystem-safety).
-- `deliver` buffers digest in memory, emitting only on success. Summary streams and broken pipe handling: [README Output](README.md#output). File target path in summary sanitized via `ErrorDetail::new`.
+- `CollectionResult::render` buffers rendered digest in memory (`BoundedBuffer`); `deliver` emits only on success. Summary streams and broken pipe handling: [README Output](README.md#output). File target path in summary sanitized via `ErrorDetail::new`.
 
 ### 3.7 Diagnostics
 

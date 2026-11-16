@@ -7,7 +7,7 @@ use memchr::memchr;
 use crate::core::error::DomainError;
 use crate::core::path::NormalizedPath;
 use crate::core::policy::{
-    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES_USIZE, OVERFLOW_LARGEST_DIRECTORIES,
+    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, OVERFLOW_LARGEST_DIRECTORIES,
 };
 use crate::core::storage::{FileStorage, SortedFiles};
 
@@ -58,7 +58,7 @@ struct CandidateBudget {
 
 impl CandidateBudget {
     /// Adds a single observed candidate path to the budget accounting.
-    pub(crate) fn add(mut self, path: &str) -> Result<Self, DomainError> {
+    fn add(mut self, path: &str) -> Result<Self, DomainError> {
         self.count += 1;
         let dir = extract_dir_slice(path);
         if let Some(count) = self.dir_counts.get_mut(dir) {
@@ -87,7 +87,7 @@ impl CandidateBudget {
 /// grow the key store beyond the candidate count times `MAX_PATH_BYTES`.
 fn extract_dir_slice(path: &str) -> &str {
     let dir = memchr(b'/', path.as_bytes()).map_or("./", |index| &path[..=index]);
-    let mut end = dir.len().min(MAX_PATH_BYTES_USIZE);
+    let mut end = dir.len().min(MAX_PATH_BYTES);
     while !dir.is_char_boundary(end) {
         end -= 1;
     }
@@ -216,7 +216,7 @@ pub(crate) struct CollectionResult {
 mod tests {
     use super::*;
     use crate::core::policy::{
-        MAX_FILE_SIZE_USIZE, MAX_OUTPUT_SIZE, MAX_OUTPUT_SIZE_USIZE, MAX_PATH_BYTES_USIZE,
+        MAX_FILE_SIZE_USIZE, MAX_OUTPUT_SIZE, MAX_OUTPUT_SIZE_USIZE, MAX_PATH_BYTES,
     };
 
     #[test]
@@ -269,9 +269,9 @@ mod tests {
     fn extract_dir_slice_takes_the_first_segment_capped_at_a_char_boundary() {
         // `a` followed by two-byte `é` puts every character start at an odd offset, so byte
         // `MAX_PATH_BYTES` lands inside a character and the cut moves back one byte.
-        let accented = format!("a{}", "é".repeat(MAX_PATH_BYTES_USIZE));
-        let accented_cut = format!("a{}", "é".repeat((MAX_PATH_BYTES_USIZE - 2) / 2));
-        let overlong = "a".repeat(MAX_PATH_BYTES_USIZE + 10);
+        let accented = format!("a{}", "é".repeat(MAX_PATH_BYTES));
+        let accented_cut = format!("a{}", "é".repeat((MAX_PATH_BYTES - 2) / 2));
+        let overlong = "a".repeat(MAX_PATH_BYTES + 10);
 
         let cases = [
             ("src/core/decide.rs".to_string(), "src/".to_string()),
@@ -279,25 +279,22 @@ mod tests {
             (String::new(), "./".to_string()),
             ("vendor/".to_string(), "vendor/".to_string()),
             ("<root>/x.rs".to_string(), "<root>/".to_string()),
-            (
-                format!("{overlong}/file.rs"),
-                "a".repeat(MAX_PATH_BYTES_USIZE),
-            ),
+            (format!("{overlong}/file.rs"), "a".repeat(MAX_PATH_BYTES)),
             (format!("{accented}/file.rs"), accented_cut),
         ];
         for (path, expected) in cases {
             assert_eq!(extract_dir_slice(&path), expected, "{path:.40}");
         }
         assert_eq!(
-            extract_dir_slice(&format!("{}/file.rs", "é".repeat(MAX_PATH_BYTES_USIZE))).len(),
-            MAX_PATH_BYTES_USIZE
+            extract_dir_slice(&format!("{}/file.rs", "é".repeat(MAX_PATH_BYTES))).len(),
+            MAX_PATH_BYTES
         );
     }
 
     #[test]
     fn candidate_budget_merges_overlong_directories_sharing_capped_prefix()
     -> Result<(), DomainError> {
-        let head = "a".repeat(MAX_PATH_BYTES_USIZE + 5);
+        let head = "a".repeat(MAX_PATH_BYTES + 5);
         let mut budget = CandidateBudget::default();
         for index in 0..3 {
             budget = budget.add(&format!("{head}{index}/file.rs"))?;
@@ -309,7 +306,7 @@ mod tests {
             budget
                 .dir_counts
                 .keys()
-                .all(|key| key.len() <= MAX_PATH_BYTES_USIZE)
+                .all(|key| key.len() <= MAX_PATH_BYTES)
         );
         Ok(())
     }

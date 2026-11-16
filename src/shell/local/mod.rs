@@ -86,8 +86,8 @@ mod tests {
     use crate::core::model::{DigestFormat, OutputTarget, RunConfig};
     use crate::core::policy::MAX_FILE_SIZE_USIZE;
     use crate::core::source::Source;
-    use crate::ingest;
     use crate::shell::github::archive;
+    use crate::shell::ingest;
     use crate::shell::testing::{gzip_tarball, run_with_timeout, temp_dir};
     use std::io;
     use tar::EntryType;

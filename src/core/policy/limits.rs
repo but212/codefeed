@@ -27,13 +27,7 @@ pub(crate) const OVERFLOW_LARGEST_DIRECTORIES: usize = 3;
 /// Maximum directory nesting depth permitted for archive entry paths.
 pub(crate) const MAX_PATH_DEPTH: usize = 256;
 /// Maximum allowable path length in bytes. Paths exceeding this limit are skipped.
-pub(crate) const MAX_PATH_BYTES: u64 = 4096;
-/// Companion `usize` constant for [`MAX_PATH_BYTES`] used in key caps, buffer allocations, and tests.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "MAX_PATH_BYTES fits in usize on all supported targets"
-)]
-pub(crate) const MAX_PATH_BYTES_USIZE: usize = MAX_PATH_BYTES as usize;
+pub(crate) const MAX_PATH_BYTES: usize = 4096;
 /// Maximum entries one local directory may list, hidden and ignored ones included. Overflow fails the run.
 pub(crate) const MAX_DIR_ENTRIES: usize = 20_000;
 /// Maximum decompressed archive stream length, entry bodies included. Overflow fails the run.
@@ -71,9 +65,9 @@ pub(crate) const GITHUB_TIMEOUT_SECS: u64 = 30;
     reason = "compile-time assertion specifically verifies that these limits fit in usize without truncation"
 )]
 const _: () = {
-    assert!(MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX as u64);
+    assert!(MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES as u64 <= u32::MAX as u64);
     assert!(MAX_FILE_SIZE <= MAX_OUTPUT_SIZE);
-    assert!(MAX_PATH_BYTES <= MAX_FILE_SIZE);
+    assert!(MAX_PATH_BYTES as u64 <= MAX_FILE_SIZE);
     assert!(MAX_FILE_COUNT > 0);
     assert!(MAX_PATH_DEPTH > 0);
     assert!(OVERFLOW_LARGEST_FILES > 0);
@@ -82,7 +76,7 @@ const _: () = {
     assert!(GITHUB_TIMEOUT_SECS <= ARCHIVE_MAX_SECS);
     assert!(ARCHIVE_BUFFER_BYTES > 0);
     // Padding (511) + three extension bodies, each a header block plus a full-length path, + final header.
-    assert!(ARCHIVE_MAX_HEADER_BYTES >= 511 + 3 * (512 + MAX_PATH_BYTES + 1024) + 512);
+    assert!(ARCHIVE_MAX_HEADER_BYTES >= 511 + 3 * (512 + MAX_PATH_BYTES as u64 + 1024) + 512);
     // One maximal record `NN comment=<64 hex>\n` (`parse_pax_comment` accepts 64-hex SHAs).
     assert!(ARCHIVE_PAX_GLOBAL_BYTES >= ("NN comment=".len() + 64 + 1) as u64);
     assert!(MAX_DIR_ENTRIES > 0);
@@ -91,7 +85,6 @@ const _: () = {
     assert!(MAX_LOCAL_WORKERS > 0);
     assert!(MAX_FILE_SIZE as usize as u64 == MAX_FILE_SIZE);
     assert!(MAX_OUTPUT_SIZE as usize as u64 == MAX_OUTPUT_SIZE);
-    assert!(MAX_PATH_BYTES as usize as u64 == MAX_PATH_BYTES);
     assert!(ARCHIVE_MAX_HEADER_BYTES as usize as u64 == ARCHIVE_MAX_HEADER_BYTES);
 };
 
@@ -155,7 +148,7 @@ mod tests {
             ),
             (
                 "MAX_PATH_BYTES",
-                format!("{} B", format_with_commas(MAX_PATH_BYTES)),
+                format!("{} B", format_with_commas(MAX_PATH_BYTES as u64)),
             ),
             ("MAX_PATH_DEPTH", format!("{MAX_PATH_DEPTH} levels")),
             (

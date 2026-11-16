@@ -1,6 +1,6 @@
 allow-unwrap-in-tests = true
 
-# Shell output goes through `shell::output`, which ignores closed pipes. A raw `eprintln!` panics on a closed stderr.
+# Shell output goes through `shell::stdio`, which ignores closed pipes. A raw `eprintln!` panics on a closed stderr.
 disallowed-macros = [
-    { path = "std::eprintln", reason = "use shell::output::write_stderr_line, which ignores broken pipes" },
+    { path = "std::eprintln", reason = "use shell::stdio::write_stderr_line, which ignores broken pipes" },
 ]

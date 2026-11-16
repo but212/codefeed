@@ -6,13 +6,13 @@
 
 ## 1. Threat Model
 
-| # | Threat | Mitigation | Implementation |
-| :--- | :--- | :--- | :--- |
-| T1 | Secret disclosure in digest | Path/name exclusion (§ 3). Content is not scanned (§ 1.2). | `policy/exclusions.rs`, `path.rs` |
-| T2 | Resource exhaustion | Size, count, depth, and path limits; bounded reads and channels; timeouts (§ 5, § 6). | `policy/limits.rs`, `local/`, `github/` |
-| T3 | Credential forwarding across origins | Origin validation; redirects strip authorization headers (§ 6). | `core/github/url.rs`, `shell/github/` |
-| T4 | Injection into terminals, XML, or LLM boundaries | Contextual output escaping (§ 7). XML format isolates file bodies; text format isolates headers and paths while emitting bodies verbatim. | `core/render/formats.rs` |
-| T5 | Traversal outside source root | Symlinks ignored; metadata checked prior to open (§ 5). | `shell/local/` |
+| # | Threat | Mitigation |
+| :--- | :--- | :--- |
+| T1 | Secret disclosure in digest | Path/name exclusion (§ 3). Content is not scanned (§ 1.2). |
+| T2 | Resource exhaustion | Size, count, depth, and path limits; bounded reads and channels; timeouts (§ 5, § 6). |
+| T3 | Credential forwarding across origins | Origin validation; redirects strip authorization headers (§ 6). |
+| T4 | Injection into terminals, XML, or LLM boundaries | Contextual output escaping (§ 7). XML format isolates file bodies; text format isolates headers and paths while emitting bodies verbatim. |
+| T5 | Traversal outside source root | Symlinks ignored; metadata checked prior to open (§ 5). |
 
 ### 1.1 Assumptions
 
@@ -40,7 +40,7 @@ Entry (local walk or tar stream)
  |           |     `-- Symlink, non-regular file, larger than `MAX_FILE_SIZE`, unreadable, or not valid UTF-8 -> Run fails (Io). § 3.5.
  |           `-- Listing over `MAX_DIR_ENTRIES` entries (hidden and ignored included) -> Run fails (InvalidMetadata).
  |
- +-- Tar header read (`Entries::next`, GNU `L`/`K` and PAX `x` bodies included). Runs before path classification and applies to every entry type.
+ +-- Tar header read (GNU `L`/`K` and PAX `x` bodies included). Runs before path classification and applies to every entry type.
  |     `-- Over `ARCHIVE_MAX_HEADER_BYTES` for one read -> Run fails (InvalidMetadata), even for entries that would be dropped (I-03).
  +-- Decompressed archive stream over `ARCHIVE_MAX_DECOMPRESSED_BYTES` -> Run fails (InvalidMetadata), entry bodies included.
  |
@@ -66,14 +66,14 @@ Entry (local walk or tar stream)
  |     `-- Valid UTF-8 path
  |           `-- Candidate.
  |
- +-- Candidate (Selector::observe)
+ +-- Candidate observation
  |     +-- Charges candidate slot. Overflowing MAX_FILE_COUNT fails the run.
  |     +-- Path equal to an earlier candidate's path (skipped ones included) -> Run fails (InvalidMetadata).
  |     +-- Declared size > MAX_FILE_SIZE: skipped; body not read.
  |     +-- Body read (bounded by worker or archive stream).
  |     `-- Content check passes -> Included. Otherwise skipped.
  |
- `-- Digest assembly (SortedFiles::new)
+ `-- Digest assembly
        `-- Stored path is a directory prefix of another stored path -> Run fails (InvalidMetadata) (I-01). Skipped candidates are not compared, so the digest tree shows each name as either a file or a directory.
 ```
 
@@ -152,10 +152,10 @@ Candidate budget overflow aborts the run without emitting partial output.
 ## 5. Local Filesystem Safety
 
 - **No Symlinks:** Walk classifies entries without following symlinks and drops non-directory, non-regular files. Link metadata is inspected before open. Symlinked root is followed once; entries beneath follow no-symlink rules.
-- **Output Exclusion:** Canonical destination resolved upfront (`resolve_output_target`) and excluded from traversal.
+- **Output Exclusion:** Directory-suffixed output paths (`out/`, `out/.`) are rejected before filesystem resolution. Canonical destination is resolved upfront and excluded from traversal.
 - **Atomic Writes:** Destination written via `.codefeed.{nanos}.{counter}.tmp`, flushed, and renamed. Unix preserves permissions and syncs parent directory (sync failure logs warning without aborting). Temporary file cleaned up on error.
 - **Unavailable vs. Fatal:** `NotFound`, `PermissionDenied`, or Windows sharing (32) / locking (33) mark files unavailable (skipped). Other I/O errors or unreadable directories abort. Deterministic first error in walk order reported.
-- **Bounded Concurrency:** Producer/workers communicate via bounded `sync_channel` queues (`LOCAL_CHANNEL_CAPACITY`). Memory holds at most `LOCAL_CHANNEL_CAPACITY + 2` concurrent file bodies, each bounded to `MAX_FILE_SIZE + 1`. Abort signals halt worker reads.
+- **Bounded Concurrency:** Producer/workers communicate via bounded queues (`LOCAL_CHANNEL_CAPACITY`). Memory holds at most `LOCAL_CHANNEL_CAPACITY + 2` concurrent file bodies, each bounded to `MAX_FILE_SIZE + 1`. Abort signals halt worker reads.
 
 ---
 
@@ -163,13 +163,13 @@ Candidate budget overflow aborts the run without emitting partial output.
 
 ### 6.1 Authentication
 
-- Resolves `TOKEN_ENV_VARS` in order (`GITHUB_TOKEN`, then `GH_TOKEN`). Empty or whitespace-only values ignored.
-- Sends `Authorization: Bearer <token>` strictly to `https://api.github.com` (`is_github_api_origin`) (I-07).
-- 403 and 429 error messages name token variables solely for anonymous requests (I-06). Authenticated requests receive no token hint. Redirect targets never receive credentials (`RedirectAuthHeaders::Never`).
+- Resolves token environment variables in order (`GITHUB_TOKEN`, then `GH_TOKEN`). Empty or whitespace-only values ignored.
+- Sends `Authorization: Bearer <token>` strictly to `https://api.github.com` (I-07).
+- 403 and 429 error messages name token variables solely for anonymous requests (I-06). Authenticated requests receive no token hint. Redirect targets never receive credentials.
 
 ### 6.2 Memory
 
-Tokens, environment buffers, and error responses use `zeroize::Zeroizing` to erase memory on drop. Copies in HTTP client internals, OS process environment, or error formatters are not zeroized.
+Tokens, environment buffers, and error responses are zeroized on drop. Copies in HTTP client internals, OS process environment, or error formatters are not zeroized.
 
 ### 6.3 Transport and TLS
 
@@ -177,7 +177,7 @@ Enforces built-in Mozilla root certificates (`rustls-webpki-roots`). OS stores a
 
 ### 6.4 Streaming
 
-- Fetches tarball via `/repos/{owner}/{repo}/tarball/{ref}`. Streams via gzip/tar directly into `Selector::observe` without disk spooling.
+- Fetches tarball via `/repos/{owner}/{repo}/tarball/{ref}`. Streams via gzip/tar directly into candidate observation without disk spooling.
 - Each tar header read is metered against `ARCHIVE_MAX_HEADER_BYTES` (I-03), covering padding, GNU `L`/`K`, PAX `x`, and sparse blocks. Overruns abort with `InvalidMetadata`. Entire decompressed stream is metered against `ARCHIVE_MAX_DECOMPRESSED_BYTES`.
 
 ### 6.5 Retries
@@ -204,7 +204,7 @@ Sanitization runs in a single pass:
 2. **XML (`--format xml`):**
    - Entities escaped (`&`, `<`, `>`, `"`, `'`). Attribute whitespace (`\t`, `\n`, `\r`) encoded as character references (`&#9;`, `&#10;`, `&#13;`). Disallowed XML 1.0 characters (C0 controls and `U+FFFE`/`U+FFFF`) map to `\u{FFFD}`.
 3. **Tree Labels:** Follow the active format's single-line escaping (header backslash/control rules in text format; XML entity, attribute-whitespace, and disallowed-character rules in XML format).
-4. **Error and Warning Diagnostics (`ErrorDetail`, `sanitize_error_detail`, I-04):**
+4. **Error and Warning Diagnostics (I-04):**
    - Single-line diagnostics emitted to stderr (paths in I/O errors, root validation errors, HTTP status messages, transport error text, domain messages, overflow lists) convert `\t`, `\r`, `\n` to space `' '` and other control characters to `\u{FFFD}` to prevent terminal injection or log forgery. Destination in stdout completion summary (`Wrote <PATH>`) is sanitized identically.
 
 ---

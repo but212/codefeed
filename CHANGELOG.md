@@ -14,6 +14,7 @@ Scope: `### Library consumers and CLI users` lists observable behavior. `### Con
 
 #### Fixed
 
+- **Directory-suffixed output paths**: `--output` (`-o`) paths ending with a separator (`out/`) or trailing current-directory segment (`out/.`) are now rejected with a usage error before filesystem resolution instead of creating or overwriting a file at the stripped path.
 - **Empty file rendering**: Empty files (`""`) no longer receive synthetic trailing newline padding in Text or XML output, keeping `""` distinct from `"\n"`.
 
 #### Changed

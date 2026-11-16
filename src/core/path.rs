@@ -2,7 +2,7 @@
 
 use crate::core::error::DomainError;
 use crate::core::policy::{
-    ExcludePatterns, MAX_PATH_BYTES_USIZE, MAX_PATH_DEPTH, is_hidden_segment, is_ignored_filename,
+    ExcludePatterns, MAX_PATH_BYTES, MAX_PATH_DEPTH, is_hidden_segment, is_ignored_filename,
     push_match_segment,
 };
 
@@ -33,7 +33,7 @@ impl From<String> for NormalizedPath {
             "NormalizedPath requires non-empty segments and no trailing slash"
         );
         assert!(
-            s.len() <= MAX_PATH_BYTES_USIZE,
+            s.len() <= MAX_PATH_BYTES,
             "NormalizedPath requires at most MAX_PATH_BYTES bytes"
         );
         Self(s)
@@ -208,7 +208,7 @@ pub(crate) fn classify_leaf(
 
     match (&parent.output, std::str::from_utf8(name)) {
         (DirPrefix::Utf8(prefix), Ok(segment))
-            if prefix.len() + segment.len() <= MAX_PATH_BYTES_USIZE =>
+            if prefix.len() + segment.len() <= MAX_PATH_BYTES =>
         {
             Ok(Some(CandidatePath::Valid(NormalizedPath(format!(
                 "{prefix}{segment}"
@@ -268,13 +268,13 @@ mod tests {
             };
             assert!(
                 matches!(
-                    classify(MAX_PATH_BYTES_USIZE),
-                    Ok(Some(CandidatePath::Valid(path))) if path.len() == MAX_PATH_BYTES_USIZE
+                    classify(MAX_PATH_BYTES),
+                    Ok(Some(CandidatePath::Valid(path))) if path.len() == MAX_PATH_BYTES
                 ),
                 "prefix {prefix:?}: at the limit"
             );
             assert_eq!(
-                classify(MAX_PATH_BYTES_USIZE + 1),
+                classify(MAX_PATH_BYTES + 1),
                 Ok(Some(CandidatePath::Unstorable(prefix.to_string()))),
                 "prefix {prefix:?}: one byte over the limit"
             );

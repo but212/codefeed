@@ -21,7 +21,7 @@ static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub(super) struct TempDirGuard(PathBuf);
 
 impl TempDirGuard {
-    pub(super) fn new(label: &str) -> Result<Self, Box<dyn Error>> {
+    fn new(label: &str) -> Result<Self, Box<dyn Error>> {
         let pid = std::process::id();
         let path = loop {
             let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -141,7 +141,7 @@ pub(super) fn tarball_response(gz: &[u8]) -> Vec<u8> {
 }
 
 pub(super) struct MockServer {
-    pub(super) port: u16,
+    port: u16,
     handle: thread::JoinHandle<(Vec<String>, usize)>,
 }
 

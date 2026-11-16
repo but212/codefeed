@@ -54,6 +54,7 @@ Before changing code, review:
 | Output format | `src/core/render/`, `README.md` (Output), `docs/README.ko.md` |
 | Any other `README.md` change | `docs/README.ko.md` (translation; `README.md` wins on conflict) |
 | `CONTRIBUTING.md` change | `docs/CONTRIBUTING.ko.md` (translation; `CONTRIBUTING.md` wins on conflict), `.github/PULL_REQUEST_TEMPLATE.md` if checklist changes |
+| `CODE_OF_CONDUCT.md` change | `docs/CODE_OF_CONDUCT.ko.md` (translation; `CODE_OF_CONDUCT.md` wins on conflict) |
 | Vulnerability reporting policy | `SECURITY.md` |
 | Domain invariant or module boundary | `context.md` |
 | Security, filesystem, or network behavior | `docs/security_and_filtering.md` |

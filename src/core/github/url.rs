@@ -71,6 +71,7 @@ const fn valid_github_name(value: &str) -> bool {
 }
 
 /// Strips an ASCII `prefix` from `value`, ignoring ASCII case (URL schemes are case-insensitive).
+#[must_use]
 pub(crate) fn strip_prefix_ignore_case<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
     let head = value.as_bytes().get(..prefix.len())?;
     // A match means the first `prefix.len()` bytes are ASCII, so the split is on a char boundary.

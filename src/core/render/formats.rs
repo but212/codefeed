@@ -305,10 +305,6 @@ mod tests {
         String::from_utf8(buf.finish().bytes).unwrap()
     }
 
-    fn xml_escape(value: &str) -> String {
-        escape_with(&XML_BODY_ESCAPE, value)
-    }
-
     #[test]
     fn xml_body_escaping_examples() {
         let cases: &[(&str, &str)] = &[
@@ -340,7 +336,7 @@ mod tests {
 
         for &(text, expected_escaped) in cases {
             assert_eq!(
-                xml_escape(text),
+                escape_with(&XML_BODY_ESCAPE, text),
                 expected_escaped,
                 "escape mismatch for {text:?}"
             );
@@ -383,11 +379,6 @@ mod tests {
                 0..48,
             )
             .prop_map(String::from_iter)
-        }
-
-        fn escape(value: &str, spec: &EscapeSpec) -> String {
-            let buf = write_escaped(BoundedBuffer::default(), value, spec).unwrap();
-            String::from_utf8(buf.finish().bytes).unwrap()
         }
 
         fn model_xml_body(c: char) -> String {
@@ -445,7 +436,7 @@ mod tests {
             fn escaping_matches_the_per_character_table(value in text()) {
                 for (name, spec, model) in escapers() {
                     let expected: String = value.chars().map(model).collect();
-                    prop_assert_eq!(escape(&value, spec), expected, "{}", name);
+                    prop_assert_eq!(escape_with(spec, &value), expected, "{}", name);
                 }
             }
 
@@ -457,8 +448,12 @@ mod tests {
                 let joined = format!("{a}{b}");
                 for (name, special_at, _) in escapers() {
                     prop_assert_eq!(
-                        escape(&joined, special_at),
-                        format!("{}{}", escape(&a, special_at), escape(&b, special_at)),
+                        escape_with(special_at, &joined),
+                        format!(
+                            "{}{}",
+                            escape_with(special_at, &a),
+                            escape_with(special_at, &b)
+                        ),
                         "{}",
                         name
                     );

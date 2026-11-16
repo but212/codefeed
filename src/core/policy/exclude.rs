@@ -135,7 +135,7 @@ mod tests {
     use super::*;
     use crate::core::error::ErrorDetail;
     use crate::core::path::{AdmittedDir, admit_dir, classify_path_segments};
-    use crate::core::policy::{MAX_PATH_BYTES_USIZE, MAX_PATH_DEPTH};
+    use crate::core::policy::{MAX_PATH_BYTES, MAX_PATH_DEPTH};
 
     fn patterns(list: &[&str]) -> ExcludePatterns {
         ExcludePatterns::new(list.iter().copied()).expect("patterns are valid")
@@ -306,7 +306,7 @@ mod tests {
         assert!(!ex.excludes(&deep, false));
 
         // Byte length does not end the window: a match inside it is found however long the prefix is.
-        let head = "a".repeat(MAX_PATH_BYTES_USIZE + 1);
+        let head = "a".repeat(MAX_PATH_BYTES + 1);
         let long: [&[u8]; 2] = [head.as_bytes(), b"file.txt"];
         assert!(ex.excludes(&long, false));
     }

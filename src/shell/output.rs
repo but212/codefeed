@@ -27,14 +27,32 @@ impl ResolvedOutput {
     }
 }
 
+/// Whether `path` ends with a path separator (`out/`) or a trailing `.` segment (`out/.`),
+/// which `Path::file_name()` would otherwise strip.
+fn has_trailing_directory_syntax(path: &Path) -> bool {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    let bytes = bytes
+        .strip_suffix(b".")
+        .filter(|prefix| {
+            prefix
+                .last()
+                .is_some_and(|&b| std::path::is_separator(char::from(b)))
+        })
+        .unwrap_or(bytes);
+    bytes
+        .last()
+        .is_some_and(|&b| std::path::is_separator(char::from(b)))
+}
+
 /// Resolves an [`OutputTarget`] into its delivery destination: stdout passes through, and a
 /// file target becomes the canonical path the digest is written to.
 pub(super) fn resolve_output_target(target: &OutputTarget) -> Result<ResolvedOutput, IngestError> {
     match target {
         OutputTarget::Stdout => Ok(ResolvedOutput::STDOUT),
         OutputTarget::File(path) => {
-            let file_name = path
-                .file_name()
+            let file_name = (!has_trailing_directory_syntax(path))
+                .then(|| path.file_name())
+                .flatten()
                 .ok_or_else(|| DomainError::usage("output path has no filename"))?;
             let parent = parent_dir(path);
             let canonical_parent = fs::canonicalize(parent).map_err(|e| {
@@ -125,11 +143,17 @@ mod tests {
 
     #[test]
     fn resolve_output_target_rejects_path_without_filename() {
-        let empty_path = PathBuf::from("");
-        let err = resolve_output_target(&OutputTarget::File(empty_path)).unwrap_err();
-        assert!(
-            matches!(err, IngestError::Domain(DomainError::Usage(msg)) if msg.contains("no filename"))
-        );
+        let mut cases = vec!["", ".", "..", "out/", "out/."];
+        if cfg!(windows) {
+            cases.extend(["out\\", "out\\."]);
+        }
+        for raw in cases {
+            let err = resolve_output_target(&OutputTarget::File(PathBuf::from(raw))).unwrap_err();
+            assert!(
+                matches!(err, IngestError::Domain(DomainError::Usage(ref msg)) if msg.contains("no filename")),
+                "expected no-filename error for {raw:?}, got {err:?}"
+            );
+        }
     }
 
     #[test]
