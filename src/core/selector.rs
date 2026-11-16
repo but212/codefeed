@@ -1,6 +1,6 @@
 //! Candidate observation, budget accounting, and storage accumulation.
 
-use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasher, RandomState};
 
 use memchr::memchr;
 
@@ -48,12 +48,172 @@ pub(crate) enum Observation<B> {
     File(NormalizedPath, Body<B>),
 }
 
+const EMPTY_BUCKET: u32 = u32::MAX;
+
+#[derive(Debug)]
+struct ArenaEntry<V> {
+    offset: u32,
+    len: u32,
+    hash: u64,
+    value: V,
+}
+
+impl<V> ArenaEntry<V> {
+    fn key<'a>(&self, arena: &'a str) -> &'a str {
+        let start = self.offset as usize;
+        &arena[start..start + self.len as usize]
+    }
+}
+
+/// Append-only string-keyed map backed by a contiguous `String` arena and an open-addressed `u32`
+/// index table, avoiding per-key heap allocations over `Selector`'s lifetime.
+#[derive(Debug)]
+struct ArenaMap<V> {
+    arena: String,
+    entries: Vec<ArenaEntry<V>>,
+    buckets: Vec<u32>,
+    hasher: RandomState,
+}
+
+impl<V> Default for ArenaMap<V> {
+    fn default() -> Self {
+        Self::with_capacity(16, 256)
+    }
+}
+
+impl<V> ArenaMap<V> {
+    fn with_capacity(entries_cap: usize, arena_bytes: usize) -> Self {
+        let bucket_cap = (entries_cap.saturating_mul(4) / 3)
+            .max(16)
+            .next_power_of_two();
+        Self {
+            arena: String::with_capacity(arena_bytes),
+            entries: Vec::with_capacity(entries_cap),
+            buckets: vec![EMPTY_BUCKET; bucket_cap],
+            hasher: RandomState::new(),
+        }
+    }
+
+    fn hash_key(&self, key: &str) -> u64 {
+        self.hasher.hash_one(key)
+    }
+
+    /// Returns `Ok(entry_idx)` when `key` is present, or `Err(bucket_idx)` pointing to the first
+    /// empty probe slot.
+    fn find_bucket(&self, key: &str, hash: u64) -> Result<usize, usize> {
+        let mask = self.buckets.len() - 1;
+        let mut idx = usize::try_from(hash & (mask as u64)).expect("masked hash fits in usize");
+        loop {
+            let slot = self.buckets[idx];
+            if slot == EMPTY_BUCKET {
+                return Err(idx);
+            }
+            let entry = &self.entries[slot as usize];
+            if entry.hash == hash && entry.key(&self.arena) == key {
+                return Ok(slot as usize);
+            }
+            idx = (idx + 1) & mask;
+        }
+    }
+
+    fn rehash(&mut self) {
+        let new_cap = self.buckets.len() * 2;
+        let mask = new_cap - 1;
+        let mut new_buckets = vec![EMPTY_BUCKET; new_cap];
+        for (entry_idx, entry) in self.entries.iter().enumerate() {
+            let mut idx =
+                usize::try_from(entry.hash & (mask as u64)).expect("masked hash fits in usize");
+            while new_buckets[idx] != EMPTY_BUCKET {
+                idx = (idx + 1) & mask;
+            }
+            new_buckets[idx] =
+                u32::try_from(entry_idx).expect("invariant: entries bounded below u32::MAX");
+        }
+        self.buckets = new_buckets;
+    }
+
+    fn insert_at_new_key(&mut self, key: &str, hash: u64, bucket_idx: usize, value: V) {
+        let bucket_idx = if (self.entries.len() + 1) * 4 > self.buckets.len() * 3 {
+            self.rehash();
+            let mask = self.buckets.len() - 1;
+            let mut idx = usize::try_from(hash & (mask as u64)).expect("masked hash fits in usize");
+            while self.buckets[idx] != EMPTY_BUCKET {
+                idx = (idx + 1) & mask;
+            }
+            idx
+        } else {
+            bucket_idx
+        };
+
+        let offset = u32::try_from(self.arena.len())
+            .expect("invariant: MAX_FILE_COUNT * MAX_PATH_BYTES <= u32::MAX");
+        let len = u32::try_from(key.len()).expect("invariant: key length <= MAX_PATH_BYTES");
+        self.arena.push_str(key);
+
+        let entry_idx = u32::try_from(self.entries.len())
+            .expect("invariant: entries bounded by MAX_FILE_COUNT < u32::MAX");
+        self.entries.push(ArenaEntry {
+            offset,
+            len,
+            hash,
+            value,
+        });
+        self.buckets[bucket_idx] = entry_idx;
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&str, &V)> {
+        self.entries
+            .iter()
+            .map(move |entry| (entry.key(&self.arena), &entry.value))
+    }
+
+    #[cfg(test)]
+    const fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[cfg(test)]
+    fn keys(&self) -> impl Iterator<Item = &str> {
+        self.entries.iter().map(move |entry| entry.key(&self.arena))
+    }
+
+    #[cfg(test)]
+    fn values(&self) -> impl Iterator<Item = &V> {
+        self.entries.iter().map(|entry| &entry.value)
+    }
+}
+
+impl ArenaMap<()> {
+    /// Inserts `key` if absent, returning `true` when newly inserted and `false` on duplicate.
+    fn insert_key(&mut self, key: &str) -> bool {
+        let hash = self.hash_key(key);
+        match self.find_bucket(key, hash) {
+            Ok(_) => false,
+            Err(bucket_idx) => {
+                self.insert_at_new_key(key, hash, bucket_idx, ());
+                true
+            }
+        }
+    }
+}
+
+impl ArenaMap<usize> {
+    /// Increments the count for `key`, inserting `1` if `key` was absent.
+    fn increment(&mut self, key: &str) {
+        let hash = self.hash_key(key);
+        match self.find_bucket(key, hash) {
+            Ok(entry_idx) => self.entries[entry_idx].value += 1,
+            Err(bucket_idx) => self.insert_at_new_key(key, hash, bucket_idx, 1),
+        }
+    }
+}
+
 /// Candidate-count budget owned by the selector that consumes it.
 #[derive(Debug)]
 #[cfg_attr(test, derive(Default))]
 struct CandidateBudget {
     count: usize,
-    dir_counts: HashMap<String, usize>,
+    dir_counts: ArenaMap<usize>,
 }
 
 impl CandidateBudget {
@@ -61,11 +221,7 @@ impl CandidateBudget {
     fn add(mut self, path: &str) -> Result<Self, DomainError> {
         self.count += 1;
         let dir = extract_dir_slice(path);
-        if let Some(count) = self.dir_counts.get_mut(dir) {
-            *count += 1;
-        } else {
-            self.dir_counts.insert(dir.to_string(), 1);
-        }
+        self.dir_counts.increment(dir);
 
         if self.count > MAX_FILE_COUNT {
             return Err(self.overflow_error());
@@ -94,8 +250,8 @@ fn extract_dir_slice(path: &str) -> &str {
     &dir[..end]
 }
 
-fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String, usize)> {
-    let mut dirs: Vec<(&str, usize)> = dir_counts.iter().map(|(d, &c)| (d.as_str(), c)).collect();
+fn top_overflow_directories(dir_counts: &ArenaMap<usize>) -> Vec<(String, usize)> {
+    let mut dirs: Vec<(&str, usize)> = dir_counts.iter().map(|(d, &c)| (d, c)).collect();
     dirs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     dirs.truncate(OVERFLOW_LARGEST_DIRECTORIES);
     dirs.into_iter().map(|(d, c)| (d.to_string(), c)).collect()
@@ -108,7 +264,7 @@ fn top_overflow_directories(dir_counts: &HashMap<String, usize>) -> Vec<(String,
 pub(crate) struct Selector {
     storage: FileStorage,
     candidates: CandidateBudget,
-    paths: HashSet<String>,
+    paths: ArenaMap<()>,
     skipped: usize,
 }
 
@@ -119,9 +275,9 @@ impl Selector {
             storage: FileStorage::new(),
             candidates: CandidateBudget {
                 count: 0,
-                dir_counts: HashMap::with_capacity(32),
+                dir_counts: ArenaMap::with_capacity(32, 512),
             },
-            paths: HashSet::new(),
+            paths: ArenaMap::with_capacity(512, 16 * 1024),
             skipped: 0,
         }
     }
@@ -130,7 +286,7 @@ impl Selector {
     ///
     /// Skipped candidates count: two entries with one path are ambiguous even when one is skipped.
     fn claim_path(mut self, path: &str) -> Result<Self, DomainError> {
-        if !self.paths.insert(path.to_string()) {
+        if !self.paths.insert_key(path) {
             return Err(DomainError::invalid_metadata(format!(
                 "duplicate entry path: {path}"
             )));
@@ -479,5 +635,55 @@ mod tests {
                 matches!(&err, DomainError::InvalidMetadata(msg) if msg == "duplicate entry path: a.txt")
             );
         }
+    }
+
+    #[test]
+    fn arena_map_rejects_duplicates_without_growing_arena() {
+        let mut set = ArenaMap::with_capacity(4, 16);
+        assert!(set.insert_key("src/main.rs"));
+        let arena_len_after_first = set.arena.len();
+        assert!(!set.insert_key("src/main.rs"));
+        assert_eq!(set.arena.len(), arena_len_after_first);
+        assert_eq!(set.entries.len(), 1);
+    }
+
+    #[test]
+    fn arena_map_rehashes_and_preserves_all_entries() {
+        let mut counts = ArenaMap::with_capacity(2, 16);
+        let initial_buckets = counts.buckets.len();
+        for i in 0..64 {
+            let key = format!("dir_{i}/");
+            counts.increment(&key);
+            counts.increment(&key);
+        }
+        assert!(counts.buckets.len() > initial_buckets);
+        assert_eq!(counts.entries.len(), 64);
+        for i in 0..64 {
+            let key = format!("dir_{i}/");
+            let hash = counts.hash_key(&key);
+            let idx = counts.find_bucket(&key, hash).expect("key must exist");
+            assert_eq!(counts.entries[idx].value, 2);
+        }
+    }
+
+    #[test]
+    fn arena_map_resolves_hash_collisions_by_key_equality() {
+        let mut map = ArenaMap::with_capacity(4, 32);
+        let forced_hash = 0xDEAD_BEEF;
+        let Err(b1) = map.find_bucket("alpha", forced_hash) else {
+            panic!("expected empty bucket");
+        };
+        map.insert_at_new_key("alpha", forced_hash, b1, 10);
+
+        let Err(b2) = map.find_bucket("beta", forced_hash) else {
+            panic!("expected empty bucket on collision");
+        };
+        map.insert_at_new_key("beta", forced_hash, b2, 20);
+
+        let idx_a = map.find_bucket("alpha", forced_hash).unwrap();
+        let idx_b = map.find_bucket("beta", forced_hash).unwrap();
+        assert_eq!(map.entries[idx_a].value, 10);
+        assert_eq!(map.entries[idx_b].value, 20);
+        assert_ne!(idx_a, idx_b);
     }
 }
