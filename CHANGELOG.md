@@ -12,6 +12,11 @@ Scope: `### Library consumers and CLI users` lists observable behavior. `### Con
 
 ### Library consumers and CLI users
 
+#### Breaking
+
+- **`ErrorDetail::new`, `GitRef::new`, and `Source::with_reference` accept `Into<Cow<'a, str>>`**: These constructors now take `<'a>(impl Into<Cow<'a, str>>)` instead of `impl Into<String>` to avoid redundant allocations (`src/core/error.rs`, `src/core/source.rs`). Callers passing `String`, `&str`, or `Cow<'_, str>` are unaffected; callers passing `Box<str>`, custom `Into<String>` types, or using turbofish type arguments no longer compile.
+  - **Action:** Convert custom `Into<String>` or `Box<str>` arguments to `String`, `&str`, or `Cow<'_, str>`, and remove explicit turbofish type arguments on these calls.
+
 #### Fixed
 
 - **Directory-suffixed output paths**: `--output` (`-o`) paths ending with a separator (`out/`) or trailing current-directory segment (`out/.`) are now rejected with a usage error before filesystem resolution instead of creating or overwriting a file at the stripped path.
