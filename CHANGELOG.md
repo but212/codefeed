@@ -12,6 +12,10 @@ Scope: `### Library consumers and CLI users` lists observable behavior. `### Con
 
 ### Library consumers and CLI users
 
+#### Fixed
+
+- **Empty file rendering**: Empty files (`""`) no longer receive synthetic trailing newline padding in Text or XML output, keeping `""` distinct from `"\n"`.
+
 #### Changed
 
 - **Install docs**: `README.md` and `docs/README.ko.md` lead with `cargo install codefeed` (source build); `cargo binstall codefeed` remains as an optional prebuilt-binary install. The `[package.metadata.binstall]` table is unchanged.
