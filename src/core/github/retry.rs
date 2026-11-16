@@ -39,11 +39,15 @@ const _: () = {
 
 /// Rate-limit facts from one response's headers. The shell reads the raw values; this type decides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RateLimitHeaders {
-    retry_after_present: bool,
-    retry_after_secs: Option<u64>,
-    quota_exhausted: bool,
-    reset_epoch_secs: Option<u64>,
+pub(crate) enum RateLimitHeaders {
+    /// No `Retry-After` header and quota is not exhausted.
+    NotLimited,
+    /// `Retry-After` header was present (e.g. HTTP-date) without a numeric seconds value.
+    UnparsedRetryAfter,
+    /// Numeric `Retry-After` delay in seconds, which takes precedence over `X-RateLimit-Reset`.
+    RetryAfterSecs(u64),
+    /// `X-RateLimit-Remaining` is `0`, with an optional `X-RateLimit-Reset` UNIX epoch in seconds.
+    QuotaExhausted { reset_epoch_secs: Option<u64> },
 }
 
 impl RateLimitHeaders {
@@ -53,32 +57,36 @@ impl RateLimitHeaders {
         remaining: Option<&str>,
         reset: Option<&str>,
     ) -> Self {
-        Self {
-            retry_after_present: retry_after.is_some(),
-            retry_after_secs: retry_after.and_then(|v| v.trim().parse().ok()),
-            quota_exhausted: remaining.is_some_and(|v| v.trim() == "0"),
-            reset_epoch_secs: reset.and_then(|v| v.trim().parse().ok()),
+        if let Some(secs) = retry_after.and_then(|v| v.trim().parse().ok()) {
+            return Self::RetryAfterSecs(secs);
         }
+        if remaining.is_some_and(|v| v.trim() == "0") {
+            return Self::QuotaExhausted {
+                reset_epoch_secs: reset.and_then(|v| v.trim().parse().ok()),
+            };
+        }
+        if retry_after.is_some() {
+            return Self::UnparsedRetryAfter;
+        }
+        Self::NotLimited
     }
 
     /// Delay before retrying. `Retry-After` wins; otherwise the reset epoch counts only once quota is exhausted.
     #[must_use]
     pub(crate) fn retry_after(self, now_secs: u64) -> Option<Duration> {
-        if let Some(secs) = self.retry_after_secs {
-            return Some(Duration::from_secs(secs));
+        match self {
+            Self::RetryAfterSecs(secs) => Some(Duration::from_secs(secs)),
+            Self::QuotaExhausted { reset_epoch_secs } => reset_epoch_secs
+                .filter(|&reset| reset > now_secs)
+                .map(|reset| Duration::from_secs(reset - now_secs)),
+            Self::NotLimited | Self::UnparsedRetryAfter => None,
         }
-        if !self.quota_exhausted {
-            return None;
-        }
-        self.reset_epoch_secs
-            .filter(|&reset| reset > now_secs)
-            .map(|reset| Duration::from_secs(reset - now_secs))
     }
 
     /// Rate-limited when `Retry-After` is present or quota is exhausted.
     #[must_use]
     pub(crate) const fn is_rate_limited(self) -> bool {
-        self.retry_after_present || self.quota_exhausted
+        !matches!(self, Self::NotLimited)
     }
 }
 
