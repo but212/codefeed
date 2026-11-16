@@ -48,7 +48,7 @@ Options may appear before or after `<SOURCE>`. Short flags accept `=` syntax (`-
 - `-o`, `--output <PATH|->`: Destination (default: `digest.txt`). `-` streams to stdout.
 - `-r`, `--ref <BRANCH|TAG|COMMIT>`: GitHub revision (default: default branch). Rejects empty, whitespace-only, `.`, and `..`.
 - `-f`, `--format <text|xml>`: Digest format (default: `text`).
-- `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to source root. Repeatable, applied in order. Invalid patterns and patterns yielding no rule (blank, comment, bare `!`) are usage errors. Syntax: [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 3.6.
+- `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to source root. Repeatable, applied in order. Invalid patterns and patterns yielding no rule (blank, comment, bare `!`) are usage errors. Syntax: [`docs/security_and_filtering.md`](docs/security_and_filtering.md) § 3.6.
 - `-h`, `--help`: Print usage and exit 0. Preempts other argument errors.
 - `-V`, `--version`: Print `codefeed <version>` and exit 0. Preempts other argument errors.
 - `--`: Treat subsequent arguments as positionals.
@@ -73,21 +73,21 @@ codefeed -- -my-directory
 - **Header**: Local digests start with `Repository: <directory name>`; GitHub digests start with `Repository: https://github.com/{owner}/{repo}`.
 - **Text format** (`text`): Verbatim UTF-8 file contents; binary (NUL) or invalid UTF-8 files skipped. Header labels and paths escaped; ANSI sequences preserved.
 - **XML format** (`xml`): `<repository>`, `<directory_structure>`, and `<files>`. Entities escaped; disallowed XML 1.0 characters become `\u{FFFD}`.
-- **Token count**: Heuristic estimate (floor(ASCII bytes / ratio) from [security sec. 8](docs/security_and_filtering.md#8-limit-values) + one token per non-ASCII character; at least 1 for non-empty digest, 0 for empty), not an exact tokenizer count.
+- **Token count**: Heuristic estimate (floor(ASCII bytes / ratio) from [security § 8](docs/security_and_filtering.md#8-limit-values) + one token per non-ASCII character; at least 1 for non-empty digest, 0 for empty), not an exact tokenizer count.
 - **Exit status**: `0` on success, help, or version; `1` on usage or ingest error. Exits `0` on broken pipe when stdout reader closes early.
 
 ## What Is Included
 
-Excluded entries are dropped silently and omitted from skipped counts (exception: oversized tar headers fail the run; [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 2):
+Excluded entries are dropped silently and omitted from skipped counts (exception: oversized tar headers fail the run; [`docs/security_and_filtering.md`](docs/security_and_filtering.md) § 2):
 
 - Hidden entries: path segments starting with `.` (excluding source root itself).
 - Symlinks and non-regular files (local and archive).
-- Dependency lockfiles (sec. 3.2).
-- Credential and key files by prefix or extension (sec. 3.3).
-- Files matched by in-tree `.gitignore` (local only; unsafe or unreadable `.gitignore` fails the run, sec. 3.5).
-- Paths matched by `--exclude` patterns (sec. 3.6).
+- Dependency lockfiles (§ 3.2).
+- Credential and key files by prefix or extension (§ 3.3).
+- Files matched by in-tree `.gitignore` (local only; unsafe or unreadable `.gitignore` fails the run, § 3.5).
+- Paths matched by `--exclude` patterns (§ 3.6).
 
-Filtering matches paths only; file contents are never scanned. Keep secrets in files with ordinary names out of the digest with `.gitignore` or `--exclude` ([`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 1.2).
+Filtering matches paths only; file contents are never scanned. Keep secrets in files with ordinary names out of the digest with `.gitignore` or `--exclude` ([`docs/security_and_filtering.md`](docs/security_and_filtering.md) § 1.2).
 
 Skipped entries (counted in summary):
 
@@ -96,11 +96,11 @@ Skipped entries (counted in summary):
 - Paths exceeding `MAX_PATH_BYTES` or non-UTF-8.
 - Unreadable files (permission denied, locked).
 
-> **Note:** Filtering matches paths and names only, never contents. Complete rules: [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 3.
+> **Note:** Filtering matches paths and names only, never contents. Complete rules: [`docs/security_and_filtering.md`](docs/security_and_filtering.md) § 3.
 
 ## Limits
 
-Limits either skip an entry or abort the run. Values and enforcement: [`docs/security_and_filtering.md`](docs/security_and_filtering.md) sec. 8. Timeouts and retries: sec. 6.5-6.6.
+Limits either skip an entry or abort the run. Values and enforcement: [`docs/security_and_filtering.md`](docs/security_and_filtering.md) § 8. Timeouts and retries: § 6.5-6.6.
 
 | Limit | On Reach |
 | :--- | :--- |

@@ -24,4 +24,4 @@ Applies strictly to repository spaces (Issues, Pull Requests, Discussions, commi
 ## Enforcement
 
 - **Reporting**: Report violations privately to `wjddlf211@naver.com`. Reports remain confidential.
-- **Actions**: Maintainers may edit or remove content, lock threads, or suspend repository interaction permissions.
+- **Actions**: Maintainers may edit or remove content, lock threads, or suspend repository interaction permissions. Actions are proportionate to the severity and recurrence of the violation.

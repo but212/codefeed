@@ -104,16 +104,22 @@ pub(super) fn write_file_entry(
             buf = buf.push_str(FILE_BLOCK_PREFIX)?;
             buf = write_escaped(buf, path, escape_header)?;
             buf = buf.push_str(FILE_BLOCK_SUFFIX)?;
-            buf = buf.push_bytes(content.as_bytes())?;
-            buf = buf.push_bytes(TEXT_FILE_TAILS[missing_nl])?;
+            if !content.is_empty() {
+                buf = buf.push_bytes(content.as_bytes())?;
+                buf = buf.push_bytes(TEXT_FILE_TAILS[missing_nl])?;
+            }
             Ok(buf)
         }
         DigestFormat::Xml => {
             buf = buf.push_str(XML_FILE_START)?;
             buf = write_escaped(buf, path, escape_xml_single_line)?;
             buf = buf.push_str(XML_TAG_CLOSE)?;
-            buf = write_escaped(buf, content, escape_xml_body)?;
-            buf = buf.push_bytes(XML_FILE_TAILS[missing_nl])?;
+            if content.is_empty() {
+                buf = buf.push_bytes(XML_FILE_TAILS[0])?;
+            } else {
+                buf = write_escaped(buf, content, escape_xml_body)?;
+                buf = buf.push_bytes(XML_FILE_TAILS[missing_nl])?;
+            }
             Ok(buf)
         }
     }
@@ -539,5 +545,62 @@ fn main() {\n\tprintln!(&quot;hello&quot;);\r\n}
 </repository>
 ";
         assert_eq!(xml_str, expected);
+    }
+
+    #[test]
+    fn empty_file_omits_synthetic_newline_padding() {
+        let files = [
+            FileRecord {
+                path: "empty.txt",
+                content: "",
+            },
+            FileRecord {
+                path: "newline.txt",
+                content: "\n",
+            },
+        ];
+
+        let xml_str = render_xml_digest("repo", None, &files, 0).unwrap();
+        let expected_xml = "\
+<repository name=\"repo\">
+<directory_structure>
+├── empty.txt
+└── newline.txt
+</directory_structure>
+<files>
+<file path=\"empty.txt\">
+</file>
+<file path=\"newline.txt\">
+
+</file>
+</files>
+</repository>
+";
+        assert_eq!(xml_str, expected_xml);
+
+        let text_str = render_text_digest("repo", None, &files, 0).unwrap();
+        let expected_text = "\
+Repository: repo
+Files: 2
+Skipped: 0
+
+Directory structure:
+├── empty.txt
+└── newline.txt
+
+Files:
+
+==================================================
+FILE: empty.txt
+==================================================
+
+==================================================
+FILE: newline.txt
+==================================================
+
+
+
+";
+        assert_eq!(text_str, expected_text);
     }
 }

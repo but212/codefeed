@@ -61,15 +61,14 @@ impl GithubClient {
 
     /// Builds a GET for `url`. Auth and API-version headers are sent only to the GitHub API origin.
     pub(super) fn request(&self, url: &str) -> RequestBuilder<WithoutBody> {
-        let request = self.agent.get(url);
-        if !is_github_api_origin(url) {
-            return request;
+        let mut request = self.agent.get(url);
+        if let Some(auth) = self.credentials(url) {
+            request = request.header("Authorization", auth.as_str());
         }
-        let request = match &self.auth_header {
-            Some(auth) => request.header("Authorization", auth.as_str()),
-            None => request,
-        };
-        request.header("X-Github-Api-Version", "2022-11-28")
+        if is_github_api_origin(url) {
+            request = request.header("X-Github-Api-Version", "2022-11-28");
+        }
+        request
     }
 }
 
