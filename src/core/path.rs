@@ -81,21 +81,21 @@ pub(crate) fn classify_path_segments<'a, I>(
 where
     I: IntoIterator<Item = &'a [u8]>,
 {
-    let segments: Vec<&'a [u8]> = segments
+    let mut filtered = segments
         .into_iter()
-        .filter(|seg| !seg.is_empty() && *seg != b".")
-        .collect();
-    let Some((leaf, ancestors)) = segments.split_last() else {
+        .filter(|seg| !seg.is_empty() && *seg != b".");
+    let Some(mut pending) = filtered.next() else {
         return Ok(None);
     };
     let mut dir = AdmittedDir::root();
-    for name in ancestors {
-        let Some(admitted) = admit_dir(dir, name, exclude) else {
+    for next in filtered {
+        let Some(admitted) = admit_dir(dir, pending, exclude) else {
             return Ok(None);
         };
         dir = admitted;
+        pending = next;
     }
-    classify_leaf(&dir, leaf, exclude)
+    classify_leaf(&dir, pending, exclude)
 }
 
 /// A directory that passed the hidden and user-exclusion checks, with the prefixes a file below it needs.
@@ -152,7 +152,7 @@ pub(crate) fn admit_dir(
     if is_hidden_segment(name) {
         return None;
     }
-    if depth <= MAX_PATH_DEPTH {
+    if !exclude.is_empty() && depth <= MAX_PATH_DEPTH {
         match_prefix = push_match_segment(match_prefix, name);
         if exclude.excludes_prefix(&match_prefix, true) {
             return None;
@@ -189,7 +189,7 @@ pub(crate) fn classify_leaf(
     if is_hidden_segment(name) {
         return Ok(None);
     }
-    if parent.depth <= MAX_PATH_DEPTH {
+    if !exclude.is_empty() && parent.depth <= MAX_PATH_DEPTH {
         let full = push_match_segment(parent.match_prefix.clone(), name);
         if exclude.excludes_prefix(&full, false) {
             return Ok(None);

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::vec;
 
-use std::io::{self, BufRead, Read};
+use std::io::{self, Read};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
@@ -81,10 +81,15 @@ impl<'a> Walk<'a> {
         if is_hidden_segment(name.as_encoded_bytes()) {
             return Ok(None);
         }
-        let path = entry.path();
-        let kind = entry.file_type().map_err(|err| io_error_at(&path, &err))?;
+        let kind = entry
+            .file_type()
+            .map_err(|err| io_error_at(&entry.path(), &err))?;
         let is_dir = kind.is_dir();
-        if (!is_dir && !kind.is_file()) || is_ignored(&self.frames, &path, is_dir) {
+        if !is_dir && !kind.is_file() {
+            return Ok(None);
+        }
+        let path = entry.path();
+        if is_ignored(&self.frames, &path, is_dir) {
             return Ok(None);
         }
         if is_dir {
@@ -212,17 +217,18 @@ fn read_rules(dir: &Path) -> Result<Gitignore, IngestError> {
     parse_rules(dir, bytes.as_slice()).map_err(|err| io_error_at(&gitignore, &err))
 }
 
-/// Compiles `reader` as the `.gitignore` rules of `dir`. Like `ignore`, it strips a leading BOM and
+/// Compiles `bytes` as the `.gitignore` rules of `dir`. Like `ignore`, it strips a leading BOM and
 /// skips lines that are not valid globs. Unlike `ignore`, a line that is not UTF-8, or a rule set that
 /// fails to compile, is an error, so no rule is dropped silently.
-fn parse_rules<R: BufRead>(dir: &Path, reader: R) -> io::Result<Gitignore> {
+fn parse_rules(dir: &Path, bytes: &[u8]) -> io::Result<Gitignore> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     let mut builder = GitignoreBuilder::new(dir);
-    for (index, line) in reader.lines().enumerate() {
-        let line = line?;
+    for (index, line) in text.lines().enumerate() {
         let line = if index == 0 {
             line.trim_start_matches(UTF8_BOM)
         } else {
-            line.as_str()
+            line
         };
         // An invalid glob line is skipped; the other lines still apply.
         let _ = builder.add_line(None, line);
@@ -236,21 +242,17 @@ fn parse_rules<R: BufRead>(dir: &Path, reader: R) -> io::Result<Gitignore> {
 mod tests {
     #[test]
     fn parse_rules_strips_bom_skips_invalid_globs_and_rejects_non_utf8() {
-        use std::io::Cursor;
-
         let dir = Path::new("root");
-        let bom = parse_rules(dir, Cursor::new("\u{feff}*.bak\n")).expect("BOM line parses");
+        let bom = parse_rules(dir, "\u{feff}*.bak\n".as_bytes()).expect("BOM line parses");
         assert!(bom.matched("root/x.bak", false).is_ignore());
 
-        let invalid =
-            parse_rules(dir, Cursor::new("[\n*.dat\n")).expect("invalid glob line is skipped");
+        let invalid = parse_rules(dir, b"[\n*.dat\n").expect("invalid glob line is skipped");
         assert!(invalid.matched("root/z.dat", false).is_ignore());
 
-        let err = parse_rules(dir, Cursor::new(b"ok\n\xff\n".to_vec()))
-            .expect_err("non-UTF-8 line is an I/O error");
+        let err = parse_rules(dir, b"ok\n\xff\n").expect_err("non-UTF-8 line is an I/O error");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
 
-        let empty = parse_rules(dir, Cursor::new("")).expect("empty file parses");
+        let empty = parse_rules(dir, b"").expect("empty file parses");
         assert!(empty.matched("root/a.txt", false).is_none());
     }
 

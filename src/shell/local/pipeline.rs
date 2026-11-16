@@ -16,9 +16,9 @@ use std::fs;
 use std::io::{self, Read};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::{Mutex, PoisonError};
 
 use super::walk::{RegularFile, Walk, classify_entry};
 use crate::core::path::{CandidatePath, NormalizedPath};
@@ -28,20 +28,81 @@ use crate::core::policy::{
 use crate::core::selector::{Body, Observation, exceeds_file_size};
 use crate::shell::error::{IngestError, io_error_at};
 
+/// Upper bound on buffer capacity retained in [`BufferPool`], preventing large files from
+/// pinning up to `LOCAL_CHANNEL_CAPACITY * MAX_FILE_SIZE` bytes of RSS.
+const LOCAL_BUFFER_RETAIN_BYTES: usize = 128 * 1024;
+const LOCAL_BUFFER_POOL_CAP: usize = LOCAL_CHANNEL_CAPACITY + MAX_LOCAL_WORKERS;
+
+/// Bounded pool of reusable `Vec<u8>` read buffers scoped to a single local collection run.
+#[derive(Debug)]
+struct BufferPool(Mutex<Vec<Vec<u8>>>);
+
+impl BufferPool {
+    fn new() -> Self {
+        Self(Mutex::new(Vec::new()))
+    }
+
+    fn take(&self, min_capacity: usize) -> PooledBuf<'_> {
+        let mut buf = if min_capacity <= LOCAL_BUFFER_RETAIN_BYTES {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pop()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if buf.capacity() < min_capacity {
+            buf.reserve(min_capacity - buf.len());
+        }
+        PooledBuf { buf, pool: self }
+    }
+
+    fn put(&self, mut buf: Vec<u8>) {
+        if buf.capacity() == 0 || buf.capacity() > LOCAL_BUFFER_RETAIN_BYTES {
+            return;
+        }
+        buf.clear();
+        let mut pool = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if pool.len() < LOCAL_BUFFER_POOL_CAP {
+            pool.push(buf);
+        }
+    }
+}
+
+/// Read buffer borrowed from [`BufferPool`] and automatically returned on drop.
+#[derive(Debug)]
+pub(super) struct PooledBuf<'a> {
+    buf: Vec<u8>,
+    pool: &'a BufferPool,
+}
+
+impl AsRef<[u8]> for PooledBuf<'_> {
+    fn as_ref(&self) -> &[u8] {
+        &self.buf
+    }
+}
+
+impl Drop for PooledBuf<'_> {
+    fn drop(&mut self) {
+        self.pool.put(std::mem::take(&mut self.buf));
+    }
+}
+
 /// One regular file queued for a worker. The worker answers once on `reply`.
-struct Job {
+struct Job<'a> {
     path: NormalizedPath,
     entry_path: PathBuf,
-    reply: SyncSender<Settled>,
+    reply: SyncSender<Settled<'a>>,
 }
 
 /// The outcome for one walk entry: `None` when it is not a candidate after all.
-type Settled = Result<Option<Observation<Vec<u8>>>, IngestError>;
+type Settled<'a> = Result<Option<Observation<PooledBuf<'a>>>, IngestError>;
 
 /// One walk entry in walk order: decided on the producer thread, or waiting for a worker.
-enum Slot {
-    Ready(Settled),
-    Pending(Receiver<Settled>),
+enum Slot<'a> {
+    Ready(Settled<'a>),
+    Pending(Receiver<Settled<'a>>),
 }
 
 /// Walks `root` in sorted order and folds each candidate through `step` in that order.
@@ -50,22 +111,23 @@ pub(super) fn fold_candidates<T>(
     output: Option<&Path>,
     exclude: &ExcludePatterns,
     init: T,
-    step: impl FnMut(T, Observation<Vec<u8>>) -> Result<T, IngestError>,
+    mut step: impl FnMut(T, Observation<PooledBuf<'_>>) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
     let walker = Walk::new(root, exclude)?;
+    let pool = BufferPool::new();
 
     let aborted = AtomicBool::new(false);
-    let (job_tx, job_rx) = sync_channel::<Job>(LOCAL_CHANNEL_CAPACITY);
+    let (job_tx, job_rx) = sync_channel::<Job<'_>>(LOCAL_CHANNEL_CAPACITY);
     let jobs = Mutex::new(job_rx);
-    let (slot_tx, slot_rx) = sync_channel::<Slot>(LOCAL_CHANNEL_CAPACITY);
+    let (slot_tx, slot_rx) = sync_channel::<Slot<'_>>(LOCAL_CHANNEL_CAPACITY);
     std::thread::scope(|s| {
         for _ in 0..local_worker_count(std::thread::available_parallelism()) {
-            s.spawn(|| run_worker(&jobs, &aborted));
+            s.spawn(|| run_worker(&jobs, &aborted, &pool));
         }
         // Senders move into the producer, so they drop before the workers are joined.
         s.spawn(move || produce_slots(walker, output, exclude, job_tx, slot_tx));
 
-        let result = settle_slots(slot_rx, init, step);
+        let result = settle_slots(slot_rx, init, &mut step);
         if result.is_err() {
             aborted.store(true, Ordering::Relaxed);
         }
@@ -75,12 +137,12 @@ pub(super) fn fold_candidates<T>(
 
 /// Routes one walk entry: `None` when it is not a candidate, a ready reply when it is decided on
 /// the producer thread, or a pending reply when a worker reads its body.
-fn dispatch(
+fn dispatch<'a>(
     entry: Result<RegularFile, IngestError>,
     output: Option<&Path>,
     exclude: &ExcludePatterns,
-    jobs: &SyncSender<Job>,
-) -> Option<Slot> {
+    jobs: &SyncSender<Job<'a>>,
+) -> Option<Slot<'a>> {
     let file = match entry {
         Ok(file) => file,
         Err(err) => return Some(Slot::Ready(Err(err))),
@@ -108,12 +170,12 @@ fn dispatch(
 
 /// Answers jobs until the job channel closes. After an abort, workers answer without touching the
 /// filesystem, so the remaining queue drains quickly.
-fn run_worker(jobs: &Mutex<Receiver<Job>>, aborted: &AtomicBool) {
+fn run_worker<'a>(jobs: &Mutex<Receiver<Job<'a>>>, aborted: &AtomicBool, pool: &'a BufferPool) {
     while let Some(job) = next_job(jobs) {
         let msg = if aborted.load(Ordering::Relaxed) {
             Ok(None)
         } else {
-            read_candidate(&job.entry_path, job.path)
+            read_candidate(&job.entry_path, job.path, pool)
         };
         // The settling side may already have stopped after an error; the reply is then unused.
         let _ = job.reply.send(msg);
@@ -121,7 +183,7 @@ fn run_worker(jobs: &Mutex<Receiver<Job>>, aborted: &AtomicBool) {
 }
 
 /// Takes the next job. The lock covers only the receive, so workers do not serialize on the reads.
-fn next_job(jobs: &Mutex<Receiver<Job>>) -> Option<Job> {
+fn next_job<'a>(jobs: &Mutex<Receiver<Job<'a>>>) -> Option<Job<'a>> {
     jobs.lock().ok()?.recv().ok()
 }
 
@@ -130,10 +192,10 @@ fn worker_stopped() -> IngestError {
 }
 
 /// Waits for one slot's reply and folds its candidate into `acc`.
-fn settle<T>(
-    slot: Slot,
+fn settle<'a, T>(
+    slot: Slot<'a>,
     acc: T,
-    step: &mut impl FnMut(T, Observation<Vec<u8>>) -> Result<T, IngestError>,
+    step: &mut impl FnMut(T, Observation<PooledBuf<'a>>) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
     let msg = match slot {
         Slot::Ready(msg) => msg,
@@ -151,12 +213,12 @@ fn settle<T>(
     clippy::needless_pass_by_value,
     reason = "dropping the senders when the producer exits disconnects both channels"
 )]
-fn produce_slots(
+fn produce_slots<'a>(
     walker: Walk<'_>,
     output: Option<&Path>,
     exclude: &ExcludePatterns,
-    jobs: SyncSender<Job>,
-    slots: SyncSender<Slot>,
+    jobs: SyncSender<Job<'a>>,
+    slots: SyncSender<Slot<'a>>,
 ) {
     for entry in walker {
         let Some(slot) = dispatch(entry, output, exclude, &jobs) else {
@@ -174,14 +236,14 @@ fn produce_slots(
     clippy::needless_pass_by_value,
     reason = "dropping the receiver on early error disconnects the slot channel and unblocks the producer"
 )]
-fn settle_slots<T>(
-    slots: Receiver<Slot>,
+fn settle_slots<'a, T>(
+    slots: Receiver<Slot<'a>>,
     init: T,
-    mut step: impl FnMut(T, Observation<Vec<u8>>) -> Result<T, IngestError>,
+    step: &mut impl FnMut(T, Observation<PooledBuf<'a>>) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
     slots
         .iter()
-        .try_fold(init, |acc, slot| settle(slot, acc, &mut step))
+        .try_fold(init, |acc, slot| settle(slot, acc, step))
 }
 
 /// Read worker count: available cores capped at `MAX_LOCAL_WORKERS`, or 1 when unknown.
@@ -192,10 +254,11 @@ fn local_worker_count(available: io::Result<NonZeroUsize>) -> usize {
 /// Reads one regular file's metadata and body. `Ok(None)` when the entry is a symlink or non-file
 /// (no longer a regular file); `Err` aborts the run. A file unavailable at metadata, open, or read
 /// (`is_unavailable_file`) is [`Body::Unavailable`].
-fn read_candidate(
+fn read_candidate<'a>(
     entry_path: &Path,
     path: NormalizedPath,
-) -> Result<Option<Observation<Vec<u8>>>, IngestError> {
+    pool: &'a BufferPool,
+) -> Result<Option<Observation<PooledBuf<'a>>>, IngestError> {
     let meta = match fs::symlink_metadata(entry_path) {
         Ok(m) => m,
         // Unlinked or locked after discovery: the selector counts it as skipped.
@@ -213,7 +276,7 @@ fn read_candidate(
     if exceeds_file_size(file_len) {
         return Ok(Some(Observation::File(path, Body::OverLimit)));
     }
-    let body = read_bounded(entry_path, file_len)?.map_or(Body::Unavailable, Body::Bytes);
+    let body = read_bounded(entry_path, file_len, pool)?.map_or(Body::Unavailable, Body::Bytes);
     Ok(Some(Observation::File(path, body)))
 }
 
@@ -235,7 +298,11 @@ fn is_unavailable_file(err: &io::Error) -> bool {
 /// Reads at most `MAX_FILE_SIZE + 1` bytes; the extra byte lets the selector detect overflow.
 /// Returns `Ok(None)` when the file is unavailable at open or read (`is_unavailable_file`).
 /// `file_len` is the metadata length, which the caller has already checked against `MAX_FILE_SIZE`.
-fn read_bounded(path: &Path, file_len: u64) -> Result<Option<Vec<u8>>, IngestError> {
+fn read_bounded<'a>(
+    path: &Path,
+    file_len: u64,
+    pool: &'a BufferPool,
+) -> Result<Option<PooledBuf<'a>>, IngestError> {
     let file = match fs::File::open(path) {
         Ok(f) => f,
         Err(err) if is_unavailable_file(&err) => return Ok(None),
@@ -243,9 +310,9 @@ fn read_bounded(path: &Path, file_len: u64) -> Result<Option<Vec<u8>>, IngestErr
     };
     let capacity =
         usize::try_from(file_len).expect("invariant: caller checked file_len <= MAX_FILE_SIZE");
-    let mut buf = Vec::with_capacity(capacity);
-    match file.take(MAX_FILE_SIZE + 1).read_to_end(&mut buf) {
-        Ok(_) => Ok(Some(buf)),
+    let mut pooled = pool.take(capacity);
+    match file.take(MAX_FILE_SIZE + 1).read_to_end(&mut pooled.buf) {
+        Ok(_) => Ok(Some(pooled)),
         Err(err) if is_unavailable_file(&err) => Ok(None),
         Err(err) => Err(io_error_at(path, &err)),
     }
@@ -292,15 +359,41 @@ mod tests {
             ),
             (&missing, 0, None, "unlinked before open"),
         ];
+        let pool = BufferPool::new();
         for (path, file_len, expected_len, label) in cases {
-            let read = read_bounded(path, file_len)?;
-            assert_eq!(read.as_ref().map(Vec::len), expected_len, "{label}");
+            let read = read_bounded(path, file_len, &pool)?;
+            assert_eq!(
+                read.as_ref().map(|buf| buf.as_ref().len()),
+                expected_len,
+                "{label}"
+            );
         }
         assert_eq!(
-            read_bounded(&kib, kib_payload.len() as u64)?,
-            Some(kib_payload)
+            read_bounded(&kib, kib_payload.len() as u64, &pool)?
+                .as_ref()
+                .map(AsRef::as_ref),
+            Some(kib_payload.as_slice())
         );
         Ok(())
+    }
+
+    #[test]
+    fn buffer_pool_reuses_within_cap_and_drops_oversized() {
+        let pool = BufferPool::new();
+        let small = pool.take(4 * 1024);
+        let small_ptr = small.buf.as_ptr();
+        drop(small);
+        assert_eq!(pool.0.lock().unwrap().len(), 1);
+
+        let reused = pool.take(1024);
+        assert_eq!(reused.buf.as_ptr(), small_ptr);
+        assert!(reused.buf.is_empty());
+        drop(reused);
+
+        let oversized = pool.take(LOCAL_BUFFER_RETAIN_BYTES + 1);
+        drop(oversized);
+        // Oversized buffer is dropped rather than retained alongside the small one.
+        assert_eq!(pool.0.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -310,7 +403,8 @@ mod tests {
         fs::write(&file, "content")?;
         fs::remove_file(&file)?;
 
-        let observation = read_candidate(&file, NormalizedPath::from("a.txt"))?
+        let pool = BufferPool::new();
+        let observation = read_candidate(&file, NormalizedPath::from("a.txt"), &pool)?
             .ok_or("unlinked file must reach the selector as a candidate")?;
         assert!(
             matches!(&observation, Observation::File(_, Body::Unavailable)),
@@ -330,7 +424,8 @@ mod tests {
         let file = root.join("large.txt");
         fs::write(&file, vec![b'x'; MAX_FILE_SIZE_USIZE + 1])?;
 
-        let observation = read_candidate(&file, NormalizedPath::from("large.txt"))?
+        let pool = BufferPool::new();
+        let observation = read_candidate(&file, NormalizedPath::from("large.txt"), &pool)?
             .ok_or("oversized file must reach the selector as a candidate")?;
         assert!(
             matches!(&observation, Observation::File(_, Body::OverLimit)),
@@ -365,7 +460,8 @@ mod tests {
         let sub = root.join("subdir");
         fs::create_dir(&sub)?;
 
-        let result = read_candidate(&sub, NormalizedPath::from("subdir"))?;
+        let pool = BufferPool::new();
+        let result = read_candidate(&sub, NormalizedPath::from("subdir"), &pool)?;
         assert!(result.is_none());
         Ok(())
     }
