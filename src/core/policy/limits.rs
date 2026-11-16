@@ -66,6 +66,8 @@ pub(crate) const GITHUB_TIMEOUT_SECS: u64 = 30;
 )]
 const _: () = {
     assert!(MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES as u64 <= u32::MAX as u64);
+    assert!((MAX_FILE_COUNT as u64) * (MAX_PATH_BYTES as u64) <= u32::MAX as u64);
+    assert!(MAX_FILE_COUNT < u32::MAX as usize);
     assert!(MAX_FILE_SIZE <= MAX_OUTPUT_SIZE);
     assert!(MAX_PATH_BYTES as u64 <= MAX_FILE_SIZE);
     assert!(MAX_FILE_COUNT > 0);

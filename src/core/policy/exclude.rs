@@ -57,6 +57,12 @@ impl ExcludePatterns {
         Ok(Self { patterns, rules })
     }
 
+    /// Whether no user exclusion patterns were configured.
+    #[must_use]
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.patterns.is_empty()
+    }
+
     /// Whether the patterns exclude `prefix`, a match prefix built by [`push_match_segment`].
     ///
     /// Each prefix is matched on its own. Callers test a directory as it is admitted, so an excluded

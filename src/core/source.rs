@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::path::PathBuf;
 
 use crate::core::error::DomainError;
@@ -13,16 +14,20 @@ impl GitRef {
     /// # Errors
     ///
     /// Returns [`DomainError::InvalidSource`] if `value` is empty, only whitespace, `.`, or `..`.
-    pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
-        let string = value.into();
-        let trimmed = string.trim_ascii();
+    pub fn new<'a>(value: impl Into<Cow<'a, str>>) -> Result<Self, DomainError> {
+        let cow = value.into();
+        let trimmed = cow.trim_ascii();
         if trimmed.is_empty() {
             return Err(DomainError::invalid_source("--ref cannot be empty"));
         }
         if trimmed == "." || trimmed == ".." {
             return Err(DomainError::invalid_source("--ref cannot be '.' or '..'"));
         }
-        Ok(Self(trimmed.to_owned()))
+        let owned = match cow {
+            Cow::Owned(s) if trimmed.len() == s.len() => s,
+            Cow::Owned(_) | Cow::Borrowed(_) => trimmed.to_owned(),
+        };
+        Ok(Self(owned))
     }
 }
 
@@ -102,7 +107,10 @@ impl Source {
     ///
     /// Returns [`DomainError::InvalidSource`] if `reference` is [`Some`] when called on a [`Source::Local`] variant,
     /// or if the reference string is empty, only whitespace, `.`, or `..`.
-    pub fn with_reference(self, reference: Option<impl Into<String>>) -> Result<Self, DomainError> {
+    pub fn with_reference<'a>(
+        self,
+        reference: Option<impl Into<Cow<'a, str>>>,
+    ) -> Result<Self, DomainError> {
         match self {
             Self::Local(_) => {
                 if reference.is_some() {
@@ -136,6 +144,12 @@ mod tests {
 
         let untrimmed = GitRef::new("  main\t\n").unwrap();
         assert_eq!(&*untrimmed, "main");
+
+        let owned_clean = GitRef::new(String::from("release/1.0")).unwrap();
+        assert_eq!(&*owned_clean, "release/1.0");
+
+        let owned_trimmed = GitRef::new(String::from("  dev  ")).unwrap();
+        assert_eq!(&*owned_trimmed, "dev");
 
         assert!(GitRef::new("").is_err());
         assert!(GitRef::new("   ").is_err());

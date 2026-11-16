@@ -18,14 +18,15 @@ where
     F: Fn(BoundedBuffer, &str) -> Result<BoundedBuffer, OutputLimitExceeded> + Copy,
 {
     let paths: Vec<&str> = files.iter().map(|f| f.path).collect();
-    render_level(buf, &paths, 0, "", format_name)
+    let mut prefix = String::new();
+    render_level(buf, &paths, 0, &mut prefix, format_name)
 }
 
 fn render_level<F>(
     mut buf: BoundedBuffer,
     paths: &[&str],
     offset: usize,
-    prefix: &str,
+    prefix: &mut String,
     format_name: F,
 ) -> Result<BoundedBuffer, OutputLimitExceeded>
 where
@@ -54,14 +55,16 @@ where
 
         if is_dir {
             buf = buf.push_bytes(b"/\n")?;
-            let child_prefix = format!("{prefix}{}", if is_last { TREE_SPACE } else { TREE_VERT });
+            let saved_len = prefix.len();
+            prefix.push_str(if is_last { TREE_SPACE } else { TREE_VERT });
             buf = render_level(
                 buf,
                 &paths[start..end],
                 offset + name.len() + 1,
-                &child_prefix,
+                prefix,
                 format_name,
             )?;
+            prefix.truncate(saved_len);
         } else {
             buf = buf.push_bytes(b"\n")?;
         }
@@ -172,7 +175,7 @@ mod tests {
             BoundedBuffer::default(),
             &["a/"],
             0,
-            "",
+            &mut String::new(),
             BoundedBuffer::push_str,
         );
     }
