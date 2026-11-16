@@ -5,6 +5,7 @@
 
 use crate::core::error::DomainError;
 use crate::core::model::DigestFormat;
+use crate::core::policy::MAX_OUTPUT_SIZE;
 use crate::core::selector::CollectionResult;
 
 mod budget;
@@ -57,7 +58,16 @@ impl CollectionResult {
     ///
     /// Returns [`DomainError::OutputTooLarge`] if output exceeds the maximum size limit.
     pub(crate) fn render(&self, format: DigestFormat) -> Result<RenderedDigest, DomainError> {
-        let buf = BoundedBuffer::with_capacity(self.files.total_bytes() + 4096);
+        let extra = match format {
+            DigestFormat::Text => self.files.len() * 128 + 4096,
+            DigestFormat::Xml => self.files.total_bytes() / 16 + self.files.len() * 64 + 4096,
+        };
+        let capacity = self
+            .files
+            .total_bytes()
+            .saturating_add(extra)
+            .min(usize::try_from(MAX_OUTPUT_SIZE).unwrap_or(usize::MAX));
+        let buf = BoundedBuffer::with_capacity(capacity);
         match render_digest(buf, self, format) {
             Ok(buf) => Ok(buf.finish()),
             Err(OutputLimitExceeded) => Err(self.files.output_too_large_error()),
