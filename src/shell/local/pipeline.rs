@@ -474,8 +474,11 @@ mod tests {
         crate::shell::testing::make_fifo(&fifo)?;
 
         // Opening a FIFO with no writer blocks, so an `open` regression surfaces as a timeout.
-        let msg = run_with_timeout(move || read_candidate(&fifo, NormalizedPath::from("pipe")));
-        assert!(msg?.is_none(), "a FIFO is not a candidate");
+        let is_none = run_with_timeout(move || {
+            let pool = BufferPool::new();
+            read_candidate(&fifo, NormalizedPath::from("pipe"), &pool).map(|obs| obs.is_none())
+        });
+        assert!(is_none?, "a FIFO is not a candidate");
         Ok(())
     }
 
