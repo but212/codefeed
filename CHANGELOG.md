@@ -34,6 +34,11 @@ Internal change. No consumer action required. Output is unchanged throughout.
 #### Changed
 
 - **Document ownership**: Output format (header, token estimate) is owned by `README.md` Output; limit authority is stated once in the `docs/security_and_filtering.md` header; `AGENTS.md` § 6 routes `CONTRIBUTING.md` and `SECURITY.md` changes. Contributor-facing documents no longer link to `AGENTS.md`: `CONTRIBUTING.md` owns the verification checklist, `AGENTS.md` links to it, and the pull request template mirrors the commands inline. `context.md` § 5 is reduced to module responsibilities, and `docs/security_and_filtering.md` no longer names implementation identifiers.
+- **`Cow<'a, str>` string constructors**: `ErrorDetail::new`, `GitRef::new`, `Source::with_reference`, and `DomainError::{usage, invalid_source, unsupported_source, invalid_metadata}` accept `impl Into<Cow<'a, str>>` instead of `impl Into<String>`, avoiding reallocation when owned inputs need no sanitization or trimming (`src/core/error.rs`, `src/core/source.rs`).
+- **Allocation reductions and `RateLimitHeaders` enum**:
+  - `RateLimitHeaders` is now an enum (`NotLimited`, `UnparsedRetryAfter`, `RetryAfterSecs`, `QuotaExhausted`) so contradictory header states are unrepresentable (`src/core/github/retry.rs`).
+  - `Selector::observe` accepts generic `B: AsRef<[u8]>` bodies (`src/core/selector.rs`), paired with bounded `BufferPool`/`PooledBuf<'a>` buffer reuse in `src/shell/local/pipeline.rs` and `ExcludePatterns::is_empty` in `src/core/policy/exclude.rs`.
+  - `Selector` and `CandidateBudget` replace `HashMap`/`HashSet` with an open-addressed `ArenaMap<V>` backed by `u32` indices, with compile-time bounds assertions in `src/core/policy/limits.rs`.
 
 ---
 
