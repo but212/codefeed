@@ -265,7 +265,6 @@ pub(crate) struct Selector {
     storage: FileStorage,
     candidates: CandidateBudget,
     paths: ArenaMap<()>,
-    skipped: usize,
 }
 
 impl Selector {
@@ -278,7 +277,6 @@ impl Selector {
                 dir_counts: ArenaMap::with_capacity(32, 512),
             },
             paths: ArenaMap::with_capacity(512, 16 * 1024),
-            skipped: 0,
         }
     }
 
@@ -313,14 +311,14 @@ impl Selector {
         let (path, body) = match observation {
             Observation::Unstorable(prefix) => {
                 self.candidates = self.candidates.add(&prefix)?;
-                return Ok(self.skip());
+                return Ok(self);
             }
             Observation::File(path, body) => (path, body),
         };
         self.candidates = self.candidates.add(&path)?;
         self = self.claim_path(&path)?;
         let Body::Bytes(bytes) = body else {
-            return Ok(self.skip());
+            return Ok(self);
         };
         match classify_content(bytes.as_ref()) {
             Some(content) => {
@@ -329,13 +327,8 @@ impl Selector {
                 self.storage = self.storage.push(&path, content)?;
                 Ok(self)
             }
-            None => Ok(self.skip()),
+            None => Ok(self),
         }
-    }
-
-    const fn skip(mut self) -> Self {
-        self.skipped += 1;
-        self
     }
 
     /// Finalizes selection, sorting files lexicographically in-place, and returns a [`CollectionResult`].
@@ -348,11 +341,12 @@ impl Selector {
         label: String,
         revision: Option<String>,
     ) -> Result<CollectionResult, DomainError> {
+        let skipped = self.candidates.count - self.storage.len();
         Ok(CollectionResult {
             label,
             revision,
             files: SortedFiles::new(self.storage)?,
-            skipped: self.skipped,
+            skipped,
         })
     }
 }
@@ -600,6 +594,30 @@ mod tests {
             assert_eq!(collection.files.len(), included, "{path}");
             assert_eq!(collection.skipped, skipped, "{path}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn finish_counts_skipped_across_mixed_observations() -> Result<(), DomainError> {
+        let empty = Selector::new().finish("test".into(), None)?;
+        assert_eq!(empty.files.len(), 0);
+        assert_eq!(empty.skipped, 0);
+
+        let observations = [
+            text("a.txt"),
+            file("bin.bin", Body::Bytes(b"\0")),
+            file("bad_utf8", Body::Bytes(b"\xff")),
+            file("over.txt", Body::OverLimit),
+            file("gone.txt", Body::Unavailable),
+            Observation::Unstorable("dir/".into()),
+            file("empty.txt", Body::Bytes(b"")),
+        ];
+        let selector = observations
+            .into_iter()
+            .try_fold(Selector::new(), Selector::observe)?;
+        let collection = selector.finish("test".into(), None)?;
+        assert_eq!(collection.files.len(), 2);
+        assert_eq!(collection.skipped, 5);
         Ok(())
     }
 

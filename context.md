@@ -23,7 +23,7 @@ Converts a local directory or public GitHub repository into a single text digest
 
 - `CandidatePath`: `Valid(NormalizedPath)` or `Unstorable(prefix)`. Ignored entries are `None` at classification and discarded before selection.
 - `NormalizedPath`: Non-empty, slash-separated UTF-8 relative path without empty or `.` segments, within `MAX_PATH_BYTES` (I-10).
-- `Selector`: Linear state managing arena storage, `CandidateBudget`, seen-path set for uniqueness, and skipped tally. Settles candidates via `observe` and completes via `finish`.
+- `Selector`: Linear state managing arena storage, `CandidateBudget`, and seen-path set for uniqueness. Settles candidates via `observe`; `finish` derives the skipped tally as candidate count minus stored file count.
 - `Observation`: Input to `Selector::observe`: `Unstorable(prefix)` or `File(NormalizedPath, Body)` (`Body`: `Unavailable`, `OverLimit`, `Bytes`).
 - `CandidateBudget`: Candidate counter and per-directory tallies (`selector.rs` private).
 - `CollectionResult`: `label`, optional `revision`, `files: SortedFiles`, and `skipped`.
