@@ -14,8 +14,9 @@ use self::pipeline::fold_candidates;
 use super::error::IngestError;
 use super::output::ResolvedOutput;
 use crate::core::error::DomainError;
+use crate::core::model::CollectionResult;
 use crate::core::policy::ExcludePatterns;
-use crate::core::selector::{CollectionResult, Selector};
+use crate::core::selector::Selector;
 
 /// Collects files from a local directory root, excluding the output file if located inside it.
 ///

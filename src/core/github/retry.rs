@@ -42,22 +42,29 @@ const _: () = {
 pub(crate) enum RateLimitHeaders {
     /// No `Retry-After` header and quota is not exhausted.
     NotLimited,
-    /// `Retry-After` header was present (e.g. HTTP-date) without a numeric seconds value.
+    /// `Retry-After` header was present without a valid delay.
     UnparsedRetryAfter,
-    /// Numeric `Retry-After` delay in seconds, which takes precedence over `X-RateLimit-Reset`.
+    /// Resolved `Retry-After` delay in seconds, which takes precedence over `X-RateLimit-Reset`.
     RetryAfterSecs(u64),
     /// `X-RateLimit-Remaining` is `0`, with an optional `X-RateLimit-Reset` UNIX epoch in seconds.
     QuotaExhausted { reset_epoch_secs: Option<u64> },
 }
 
 impl RateLimitHeaders {
-    /// Parses raw header values, where `None` means the header was absent.
+    /// Parses numeric header values, where `None` means the header was absent.
+    /// The shell resolves HTTP-date values directly into [`Self::RetryAfterSecs`].
     pub(crate) fn parse(
         retry_after: Option<&str>,
         remaining: Option<&str>,
         reset: Option<&str>,
     ) -> Self {
-        if let Some(secs) = retry_after.and_then(|v| v.trim().parse().ok()) {
+        if let Some(secs) = retry_after.and_then(|value| {
+            let value = value.trim();
+            value.parse().ok().or_else(|| {
+                // All-digit overflow is still a delay above the retry cap, not a missing hint.
+                (!value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())).then_some(u64::MAX)
+            })
+        }) {
             return Self::RetryAfterSecs(secs);
         }
         if remaining.is_some_and(|v| v.trim() == "0") {
@@ -222,8 +229,8 @@ mod tests {
             (None, None, Some("1002400"), NOW, None),
             (None, Some("0"), Some("999"), NOW, None),
             (None, Some("0"), Some("1002400"), u64::MAX, None),
-            // HTTP-date form is not parsed: it yields no wait and falls back to backoff.
-            (Some("Wed, 21 Oct 2026 07:28:00 GMT"), None, None, NOW, None),
+            // An invalid hint falls back to backoff; HTTP-dates are resolved by the shell.
+            (Some("soon"), None, None, NOW, None),
         ];
 
         for (retry_after, remaining, reset, now, expected) in cases {
@@ -234,6 +241,21 @@ mod tests {
                 got, expected,
                 "retry-after={retry_after:?} remaining={remaining:?} reset={reset:?} now={now}"
             );
+        }
+    }
+
+    #[test]
+    fn overflowing_retry_after_seconds_exceed_the_retry_cap() {
+        for value in ["18446744073709551616", "999999999999999999999999999999"] {
+            let facts = RateLimitHeaders::parse(Some(value), Some("0"), Some("1000001"));
+            let delay = facts.retry_after(1_000_000);
+            assert_eq!(delay, Some(Duration::from_secs(u64::MAX)), "{value}");
+            let (_, transition) = AttemptState::new().step(&RequestOutcome::HttpStatus {
+                status: 429,
+                retry_after: delay,
+                is_rate_limit: facts.is_rate_limited(),
+            });
+            assert_eq!(transition, Transition::Fail, "{value}");
         }
     }
 

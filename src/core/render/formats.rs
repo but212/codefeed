@@ -462,8 +462,8 @@ mod tests {
         }
     }
 
+    use crate::core::model::CollectionResult;
     use crate::core::render::render_digest;
-    use crate::core::selector::CollectionResult;
     use crate::core::storage::{FileRecord, FileStorage, SortedFiles};
 
     fn render_digest_str(

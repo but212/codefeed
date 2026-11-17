@@ -49,9 +49,11 @@ Options may appear before or after `<SOURCE>`. Short flags accept `=` syntax (`-
 - `-r`, `--ref <BRANCH|TAG|COMMIT>`: GitHub revision (default: default branch). Rejects empty, whitespace-only, `.`, and `..`.
 - `-f`, `--format <text|xml>`: Digest format (default: `text`).
 - `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to source root. Repeatable, applied in order. Invalid patterns and patterns yielding no rule (blank, comment, bare `!`) are usage errors. Syntax: [`docs/security_and_filtering.md`](docs/security_and_filtering.md) § 3.6.
-- `-h`, `--help`: Print usage and exit 0. Preempts other argument errors.
-- `-V`, `--version`: Print `codefeed <version>` and exit 0. Preempts other argument errors.
+- `-h`, `--help`: Print usage and exit 0.
+- `-V`, `--version`: Print `codefeed <version>` and exit 0.
 - `--`: Treat subsequent arguments as positionals.
+
+Help/version preempt other argument errors only when parsed as options; the first one wins. An occurrence in a separate option-value position (even a rejected value, as in `--output --help`) or after `--` does not trigger either action.
 
 Inline values (`--flag=value`) may start with `-` (e.g. `--output=-notes.txt`). Separate values may not, except `-o -`.
 

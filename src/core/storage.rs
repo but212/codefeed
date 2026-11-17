@@ -133,6 +133,11 @@ impl FileStorage {
     }
 
     #[must_use]
+    pub(crate) fn path_at(&self, index: usize) -> &str {
+        self.spans[index].path(&self.path_arena)
+    }
+
+    #[must_use]
     pub(crate) const fn total_bytes(&self) -> usize {
         self.path_arena.len() + self.content_arena.len()
     }
@@ -476,7 +481,7 @@ mod tests {
                     assert!(!fits, "content length {content_len} must fit");
                     assert_eq!(err.limit, MAX_OUTPUT_SIZE);
                     assert!(
-                        err.largest_files.iter().any(|(p, _)| p == "big.txt"),
+                        err.largest.iter().any(|(p, _)| p == "big.txt"),
                         "rejected candidate must appear in diagnostics"
                     );
                 }

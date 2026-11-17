@@ -14,7 +14,7 @@ use std::io::{self, Read};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::core::error::DomainError;
-use crate::core::path::{AdmittedDir, CandidatePath, DepthExceededError, admit_dir, classify_leaf};
+use crate::core::path::{AdmittedDir, Candidate, admit_dir, classify_leaf};
 use crate::core::policy::{ExcludePatterns, MAX_DIR_ENTRIES, MAX_FILE_SIZE, is_hidden_segment};
 use crate::shell::error::{IngestError, io_error_at};
 
@@ -173,12 +173,16 @@ pub(super) fn classify_entry(
     output: Option<&Path>,
     exclude: &ExcludePatterns,
     file: &RegularFile,
-) -> Result<Option<CandidatePath>, IngestError> {
+) -> Result<Option<Candidate>, IngestError> {
     if output.is_some_and(|target| file.path.as_path() == target) {
         return Ok(None);
     }
-    classify_leaf(&file.parent, file.name.as_encoded_bytes(), exclude)
-        .map_err(|_| DepthExceededError::domain_error("local path").into())
+    Ok(classify_leaf(
+        &file.parent,
+        file.name.as_encoded_bytes(),
+        exclude,
+        "local path",
+    )?)
 }
 
 /// Byte order mark that Git ignores at the start of a `.gitignore`.

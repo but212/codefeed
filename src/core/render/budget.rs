@@ -1,5 +1,6 @@
 //! In-memory bounded buffer and token estimation heuristic.
 
+use crate::core::model::RenderedDigest;
 use crate::core::policy::ASCII_BYTES_PER_TOKEN;
 
 /// Token estimation heuristic calculating ASCII bytes and non-ASCII character counts.
@@ -19,14 +20,6 @@ pub(super) fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
 /// Error returned when rendered content exceeds the buffer's limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct OutputLimitExceeded;
-
-/// Rendered digest: the bytes to deliver and their token estimate.
-#[derive(Debug)]
-#[must_use]
-pub(crate) struct RenderedDigest {
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) estimated_tokens: usize,
-}
 
 /// In-memory buffer with value-passing operations, bounded by a byte `limit`.
 ///

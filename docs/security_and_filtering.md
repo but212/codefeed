@@ -42,7 +42,7 @@ Entry (local walk or tar stream)
  |
  +-- Tar header read (GNU `L`/`K` and PAX `x` bodies included). Runs before path classification and applies to every entry type.
  |     `-- Over `ARCHIVE_MAX_HEADER_BYTES` for one read -> Run fails (InvalidMetadata), even for entries that would be dropped (I-03).
- +-- Decompressed archive stream over `ARCHIVE_MAX_DECOMPRESSED_BYTES` -> Run fails (InvalidMetadata), entry bodies included.
+ +-- Decompressed archive stream over `ARCHIVE_MAX_DECOMPRESSED_BYTES` -> Run fails (InvalidMetadata), entry bodies and reconstructed sparse holes included.
  |
  +-- Non-regular file (symlink, FIFO, socket, device, non-file tar header)
  |     `-- Dropped silently. Omitted from count.
@@ -62,7 +62,7 @@ Entry (local walk or tar stream)
  |     +-- Depth > MAX_PATH_DEPTH
  |     |     `-- Run fails (InvalidMetadata).
  |     +-- Non-UTF-8 segment, or path > MAX_PATH_BYTES
- |     |     `-- Candidate with prefix (valid segments or "").
+ |     |     `-- Candidate with accounting prefix (valid segments or "") and complete normalized byte identity.
  |     `-- Valid UTF-8 path
  |           `-- Candidate.
  |
@@ -113,7 +113,7 @@ Exact matches against final path segment:
 | :--- | :--- |
 | Depth > `MAX_PATH_DEPTH` | Run fails (`InvalidMetadata`). Hidden/noise items dropped prior to check. |
 | Path > `MAX_PATH_BYTES` | Consumes candidate slot; counted as skipped; body unread. Truncated prefix keys budget (I-05). |
-| Path equal to another candidate's path | Run fails (`InvalidMetadata`). Applies to skipped candidates too. |
+| Path equal to another candidate's path | Run fails (`InvalidMetadata`). Applies to skipped candidates too; normalized raw bytes determine identity, not accounting prefixes or lossy UTF-8. |
 | Stored path is directory prefix of another (`a` and `a/…`) | Run fails (`InvalidMetadata`) at digest assembly. Skipped candidates excluded. |
 
 ### 3.5 Ignore Files (Local Only)
@@ -178,12 +178,15 @@ Enforces built-in Mozilla root certificates (`rustls-webpki-roots`). OS stores a
 ### 6.4 Streaming
 
 - Fetches tarball via `/repos/{owner}/{repo}/tarball/{ref}`. Streams via gzip/tar directly into candidate observation without disk spooling.
-- Each tar header read is metered against `ARCHIVE_MAX_HEADER_BYTES` (I-03), covering padding, GNU `L`/`K`, PAX `x`, and sparse blocks. Overruns abort with `InvalidMetadata`. Entire decompressed stream is metered against `ARCHIVE_MAX_DECOMPRESSED_BYTES`.
+- Tar termination does not finalize collection: the gzip stream is drained through its trailer before any digest is delivered. A missing or invalid gzip checksum or uncompressed-size trailer fails the run (`IngestError::Http`). Decoded bytes after the tar end marker still consume the decompressed stream budget, not the tar header budget.
+- Each tar header read is metered against `ARCHIVE_MAX_HEADER_BYTES` (I-03), covering padding, GNU `L`/`K`, PAX `x`, and sparse blocks. Overruns abort with `InvalidMetadata`.
+- The entire decompressed stream, including holes reconstructed by GNU sparse entries, shares the `ARCHIVE_MAX_DECOMPRESSED_BYTES` budget. A sparse entry whose logical body cannot fit the remaining budget fails with `InvalidMetadata` before expansion. Entries within the budget remain excluded as non-regular files and consume no candidate slots.
 
 ### 6.5 Retries
 
 - **Retried:** Transport timeouts/errors, HTTP 429, HTTP 5xx, HTTP 403 with `Retry-After` or zero quota.
 - **Not Retried:** Other HTTP 4xx, non-transient transport errors.
+- `Retry-After` accepts decimal seconds and HTTP-date (including legacy HTTP-date forms), taking precedence over quota reset headers when valid. Dates resolve against the current Unix time; a due or past date requests no wait. All-digit seconds exceeding the representable range saturate rather than falling back to backoff. Malformed values retain the existing quota-reset or backoff fallback.
 - Attempts capped by `MAX_ATTEMPTS`. Exponential backoff spans `RETRY_INITIAL_DELAY_MS` to `RETRY_MAX_DELAY_MS`. Server wait delays from `Retry-After` or `x-ratelimit-reset` exceeding `RETRY_MAX_DELAY_MS` abort immediately.
 
 ### 6.6 Time Limits
@@ -222,7 +225,7 @@ Sole documentation mirror for numerical limits (authoritative definitions reside
 | `MAX_OUTPUT_SIZE` | 20 MiB | Storage check & buffer |
 | `ARCHIVE_BUFFER_BYTES` | 64 KiB | Archive read buffer (buffering parameter) |
 | `ARCHIVE_MAX_HEADER_BYTES` | 64 KiB | Archive header read budget |
-| `ARCHIVE_MAX_DECOMPRESSED_BYTES` | 256 MiB | Decompressed archive stream meter |
+| `ARCHIVE_MAX_DECOMPRESSED_BYTES` | 256 MiB | Decompressed stream and reconstructed sparse holes |
 | `MAX_DIR_ENTRIES` | 20,000 entries | Local directory listing |
 | `ARCHIVE_PAX_GLOBAL_BYTES` | 1 KiB | PAX global header read (revision falls back to the requested ref) |
 | `GITHUB_ERROR_BODY_BYTES` | 4 KiB | GitHub API error body read (rest of body left out of the message) |

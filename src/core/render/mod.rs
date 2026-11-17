@@ -4,15 +4,13 @@
 //! token estimation, and output size cap enforcement.
 
 use crate::core::error::DomainError;
-use crate::core::model::DigestFormat;
+use crate::core::model::{CollectionResult, DigestFormat, RenderedDigest};
 use crate::core::policy::MAX_OUTPUT_SIZE;
-use crate::core::selector::CollectionResult;
 
 mod budget;
 mod formats;
 mod tree;
 
-pub(crate) use budget::RenderedDigest;
 use budget::{BoundedBuffer, OutputLimitExceeded};
 
 fn render_digest(
@@ -205,8 +203,8 @@ mod tests {
         };
         match collection.render(DigestFormat::Text) {
             Err(DomainError::OutputTooLarge(err)) => {
-                assert_eq!(err.largest_files.len(), 1);
-                assert_eq!(&*err.largest_files[0].0, "large.txt");
+                assert_eq!(err.largest.len(), 1);
+                assert_eq!(&*err.largest[0].0, "large.txt");
             }
             other => panic!("expected OutputTooLarge, got {other:?}"),
         }
