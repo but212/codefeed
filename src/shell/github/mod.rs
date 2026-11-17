@@ -1,5 +1,8 @@
 //! GitHub collection orchestration: tarball URL, HTTP retry loop, and streaming ingestion.
 
+#[cfg(not(test))]
+mod archive;
+#[cfg(test)]
 pub(in crate::shell) mod archive;
 mod client;
 

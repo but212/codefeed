@@ -5,7 +5,7 @@ use crate::core::policy::ASCII_BYTES_PER_TOKEN;
 
 /// Token estimation heuristic calculating ASCII bytes and non-ASCII character counts.
 #[must_use]
-pub(super) fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
+fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
     if bytes.is_empty() {
         return 0;
     }
@@ -199,5 +199,27 @@ mod tests {
             digest.estimated_tokens,
             estimate_tokens_from_bytes(b"test output")
         );
+    }
+
+    #[test]
+    fn render_reports_tokens_of_the_rendered_bytes() -> Result<(), crate::core::error::DomainError>
+    {
+        use crate::core::model::{CollectionResult, DigestFormat};
+        use crate::core::path::NormalizedPath;
+        use crate::core::storage::{FileStorage, SortedFiles};
+
+        let storage = FileStorage::new().push(&NormalizedPath::from("a.txt"), "abc")?;
+        let collection = CollectionResult {
+            label: "repo".into(),
+            revision: None,
+            files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
+            skipped: 2,
+        };
+        let digest = collection.render(DigestFormat::Text)?;
+        assert_eq!(
+            digest.estimated_tokens,
+            estimate_tokens_from_bytes(&digest.bytes)
+        );
+        Ok(())
     }
 }

@@ -5,7 +5,6 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use super::atomic::{parent_dir, write_atomic};
-use super::stdio::ignore_broken_pipe;
 use crate::core::error::DomainError;
 use crate::core::model::OutputTarget;
 use crate::shell::error::{IngestError, sanitized_io_error};
@@ -103,6 +102,14 @@ pub(super) fn deliver(resolved_target: &ResolvedOutput, bytes: &[u8]) -> Result<
     }
 }
 
+fn ignore_broken_pipe(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 fn render_stdout_to<W: Write>(out: &mut W, bytes: &[u8]) -> Result<(), IngestError> {
     ignore_broken_pipe(out.write_all(bytes).and_then(|()| out.flush())).map_err(IngestError::Io)
 }
@@ -112,8 +119,19 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::shell::stdio::BrokenPipeWriter;
     use crate::shell::testing::temp_dir;
+
+    /// Writer whose every operation reports a closed pipe.
+    struct BrokenPipeWriter;
+
+    impl io::Write for BrokenPipeWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+    }
 
     /// Resolves a file target and returns the canonical path it will be written to.
     fn resolve_file(path: PathBuf) -> Result<PathBuf, IngestError> {

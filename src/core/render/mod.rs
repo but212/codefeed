@@ -133,23 +133,6 @@ mod tests {
     }
 
     #[test]
-    fn render_reports_tokens_of_the_rendered_bytes() -> Result<(), DomainError> {
-        let storage = FileStorage::new().push(&NormalizedPath::from("a.txt"), "abc")?;
-        let collection = CollectionResult {
-            label: "repo".into(),
-            revision: None,
-            files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
-            skipped: 2,
-        };
-        let digest = collection.render(DigestFormat::Text)?;
-        assert_eq!(
-            digest.estimated_tokens,
-            budget::estimate_tokens_from_bytes(&digest.bytes)
-        );
-        Ok(())
-    }
-
-    #[test]
     fn render_fails_at_every_write_position_within_its_limit() -> Result<(), DomainError> {
         // Every write (framing, header, tree, escaped body) must propagate a limit failure.
         let storage = [

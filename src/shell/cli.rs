@@ -4,6 +4,7 @@
 //! and determines process exit codes.
 
 use std::fmt::Display;
+use std::io::{self, Write};
 
 use crate::core::cli::{CliAction, HELP, VERSION, completion_message, parse};
 use crate::core::model::OutputTarget;
@@ -25,11 +26,11 @@ where
 
     let config = match action {
         CliAction::Help => {
-            stdio::write_stdout_line(HELP);
+            write_stdout_line(HELP);
             return 0;
         }
         CliAction::Version => {
-            stdio::write_stdout_line(VERSION);
+            write_stdout_line(VERSION);
             return 0;
         }
         CliAction::Run(config) => config,
@@ -41,10 +42,17 @@ where
     };
     let message = completion_message(&report);
     match &report.output {
-        OutputTarget::File(_) => stdio::write_stdout_line(&message),
+        OutputTarget::File(_) => write_stdout_line(&message),
         OutputTarget::Stdout => stdio::write_stderr_line(&message),
     }
     0
+}
+
+/// Writes one line to stdout. A closed stdout is not an error, so the failure is dropped.
+fn write_stdout_line(line: &str) {
+    let stdout = io::stdout();
+    let mut lock = stdout.lock();
+    let _ = writeln!(lock, "{line}");
 }
 
 /// Writes one `error:` line to stderr and returns the failure exit code.
