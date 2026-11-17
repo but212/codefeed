@@ -21,11 +21,11 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Mutex, PoisonError};
 
 use super::walk::{RegularFile, Walk, classify_entry};
-use crate::core::path::{CandidatePath, NormalizedPath};
+use crate::core::path::{Candidate, NormalizedPath};
 use crate::core::policy::{
     ExcludePatterns, LOCAL_CHANNEL_CAPACITY, MAX_FILE_SIZE, MAX_LOCAL_WORKERS,
 };
-use crate::core::selector::{Body, Observation, exceeds_file_size};
+use crate::core::selector::{Body, exceeds_file_size};
 use crate::shell::error::{IngestError, io_error_at};
 
 /// Upper bound on buffer capacity retained in [`BufferPool`], preventing large files from
@@ -97,7 +97,7 @@ struct Job<'a> {
 }
 
 /// The outcome for one walk entry: `None` when it is not a candidate after all.
-type Settled<'a> = Result<Option<Observation<PooledBuf<'a>>>, IngestError>;
+type Settled<'a> = Result<Option<Candidate<Body<PooledBuf<'a>>>>, IngestError>;
 
 /// One walk entry in walk order: decided on the producer thread, or waiting for a worker.
 enum Slot<'a> {
@@ -111,7 +111,7 @@ pub(super) fn fold_candidates<T>(
     output: Option<&Path>,
     exclude: &ExcludePatterns,
     init: T,
-    mut step: impl FnMut(T, Observation<PooledBuf<'_>>) -> Result<T, IngestError>,
+    mut step: impl FnMut(T, Candidate<Body<PooledBuf<'_>>>) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
     let walker = Walk::new(root, exclude)?;
     let pool = BufferPool::new();
@@ -149,10 +149,10 @@ fn dispatch<'a>(
     };
     let path = match classify_entry(output, exclude, &file) {
         Ok(None) => return None,
-        Ok(Some(CandidatePath::Unstorable(prefix))) => {
-            return Some(Slot::Ready(Ok(Some(Observation::Unstorable(prefix)))));
+        Ok(Some(Candidate::Unstorable(prefix))) => {
+            return Some(Slot::Ready(Ok(Some(Candidate::Unstorable(prefix)))));
         }
-        Ok(Some(CandidatePath::Valid(path))) => path,
+        Ok(Some(Candidate::Valid(path, ()))) => path,
         Err(err) => return Some(Slot::Ready(Err(err))),
     };
 
@@ -195,7 +195,7 @@ fn worker_stopped() -> IngestError {
 fn settle<'a, T>(
     slot: Slot<'a>,
     acc: T,
-    step: &mut impl FnMut(T, Observation<PooledBuf<'a>>) -> Result<T, IngestError>,
+    step: &mut impl FnMut(T, Candidate<Body<PooledBuf<'a>>>) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
     let msg = match slot {
         Slot::Ready(msg) => msg,
@@ -239,7 +239,7 @@ fn produce_slots<'a>(
 fn settle_slots<'a, T>(
     slots: Receiver<Slot<'a>>,
     init: T,
-    step: &mut impl FnMut(T, Observation<PooledBuf<'a>>) -> Result<T, IngestError>,
+    step: &mut impl FnMut(T, Candidate<Body<PooledBuf<'a>>>) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
     slots
         .iter()
@@ -258,12 +258,12 @@ fn read_candidate<'a>(
     entry_path: &Path,
     path: NormalizedPath,
     pool: &'a BufferPool,
-) -> Result<Option<Observation<PooledBuf<'a>>>, IngestError> {
+) -> Result<Option<Candidate<Body<PooledBuf<'a>>>>, IngestError> {
     let meta = match fs::symlink_metadata(entry_path) {
         Ok(m) => m,
         // Unlinked or locked after discovery: the selector counts it as skipped.
         Err(err) if is_unavailable_file(&err) => {
-            return Ok(Some(Observation::File(path, Body::Unavailable)));
+            return Ok(Some(Candidate::Valid(path, Body::Unavailable)));
         }
         Err(err) => return Err(io_error_at(entry_path, &err)),
     };
@@ -274,10 +274,10 @@ fn read_candidate<'a>(
 
     let file_len = meta.len();
     if exceeds_file_size(file_len) {
-        return Ok(Some(Observation::File(path, Body::OverLimit)));
+        return Ok(Some(Candidate::Valid(path, Body::OverLimit)));
     }
     let body = read_bounded(entry_path, file_len, pool)?.map_or(Body::Unavailable, Body::Bytes);
-    Ok(Some(Observation::File(path, body)))
+    Ok(Some(Candidate::Valid(path, body)))
 }
 
 /// Errors that make one file unavailable without invalidating the walk. Applied at metadata, open,
@@ -407,7 +407,7 @@ mod tests {
         let observation = read_candidate(&file, NormalizedPath::from("a.txt"), &pool)?
             .ok_or("unlinked file must reach the selector as a candidate")?;
         assert!(
-            matches!(&observation, Observation::File(_, Body::Unavailable)),
+            matches!(&observation, Candidate::Valid(_, Body::Unavailable)),
             "unlinked file must be an unavailable candidate"
         );
         let selector = Selector::new().observe(observation)?;
@@ -428,7 +428,7 @@ mod tests {
         let observation = read_candidate(&file, NormalizedPath::from("large.txt"), &pool)?
             .ok_or("oversized file must reach the selector as a candidate")?;
         assert!(
-            matches!(&observation, Observation::File(_, Body::OverLimit)),
+            matches!(&observation, Candidate::Valid(_, Body::OverLimit)),
             "oversized file must be over the limit and carry no read"
         );
         let selector = Selector::new().observe(observation)?;
@@ -509,7 +509,7 @@ mod tests {
             &ExcludePatterns::default(),
             Vec::new(),
             |mut paths, candidate| {
-                if let Observation::File(path, _) = candidate {
+                if let Candidate::Valid(path, _) = candidate {
                     paths.push(path.to_string());
                 }
                 Ok(paths)
@@ -595,7 +595,7 @@ mod tests {
         // 5. settle with Slot::Pending where candidate is Some
         let (reply_tx, reply_rx) = sync_channel(1);
         reply_tx
-            .send(Ok(Some(Observation::Unstorable(
+            .send(Ok(Some(Candidate::Unstorable(
                 ("", b"\xff".as_slice()).into(),
             ))))
             .unwrap();

@@ -14,6 +14,8 @@ Scope: `### Library consumers and CLI users` lists observable behavior. `### Con
 
 #### Breaking
 
+- **Unified `LimitExceededError`**: `CandidateLimitExceededError` and `OutputTooLargeError` have been unified into [`LimitExceededError`](src/core/error.rs) (`{ limit: u64, largest: Vec<(ErrorDetail, usize)> }`), carried by `DomainError::CandidateLimitExceeded` and `DomainError::OutputTooLarge` and re-exported from `src/lib.rs`.
+  - **Action:** Replace references to `CandidateLimitExceededError` / `OutputTooLargeError` with `LimitExceededError`, and update field accesses from `largest_directories` / `largest_files` to `largest`.
 - **`ErrorDetail::new`, `GitRef::new`, and `Source::with_reference` accept `Into<Cow<'a, str>>`**: These constructors now take `<'a>(impl Into<Cow<'a, str>>)` instead of `impl Into<String>` to avoid redundant allocations (`src/core/error.rs`, `src/core/source.rs`). Callers passing `String`, `&str`, or `Cow<'_, str>` are unaffected; callers passing `Box<str>`, custom `Into<String>` types, or using turbofish type arguments no longer compile.
   - **Action:** Convert custom `Into<String>` or `Box<str>` arguments to `String`, `&str`, or `Cow<'_, str>`, and remove explicit turbofish type arguments on these calls.
 

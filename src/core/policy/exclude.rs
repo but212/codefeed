@@ -156,7 +156,10 @@ mod tests {
     /// rejected when admitting it fails, and a file when it classifies as `None` (Ignored).
     fn rejected(patterns: &ExcludePatterns, segments: &[&[u8]], is_dir: bool) -> bool {
         if !is_dir {
-            return classify_path_segments(segments.iter().copied(), patterns) == Ok(None);
+            return matches!(
+                classify_path_segments(segments.iter().copied(), patterns, "test path"),
+                Ok(None)
+            );
         }
         let mut dir = AdmittedDir::root();
         for name in segments {

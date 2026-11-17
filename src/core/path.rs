@@ -40,14 +40,15 @@ impl From<String> for NormalizedPath {
     }
 }
 
-/// Candidate path outcome from a single-pass policy evaluation.
+/// Candidate path outcome from classification, optionally carrying a read body (I-11).
 ///
-/// An entry is either a storable path or an unstorable candidate carrying its valid directory prefix.
+/// An entry is either a storable path (with `()` at classification or `Body<B>` at observation)
+/// or an unstorable candidate carrying its valid directory prefix and raw byte identity.
 /// Ignored entries (hidden, conventional noise, sensitive patterns, or empty/root) are represented by `None`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum CandidatePath {
+pub(crate) enum Candidate<B = ()> {
     /// Normalized relative UTF-8 path within `MAX_PATH_BYTES`.
-    Valid(NormalizedPath),
+    Valid(NormalizedPath, B),
     /// Path that is not hidden but cannot be stored, because it is non-UTF-8 or longer than
     /// `MAX_PATH_BYTES`. It is counted against the candidate budget as skipped.
     Unstorable(UnstorablePath),
@@ -83,20 +84,12 @@ impl From<(&str, &[u8])> for UnstorablePath {
     }
 }
 
-/// Error indicating that a path's directory nesting depth exceeds [`MAX_PATH_DEPTH`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DepthExceededError;
-
-impl DepthExceededError {
-    /// Returns the [`DomainError::InvalidMetadata`] for a path nested past [`MAX_PATH_DEPTH`].
-    /// `subject` names the entry kind in the message, such as `local path` or `Tar entry path`.
-    #[cold]
-    pub(crate) fn domain_error(subject: &str) -> DomainError {
-        DomainError::invalid_metadata(format!("{subject} exceeds maximum directory depth"))
-    }
+#[cold]
+fn depth_exceeded_error(subject: &str) -> DomainError {
+    DomainError::invalid_metadata(format!("{subject} exceeds maximum directory depth"))
 }
 
-/// Classifies a sequence of raw path segment bytes into [`Option<CandidatePath>`].
+/// Classifies a sequence of raw path segment bytes into [`Option<Candidate>`].
 ///
 /// Checks run in this order: hidden segment, user exclusion, noise or sensitive name, depth. Each
 /// check that matches returns `None` before the later ones run, so a path excluded within the first
@@ -107,7 +100,8 @@ impl DepthExceededError {
 pub(crate) fn classify_path_segments<'a, I>(
     segments: I,
     exclude: &ExcludePatterns,
-) -> Result<Option<CandidatePath>, DepthExceededError>
+    subject: &str,
+) -> Result<Option<Candidate>, DomainError>
 where
     I: IntoIterator<Item = &'a [u8]>,
 {
@@ -125,7 +119,7 @@ where
         dir = admitted;
         pending = next;
     }
-    classify_leaf(&dir, pending, exclude)
+    classify_leaf(&dir, pending, exclude, subject)
 }
 
 /// A directory that passed the hidden and user-exclusion checks, with the prefixes a file below it needs.
@@ -143,7 +137,7 @@ pub(crate) struct AdmittedDir {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DirPrefix {
     Utf8(String),
-    NonUtf8 { prefix: String, bytes: Vec<u8> },
+    NonUtf8(UnstorablePath),
 }
 
 impl AdmittedDir {
@@ -194,16 +188,16 @@ pub(crate) fn admit_dir(
                 prefix.push('/');
                 DirPrefix::Utf8(prefix)
             } else {
-                let mut bytes = prefix.as_bytes().to_vec();
-                bytes.extend_from_slice(name);
-                bytes.push(b'/');
-                DirPrefix::NonUtf8 { prefix, bytes }
+                let mut identity = prefix.as_bytes().to_vec();
+                identity.extend_from_slice(name);
+                identity.push(b'/');
+                DirPrefix::NonUtf8(UnstorablePath { prefix, identity })
             }
         }
-        DirPrefix::NonUtf8 { prefix, mut bytes } if depth <= MAX_PATH_DEPTH => {
-            bytes.extend_from_slice(name);
-            bytes.push(b'/');
-            DirPrefix::NonUtf8 { prefix, bytes }
+        DirPrefix::NonUtf8(mut unstorable) if depth <= MAX_PATH_DEPTH => {
+            unstorable.identity.extend_from_slice(name);
+            unstorable.identity.push(b'/');
+            DirPrefix::NonUtf8(unstorable)
         }
         unchanged => unchanged,
     };
@@ -223,7 +217,8 @@ pub(crate) fn classify_leaf(
     parent: &AdmittedDir,
     name: &[u8],
     exclude: &ExcludePatterns,
-) -> Result<Option<CandidatePath>, DepthExceededError> {
+    subject: &str,
+) -> Result<Option<Candidate>, DomainError> {
     if is_hidden_segment(name) {
         return Ok(None);
     }
@@ -241,27 +236,28 @@ pub(crate) fn classify_leaf(
     }
 
     if parent.depth > MAX_PATH_DEPTH {
-        return Err(DepthExceededError);
+        return Err(depth_exceeded_error(subject));
     }
 
     match (&parent.output, std::str::from_utf8(name)) {
         (DirPrefix::Utf8(prefix), Ok(segment))
             if prefix.len() + segment.len() <= MAX_PATH_BYTES =>
         {
-            Ok(Some(CandidatePath::Valid(NormalizedPath(format!(
-                "{prefix}{segment}"
-            )))))
+            Ok(Some(Candidate::Valid(
+                NormalizedPath(format!("{prefix}{segment}")),
+                (),
+            )))
         }
         (output, _) => {
-            let (prefix, mut identity) = match output {
-                DirPrefix::Utf8(prefix) => (prefix.clone(), prefix.as_bytes().to_vec()),
-                DirPrefix::NonUtf8 { prefix, bytes } => (prefix.clone(), bytes.clone()),
+            let mut unstorable = match output {
+                DirPrefix::Utf8(prefix) => UnstorablePath {
+                    prefix: prefix.clone(),
+                    identity: prefix.as_bytes().to_vec(),
+                },
+                DirPrefix::NonUtf8(unstorable) => unstorable.clone(),
             };
-            identity.extend_from_slice(name);
-            Ok(Some(CandidatePath::Unstorable(UnstorablePath {
-                prefix,
-                identity,
-            })))
+            unstorable.identity.extend_from_slice(name);
+            Ok(Some(Candidate::Unstorable(unstorable)))
         }
     }
 }
@@ -272,7 +268,7 @@ mod tests {
 
     #[test]
     fn depth_exceeded_error_names_its_entry_kind() {
-        let err = DepthExceededError::domain_error("Tar entry path");
+        let err = depth_exceeded_error("Tar entry path");
         assert!(
             matches!(&err, DomainError::InvalidMetadata(msg) if msg == "Tar entry path exceeds maximum directory depth"),
             "{err:?}"
@@ -287,14 +283,18 @@ mod tests {
         segments.push(b"x.log".as_slice());
 
         let exclude = ExcludePatterns::new(["*.log"]).unwrap();
-        assert_eq!(
-            classify_path_segments(segments.iter().copied(), &exclude),
+        assert!(matches!(
+            classify_path_segments(segments.iter().copied(), &exclude, "test path"),
             Ok(None)
-        );
+        ));
         // Without the exclusion the path is over `MAX_PATH_BYTES`, so it is unstorable (I-10).
         assert!(matches!(
-            classify_path_segments(segments.iter().copied(), &ExcludePatterns::default()),
-            Ok(Some(CandidatePath::Unstorable(_)))
+            classify_path_segments(
+                segments.iter().copied(),
+                &ExcludePatterns::default(),
+                "test path"
+            ),
+            Ok(Some(Candidate::Unstorable(_)))
         ));
     }
 
@@ -310,25 +310,26 @@ mod tests {
                     segments.push(b"src");
                 }
                 segments.push(leaf.as_bytes());
-                classify_path_segments(segments, &ExcludePatterns::default())
+                classify_path_segments(segments, &ExcludePatterns::default(), "test path")
             };
             assert!(
                 matches!(
                     classify(MAX_PATH_BYTES),
-                    Ok(Some(CandidatePath::Valid(path))) if path.len() == MAX_PATH_BYTES
+                    Ok(Some(Candidate::Valid(path, ()))) if path.len() == MAX_PATH_BYTES
                 ),
                 "prefix {prefix:?}: at the limit"
             );
+            let over = classify(MAX_PATH_BYTES + 1).expect("within depth limit");
             assert_eq!(
-                classify(MAX_PATH_BYTES + 1),
-                Ok(Some(CandidatePath::Unstorable(
+                over,
+                Some(Candidate::Unstorable(
                     (
                         prefix,
                         format!("{prefix}{}", "f".repeat(MAX_PATH_BYTES + 1 - prefix.len()))
                             .as_bytes(),
                     )
                         .into()
-                ))),
+                )),
                 "prefix {prefix:?}: one byte over the limit"
             );
         }
@@ -336,22 +337,24 @@ mod tests {
 
     #[test]
     fn classify_path_segments_drops_empty_and_dot_segments() {
-        let cases: [(&[&[u8]], Option<CandidatePath>); 5] = [
-            (&[b"a", b"", b"b"], Some(CandidatePath::Valid("a/b".into()))),
+        let cases: [(&[&[u8]], Option<Candidate>); 5] = [
+            (&[b"a", b"", b"b"], Some(Candidate::Valid("a/b".into(), ()))),
             (
                 &[b"a", b".", b"b"],
-                Some(CandidatePath::Valid("a/b".into())),
+                Some(Candidate::Valid("a/b".into(), ())),
             ),
             (&[b"", b""], None),
             (&[b"."], None),
-            (&[b"a", b"", b""], Some(CandidatePath::Valid("a".into()))),
+            (&[b"a", b"", b""], Some(Candidate::Valid("a".into(), ()))),
         ];
         for (segments, expected) in cases {
-            assert_eq!(
-                classify_path_segments(segments.iter().copied(), &ExcludePatterns::default()),
-                Ok(expected),
-                "segments: {segments:?}"
-            );
+            let actual = classify_path_segments(
+                segments.iter().copied(),
+                &ExcludePatterns::default(),
+                "test path",
+            )
+            .expect("within depth limit");
+            assert_eq!(actual, expected, "segments: {segments:?}");
         }
     }
 
@@ -425,16 +428,13 @@ mod tests {
                 .chain(std::iter::once(tail))
                 .collect()
         }
-        let valid = |p: &str| -> Result<Option<CandidatePath>, DepthExceededError> {
-            Ok(Some(CandidatePath::Valid(p.into())))
+        let valid =
+            |p: &str| -> Result<Option<Candidate>, ()> { Ok(Some(Candidate::Valid(p.into(), ()))) };
+        let nonutf8 = |prefix: &str, identity: &[u8]| -> Result<Option<Candidate>, ()> {
+            Ok(Some(Candidate::Unstorable((prefix, identity).into())))
         };
-        let nonutf8 =
-            |prefix: &str, identity: &[u8]| -> Result<Option<CandidatePath>, DepthExceededError> {
-                Ok(Some(CandidatePath::Unstorable((prefix, identity).into())))
-            };
-        let ignored = || -> Result<Option<CandidatePath>, DepthExceededError> { Ok(None) };
-        let depth_err =
-            || -> Result<Option<CandidatePath>, DepthExceededError> { Err(DepthExceededError) };
+        let ignored = || -> Result<Option<Candidate>, ()> { Ok(None) };
+        let depth_err = || -> Result<Option<Candidate>, ()> { Err(()) };
 
         let exclude = ExcludePatterns::new(["build/", "*.log", "/top"]).unwrap();
         let none = ExcludePatterns::default();
@@ -530,11 +530,9 @@ mod tests {
             ),
         ];
         for (segments, exclude, expected) in cases {
-            assert_eq!(
-                classify_path_segments(segments.iter().copied(), exclude),
-                expected,
-                "segments: {segments:?}"
-            );
+            let actual = classify_path_segments(segments.iter().copied(), exclude, "test path")
+                .map_err(|err| assert!(matches!(err, DomainError::InvalidMetadata(_))));
+            assert_eq!(actual, expected, "segments: {segments:?}");
         }
     }
 
@@ -570,10 +568,13 @@ mod tests {
                     .copied()
                     .filter(|seg| !seg.is_empty() && *seg != b".")
                     .collect();
-                let result =
-                    classify_path_segments(segments.iter().copied(), &ExcludePatterns::default());
+                let result = classify_path_segments(
+                    segments.iter().copied(),
+                    &ExcludePatterns::default(),
+                    "test path",
+                );
                 match result {
-                    Ok(Some(CandidatePath::Valid(path))) => {
+                    Ok(Some(Candidate::Valid(path, ()))) => {
                         let expected: Vec<&str> = kept
                             .iter()
                             .map(|seg| std::str::from_utf8(seg).expect("valid candidates are UTF-8"))
@@ -582,14 +583,14 @@ mod tests {
                         prop_assert!(!path.is_empty());
                         prop_assert!(path.split('/').all(|seg| !seg.is_empty() && seg != "."));
                     }
-                    Ok(Some(CandidatePath::Unstorable(path))) => {
+                    Ok(Some(Candidate::Unstorable(path))) => {
                         let prefix = path.prefix();
                         prop_assert!(prefix.is_empty() || prefix.ends_with('/'));
                         prop_assert!(!prefix.contains("//") && !prefix.starts_with('/'));
                         prop_assert_eq!(path.into_identity(), kept.join(&b'/'));
                     }
                     Ok(None) => {}
-                    Err(DepthExceededError) => {
+                    Err(_) => {
                         prop_assert!(false, "{} segments cannot exceed MAX_PATH_DEPTH", kept.len());
                     }
                 }

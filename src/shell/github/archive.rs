@@ -8,12 +8,13 @@ use tar::{Archive, EntryType};
 
 use crate::core::error::DomainError;
 use crate::core::github::{normalize_tar_entry_path, parse_pax_comment};
-use crate::core::path::CandidatePath;
+use crate::core::model::CollectionResult;
+use crate::core::path::Candidate;
 use crate::core::policy::{
     ARCHIVE_BUFFER_BYTES, ARCHIVE_MAX_DECOMPRESSED_BYTES, ARCHIVE_MAX_HEADER_BYTES,
     ARCHIVE_PAX_GLOBAL_BYTES, ExcludePatterns, MAX_FILE_SIZE,
 };
-use crate::core::selector::{Body, CollectionResult, Observation, Selector, exceeds_file_size};
+use crate::core::selector::{Body, Selector, exceeds_file_size};
 use crate::shell::error::{IngestError, transport_error};
 
 /// Collects files from a tarball reader directly into a [`CollectionResult`].
@@ -216,20 +217,20 @@ fn process_tar_entry<R: Read>(
     };
 
     // 3. Bounded body read: a declared size over the limit is not read
-    let observation = match candidate {
-        CandidatePath::Unstorable(path) => Observation::Unstorable(path),
-        CandidatePath::Valid(path) if exceeds_file_size(entry.size()) => {
-            Observation::File(path, Body::OverLimit)
+    let settled = match candidate {
+        Candidate::Unstorable(path) => Candidate::Unstorable(path),
+        Candidate::Valid(path, ()) if exceeds_file_size(entry.size()) => {
+            Candidate::Valid(path, Body::OverLimit)
         }
-        CandidatePath::Valid(path) => {
+        Candidate::Valid(path, ()) => {
             (&mut *entry)
                 .take(MAX_FILE_SIZE + 1)
                 .read_to_end(content_scratch)
                 .map_err(|err: io::Error| stream_error(&err, meter))?;
-            Observation::File(path, Body::Bytes(content_scratch.as_slice()))
+            Candidate::Valid(path, Body::Bytes(content_scratch.as_slice()))
         }
     };
-    Ok(selector.observe(observation)?)
+    Ok(selector.observe(settled)?)
 }
 
 #[cfg(test)]

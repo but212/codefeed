@@ -21,13 +21,12 @@ Converts a local directory or public GitHub repository into a single text digest
 
 ### Candidate Collection
 
-- `CandidatePath`: `Valid(NormalizedPath)` or `Unstorable(UnstorablePath)`. Ignored entries are `None` at classification and discarded before selection.
+- `Candidate<B = ()>`: `Valid(NormalizedPath, B)` or `Unstorable(UnstorablePath)` (`()` at classification, `Body<B>` at observation). Ignored entries are `None` at classification and discarded before selection.
 - `UnstorablePath`: Classification-owned value retaining the valid UTF-8 accounting prefix and complete normalized raw-byte identity.
 - `NormalizedPath`: Non-empty, slash-separated UTF-8 relative path without empty or `.` segments, within `MAX_PATH_BYTES` (I-10).
-- `Selector`: Linear state managing arena storage, `CandidateBudget`, and seen-path set for uniqueness. Settles candidates via `observe`; `finish` derives the skipped tally as candidate count minus stored file count.
-- `Observation`: Input to `Selector::observe`: `Unstorable(UnstorablePath)` or `File(NormalizedPath, Body)` (`Body`: `Unavailable`, `OverLimit`, `Bytes`).
+- `Selector`: Linear state managing `FileStorage`, `CandidateBudget`, `PathIndex` (referencing `FileStorage` for stored paths and `skipped_arena` for skipped paths), and unstorable byte-identity set. Settles candidates via `observe`; `finish` derives the skipped tally as candidate count minus stored file count.
 - `CandidateBudget`: Candidate counter and per-directory tallies (`selector.rs` private).
-- `CollectionResult`: `label`, optional `revision`, `files: SortedFiles`, and `skipped`.
+- `CollectionResult`: `label`, optional `revision`, `files: SortedFiles`, and `skipped` (`model.rs`).
 
 ### Storage
 
@@ -44,7 +43,7 @@ Converts a local directory or public GitHub repository into a single text digest
 ### Errors
 
 - `ErrorDetail`: Sanitized error text constructed exclusively via `ErrorDetail::new` (`Deref<Target = str>`).
-- `DomainError`: Core failures (`Usage`, `InvalidSource`, `UnsupportedSource`, `InvalidMetadata` carrying `ErrorDetail`; `CandidateLimitExceeded`; `OutputTooLarge(OutputTooLargeError)`).
+- `DomainError`: Core failures (`Usage`, `InvalidSource`, `UnsupportedSource`, `InvalidMetadata` carrying `ErrorDetail`; `CandidateLimitExceeded(LimitExceededError)`; `OutputTooLarge(LimitExceededError)`).
 - `IngestError`: Shell error wrapping `DomainError`, `Io`, `Http(ErrorDetail)`, and `Api(GithubApiError)`.
 
 ## 3. Invariants
@@ -61,7 +60,7 @@ Converts a local directory or public GitHub repository into a single text digest
 - Order: [security § 2](docs/security_and_filtering.md#2-evaluation-order). Tar streams classify via `classify_path_segments`. Local walks admit directories via `admit_dir` and files via `classify_leaf`.
 - `Ignored` entries consume no candidate slots and are omitted from skipped counts.
 - Run-aborting checks (depth, tar path normalization, oversized tar headers): [security § 2](docs/security_and_filtering.md#2-evaluation-order); header budget is I-03 ([§ 3.9](#39-network)).
-- Unstorable candidates retain a valid prefix (`"a/b/"` or `""`) for accounting and a complete raw-byte identity for uniqueness. `DirPrefix::NonUtf8` retains the bytes after the first invalid segment, so classification never substitutes a lossy identity. Budget keys use the first valid segment (`"a/"`) or root (`"./"`).
+- `DirPrefix::NonUtf8(UnstorablePath)` retains the bytes after the first invalid segment, so classification never substitutes a lossy identity. Budget keys use the first valid segment (`"a/"`) or root (`"./"`).
 - **I-10 (`type`, `NormalizedPath`, `classify_leaf`):** A `Valid` path is at most `MAX_PATH_BYTES` bytes. `NormalizedPath` is private and `classify_leaf` is its sole non-test constructor returning `Unstorable` on overflow, so `Selector` needs no path-length check.
 - **I-02 (`boundary`, `admit_dir`, `classify_leaf`):** No classified path or unstorable prefix has a first segment starting with `.`, since hidden directories are never admitted, hidden files are `Ignored`, and empty/`.` segments are dropped. Root entries key as `"./"`, which no real directory produces.
 
@@ -70,14 +69,14 @@ Converts a local directory or public GitHub repository into a single text digest
 - Slot allocation and skipped rules: [security § 4](docs/security_and_filtering.md#4-candidate-and-skipped-accounting).
 - `Selector::observe` charges a candidate slot prior to inspecting content.
 - Read timing: Sources read bounded bodies before `Selector::observe`, except when declared size exceeds `MAX_FILE_SIZE` (`OverLimit`, skipped without reading). Local workers read concurrently; archive streams read in-place and drain to next header.
-- **I-11 (`type`, `Observation`):** Unstorable paths carry no body; storable paths always carry a `Body`. Neither bodies for unstorable paths nor storable paths without read outcomes can be constructed.
+- **I-11 (`type`, `Candidate<B>`):** Unstorable paths carry no body; storable paths carry `B` (`Body<B>` at observation). Neither bodies for unstorable paths nor storable paths without read outcomes can be constructed at `Selector::observe`.
 
 ### 3.4 Storage and Ordering
 
 - `FileStorage::push` rejects candidates before allocation if raw arena bytes would exceed `MAX_OUTPUT_SIZE`.
 - `SortedFiles::new` sorts spans via `cmp_path` (component-wise), guaranteeing deterministic output across concurrency timings.
 - **I-01 (`runtime`, `SortedFiles::new`):** No stored path is a directory prefix of another stored path. Enforced after sorting by checking adjacent pairs. A schema, type, or boundary check cannot express this because the rule relates separate entries, and a per-entry parse cannot see the others. Behavior: [security § 3.4](docs/security_and_filtering.md#34-path-limits).
-- **I-09 (`runtime`, `Selector::observe`):** No two candidates share a path. Storable paths use the UTF-8 arena set; unstorable paths use an exact raw-byte set, distinct from accounting prefixes. The sets relate separate entries, so no per-entry type can express uniqueness. Behavior: [security § 3.4](docs/security_and_filtering.md#34-path-limits).
+- **I-09 (`runtime`, `Selector::observe`):** No two candidates share a path. Storable paths use `PathIndex` (referencing `FileStorage` for stored paths and `skipped_arena` for skipped paths); unstorable paths use an exact raw-byte set, distinct from accounting prefixes. The sets relate separate entries, so no per-entry type can express uniqueness. Behavior: [security § 3.4](docs/security_and_filtering.md#34-path-limits).
 - **I-05 (`boundary`, `extract_dir_slice`):** Candidate budget keys are at most `MAX_PATH_BYTES` bytes ending on a UTF-8 char boundary. Cut from the first segment at creation, bounding key storage to candidates times `MAX_PATH_BYTES`. A `type` or `schema` cannot express a length cap on a `&str` key, and `CandidateBudget::add` needs no separate check.
 - Arena indices are `u32`. Assertions in `policy/limits.rs` verify `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX` ([coding convention § 3.3](docs/coding_convention.md#33-type-invariants)).
 
@@ -135,7 +134,7 @@ Purity rules and one-way Shell-to-Core dependency: [coding convention § 3](docs
 - `policy/`: Limits, exclusions, user exclude patterns, `TOKEN_ENV_VARS`.
 - `source.rs`: `Source` and `GitRef` parsing; URLs delegated to `github/`.
 - `model.rs`: Configuration and report types.
-- `selector.rs`: Candidate settlement, budget, and `CollectionResult`.
+- `selector.rs`: Candidate settlement and budget accounting.
 - `storage.rs`: Arena storage and path ordering.
 - `error.rs`: Domain errors and `ErrorDetail`.
 - `github/`: URL grammar, tar normalization, retry logic, API error types.
@@ -155,4 +154,4 @@ Purity rules and one-way Shell-to-Core dependency: [coding convention § 3](docs
 
 ### Public API (`src/lib.rs`)
 
-Exports: `ingest`, `RunConfig`, `ExcludePatterns`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, `ErrorDetail`, `CandidateLimitExceededError`, `OutputTooLargeError`, `GithubApiError`, and hidden `cli::run_cli`. All other items are `pub(crate)`.
+Exports: `ingest`, `RunConfig`, `ExcludePatterns`, `Source`, `GitRef`, `GithubName`, `OutputTarget`, `DigestFormat`, `IngestReport`, `IngestError`, `DomainError`, `ErrorDetail`, `LimitExceededError`, `GithubApiError`, and hidden `cli::run_cli`. All other items are `pub(crate)`.

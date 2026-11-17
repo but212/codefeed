@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::core::policy::ExcludePatterns;
 use crate::core::source::Source;
+use crate::core::storage::SortedFiles;
 
 /// Where the digest is delivered. Distinguishes a filesystem path from the
 /// standard output stream at the type level; there is no sentinel path.
@@ -61,4 +62,23 @@ pub struct IngestReport {
     pub skipped_files: usize,
     /// Approximate token count of the rendered digest.
     pub estimated_tokens: usize,
+}
+
+/// Raw files and metadata collected by the shell before digest rendering.
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
+#[must_use]
+pub(crate) struct CollectionResult {
+    pub(crate) label: String,
+    pub(crate) revision: Option<String>,
+    pub(crate) files: SortedFiles,
+    pub(crate) skipped: usize,
+}
+
+/// Rendered digest: the bytes to deliver and their token estimate.
+#[derive(Debug)]
+#[must_use]
+pub(crate) struct RenderedDigest {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) estimated_tokens: usize,
 }

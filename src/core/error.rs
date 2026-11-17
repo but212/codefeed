@@ -39,22 +39,13 @@ impl Display for ErrorDetail {
     }
 }
 
-/// Diagnostic details for exceeded candidate limits.
+/// Diagnostic details for an exceeded candidate count or output size limit.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CandidateLimitExceededError {
-    /// The candidate limit that was exceeded.
-    pub limit: usize,
-    /// Top directories contributing to the candidate overflow.
-    pub largest_directories: Vec<(ErrorDetail, usize)>,
-}
-
-/// Diagnostic details for an exceeded output size limit.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OutputTooLargeError {
-    /// The output size limit in bytes that was exceeded.
+pub struct LimitExceededError {
+    /// The limit that was exceeded (file count or output bytes).
     pub limit: u64,
-    /// Largest files contributing to the overflow, as `(path, size in bytes)`.
-    pub largest_files: Vec<(ErrorDetail, usize)>,
+    /// Top entries contributing to the overflow, as `(name/path, count/size)`.
+    pub largest: Vec<(ErrorDetail, usize)>,
 }
 
 /// Pure domain rule failure. Core returns this type only; effect failures belong to the shell.
@@ -64,7 +55,7 @@ pub enum DomainError {
     /// CLI usage error or missing argument.
     Usage(ErrorDetail),
     /// Candidate file budget exceeded.
-    CandidateLimitExceeded(CandidateLimitExceededError),
+    CandidateLimitExceeded(LimitExceededError),
     /// Source string or CLI argument is syntactically invalid.
     InvalidSource(ErrorDetail),
     /// Source scheme or host is unsupported (e.g. non-GitHub remote or SSH).
@@ -72,7 +63,7 @@ pub enum DomainError {
     /// Repository metadata or API response payload is malformed.
     InvalidMetadata(ErrorDetail),
     /// Rendered digest exceeds the maximum allowed output size.
-    OutputTooLarge(OutputTooLargeError),
+    OutputTooLarge(LimitExceededError),
 }
 
 impl DomainError {
@@ -89,9 +80,9 @@ impl DomainError {
         limit: usize,
         largest_directories: Vec<(String, usize)>,
     ) -> Self {
-        Self::CandidateLimitExceeded(CandidateLimitExceededError {
-            limit,
-            largest_directories: sanitized_counts(largest_directories),
+        Self::CandidateLimitExceeded(LimitExceededError {
+            limit: limit as u64,
+            largest: sanitized_counts(largest_directories),
         })
     }
 
@@ -117,9 +108,9 @@ impl DomainError {
     /// The file names are sanitized.
     #[cold]
     pub(crate) fn output_too_large(limit: u64, largest_files: Vec<(String, usize)>) -> Self {
-        Self::OutputTooLarge(OutputTooLargeError {
+        Self::OutputTooLarge(LimitExceededError {
             limit,
-            largest_files: sanitized_counts(largest_files),
+            largest: sanitized_counts(largest_files),
         })
     }
 }
@@ -163,7 +154,7 @@ impl Display for DomainError {
                     "repository contains more than {} files\nlargest directories:",
                     err.limit
                 )?;
-                for (dir, count) in &err.largest_directories {
+                for (dir, count) in &err.largest {
                     write!(f, "\n  - {dir} ({count} files)")?;
                 }
                 Ok(())
@@ -176,9 +167,9 @@ impl Display for DomainError {
             Self::OutputTooLarge(err) => {
                 let limit_mib = err.limit / (1024 * 1024);
                 write!(f, "digest exceeds the {limit_mib} MiB output limit")?;
-                if !err.largest_files.is_empty() {
+                if !err.largest.is_empty() {
                     write!(f, "\nlargest files:")?;
-                    for (path, size) in &err.largest_files {
+                    for (path, size) in &err.largest {
                         let formatted_size = format_size(*size);
                         write!(f, "\n  - {path} ({formatted_size})")?;
                     }

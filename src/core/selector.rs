@@ -6,7 +6,8 @@ use std::hash::{BuildHasher, RandomState};
 use memchr::memchr;
 
 use crate::core::error::DomainError;
-use crate::core::path::{NormalizedPath, UnstorablePath};
+use crate::core::model::CollectionResult;
+use crate::core::path::Candidate;
 use crate::core::policy::{
     MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, OVERFLOW_LARGEST_DIRECTORIES,
 };
@@ -38,17 +39,6 @@ pub(crate) enum Body<B> {
     Bytes(B),
 }
 
-/// One settled candidate, as the shell reports it to [`Selector::observe`] (I-11).
-///
-/// An unstorable path has no content, so the pair of an unstorable path and a body cannot be built.
-#[derive(Debug)]
-pub(crate) enum Observation<B> {
-    /// Non-UTF-8 or overlong path with its accounting prefix and normalized byte identity.
-    Unstorable(UnstorablePath),
-    /// Storable path with the outcome of reading its content.
-    File(NormalizedPath, Body<B>),
-}
-
 const EMPTY_BUCKET: u32 = u32::MAX;
 
 #[derive(Debug)]
@@ -66,14 +56,92 @@ impl<V> ArenaEntry<V> {
     }
 }
 
+/// Open-addressed `u32` bucket index shared by string-keyed arena tables.
+#[derive(Debug)]
+struct BucketTable {
+    buckets: Vec<u32>,
+    hasher: RandomState,
+}
+
+impl BucketTable {
+    fn with_capacity(entries_cap: usize) -> Self {
+        let bucket_cap = (entries_cap.saturating_mul(4) / 3)
+            .max(16)
+            .next_power_of_two();
+        Self {
+            buckets: vec![EMPTY_BUCKET; bucket_cap],
+            hasher: RandomState::new(),
+        }
+    }
+
+    fn hash_key(&self, key: &str) -> u64 {
+        self.hasher.hash_one(key)
+    }
+
+    fn probe_empty(buckets: &[u32], hash: u64) -> usize {
+        let mask = buckets.len() - 1;
+        let mut idx = usize::try_from(hash & (mask as u64)).expect("masked hash fits in usize");
+        while buckets[idx] != EMPTY_BUCKET {
+            idx = (idx + 1) & mask;
+        }
+        idx
+    }
+
+    /// Returns `Ok(entry_idx)` when `key` is present, or `Err(bucket_idx)` pointing to the first
+    /// empty probe slot.
+    fn find_bucket<'a>(
+        &self,
+        key: &str,
+        hash: u64,
+        mut resolve: impl FnMut(u32) -> (u64, &'a str),
+    ) -> Result<usize, usize> {
+        let mask = self.buckets.len() - 1;
+        let mut idx = usize::try_from(hash & (mask as u64)).expect("masked hash fits in usize");
+        loop {
+            let slot = self.buckets[idx];
+            if slot == EMPTY_BUCKET {
+                return Err(idx);
+            }
+            let (entry_hash, entry_key) = resolve(slot);
+            if entry_hash == hash && entry_key == key {
+                return Ok(slot as usize);
+            }
+            idx = (idx + 1) & mask;
+        }
+    }
+
+    fn insert_slot(
+        &mut self,
+        entry_idx: usize,
+        hash: u64,
+        bucket_idx: usize,
+        existing_hashes: impl Iterator<Item = u64>,
+    ) {
+        let bucket_idx = if (entry_idx + 1) * 4 > self.buckets.len() * 3 {
+            let new_cap = self.buckets.len() * 2;
+            let mut new_buckets = vec![EMPTY_BUCKET; new_cap];
+            for (idx, existing_hash) in existing_hashes.enumerate() {
+                let slot = Self::probe_empty(&new_buckets, existing_hash);
+                new_buckets[slot] =
+                    u32::try_from(idx).expect("invariant: entries bounded below u32::MAX");
+            }
+            self.buckets = new_buckets;
+            Self::probe_empty(&self.buckets, hash)
+        } else {
+            bucket_idx
+        };
+        self.buckets[bucket_idx] = u32::try_from(entry_idx)
+            .expect("invariant: entries bounded by MAX_FILE_COUNT < u32::MAX");
+    }
+}
+
 /// Append-only string-keyed map backed by a contiguous `String` arena and an open-addressed `u32`
 /// index table, avoiding per-key heap allocations over `Selector`'s lifetime.
 #[derive(Debug)]
 struct ArenaMap<V> {
     arena: String,
     entries: Vec<ArenaEntry<V>>,
-    buckets: Vec<u32>,
-    hasher: RandomState,
+    table: BucketTable,
 }
 
 impl<V> Default for ArenaMap<V> {
@@ -84,82 +152,46 @@ impl<V> Default for ArenaMap<V> {
 
 impl<V> ArenaMap<V> {
     fn with_capacity(entries_cap: usize, arena_bytes: usize) -> Self {
-        let bucket_cap = (entries_cap.saturating_mul(4) / 3)
-            .max(16)
-            .next_power_of_two();
         Self {
             arena: String::with_capacity(arena_bytes),
             entries: Vec::with_capacity(entries_cap),
-            buckets: vec![EMPTY_BUCKET; bucket_cap],
-            hasher: RandomState::new(),
+            table: BucketTable::with_capacity(entries_cap),
         }
     }
 
     fn hash_key(&self, key: &str) -> u64 {
-        self.hasher.hash_one(key)
+        self.table.hash_key(key)
     }
 
     /// Returns `Ok(entry_idx)` when `key` is present, or `Err(bucket_idx)` pointing to the first
     /// empty probe slot.
     fn find_bucket(&self, key: &str, hash: u64) -> Result<usize, usize> {
-        let mask = self.buckets.len() - 1;
-        let mut idx = usize::try_from(hash & (mask as u64)).expect("masked hash fits in usize");
-        loop {
-            let slot = self.buckets[idx];
-            if slot == EMPTY_BUCKET {
-                return Err(idx);
-            }
+        self.table.find_bucket(key, hash, |slot| {
             let entry = &self.entries[slot as usize];
-            if entry.hash == hash && entry.key(&self.arena) == key {
-                return Ok(slot as usize);
-            }
-            idx = (idx + 1) & mask;
-        }
-    }
-
-    fn rehash(&mut self) {
-        let new_cap = self.buckets.len() * 2;
-        let mask = new_cap - 1;
-        let mut new_buckets = vec![EMPTY_BUCKET; new_cap];
-        for (entry_idx, entry) in self.entries.iter().enumerate() {
-            let mut idx =
-                usize::try_from(entry.hash & (mask as u64)).expect("masked hash fits in usize");
-            while new_buckets[idx] != EMPTY_BUCKET {
-                idx = (idx + 1) & mask;
-            }
-            new_buckets[idx] =
-                u32::try_from(entry_idx).expect("invariant: entries bounded below u32::MAX");
-        }
-        self.buckets = new_buckets;
+            (entry.hash, entry.key(&self.arena))
+        })
     }
 
     fn insert_at_new_key(&mut self, key: &str, hash: u64, bucket_idx: usize, value: V) {
-        let bucket_idx = if (self.entries.len() + 1) * 4 > self.buckets.len() * 3 {
-            self.rehash();
-            let mask = self.buckets.len() - 1;
-            let mut idx = usize::try_from(hash & (mask as u64)).expect("masked hash fits in usize");
-            while self.buckets[idx] != EMPTY_BUCKET {
-                idx = (idx + 1) & mask;
-            }
-            idx
-        } else {
-            bucket_idx
-        };
+        let entry_idx = self.entries.len();
+        self.table.insert_slot(
+            entry_idx,
+            hash,
+            bucket_idx,
+            self.entries.iter().map(|e| e.hash),
+        );
 
         let offset = u32::try_from(self.arena.len())
             .expect("invariant: MAX_FILE_COUNT * MAX_PATH_BYTES <= u32::MAX");
         let len = u32::try_from(key.len()).expect("invariant: key length <= MAX_PATH_BYTES");
         self.arena.push_str(key);
 
-        let entry_idx = u32::try_from(self.entries.len())
-            .expect("invariant: entries bounded by MAX_FILE_COUNT < u32::MAX");
         self.entries.push(ArenaEntry {
             offset,
             len,
             hash,
             value,
         });
-        self.buckets[bucket_idx] = entry_idx;
     }
 
     fn iter(&self) -> impl Iterator<Item = (&str, &V)> {
@@ -181,20 +213,6 @@ impl<V> ArenaMap<V> {
     #[cfg(test)]
     fn values(&self) -> impl Iterator<Item = &V> {
         self.entries.iter().map(|entry| &entry.value)
-    }
-}
-
-impl ArenaMap<()> {
-    /// Inserts `key` if absent, returning `true` when newly inserted and `false` on duplicate.
-    fn insert_key(&mut self, key: &str) -> bool {
-        let hash = self.hash_key(key);
-        match self.find_bucket(key, hash) {
-            Ok(_) => false,
-            Err(bucket_idx) => {
-                self.insert_at_new_key(key, hash, bucket_idx, ());
-                true
-            }
-        }
     }
 }
 
@@ -258,14 +276,81 @@ fn top_overflow_directories(dir_counts: &ArenaMap<usize>) -> Vec<(String, usize)
     dirs.into_iter().map(|(d, c)| (d.to_string(), c)).collect()
 }
 
+#[derive(Debug, Clone, Copy)]
+enum PathSlot {
+    Stored(u32),
+    Skipped { offset: u32, len: u32 },
+}
+
+#[derive(Debug)]
+struct PathIndexEntry {
+    hash: u64,
+    slot: PathSlot,
+}
+
+/// Uniqueness index for storable paths without duplicating `FileStorage::path_arena`.
+/// Stored entries resolve directly against `FileStorage`; only skipped entries allocate in `skipped_arena`.
+#[derive(Debug)]
+struct PathIndex {
+    skipped_arena: String,
+    entries: Vec<PathIndexEntry>,
+    table: BucketTable,
+}
+
+impl PathIndex {
+    fn with_capacity(entries_cap: usize) -> Self {
+        Self {
+            skipped_arena: String::new(),
+            entries: Vec::with_capacity(entries_cap),
+            table: BucketTable::with_capacity(entries_cap),
+        }
+    }
+
+    fn resolve<'a>(&'a self, slot: PathSlot, storage: &'a FileStorage) -> &'a str {
+        match slot {
+            PathSlot::Stored(index) => storage.path_at(index as usize),
+            PathSlot::Skipped { offset, len } => {
+                let start = offset as usize;
+                &self.skipped_arena[start..start + len as usize]
+            }
+        }
+    }
+
+    fn find_bucket(&self, key: &str, hash: u64, storage: &FileStorage) -> Result<usize, usize> {
+        self.table.find_bucket(key, hash, |slot| {
+            let entry = &self.entries[slot as usize];
+            (entry.hash, self.resolve(entry.slot, storage))
+        })
+    }
+
+    fn insert_at(&mut self, hash: u64, bucket_idx: usize, slot: PathSlot) {
+        let entry_idx = self.entries.len();
+        self.table.insert_slot(
+            entry_idx,
+            hash,
+            bucket_idx,
+            self.entries.iter().map(|e| e.hash),
+        );
+        self.entries.push(PathIndexEntry { hash, slot });
+    }
+
+    fn record_skipped(&mut self, key: &str, hash: u64, bucket_idx: usize) {
+        let offset = u32::try_from(self.skipped_arena.len())
+            .expect("invariant: MAX_FILE_COUNT * MAX_PATH_BYTES <= u32::MAX");
+        let len = u32::try_from(key.len()).expect("invariant: key length <= MAX_PATH_BYTES");
+        self.skipped_arena.push_str(key);
+        self.insert_at(hash, bucket_idx, PathSlot::Skipped { offset, len });
+    }
+}
+
 /// Pure per-item selection and budget accounting. Owns no I/O; the shell feeds
-/// observations and reads the outcome through [`Selector::finish`].
+/// candidates and reads the outcome through [`Selector::finish`].
 #[derive(Debug)]
 #[must_use]
 pub(crate) struct Selector {
     storage: FileStorage,
     candidates: CandidateBudget,
-    paths: ArenaMap<()>,
+    paths: PathIndex,
     unstorable_paths: HashSet<Vec<u8>>,
 }
 
@@ -278,28 +363,16 @@ impl Selector {
                 count: 0,
                 dir_counts: ArenaMap::with_capacity(32, 512),
             },
-            paths: ArenaMap::with_capacity(512, 16 * 1024),
+            paths: PathIndex::with_capacity(512),
             unstorable_paths: HashSet::new(),
         }
     }
 
-    /// Claims `path` for uniqueness. Rejects it when an earlier candidate holds the same path.
-    ///
-    /// Skipped candidates count: two entries with one path are ambiguous even when one is skipped.
-    fn claim_path(mut self, path: &str) -> Result<Self, DomainError> {
-        if !self.paths.insert_key(path) {
-            return Err(DomainError::invalid_metadata(format!(
-                "duplicate entry path: {path}"
-            )));
-        }
-        Ok(self)
-    }
-
     /// Observes one candidate entry and settles it.
     ///
-    /// - [`Observation::Unstorable`] consumes candidate budget, must have a unique byte identity,
+    /// - [`Candidate::Unstorable`] consumes candidate budget, must have a unique byte identity,
     ///   and is skipped.
-    /// - [`Observation::File`] consumes candidate budget and must not repeat an earlier file path.
+    /// - [`Candidate::Valid`] consumes candidate budget and must not repeat an earlier file path.
     ///   [`Body::Bytes`] is stored when it is UTF-8
     ///   text within the size limit, and skipped otherwise. [`Body::Unavailable`] and
     ///   [`Body::OverLimit`] are skipped.
@@ -310,10 +383,10 @@ impl Selector {
     /// [`DomainError::OutputTooLarge`].
     pub(crate) fn observe<B: AsRef<[u8]>>(
         mut self,
-        observation: Observation<B>,
+        candidate: Candidate<Body<B>>,
     ) -> Result<Self, DomainError> {
-        let (path, body) = match observation {
-            Observation::Unstorable(path) => {
+        let (path, body) = match candidate {
+            Candidate::Unstorable(path) => {
                 self.candidates = self.candidates.add(path.prefix())?;
                 if !self.unstorable_paths.insert(path.into_identity()) {
                     return Err(DomainError::invalid_metadata(
@@ -322,22 +395,31 @@ impl Selector {
                 }
                 return Ok(self);
             }
-            Observation::File(path, body) => (path, body),
+            Candidate::Valid(path, body) => (path, body),
         };
         self.candidates = self.candidates.add(&path)?;
-        self = self.claim_path(&path)?;
-        let Body::Bytes(bytes) = body else {
-            return Ok(self);
+        let hash = self.paths.table.hash_key(&path);
+        let Err(bucket_idx) = self.paths.find_bucket(&path, hash, &self.storage) else {
+            return Err(DomainError::invalid_metadata(format!(
+                "duplicate entry path: {}",
+                &*path
+            )));
         };
-        match classify_content(bytes.as_ref()) {
-            Some(content) => {
-                // Raw arena bytes are a strict lower bound for the rendered digest size, so
-                // `push` rejects over-limit content before the final rendering pass.
-                self.storage = self.storage.push(&path, content)?;
-                Ok(self)
-            }
-            None => Ok(self),
+
+        if let Body::Bytes(bytes) = body
+            && let Some(content) = classify_content(bytes.as_ref())
+        {
+            let span_index = u32::try_from(self.storage.len())
+                .expect("invariant: entries bounded by MAX_FILE_COUNT < u32::MAX");
+            // Raw arena bytes are a strict lower bound for the rendered digest size, so
+            // `push` rejects over-limit content before the final rendering pass.
+            self.storage = self.storage.push(&path, content)?;
+            self.paths
+                .insert_at(hash, bucket_idx, PathSlot::Stored(span_index));
+        } else {
+            self.paths.record_skipped(&path, hash, bucket_idx);
         }
+        Ok(self)
     }
 
     /// Finalizes selection, sorting files lexicographically in-place, and returns a [`CollectionResult`].
@@ -358,17 +440,6 @@ impl Selector {
             skipped,
         })
     }
-}
-
-/// Raw files and metadata collected by the shell before digest rendering.
-#[derive(Debug)]
-#[cfg_attr(test, derive(Clone))]
-#[must_use]
-pub(crate) struct CollectionResult {
-    pub(crate) label: String,
-    pub(crate) revision: Option<String>,
-    pub(crate) files: SortedFiles,
-    pub(crate) skipped: usize,
 }
 
 #[cfg(test)]
@@ -515,11 +586,11 @@ mod tests {
         assert_eq!(classify_content(&bytes_with_nul), None);
     }
 
-    fn file<'a>(path: &str, body: Body<&'a [u8]>) -> Observation<&'a [u8]> {
-        Observation::File(path.into(), body)
+    fn file<'a>(path: &str, body: Body<&'a [u8]>) -> Candidate<Body<&'a [u8]>> {
+        Candidate::Valid(path.into(), body)
     }
 
-    fn text(path: &str) -> Observation<&'static [u8]> {
+    fn text(path: &str) -> Candidate<Body<&'static [u8]>> {
         file(path, Body::Bytes(b"content"))
     }
 
@@ -568,7 +639,7 @@ mod tests {
         }
 
         let err = selector
-            .observe(Observation::<&[u8]>::Unstorable(
+            .observe(Candidate::<Body<&[u8]>>::Unstorable(
                 ("dir/", b"dir/\xff".as_slice()).into(),
             ))
             .unwrap_err();
@@ -600,7 +671,7 @@ mod tests {
             ("empty.txt", Body::Bytes(Vec::new()), 1, 0),
         ];
         for (path, body, included, skipped) in cases {
-            let selector = Selector::new().observe(Observation::File(path.into(), body))?;
+            let selector = Selector::new().observe(Candidate::Valid(path.into(), body))?;
             let collection = selector.finish("test".into(), None)?;
             assert_eq!(collection.files.len(), included, "{path}");
             assert_eq!(collection.skipped, skipped, "{path}");
@@ -620,7 +691,7 @@ mod tests {
             file("bad_utf8", Body::Bytes(b"\xff")),
             file("over.txt", Body::OverLimit),
             file("gone.txt", Body::Unavailable),
-            Observation::Unstorable(("dir/", b"dir/\xff".as_slice()).into()),
+            Candidate::Unstorable(("dir/", b"dir/\xff".as_slice()).into()),
             file("empty.txt", Body::Bytes(b"")),
         ];
         let selector = observations
@@ -637,7 +708,7 @@ mod tests {
         for prefix in ["", "dir/sub/"] {
             let mut identity = prefix.as_bytes().to_vec();
             identity.push(0xff);
-            let selector = Selector::new().observe(Observation::<&[u8]>::Unstorable(
+            let selector = Selector::new().observe(Candidate::<Body<&[u8]>>::Unstorable(
                 (prefix, identity.as_slice()).into(),
             ))?;
             assert_eq!(selector.candidates.count, 1);
@@ -670,25 +741,25 @@ mod tests {
     }
 
     #[test]
-    fn arena_map_rejects_duplicates_without_growing_arena() {
-        let mut set = ArenaMap::with_capacity(4, 16);
-        assert!(set.insert_key("src/main.rs"));
-        let arena_len_after_first = set.arena.len();
-        assert!(!set.insert_key("src/main.rs"));
-        assert_eq!(set.arena.len(), arena_len_after_first);
-        assert_eq!(set.entries.len(), 1);
+    fn path_index_stores_only_skipped_paths_in_skipped_arena() -> Result<(), DomainError> {
+        let selector = Selector::new()
+            .observe(text("src/main.rs"))?
+            .observe(file("src/skipped.bin", Body::OverLimit))?;
+        assert_eq!(selector.paths.entries.len(), 2);
+        assert_eq!(selector.paths.skipped_arena, "src/skipped.bin");
+        Ok(())
     }
 
     #[test]
     fn arena_map_rehashes_and_preserves_all_entries() {
         let mut counts = ArenaMap::with_capacity(2, 16);
-        let initial_buckets = counts.buckets.len();
+        let initial_buckets = counts.table.buckets.len();
         for i in 0..64 {
             let key = format!("dir_{i}/");
             counts.increment(&key);
             counts.increment(&key);
         }
-        assert!(counts.buckets.len() > initial_buckets);
+        assert!(counts.table.buckets.len() > initial_buckets);
         assert_eq!(counts.entries.len(), 64);
         for i in 0..64 {
             let key = format!("dir_{i}/");
