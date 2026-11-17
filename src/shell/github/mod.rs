@@ -170,7 +170,7 @@ fn unix_now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::policy::{MAX_ATTEMPTS, TOKEN_ENV_VARS};
+    use crate::core::policy::{MAX_ATTEMPTS, RETRY_MAX_DELAY_MS, TOKEN_ENV_VARS};
     use crate::shell::testing::{MockServer, gzip_tarball, tarball_response};
     use tar::EntryType;
 
@@ -307,9 +307,8 @@ mod tests {
             };
             assert_eq!(api.status(), 429, "{value}");
             assert!(
-                api.retry_after().is_some_and(
-                    |delay| delay.as_millis() > crate::core::policy::RETRY_MAX_DELAY_MS as u128
-                ),
+                api.retry_after()
+                    .is_some_and(|delay| delay.as_millis() > u128::from(RETRY_MAX_DELAY_MS)),
                 "{value}: requested delay was discarded"
             );
             let (_, connections) = server.join();

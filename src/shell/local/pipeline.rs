@@ -387,7 +387,7 @@ mod tests {
 
         let reused = pool.take(1024);
         assert_eq!(reused.buf.as_ptr(), small_ptr);
-        assert!(reused.buf.is_empty());
+        assert_eq!(reused.buf, [] as [u8; 0]);
         drop(reused);
 
         let oversized = pool.take(LOCAL_BUFFER_RETAIN_BYTES + 1);

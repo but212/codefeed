@@ -188,19 +188,18 @@ pub(crate) fn admit_dir(
         }
     }
     let output = match output {
-        DirPrefix::Utf8(mut prefix) if depth <= MAX_PATH_DEPTH => match std::str::from_utf8(name) {
-            Ok(segment) => {
+        DirPrefix::Utf8(mut prefix) if depth <= MAX_PATH_DEPTH => {
+            if let Ok(segment) = std::str::from_utf8(name) {
                 prefix.push_str(segment);
                 prefix.push('/');
                 DirPrefix::Utf8(prefix)
-            }
-            Err(_) => {
+            } else {
                 let mut bytes = prefix.as_bytes().to_vec();
                 bytes.extend_from_slice(name);
                 bytes.push(b'/');
                 DirPrefix::NonUtf8 { prefix, bytes }
             }
-        },
+        }
         DirPrefix::NonUtf8 { prefix, mut bytes } if depth <= MAX_PATH_DEPTH => {
             bytes.extend_from_slice(name);
             bytes.push(b'/');
@@ -414,6 +413,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn classification_corpus_is_stable() {
         // Pins the observable outcome of every check, including check order, the depth window, and the
         // trailing separator of non-UTF-8 prefixes. Both the archive and the local walk rely on it.
