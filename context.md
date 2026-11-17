@@ -111,7 +111,7 @@ Converts a local directory or public GitHub repository into a single text digest
 - Archive entries stream into `Selector::observe` without disk writes.
 - Revision SHA extracts from first `ARCHIVE_PAX_GLOBAL_BYTES` of PAX header, falling back to requested ref.
 - Stream/gzip/tar failures map to `IngestError::Http`. After tar termination, `shell/github/archive.rs::collect` drains the metered decoder before `Selector::finish`, validating the gzip trailer without escaping the stream budget.
-- `shell/github/mod.rs::read_rate_limit_headers` resolves HTTP-date headers into `RateLimitHeaders::RetryAfterSecs` using explicitly supplied Unix time. Core numeric parsing saturates overflowing decimal delays; retry policy reads no clock.
+- `shell/github/client.rs::read_rate_limit_headers` resolves HTTP-date headers into `RateLimitHeaders::RetryAfterSecs` using explicitly supplied Unix time. Core numeric parsing saturates overflowing decimal delays; retry policy reads no clock.
 - **I-03 (`runtime`, `shell/github/archive.rs`):** One `Entries::next` call reads at most `ARCHIVE_MAX_HEADER_BYTES`. tar reads extension bodies internally, so no type or boundary can express the bound. A byte budget on the shared reader enforces it, and each entry body is drained before the next call so only headers are metered. Behavior: [security § 2 and 6.4](docs/security_and_filtering.md#64-streaming).
 - **I-12 (`runtime`, `StreamMeter`, `drain_entry`):** The archive budget includes bytes synthesized by tar's sparse reader. Before draining an untouched sparse entry, its logical size is checked against the remaining budget; afterwards only synthesized bytes are added, since physical reads already passed through the meter. The cumulative budget relates separate entries and reader activity, so no per-entry type can express it. Behavior: [security § 6.4](docs/security_and_filtering.md#64-streaming).
 - **I-04 (`type`, `ErrorDetail::new`):** Every error text that may echo user input or remote payloads is an `ErrorDetail`, whose sole constructor sanitizes. Direct `DomainError` builds cannot store unsanitized text, and `Display` does not sanitize again. Non-`DomainError` effects (`io::Error`, `GithubApiError`, retry warnings) sanitize via `ErrorDetail::new`. Behavior: [security § 7](docs/security_and_filtering.md#7-output-sanitization).
@@ -146,7 +146,7 @@ Purity rules and one-way Shell-to-Core dependency: [coding convention § 3](docs
 - `cli.rs`: CLI orchestration, stream selection, exit codes.
 - `error.rs`: `IngestError` and transport error mapping.
 - `local/`: Local walk, `.gitignore` loading, producer/worker reads.
-- `github/`: Archive fetch with retries, tarball streaming, TLS client, token handling.
+- `github/`: Collection orchestration in `mod.rs`; HTTP configuration, credentials, request execution, retries, and response errors in `client.rs`; metered tarball ingestion in `archive.rs`.
 - `atomic.rs`: Atomic file writes.
 - `output.rs`: Destination resolution and delivery.
 - `stdio.rs`: stdout/stderr line writers.
