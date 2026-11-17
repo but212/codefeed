@@ -58,6 +58,10 @@ pub(in crate::shell) fn collect<R: Read>(
         }
         drain_entry(&mut entry, &meter)?;
     }
+    // Tar stops at its end marker, before gzip necessarily checks its checksum and size.
+    // Keep the remaining decoded bytes inside the stream budget while validating the trailer.
+    io::copy(&mut archive.into_inner(), &mut io::sink())
+        .map_err(|err| stream_error(&err, &meter))?;
 
     let revision = parsed_revision.or_else(|| default_reference.map(str::to_string));
     Ok(selector.finish(label.to_string(), revision)?)
@@ -732,6 +736,78 @@ mod tests {
     }
 
     #[test]
+    fn gzip_payload_and_trailer_corruption_fail_collection() {
+        use std::io::Write;
+
+        let mut tar = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(5);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, "repo-root/a.txt", &b"hello"[..])
+            .unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::none());
+        encoder.write_all(&tar.into_inner().unwrap()).unwrap();
+        let intact = encoder.finish().unwrap();
+        let full = collect_default(&intact, "label", None).expect("intact stream collects");
+        assert_eq!(full.files.iter().next().unwrap().content, "hello");
+
+        let payload = intact.windows(5).position(|w| w == b"hello").unwrap();
+        let mut bad_payload = intact.clone();
+        bad_payload[payload] = b'j';
+        let mut bad_crc = intact.clone();
+        bad_crc[intact.len() - 8] ^= 1;
+        let mut bad_size = intact.clone();
+        bad_size[intact.len() - 4] ^= 1;
+        for (case, bytes) in [
+            ("payload", bad_payload),
+            ("checksum", bad_crc),
+            ("size", bad_size),
+        ] {
+            let result = collect_default(&bytes, "label", None);
+            assert!(
+                matches!(result, Err(IngestError::Http(_))),
+                "{case}: {result:?}"
+            );
+        }
+        for missing in 1..=8 {
+            let result = collect_default(&intact[..intact.len() - missing], "label", None);
+            assert!(
+                matches!(result, Err(IngestError::Http(_))),
+                "missing {missing} trailer bytes: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bytes_after_tar_end_share_the_decompressed_stream_budget() {
+        for (length, accepted) in [
+            (ARCHIVE_MAX_HEADER_BYTES + 1, true),
+            (ARCHIVE_MAX_DECOMPRESSED_BYTES, true),
+            (ARCHIVE_MAX_DECOMPRESSED_BYTES + 1, false),
+        ] {
+            // The first zero block ends tar; the remaining bytes still belong to gzip.
+            let stream = flate2::read::GzEncoder::new(
+                io::repeat(0).take(length),
+                flate2::Compression::fast(),
+            );
+            let result = collect(stream, "label", None, &ExcludePatterns::default());
+            if accepted {
+                let collection =
+                    result.expect("trailing bytes within the stream budget are accepted");
+                assert_eq!(collection.files.len(), 0);
+                assert_eq!(collection.skipped, 0);
+            } else {
+                assert!(
+                    matches!(&result, Err(IngestError::Domain(DomainError::InvalidMetadata(message)))
+                        if message.contains("ARCHIVE_MAX_DECOMPRESSED_BYTES")),
+                    "length {length}: {result:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn stream_decode_failure_is_http() {
         let Err(err) = collect_default(&b"not gzip"[..], "x", None) else {
             panic!("expected error");
@@ -806,32 +882,23 @@ mod tests {
             ("repo-root/src/main.rs", body.as_slice(), EntryType::Regular),
         ]);
 
-        let full = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+        let _ = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
             .expect("intact stream collects");
-        let expected_files = full.files.len();
 
         for cut in 0..mock_data.len() {
             let reader = DroppedAfter {
                 data: &mock_data[..cut],
             };
-            match collect(
+            let result = collect(
                 reader,
                 "https://github.com/owner/repo",
                 None,
                 &ExcludePatterns::default(),
-            ) {
-                Err(IngestError::Http(_)) => {}
-                // The tar end marker can sit before the last gzip bytes, so a cut there completes the run.
-                Ok(partial) => {
-                    assert_eq!(partial.files.len(), expected_files, "cut at {cut}");
-                    assert_eq!(
-                        partial.files.total_bytes(),
-                        full.files.total_bytes(),
-                        "cut at {cut}"
-                    );
-                }
-                Err(other) => panic!("cut at {cut}: unexpected error {other:?}"),
-            }
+            );
+            assert!(
+                matches!(result, Err(IngestError::Http(_))),
+                "cut at {cut}: {result:?}"
+            );
         }
     }
 

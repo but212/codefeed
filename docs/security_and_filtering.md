@@ -178,6 +178,7 @@ Enforces built-in Mozilla root certificates (`rustls-webpki-roots`). OS stores a
 ### 6.4 Streaming
 
 - Fetches tarball via `/repos/{owner}/{repo}/tarball/{ref}`. Streams via gzip/tar directly into candidate observation without disk spooling.
+- Tar termination does not finalize collection: the gzip stream is drained through its trailer before any digest is delivered. A missing or invalid gzip checksum or uncompressed-size trailer fails the run (`IngestError::Http`). Decoded bytes after the tar end marker still consume the decompressed stream budget, not the tar header budget.
 - Each tar header read is metered against `ARCHIVE_MAX_HEADER_BYTES` (I-03), covering padding, GNU `L`/`K`, PAX `x`, and sparse blocks. Overruns abort with `InvalidMetadata`.
 - The entire decompressed stream, including holes reconstructed by GNU sparse entries, shares the `ARCHIVE_MAX_DECOMPRESSED_BYTES` budget. A sparse entry whose logical body cannot fit the remaining budget fails with `InvalidMetadata` before expansion. Entries within the budget remain excluded as non-regular files and consume no candidate slots.
 
@@ -185,6 +186,7 @@ Enforces built-in Mozilla root certificates (`rustls-webpki-roots`). OS stores a
 
 - **Retried:** Transport timeouts/errors, HTTP 429, HTTP 5xx, HTTP 403 with `Retry-After` or zero quota.
 - **Not Retried:** Other HTTP 4xx, non-transient transport errors.
+- `Retry-After` accepts decimal seconds and HTTP-date (including legacy HTTP-date forms), taking precedence over quota reset headers when valid. Dates resolve against the current Unix time; a due or past date requests no wait. All-digit seconds exceeding the representable range saturate rather than falling back to backoff. Malformed values retain the existing quota-reset or backoff fallback.
 - Attempts capped by `MAX_ATTEMPTS`. Exponential backoff spans `RETRY_INITIAL_DELAY_MS` to `RETRY_MAX_DELAY_MS`. Server wait delays from `Retry-After` or `x-ratelimit-reset` exceeding `RETRY_MAX_DELAY_MS` abort immediately.
 
 ### 6.6 Time Limits

@@ -19,6 +19,8 @@ Scope: `### Library consumers and CLI users` lists observable behavior. `### Con
 
 #### Fixed
 
+- **Gzip trailers are validated before delivery**: Archive collection now drains the metered gzip decoder after tar termination, rejecting corrupted payloads, invalid checksum/size trailers, and missing trailer bytes without creating or replacing output. Decoded bytes after the tar end marker remain subject to the archive stream budget.
+- **Long `Retry-After` delays are honored**: HTTP-date values and overflowing decimal delays no longer fall back to a short retry. Valid dates take precedence over quota resets, and waits exceeding the retry cap fail on the original response without a second request.
 - **Sparse archive expansion is bounded**: Reconstructed GNU sparse holes now consume the cumulative archive stream budget. Sparse entries whose logical bodies cannot fit the remaining budget fail before expansion instead of allowing a tiny archive to trigger unbounded draining work.
 - **Duplicate unstorable paths are rejected**: Overlong and non-UTF-8 candidate paths now retain their complete normalized byte identity and participate in duplicate detection. Distinct paths sharing an accounting prefix or lossy UTF-8 spelling remain separate candidates.
 - **Directory-suffixed output paths**: `--output` (`-o`) paths ending with a separator (`out/`) or trailing current-directory segment (`out/.`) are now rejected with a usage error before filesystem resolution instead of creating or overwriting a file at the stripped path.

@@ -93,6 +93,43 @@ mod tests {
     }
 
     #[test]
+    fn invalid_gzip_trailers_leave_the_output_untouched() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = temp_dir("invalid_gzip_trailer")?;
+        let output = root.join("digest.txt");
+        let intact = gzip_tarball(&[("repo-root/main.rs", b"fn main() {}", EntryType::Regular)]);
+        let mut bad_crc = intact.clone();
+        bad_crc[intact.len() - 8] ^= 1;
+        let truncated = intact[..intact.len() - 8].to_vec();
+        let source = Source::github("owner", "repo", None)?;
+        let config = RunConfig::new(
+            source,
+            OutputTarget::File(output.clone()),
+            DigestFormat::Text,
+        );
+
+        for archive in [bad_crc, truncated] {
+            for previous in [None, Some("previous digest")] {
+                if let Some(contents) = previous {
+                    fs::write(&output, contents)?;
+                }
+                let gz = archive.clone();
+                let server = MockServer::spawn(1, move |_index, _req, _port| tarball_response(&gz));
+                let result = ingest_from(&config, &server.url(""));
+                server.join();
+                assert!(matches!(result, Err(IngestError::Http(_))), "{result:?}");
+                if let Some(contents) = previous {
+                    assert_eq!(fs::read_to_string(&output)?, contents);
+                    fs::remove_file(&output)?;
+                } else {
+                    assert!(!output.exists(), "failed collection must not create output");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn ingest_github_source_succeeds() {
         let gz = gzip_tarball(&[("repo-root/main.rs", b"fn main() {}", EntryType::Regular)]);
         let server = MockServer::spawn(1, move |_index, _req, _port| tarball_response(&gz));

@@ -49,8 +49,9 @@ impl Attempt {
     ) -> (Self, RequestOutcome) {
         match result {
             Ok(response) => {
-                let rate_limit = read_rate_limit_headers(response.headers());
-                let retry_after = rate_limit.retry_after(unix_now_secs());
+                let now_secs = unix_now_secs();
+                let rate_limit = read_rate_limit_headers(response.headers(), now_secs);
+                let retry_after = rate_limit.retry_after(now_secs);
                 let outcome = RequestOutcome::HttpStatus {
                     status: response.status().as_u16(),
                     retry_after,
@@ -140,14 +141,23 @@ const fn transport_kind(error: &ureq::Error) -> TransportKind {
     }
 }
 
-/// Reads rate-limit headers from a response. A present but non-UTF-8 header counts as present with no value.
-fn read_rate_limit_headers(headers: &ureq::http::HeaderMap) -> RateLimitHeaders {
+/// Reads rate-limit headers, resolving HTTP-dates against the supplied Unix time.
+/// A present but non-UTF-8 header counts as present with no value.
+fn read_rate_limit_headers(headers: &ureq::http::HeaderMap, now_secs: u64) -> RateLimitHeaders {
     let text = |name: &str| headers.get(name).map(|v| v.to_str().unwrap_or(""));
-    RateLimitHeaders::parse(
-        text("retry-after"),
-        text("x-ratelimit-remaining"),
-        text("x-ratelimit-reset"),
-    )
+    text("retry-after")
+        .and_then(|value| httpdate::parse_http_date(value.trim()).ok())
+        .and_then(|date| date.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or_else(
+            || {
+                RateLimitHeaders::parse(
+                    text("retry-after"),
+                    text("x-ratelimit-remaining"),
+                    text("x-ratelimit-reset"),
+                )
+            },
+            |date| RateLimitHeaders::RetryAfterSecs(date.as_secs().saturating_sub(now_secs)),
+        )
 }
 
 /// Current Unix time in seconds. A clock before the epoch maps to `u64::MAX`, so no reset is ever in the future.
@@ -234,9 +244,77 @@ mod tests {
         headers.insert("x-ratelimit-remaining", "0".parse().expect("header value"));
         headers.insert("x-ratelimit-reset", "123".parse().expect("header value"));
         assert_eq!(
-            read_rate_limit_headers(&headers),
+            read_rate_limit_headers(&headers, 0),
             RateLimitHeaders::parse(None, Some("0"), Some("123"))
         );
+    }
+
+    #[test]
+    fn retry_after_http_dates_resolve_against_explicit_time() {
+        const DATE: u64 = 784_111_777;
+        for value in [
+            "Sun, 06 Nov 1994 08:49:37 GMT",
+            "Sunday, 06-Nov-94 08:49:37 GMT",
+            "Sun Nov  6 08:49:37 1994",
+        ] {
+            for (now, expected) in [(DATE - 2, 2), (DATE, 0), (DATE + 1, 0), (u64::MAX, 0)] {
+                let mut headers = ureq::http::HeaderMap::new();
+                headers.insert("retry-after", value.parse().unwrap());
+                // A valid date takes precedence even when the quota reset is later.
+                headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
+                headers.insert("x-ratelimit-reset", "1000000000".parse().unwrap());
+                let facts = read_rate_limit_headers(&headers, now);
+                assert!(facts.is_rate_limited());
+                assert_eq!(
+                    facts.retry_after(now),
+                    Some(Duration::from_secs(expected)),
+                    "{value}: now={now}"
+                );
+            }
+        }
+        for value in ["soon", "Sun, 07 Nov 1994 08:49:37 GMT", ""] {
+            let mut headers = ureq::http::HeaderMap::new();
+            headers.insert("retry-after", value.parse().unwrap());
+            assert_eq!(
+                read_rate_limit_headers(&headers, DATE),
+                RateLimitHeaders::UnparsedRetryAfter,
+                "{value}"
+            );
+            headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
+            headers.insert("x-ratelimit-reset", (DATE + 2).to_string().parse().unwrap());
+            assert_eq!(
+                read_rate_limit_headers(&headers, DATE).retry_after(DATE),
+                Some(Duration::from_secs(2)),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn long_retry_after_values_do_not_send_a_second_request() {
+        for value in ["Fri, 31 Dec 9999 23:59:59 GMT", "18446744073709551616"] {
+            let server = MockServer::spawn(1, move |_index, _req, _port| {
+                format!(
+                    "HTTP/1.1 429 Too Many Requests\r\nRetry-After: {value}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                ).into_bytes()
+            });
+            let client = GithubClient::new();
+            let Err(err) = client.stream_url(&server.url("/test")) else {
+                panic!("{value}: expected the original rate-limit error");
+            };
+            let IngestError::Api(api) = err else {
+                panic!("{value}: a retry lost the original rate-limit response: {err}");
+            };
+            assert_eq!(api.status(), 429, "{value}");
+            assert!(
+                api.retry_after().is_some_and(
+                    |delay| delay.as_millis() > crate::core::policy::RETRY_MAX_DELAY_MS as u128
+                ),
+                "{value}: requested delay was discarded"
+            );
+            let (_, connections) = server.join();
+            assert_eq!(connections, 1, "{value}");
+        }
     }
 
     #[test]
