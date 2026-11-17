@@ -19,11 +19,14 @@ Scope: `### Library consumers and CLI users` lists observable behavior. `### Con
 
 #### Fixed
 
+- **Sparse archive expansion is bounded**: Reconstructed GNU sparse holes now consume the cumulative archive stream budget. Sparse entries whose logical bodies cannot fit the remaining budget fail before expansion instead of allowing a tiny archive to trigger unbounded draining work.
+- **Duplicate unstorable paths are rejected**: Overlong and non-UTF-8 candidate paths now retain their complete normalized byte identity and participate in duplicate detection. Distinct paths sharing an accounting prefix or lossy UTF-8 spelling remain separate candidates.
 - **Directory-suffixed output paths**: `--output` (`-o`) paths ending with a separator (`out/`) or trailing current-directory segment (`out/.`) are now rejected with a usage error before filesystem resolution instead of creating or overwriting a file at the stripped path.
 - **Empty file rendering**: Empty files (`""`) no longer receive synthetic trailing newline padding in Text or XML output, keeping `""` distinct from `"\n"`.
 
 #### Changed
 
+- **Help/version documentation**: The English and Korean READMEs clarify the existing precedence exceptions for option-value positions and arguments after `--`; CLI behavior is unchanged.
 - **Install docs**: `README.md` and `docs/README.ko.md` lead with `cargo install codefeed` (source build); `cargo binstall codefeed` remains as an optional prebuilt-binary install. The `[package.metadata.binstall]` table is unchanged.
 
 ### Contributors
@@ -39,6 +42,7 @@ Internal change. No consumer action required. Output is unchanged throughout.
 #### Changed
 
 - **Document ownership**: Output format (header, token estimate) is owned by `README.md` Output; limit authority is stated once in the `docs/security_and_filtering.md` header; `AGENTS.md` § 6 routes `CONTRIBUTING.md` and `SECURITY.md` changes. Contributor-facing documents no longer link to `AGENTS.md`: `CONTRIBUTING.md` owns the verification checklist, `AGENTS.md` links to it, and the pull request template mirrors the commands inline. `context.md` § 5 is reduced to module responsibilities, and `docs/security_and_filtering.md` no longer names implementation identifiers.
+- **Unstorable identity and sparse accounting invariants**: `CandidatePath::Unstorable` and `Observation::Unstorable` carry `UnstorablePath` instead of only an accounting prefix. I-09 now records exact byte identity enforcement, and I-12 records cumulative sparse-expansion accounting (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/github/archive.rs`, `context.md`).
 - **Derived skipped tally**: `Selector` no longer stores a separate skipped counter; `finish` derives it from candidate count minus stored file count, removing counter synchronization without changing output (`src/core/selector.rs`).
 - **`Cow<'a, str>` string constructors**: `ErrorDetail::new`, `GitRef::new`, `Source::with_reference`, and `DomainError::{usage, invalid_source, unsupported_source, invalid_metadata}` accept `impl Into<Cow<'a, str>>` instead of `impl Into<String>`, avoiding reallocation when owned inputs need no sanitization or trimming (`src/core/error.rs`, `src/core/source.rs`).
 - **Allocation reductions and `RateLimitHeaders` enum**:

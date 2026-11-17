@@ -84,11 +84,11 @@ impl Overrun {
 
 /// Byte meters on the decompressed stream. The header budget (I-03) is armed before an `Entries::next`
 /// call and disarmed after it, so only the reads tar makes for headers and extension bodies count
-/// against it. The total counts every read, entry bodies included.
+/// against it. The total counts physical reads and reconstructed sparse holes.
 struct StreamMeter {
     /// Bytes left for the armed call, or `None` while disarmed (unmetered).
     header_remaining: Cell<Option<u64>>,
-    /// Decompressed bytes read so far.
+    /// Decompressed bytes and reconstructed sparse holes charged so far.
     total: Cell<u64>,
     overrun: Cell<Option<Overrun>>,
 }
@@ -130,9 +130,8 @@ impl StreamMeter {
         Ok(usize::try_from(allowed).unwrap_or(requested))
     }
 
-    /// Accounts for `read` bytes just read.
-    fn record(&self, read: usize) -> io::Result<()> {
-        let read = read as u64;
+    /// Accounts for physical bytes read or sparse holes reconstructed.
+    fn record(&self, read: u64) -> io::Result<()> {
         let total = self.total.get() + read;
         self.total.set(total);
         if total > ARCHIVE_MAX_DECOMPRESSED_BYTES {
@@ -155,7 +154,7 @@ impl<R: Read> Read for Metered<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let cap = self.meter.read_cap(buf.len())?;
         let read = self.inner.read(&mut buf[..cap])?;
-        self.meter.record(read)?;
+        self.meter.record(read as u64)?;
         Ok(read)
     }
 }
@@ -171,9 +170,23 @@ fn stream_error(err: &io::Error, meter: &StreamMeter) -> IngestError {
     )
 }
 
-/// Discards the unread rest of an entry body, so the next header read starts at its padding.
+/// Discards the unread body. Sparse holes count toward the stream budget even though tar generates
+/// them without reading the underlying stream. Sparse entries are never read before this call.
 fn drain_entry<R: Read>(entry: &mut tar::Entry<R>, meter: &StreamMeter) -> Result<(), IngestError> {
-    io::copy(entry, &mut io::sink()).map_err(|err: io::Error| stream_error(&err, meter))?;
+    let sparse = entry.header().entry_type() == EntryType::GNUSparse;
+    let before = meter.total.get();
+    if sparse && entry.size() > ARCHIVE_MAX_DECOMPRESSED_BYTES.saturating_sub(before) {
+        return Err(stream_error(&meter.fail(Overrun::Decompressed), meter));
+    }
+    let drained =
+        io::copy(entry, &mut io::sink()).map_err(|err: io::Error| stream_error(&err, meter))?;
+    if sparse {
+        // Physical data was already charged by Metered; charge only the synthesized holes.
+        let physical = meter.total.get() - before;
+        meter
+            .record(drained - physical)
+            .map_err(|err| stream_error(&err, meter))?;
+    }
     Ok(())
 }
 
@@ -200,7 +213,7 @@ fn process_tar_entry<R: Read>(
 
     // 3. Bounded body read: a declared size over the limit is not read
     let observation = match candidate {
-        CandidatePath::Unstorable(prefix) => Observation::Unstorable(prefix),
+        CandidatePath::Unstorable(path) => Observation::Unstorable(path),
         CandidatePath::Valid(path) if exceeds_file_size(entry.size()) => {
             Observation::File(path, Body::OverLimit)
         }
@@ -226,7 +239,7 @@ mod tests {
     fn read_cap_after_overrun_does_not_underflow() {
         let meter = StreamMeter::new();
         let cap = meter.read_cap(usize::MAX).unwrap();
-        assert!(meter.record(cap).is_err());
+        assert!(meter.record(cap as u64).is_err());
         assert!(meter.read_cap(1).is_ok());
     }
 
@@ -529,6 +542,151 @@ mod tests {
                 "{case}: expected InvalidMetadata, got: {err:?}"
             );
         }
+    }
+
+    /// Builds GNU long-name records so raw non-UTF-8 paths work on every host OS.
+    fn gzip_raw_paths(paths: &[&[u8]]) -> Vec<u8> {
+        gzip_archive(|tar| {
+            for &path in paths {
+                let mut long = tar::Header::new_gnu();
+                long.set_entry_type(EntryType::GNULongName);
+                long.set_size(path.len() as u64 + 1);
+                long.set_cksum();
+                tar.append(&long, path.chain(io::repeat(0).take(1)))
+                    .unwrap();
+
+                let mut file = tar::Header::new_gnu();
+                file.set_size(1);
+                file.set_cksum();
+                tar.append_data(&mut file, "repo-root/placeholder", &b"x"[..])
+                    .unwrap();
+            }
+        })
+    }
+
+    #[test]
+    fn duplicate_unstorable_paths_fail_after_normalization() {
+        let long = "x".repeat(crate::core::policy::MAX_PATH_BYTES + 1);
+        let first = format!("r1/src/{long}");
+        let second = format!("r2//./src//{long}/");
+        let cases: [(&[u8], &[u8]); 3] = [
+            (first.as_bytes(), second.as_bytes()),
+            (b"r1/src/\xff/file", b"r2//src/./\xff/file"),
+            (b"r1/src/file\xff", b"r2/src/file\xff"),
+        ];
+        for (first, second) in cases {
+            let gz = gzip_raw_paths(&[first, second]);
+            let err = collect_default(&gz, "test", None).unwrap_err();
+            assert!(
+                matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(detail)) if detail.contains("duplicate entry path")),
+                "{first:?}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn distinct_unstorable_paths_with_shared_prefixes_do_not_collide() {
+        let long = "x".repeat(crate::core::policy::MAX_PATH_BYTES + 1);
+        let first = format!("repo/src/{long}a");
+        let second = format!("repo/src/{long}b");
+        for paths in [
+            [first.as_bytes(), second.as_bytes()],
+            [b"repo/src/\xff/file".as_slice(), b"repo/src/\xfe/file"],
+            [b"repo/src/\xff/a".as_slice(), b"repo/src/\xff/b"],
+            [b"repo/src/\xff".as_slice(), "repo/src/\u{FFFD}".as_bytes()],
+        ] {
+            let gz = gzip_raw_paths(&paths);
+            let result = collect_default(&gz, "test", None).unwrap();
+            assert_eq!(result.files.len() + result.skipped, 2);
+        }
+    }
+
+    fn sparse_archive(hole: u64) -> Vec<u8> {
+        let mut header = tar::Header::new_gnu();
+        header.set_path("repo-root/sparse").unwrap();
+        header.set_entry_type(EntryType::GNUSparse);
+        header.set_size(1);
+        let gnu = header.as_gnu_mut().unwrap();
+        gnu.set_real_size(hole + 1);
+        gnu.sparse[0].set_offset(hole);
+        gnu.sparse[0].set_length(1);
+        header.set_cksum();
+        let mut raw = header.as_bytes().to_vec();
+        raw.push(b'x');
+        raw.resize(2048, 0);
+        raw
+    }
+
+    #[test]
+    fn sparse_holes_are_charged_to_the_stream_budget() {
+        let hole = MAX_FILE_SIZE;
+        let raw = sparse_archive(hole);
+        let meter = StreamMeter::new();
+        let mut archive = Archive::new(Metered {
+            inner: raw.as_slice(),
+            meter: &meter,
+        });
+        let mut entries = archive.entries().unwrap();
+        meter.arm();
+        let mut entry = entries.next().unwrap().unwrap();
+        meter.disarm();
+        drain_entry(&mut entry, &meter).unwrap();
+        assert_eq!(meter.total.get(), 512 + hole + 1);
+    }
+
+    #[test]
+    fn sparse_entries_preserve_following_files_or_fail_before_expansion() {
+        for hole in [
+            0,
+            MAX_FILE_SIZE,
+            ARCHIVE_MAX_DECOMPRESSED_BYTES,
+            1_u64 << 60,
+        ] {
+            let mut raw = sparse_archive(hole);
+            raw.truncate(1024); // Keep the sparse header, physical body, and its padding.
+            let mut tail = tar::Builder::new(Vec::new());
+            let mut file = tar::Header::new_gnu();
+            file.set_size(2);
+            file.set_cksum();
+            tail.append_data(&mut file, "repo-root/keep.txt", &b"ok"[..])
+                .unwrap();
+            raw.extend(tail.into_inner().unwrap());
+            let gzip = flate2::read::GzEncoder::new(raw.as_slice(), flate2::Compression::fast());
+            let result = collect(gzip, "test", None, &ExcludePatterns::default());
+            if hole < ARCHIVE_MAX_DECOMPRESSED_BYTES {
+                let collection = result.unwrap();
+                assert_eq!(collection.skipped, 0);
+                let files: Vec<_> = collection.files.iter().collect();
+                assert_eq!(files.len(), 1);
+                assert_eq!((files[0].path, files[0].content), ("keep.txt", "ok"));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(IngestError::Domain(DomainError::InvalidMetadata(_)))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_holes_cannot_exceed_the_remaining_stream_budget() {
+        let hole = MAX_FILE_SIZE;
+        let raw = sparse_archive(hole);
+        let meter = StreamMeter::new();
+        let mut archive = Archive::new(Metered {
+            inner: raw.as_slice(),
+            meter: &meter,
+        });
+        let mut entries = archive.entries().unwrap();
+        meter.arm();
+        let mut entry = entries.next().unwrap().unwrap();
+        meter.disarm();
+        meter.total.set(ARCHIVE_MAX_DECOMPRESSED_BYTES - hole / 2);
+        let err = drain_entry(&mut entry, &meter).unwrap_err();
+        assert!(matches!(
+            err,
+            IngestError::Domain(DomainError::InvalidMetadata(_))
+        ));
     }
 
     #[test]

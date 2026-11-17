@@ -1,11 +1,12 @@
 //! Candidate observation, budget accounting, and storage accumulation.
 
+use std::collections::HashSet;
 use std::hash::{BuildHasher, RandomState};
 
 use memchr::memchr;
 
 use crate::core::error::DomainError;
-use crate::core::path::NormalizedPath;
+use crate::core::path::{NormalizedPath, UnstorablePath};
 use crate::core::policy::{
     MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, OVERFLOW_LARGEST_DIRECTORIES,
 };
@@ -42,8 +43,8 @@ pub(crate) enum Body<B> {
 /// An unstorable path has no content, so the pair of an unstorable path and a body cannot be built.
 #[derive(Debug)]
 pub(crate) enum Observation<B> {
-    /// Non-UTF-8 or overlong path, identified by its valid directory prefix.
-    Unstorable(String),
+    /// Non-UTF-8 or overlong path with its accounting prefix and normalized byte identity.
+    Unstorable(UnstorablePath),
     /// Storable path with the outcome of reading its content.
     File(NormalizedPath, Body<B>),
 }
@@ -265,6 +266,7 @@ pub(crate) struct Selector {
     storage: FileStorage,
     candidates: CandidateBudget,
     paths: ArenaMap<()>,
+    unstorable_paths: HashSet<Vec<u8>>,
 }
 
 impl Selector {
@@ -277,6 +279,7 @@ impl Selector {
                 dir_counts: ArenaMap::with_capacity(32, 512),
             },
             paths: ArenaMap::with_capacity(512, 16 * 1024),
+            unstorable_paths: HashSet::new(),
         }
     }
 
@@ -294,7 +297,8 @@ impl Selector {
 
     /// Observes one candidate entry and settles it.
     ///
-    /// - [`Observation::Unstorable`] consumes candidate budget and is skipped.
+    /// - [`Observation::Unstorable`] consumes candidate budget, must have a unique byte identity,
+    ///   and is skipped.
     /// - [`Observation::File`] consumes candidate budget and must not repeat an earlier file path.
     ///   [`Body::Bytes`] is stored when it is UTF-8
     ///   text within the size limit, and skipped otherwise. [`Body::Unavailable`] and
@@ -309,8 +313,13 @@ impl Selector {
         observation: Observation<B>,
     ) -> Result<Self, DomainError> {
         let (path, body) = match observation {
-            Observation::Unstorable(prefix) => {
-                self.candidates = self.candidates.add(&prefix)?;
+            Observation::Unstorable(path) => {
+                self.candidates = self.candidates.add(path.prefix())?;
+                if !self.unstorable_paths.insert(path.into_identity()) {
+                    return Err(DomainError::invalid_metadata(
+                        "duplicate entry path (unstorable)",
+                    ));
+                }
                 return Ok(self);
             }
             Observation::File(path, body) => (path, body),
@@ -559,7 +568,9 @@ mod tests {
         }
 
         let err = selector
-            .observe(Observation::<&[u8]>::Unstorable("dir/".into()))
+            .observe(Observation::<&[u8]>::Unstorable(
+                ("dir/", b"dir/\xff".as_slice()).into(),
+            ))
             .unwrap_err();
         assert!(matches!(err, DomainError::CandidateLimitExceeded(..)));
         Ok(())
@@ -609,7 +620,7 @@ mod tests {
             file("bad_utf8", Body::Bytes(b"\xff")),
             file("over.txt", Body::OverLimit),
             file("gone.txt", Body::Unavailable),
-            Observation::Unstorable("dir/".into()),
+            Observation::Unstorable(("dir/", b"dir/\xff".as_slice()).into()),
             file("empty.txt", Body::Bytes(b"")),
         ];
         let selector = observations
@@ -624,8 +635,11 @@ mod tests {
     #[test]
     fn unstorable_observation_is_counted_and_skipped() -> Result<(), DomainError> {
         for prefix in ["", "dir/sub/"] {
-            let selector =
-                Selector::new().observe(Observation::<&[u8]>::Unstorable(prefix.into()))?;
+            let mut identity = prefix.as_bytes().to_vec();
+            identity.push(0xff);
+            let selector = Selector::new().observe(Observation::<&[u8]>::Unstorable(
+                (prefix, identity.as_slice()).into(),
+            ))?;
             assert_eq!(selector.candidates.count, 1);
             let collection = selector.finish("test".into(), None)?;
             assert_eq!(collection.files.len(), 0);

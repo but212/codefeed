@@ -95,6 +95,23 @@ fn version_exits_successfully_without_ingesting() {
 }
 
 #[test]
+fn help_and_version_in_option_value_positions_are_not_actions() {
+    for (args, fragment) in [
+        (&["--output", "--help"][..], "a value is required"),
+        (&["--ref", "--version"][..], "a value is required"),
+        (&["--bogus", "--output", "--help"][..], "unknown option"),
+    ] {
+        let output = run(args);
+        assert_eq!(output.status.code(), Some(1), "args: {args:?}");
+        assert!(output.stdout.is_empty(), "args: {args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(fragment),
+            "args: {args:?}"
+        );
+    }
+}
+
+#[test]
 fn invalid_invocations_exit_one_with_an_error_line() {
     // (args, fragment unique to the failing branch, fragment that must be absent)
     let cases: [(&[&str], &str, Option<&str>); 4] = [

@@ -595,7 +595,9 @@ mod tests {
         // 5. settle with Slot::Pending where candidate is Some
         let (reply_tx, reply_rx) = sync_channel(1);
         reply_tx
-            .send(Ok(Some(Observation::Unstorable("bad".into()))))
+            .send(Ok(Some(Observation::Unstorable(
+                ("", b"\xff".as_slice()).into(),
+            ))))
             .unwrap();
         let res = settle(Slot::Pending(reply_rx), 42, &mut |acc, _c| Ok(acc + 1)).unwrap();
         assert_eq!(res, 43);

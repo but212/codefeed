@@ -50,7 +50,37 @@ pub(crate) enum CandidatePath {
     Valid(NormalizedPath),
     /// Path that is not hidden but cannot be stored, because it is non-UTF-8 or longer than
     /// `MAX_PATH_BYTES`. It is counted against the candidate budget as skipped.
-    Unstorable(String),
+    Unstorable(UnstorablePath),
+}
+
+/// Unstorable candidate with an accounting prefix and its complete normalized byte identity.
+/// Only classification constructs it, preserving non-UTF-8 segments without lossy collisions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct UnstorablePath {
+    prefix: String,
+    identity: Vec<u8>,
+}
+
+impl UnstorablePath {
+    #[must_use]
+    pub(crate) fn prefix(&self) -> &str {
+        &self.prefix
+    }
+
+    #[must_use]
+    pub(crate) fn into_identity(self) -> Vec<u8> {
+        self.identity
+    }
+}
+
+#[cfg(test)]
+impl From<(&str, &[u8])> for UnstorablePath {
+    fn from((prefix, identity): (&str, &[u8])) -> Self {
+        Self {
+            prefix: prefix.into(),
+            identity: identity.into(),
+        }
+    }
 }
 
 /// Error indicating that a path's directory nesting depth exceeds [`MAX_PATH_DEPTH`].
@@ -108,13 +138,12 @@ pub(crate) struct AdmittedDir {
     output: DirPrefix,
 }
 
-/// Output prefix of an admitted directory. Both variants hold the valid prefix ending in `/`, or empty at
-/// the root, so a path below extends it with a bare segment. `NonUtf8` holds the prefix before the first
-/// non-UTF-8 segment, which every path below reports as its unstorable prefix.
+/// Output prefix of an admitted directory, ending in `/` or empty at the root.
+/// `NonUtf8` retains both the valid prefix and all raw segments for candidate identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DirPrefix {
     Utf8(String),
-    NonUtf8(String),
+    NonUtf8 { prefix: String, bytes: Vec<u8> },
 }
 
 impl AdmittedDir {
@@ -165,8 +194,18 @@ pub(crate) fn admit_dir(
                 prefix.push('/');
                 DirPrefix::Utf8(prefix)
             }
-            Err(_) => DirPrefix::NonUtf8(prefix),
+            Err(_) => {
+                let mut bytes = prefix.as_bytes().to_vec();
+                bytes.extend_from_slice(name);
+                bytes.push(b'/');
+                DirPrefix::NonUtf8 { prefix, bytes }
+            }
         },
+        DirPrefix::NonUtf8 { prefix, mut bytes } if depth <= MAX_PATH_DEPTH => {
+            bytes.extend_from_slice(name);
+            bytes.push(b'/');
+            DirPrefix::NonUtf8 { prefix, bytes }
+        }
         unchanged => unchanged,
     };
     Some(AdmittedDir {
@@ -214,8 +253,16 @@ pub(crate) fn classify_leaf(
                 "{prefix}{segment}"
             )))))
         }
-        (DirPrefix::Utf8(prefix) | DirPrefix::NonUtf8(prefix), _) => {
-            Ok(Some(CandidatePath::Unstorable(prefix.clone())))
+        (output, _) => {
+            let (prefix, mut identity) = match output {
+                DirPrefix::Utf8(prefix) => (prefix.clone(), prefix.as_bytes().to_vec()),
+                DirPrefix::NonUtf8 { prefix, bytes } => (prefix.clone(), bytes.clone()),
+            };
+            identity.extend_from_slice(name);
+            Ok(Some(CandidatePath::Unstorable(UnstorablePath {
+                prefix,
+                identity,
+            })))
         }
     }
 }
@@ -275,7 +322,14 @@ mod tests {
             );
             assert_eq!(
                 classify(MAX_PATH_BYTES + 1),
-                Ok(Some(CandidatePath::Unstorable(prefix.to_string()))),
+                Ok(Some(CandidatePath::Unstorable(
+                    (
+                        prefix,
+                        format!("{prefix}{}", "f".repeat(MAX_PATH_BYTES + 1 - prefix.len()))
+                            .as_bytes(),
+                    )
+                        .into()
+                ))),
                 "prefix {prefix:?}: one byte over the limit"
             );
         }
@@ -374,9 +428,10 @@ mod tests {
         let valid = |p: &str| -> Result<Option<CandidatePath>, DepthExceededError> {
             Ok(Some(CandidatePath::Valid(p.into())))
         };
-        let nonutf8 = |p: &str| -> Result<Option<CandidatePath>, DepthExceededError> {
-            Ok(Some(CandidatePath::Unstorable(p.into())))
-        };
+        let nonutf8 =
+            |prefix: &str, identity: &[u8]| -> Result<Option<CandidatePath>, DepthExceededError> {
+                Ok(Some(CandidatePath::Unstorable((prefix, identity).into())))
+            };
         let ignored = || -> Result<Option<CandidatePath>, DepthExceededError> { Ok(None) };
         let depth_err =
             || -> Result<Option<CandidatePath>, DepthExceededError> { Err(DepthExceededError) };
@@ -415,17 +470,29 @@ mod tests {
             (
                 segs(&[b"src", b"\xff\xfe", b"main.rs"]),
                 &exclude,
-                nonutf8("src/"),
+                nonutf8("src/", b"src/\xff\xfe/main.rs"),
             ),
-            (segs(&[b"\xff", b"x.rs"]), &exclude, nonutf8("")),
-            (segs(&[b"src", b"\xff.rs"]), &exclude, nonutf8("src/")),
+            (
+                segs(&[b"\xff", b"x.rs"]),
+                &exclude,
+                nonutf8("", b"\xff/x.rs"),
+            ),
+            (
+                segs(&[b"src", b"\xff.rs"]),
+                &exclude,
+                nonutf8("src/", b"src/\xff.rs"),
+            ),
             (segs(&[b"a", b"b", b"c.rs"]), &none, valid("a/b/c.rs")),
             (
                 segs(&[b"a", b"b", b"\xff", b"x.rs"]),
                 &none,
-                nonutf8("a/b/"),
+                nonutf8("a/b/", b"a/b/\xff/x.rs"),
             ),
-            (segs(&[b"a", b"\xff", b"b", b"c.rs"]), &none, nonutf8("a/")),
+            (
+                segs(&[b"a", b"\xff", b"b", b"c.rs"]),
+                &none,
+                nonutf8("a/", b"a/\xff/b/c.rs"),
+            ),
             (segs(&[b"\xff", b"build", b"x"]), &exclude, ignored()),
             (segs(&[b"build", b"\xff"]), &exclude, ignored()),
             (segs(&[b"\xff", b"a.log"]), &exclude, ignored()),
@@ -450,9 +517,17 @@ mod tests {
             (segs(&[b"dir", b"id_rsa\xff.key"]), &none, ignored()),
             (segs(&[b"secret\xff.key"]), &none, ignored()),
             (segs(&[b"dir", b"credentials\xff"]), &none, ignored()),
-            (segs(&[b"notes\xff.txt"]), &none, nonutf8("")),
+            (
+                segs(&[b"notes\xff.txt"]),
+                &none,
+                nonutf8("", b"notes\xff.txt"),
+            ),
             // Noise names match exactly: an invalid byte makes `Cargo.lock` a different name.
-            (segs(&[b"Cargo.lock\xff"]), &none, nonutf8("")),
+            (
+                segs(&[b"Cargo.lock\xff"]),
+                &none,
+                nonutf8("", b"Cargo.lock\xff"),
+            ),
         ];
         for (segments, exclude, expected) in cases {
             assert_eq!(
@@ -507,9 +582,11 @@ mod tests {
                         prop_assert!(!path.is_empty());
                         prop_assert!(path.split('/').all(|seg| !seg.is_empty() && seg != "."));
                     }
-                    Ok(Some(CandidatePath::Unstorable(prefix))) => {
+                    Ok(Some(CandidatePath::Unstorable(path))) => {
+                        let prefix = path.prefix();
                         prop_assert!(prefix.is_empty() || prefix.ends_with('/'));
                         prop_assert!(!prefix.contains("//") && !prefix.starts_with('/'));
+                        prop_assert_eq!(path.into_identity(), kept.join(&b'/'));
                     }
                     Ok(None) => {}
                     Err(DepthExceededError) => {

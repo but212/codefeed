@@ -21,10 +21,11 @@ Converts a local directory or public GitHub repository into a single text digest
 
 ### Candidate Collection
 
-- `CandidatePath`: `Valid(NormalizedPath)` or `Unstorable(prefix)`. Ignored entries are `None` at classification and discarded before selection.
+- `CandidatePath`: `Valid(NormalizedPath)` or `Unstorable(UnstorablePath)`. Ignored entries are `None` at classification and discarded before selection.
+- `UnstorablePath`: Classification-owned value retaining the valid UTF-8 accounting prefix and complete normalized raw-byte identity.
 - `NormalizedPath`: Non-empty, slash-separated UTF-8 relative path without empty or `.` segments, within `MAX_PATH_BYTES` (I-10).
 - `Selector`: Linear state managing arena storage, `CandidateBudget`, and seen-path set for uniqueness. Settles candidates via `observe`; `finish` derives the skipped tally as candidate count minus stored file count.
-- `Observation`: Input to `Selector::observe`: `Unstorable(prefix)` or `File(NormalizedPath, Body)` (`Body`: `Unavailable`, `OverLimit`, `Bytes`).
+- `Observation`: Input to `Selector::observe`: `Unstorable(UnstorablePath)` or `File(NormalizedPath, Body)` (`Body`: `Unavailable`, `OverLimit`, `Bytes`).
 - `CandidateBudget`: Candidate counter and per-directory tallies (`selector.rs` private).
 - `CollectionResult`: `label`, optional `revision`, `files: SortedFiles`, and `skipped`.
 
@@ -60,7 +61,7 @@ Converts a local directory or public GitHub repository into a single text digest
 - Order: [security § 2](docs/security_and_filtering.md#2-evaluation-order). Tar streams classify via `classify_path_segments`. Local walks admit directories via `admit_dir` and files via `classify_leaf`.
 - `Ignored` entries consume no candidate slots and are omitted from skipped counts.
 - Run-aborting checks (depth, tar path normalization, oversized tar headers): [security § 2](docs/security_and_filtering.md#2-evaluation-order); header budget is I-03 ([§ 3.9](#39-network)).
-- Unstorable candidates record valid prefix (`"a/b/"` or `""`), charged to budget under first segment (`"a/"`) or root (`"./"`).
+- Unstorable candidates retain a valid prefix (`"a/b/"` or `""`) for accounting and a complete raw-byte identity for uniqueness. `DirPrefix::NonUtf8` retains the bytes after the first invalid segment, so classification never substitutes a lossy identity. Budget keys use the first valid segment (`"a/"`) or root (`"./"`).
 - **I-10 (`type`, `NormalizedPath`, `classify_leaf`):** A `Valid` path is at most `MAX_PATH_BYTES` bytes. `NormalizedPath` is private and `classify_leaf` is its sole non-test constructor returning `Unstorable` on overflow, so `Selector` needs no path-length check.
 - **I-02 (`boundary`, `admit_dir`, `classify_leaf`):** No classified path or unstorable prefix has a first segment starting with `.`, since hidden directories are never admitted, hidden files are `Ignored`, and empty/`.` segments are dropped. Root entries key as `"./"`, which no real directory produces.
 
@@ -76,7 +77,7 @@ Converts a local directory or public GitHub repository into a single text digest
 - `FileStorage::push` rejects candidates before allocation if raw arena bytes would exceed `MAX_OUTPUT_SIZE`.
 - `SortedFiles::new` sorts spans via `cmp_path` (component-wise), guaranteeing deterministic output across concurrency timings.
 - **I-01 (`runtime`, `SortedFiles::new`):** No stored path is a directory prefix of another stored path. Enforced after sorting by checking adjacent pairs. A schema, type, or boundary check cannot express this because the rule relates separate entries, and a per-entry parse cannot see the others. Behavior: [security § 3.4](docs/security_and_filtering.md#34-path-limits).
-- **I-09 (`runtime`, `Selector::observe`):** No two candidates share a path. The seen-path set relates separate entries, so no per-entry type can express it. Behavior: [security § 3.4](docs/security_and_filtering.md#34-path-limits).
+- **I-09 (`runtime`, `Selector::observe`):** No two candidates share a path. Storable paths use the UTF-8 arena set; unstorable paths use an exact raw-byte set, distinct from accounting prefixes. The sets relate separate entries, so no per-entry type can express uniqueness. Behavior: [security § 3.4](docs/security_and_filtering.md#34-path-limits).
 - **I-05 (`boundary`, `extract_dir_slice`):** Candidate budget keys are at most `MAX_PATH_BYTES` bytes ending on a UTF-8 char boundary. Cut from the first segment at creation, bounding key storage to candidates times `MAX_PATH_BYTES`. A `type` or `schema` cannot express a length cap on a `&str` key, and `CandidateBudget::add` needs no separate check.
 - Arena indices are `u32`. Assertions in `policy/limits.rs` verify `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX` ([coding convention § 3.3](docs/coding_convention.md#33-type-invariants)).
 
@@ -112,6 +113,7 @@ Converts a local directory or public GitHub repository into a single text digest
 - Revision SHA extracts from first `ARCHIVE_PAX_GLOBAL_BYTES` of PAX header, falling back to requested ref.
 - Stream/gzip/tar failures map to `IngestError::Http`.
 - **I-03 (`runtime`, `shell/github/archive.rs`):** One `Entries::next` call reads at most `ARCHIVE_MAX_HEADER_BYTES`. tar reads extension bodies internally, so no type or boundary can express the bound. A byte budget on the shared reader enforces it, and each entry body is drained before the next call so only headers are metered. Behavior: [security § 2 and 6.4](docs/security_and_filtering.md#64-streaming).
+- **I-12 (`runtime`, `StreamMeter`, `drain_entry`):** The archive budget includes bytes synthesized by tar's sparse reader. Before draining an untouched sparse entry, its logical size is checked against the remaining budget; afterwards only synthesized bytes are added, since physical reads already passed through the meter. The cumulative budget relates separate entries and reader activity, so no per-entry type can express it. Behavior: [security § 6.4](docs/security_and_filtering.md#64-streaming).
 - **I-04 (`type`, `ErrorDetail::new`):** Every error text that may echo user input or remote payloads is an `ErrorDetail`, whose sole constructor sanitizes. Direct `DomainError` builds cannot store unsanitized text, and `Display` does not sanitize again. Non-`DomainError` effects (`io::Error`, `GithubApiError`, retry warnings) sanitize via `ErrorDetail::new`. Behavior: [security § 7](docs/security_and_filtering.md#7-output-sanitization).
 - **I-06 (`type`, `Auth`, `api_error`):** `api_error` is the sole constructor of token hints and requires `Auth`. A request bearing a token never receives the hint, including errors from redirect targets. Behavior: [security § 6.1](docs/security_and_filtering.md#61-authentication).
 - **I-07 (`boundary`, `GithubClient::credentials`):** Only GitHub API origins receive tokens. Authorization headers and error `Auth` derive from `credentials(url)`, preventing divergence. Fields are private to `client.rs`.
