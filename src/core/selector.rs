@@ -21,13 +21,6 @@ fn classify_content(bytes: &[u8]) -> Option<&str> {
     std::str::from_utf8(bytes).ok()
 }
 
-/// Declared-size gate. Shared by the shell readers that decide whether to read content, so both
-/// report an over-limit declaration as [`Body::OverLimit`].
-#[must_use]
-pub(crate) const fn exceeds_file_size(declared: u64) -> bool {
-    declared > MAX_FILE_SIZE
-}
-
 /// What a shell reader learned about the content of one storable path.
 #[derive(Debug)]
 pub(crate) enum Body<B> {
@@ -41,6 +34,11 @@ pub(crate) enum Body<B> {
 
 const EMPTY_BUCKET: u32 = u32::MAX;
 
+fn arena_slice(arena: &str, offset: u32, len: u32) -> &str {
+    let start = offset as usize;
+    &arena[start..start + len as usize]
+}
+
 #[derive(Debug)]
 struct CountEntry {
     offset: u32,
@@ -51,8 +49,7 @@ struct CountEntry {
 
 impl CountEntry {
     fn key<'a>(&self, arena: &'a str) -> &'a str {
-        let start = self.offset as usize;
-        &arena[start..start + self.len as usize]
+        arena_slice(arena, self.offset, self.len)
     }
 }
 
@@ -111,12 +108,12 @@ impl BucketTable {
     }
 
     fn insert_slot(
-        &mut self,
+        mut self,
         entry_idx: usize,
         hash: u64,
         bucket_idx: usize,
         existing_hashes: impl Iterator<Item = u64>,
-    ) {
+    ) -> Self {
         let bucket_idx = if (entry_idx + 1) * 4 > self.buckets.len() * 3 {
             let new_cap = self.buckets.len() * 2;
             let mut new_buckets = vec![EMPTY_BUCKET; new_cap];
@@ -132,35 +129,35 @@ impl BucketTable {
         };
         self.buckets[bucket_idx] = u32::try_from(entry_idx)
             .expect("invariant: entries bounded by MAX_FILE_COUNT < u32::MAX");
+        self
     }
 }
 
-/// Directory tallies with keys stored in a shared string arena to avoid per-key allocations.
+/// Candidate-count budget and per-directory tallies owned by the selector that consumes it.
+/// Directory keys are stored in a shared string arena to avoid per-key allocations.
 #[derive(Debug)]
-struct DirectoryCounts {
+struct CandidateBudget {
+    count: usize,
     arena: String,
     entries: Vec<CountEntry>,
     table: BucketTable,
 }
 
 #[cfg(test)]
-impl Default for DirectoryCounts {
+impl Default for CandidateBudget {
     fn default() -> Self {
         Self::with_capacity(16, 256)
     }
 }
 
-impl DirectoryCounts {
+impl CandidateBudget {
     fn with_capacity(entries_cap: usize, arena_bytes: usize) -> Self {
         Self {
+            count: 0,
             arena: String::with_capacity(arena_bytes),
             entries: Vec::with_capacity(entries_cap),
             table: BucketTable::with_capacity(entries_cap),
         }
-    }
-
-    fn hash_key(&self, key: &str) -> u64 {
-        self.table.hash_key(key)
     }
 
     /// Returns `Ok(entry_idx)` when `key` is present, or `Err(bucket_idx)` pointing to the first
@@ -172,9 +169,9 @@ impl DirectoryCounts {
         })
     }
 
-    fn insert_at_new_key(&mut self, key: &str, hash: u64, bucket_idx: usize) {
+    fn insert_at_new_key(mut self, key: &str, hash: u64, bucket_idx: usize) -> Self {
         let entry_idx = self.entries.len();
-        self.table.insert_slot(
+        self.table = self.table.insert_slot(
             entry_idx,
             hash,
             bucket_idx,
@@ -192,53 +189,26 @@ impl DirectoryCounts {
             hash,
             count: 1,
         });
-    }
-
-    fn iter(&self) -> impl Iterator<Item = (&str, usize)> {
-        self.entries
-            .iter()
-            .map(move |entry| (entry.key(&self.arena), entry.count))
-    }
-
-    #[cfg(test)]
-    const fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    #[cfg(test)]
-    fn keys(&self) -> impl Iterator<Item = &str> {
-        self.entries.iter().map(move |entry| entry.key(&self.arena))
-    }
-
-    #[cfg(test)]
-    fn values(&self) -> impl Iterator<Item = &usize> {
-        self.entries.iter().map(|entry| &entry.count)
+        self
     }
 
     /// Increments the count for `key`, inserting `1` if `key` was absent.
-    fn increment(&mut self, key: &str) {
-        let hash = self.hash_key(key);
+    fn increment(mut self, key: &str) -> Self {
+        let hash = self.table.hash_key(key);
         match self.find_bucket(key, hash) {
-            Ok(entry_idx) => self.entries[entry_idx].count += 1,
+            Ok(entry_idx) => {
+                self.entries[entry_idx].count += 1;
+                self
+            }
             Err(bucket_idx) => self.insert_at_new_key(key, hash, bucket_idx),
         }
     }
-}
 
-/// Candidate-count budget owned by the selector that consumes it.
-#[derive(Debug)]
-#[cfg_attr(test, derive(Default))]
-struct CandidateBudget {
-    count: usize,
-    dir_counts: DirectoryCounts,
-}
-
-impl CandidateBudget {
     /// Adds a single observed candidate path to the budget accounting.
     fn add(mut self, path: &str) -> Result<Self, DomainError> {
         self.count += 1;
         let dir = extract_dir_slice(path);
-        self.dir_counts.increment(dir);
+        self = self.increment(dir);
 
         if self.count > MAX_FILE_COUNT {
             return Err(self.overflow_error());
@@ -247,10 +217,14 @@ impl CandidateBudget {
     }
 
     fn overflow_error(&self) -> DomainError {
-        DomainError::candidate_limit_exceeded(
-            MAX_FILE_COUNT,
-            top_overflow_directories(&self.dir_counts),
-        )
+        let mut dirs: Vec<(&str, usize)> = self
+            .entries
+            .iter()
+            .map(|entry| (entry.key(&self.arena), entry.count))
+            .collect();
+        dirs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        dirs.truncate(OVERFLOW_LARGEST_DIRECTORIES);
+        DomainError::candidate_limit_exceeded(MAX_FILE_COUNT, dirs)
     }
 }
 
@@ -265,13 +239,6 @@ fn extract_dir_slice(path: &str) -> &str {
         end -= 1;
     }
     &dir[..end]
-}
-
-fn top_overflow_directories(dir_counts: &DirectoryCounts) -> Vec<(String, usize)> {
-    let mut dirs: Vec<(&str, usize)> = dir_counts.iter().collect();
-    dirs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-    dirs.truncate(OVERFLOW_LARGEST_DIRECTORIES);
-    dirs.into_iter().map(|(d, c)| (d.to_string(), c)).collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -307,10 +274,7 @@ impl PathIndex {
     fn resolve<'a>(&'a self, slot: PathSlot, storage: &'a FileStorage) -> &'a str {
         match slot {
             PathSlot::Stored(index) => storage.path_at(index as usize),
-            PathSlot::Skipped { offset, len } => {
-                let start = offset as usize;
-                &self.skipped_arena[start..start + len as usize]
-            }
+            PathSlot::Skipped { offset, len } => arena_slice(&self.skipped_arena, offset, len),
         }
     }
 
@@ -321,23 +285,30 @@ impl PathIndex {
         })
     }
 
-    fn insert_at(&mut self, hash: u64, bucket_idx: usize, slot: PathSlot) {
+    fn insert_at(mut self, hash: u64, bucket_idx: usize, slot: PathSlot) -> Self {
         let entry_idx = self.entries.len();
-        self.table.insert_slot(
+        self.table = self.table.insert_slot(
             entry_idx,
             hash,
             bucket_idx,
             self.entries.iter().map(|e| e.hash),
         );
         self.entries.push(PathIndexEntry { hash, slot });
+        self
     }
 
-    fn record_skipped(&mut self, key: &str, hash: u64, bucket_idx: usize) {
+    fn record_stored(self, hash: u64, bucket_idx: usize, span_index: usize) -> Self {
+        let index = u32::try_from(span_index)
+            .expect("invariant: entries bounded by MAX_FILE_COUNT < u32::MAX");
+        self.insert_at(hash, bucket_idx, PathSlot::Stored(index))
+    }
+
+    fn record_skipped(mut self, key: &str, hash: u64, bucket_idx: usize) -> Self {
         let offset = u32::try_from(self.skipped_arena.len())
             .expect("invariant: MAX_FILE_COUNT * MAX_PATH_BYTES <= u32::MAX");
         let len = u32::try_from(key.len()).expect("invariant: key length <= MAX_PATH_BYTES");
         self.skipped_arena.push_str(key);
-        self.insert_at(hash, bucket_idx, PathSlot::Skipped { offset, len });
+        self.insert_at(hash, bucket_idx, PathSlot::Skipped { offset, len })
     }
 }
 
@@ -357,10 +328,7 @@ impl Selector {
     pub(crate) fn new() -> Self {
         Self {
             storage: FileStorage::new(),
-            candidates: CandidateBudget {
-                count: 0,
-                dir_counts: DirectoryCounts::with_capacity(32, 512),
-            },
+            candidates: CandidateBudget::with_capacity(32, 512),
             paths: PathIndex::with_capacity(512),
             unstorable_paths: HashSet::new(),
         }
@@ -407,15 +375,13 @@ impl Selector {
         if let Body::Bytes(bytes) = body
             && let Some(content) = classify_content(bytes.as_ref())
         {
-            let span_index = u32::try_from(self.storage.len())
-                .expect("invariant: entries bounded by MAX_FILE_COUNT < u32::MAX");
+            let span_index = self.storage.len();
             // Raw arena bytes are a strict lower bound for the rendered digest size, so
             // `push` rejects over-limit content before the final rendering pass.
             self.storage = self.storage.push(&path, content)?;
-            self.paths
-                .insert_at(hash, bucket_idx, PathSlot::Stored(span_index));
+            self.paths = self.paths.record_stored(hash, bucket_idx, span_index);
         } else {
-            self.paths.record_skipped(&path, hash, bucket_idx);
+            self.paths = self.paths.record_skipped(&path, hash, bucket_idx);
         }
         Ok(self)
     }
@@ -446,13 +412,6 @@ mod tests {
     use crate::core::policy::{
         MAX_FILE_SIZE_USIZE, MAX_OUTPUT_SIZE, MAX_OUTPUT_SIZE_USIZE, MAX_PATH_BYTES,
     };
-
-    #[test]
-    fn file_size_gate_admits_exactly_the_limit_and_rejects_one_beyond() {
-        assert!(!exceeds_file_size(0));
-        assert!(!exceeds_file_size(MAX_FILE_SIZE));
-        assert!(exceeds_file_size(MAX_FILE_SIZE + 1));
-    }
 
     #[test]
     fn candidate_overflow_includes_largest_directories_diagnostic()
@@ -528,13 +487,13 @@ mod tests {
             budget = budget.add(&format!("{head}{index}/file.rs"))?;
         }
         assert_eq!(budget.count, 3);
-        assert_eq!(budget.dir_counts.len(), 1);
-        assert_eq!(budget.dir_counts.values().copied().collect::<Vec<_>>(), [3]);
+        assert_eq!(budget.entries.len(), 1);
+        assert_eq!(budget.entries[0].count, 3);
         assert!(
             budget
-                .dir_counts
-                .keys()
-                .all(|key| key.len() <= MAX_PATH_BYTES)
+                .entries
+                .iter()
+                .all(|entry| entry.key(&budget.arena).len() <= MAX_PATH_BYTES)
         );
         Ok(())
     }
@@ -749,42 +708,41 @@ mod tests {
     }
 
     #[test]
-    fn directory_counts_rehash_and_preserve_all_entries() {
-        let mut counts = DirectoryCounts::with_capacity(2, 16);
-        let initial_buckets = counts.table.buckets.len();
+    fn candidate_budget_rehashes_and_preserves_all_entries() {
+        let mut budget = CandidateBudget::with_capacity(2, 16);
+        let initial_buckets = budget.table.buckets.len();
         for i in 0..64 {
             let key = format!("dir_{i}/");
-            counts.increment(&key);
-            counts.increment(&key);
+            budget = budget.increment(&key).increment(&key);
         }
-        assert!(counts.table.buckets.len() > initial_buckets);
-        assert_eq!(counts.entries.len(), 64);
+        assert!(budget.table.buckets.len() > initial_buckets);
+        assert_eq!(budget.entries.len(), 64);
         for i in 0..64 {
             let key = format!("dir_{i}/");
-            let hash = counts.hash_key(&key);
-            let idx = counts.find_bucket(&key, hash).expect("key must exist");
-            assert_eq!(counts.entries[idx].count, 2);
+            let hash = budget.table.hash_key(&key);
+            let idx = budget.find_bucket(&key, hash).expect("key must exist");
+            assert_eq!(budget.entries[idx].count, 2);
         }
     }
 
     #[test]
-    fn directory_counts_resolve_hash_collisions_by_key_equality() {
-        let mut counts = DirectoryCounts::with_capacity(4, 32);
+    fn candidate_budget_resolves_hash_collisions_by_key_equality() {
+        let mut budget = CandidateBudget::with_capacity(4, 32);
         let forced_hash = 0xDEAD_BEEF;
-        let Err(b1) = counts.find_bucket("alpha", forced_hash) else {
+        let Err(b1) = budget.find_bucket("alpha", forced_hash) else {
             panic!("expected empty bucket");
         };
-        counts.insert_at_new_key("alpha", forced_hash, b1);
+        budget = budget.insert_at_new_key("alpha", forced_hash, b1);
 
-        let Err(b2) = counts.find_bucket("beta", forced_hash) else {
+        let Err(b2) = budget.find_bucket("beta", forced_hash) else {
             panic!("expected empty bucket on collision");
         };
-        counts.insert_at_new_key("beta", forced_hash, b2);
+        budget = budget.insert_at_new_key("beta", forced_hash, b2);
 
-        let idx_a = counts.find_bucket("alpha", forced_hash).unwrap();
-        let idx_b = counts.find_bucket("beta", forced_hash).unwrap();
-        assert_eq!(counts.entries[idx_a].key(&counts.arena), "alpha");
-        assert_eq!(counts.entries[idx_b].key(&counts.arena), "beta");
+        let idx_a = budget.find_bucket("alpha", forced_hash).unwrap();
+        let idx_b = budget.find_bucket("beta", forced_hash).unwrap();
+        assert_eq!(budget.entries[idx_a].key(&budget.arena), "alpha");
+        assert_eq!(budget.entries[idx_b].key(&budget.arena), "beta");
         assert_ne!(idx_a, idx_b);
     }
 }

@@ -21,11 +21,11 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Mutex, PoisonError};
 
 use super::walk::Walk;
-use crate::core::path::{Candidate, NormalizedPath};
+use crate::core::path::{Candidate, NormalizedPath, UnstorablePath};
 use crate::core::policy::{
     ExcludePatterns, LOCAL_CHANNEL_CAPACITY, MAX_FILE_SIZE, MAX_LOCAL_WORKERS,
 };
-use crate::core::selector::{Body, exceeds_file_size};
+use crate::core::selector::{Body, Selector};
 use crate::shell::error::{IngestError, io_error_at};
 
 /// Upper bound on buffer capacity retained in [`BufferPool`], preventing large files from
@@ -72,7 +72,7 @@ impl BufferPool {
 
 /// Read buffer borrowed from [`BufferPool`] and automatically returned on drop.
 #[derive(Debug)]
-pub(super) struct PooledBuf<'a> {
+struct PooledBuf<'a> {
     buf: Vec<u8>,
     pool: &'a BufferPool,
 }
@@ -89,24 +89,36 @@ impl Drop for PooledBuf<'_> {
     }
 }
 
+/// The worker's read outcome for one regular file: `None` when it is not a regular file after all.
+type WorkerReply<'a> = Result<Option<Body<PooledBuf<'a>>>, IngestError>;
+
 /// One regular file queued for a worker. The worker answers once on `reply`.
 struct Job<'a> {
-    path: NormalizedPath,
     entry_path: PathBuf,
-    reply: SyncSender<Settled<'a>>,
+    reply: SyncSender<WorkerReply<'a>>,
 }
-
-/// The outcome for one walk entry: `None` when it is not a candidate after all.
-type Settled<'a> = Result<Option<Candidate<Body<PooledBuf<'a>>>>, IngestError>;
 
 /// One walk entry in walk order: decided on the producer thread, or waiting for a worker.
 enum Slot<'a> {
-    Ready(Settled<'a>),
-    Pending(Receiver<Settled<'a>>),
+    Pending(NormalizedPath, Receiver<WorkerReply<'a>>),
+    Unstorable(UnstorablePath),
+    Error(IngestError),
+}
+
+/// Walks `root` in sorted order and settles each candidate into `selector` in that order.
+pub(super) fn collect_candidates(
+    root: &Path,
+    output: Option<&Path>,
+    exclude: &ExcludePatterns,
+    selector: Selector,
+) -> Result<Selector, IngestError> {
+    fold_candidates(root, output, exclude, selector, |selector, observation| {
+        Ok(selector.observe(observation)?)
+    })
 }
 
 /// Walks `root` in sorted order and folds each candidate through `step` in that order.
-pub(super) fn fold_candidates<T>(
+fn fold_candidates<T>(
     root: &Path,
     output: Option<&Path>,
     exclude: &ExcludePatterns,
@@ -124,9 +136,23 @@ pub(super) fn fold_candidates<T>(
             s.spawn(|| run_worker(&jobs, &aborted, &pool));
         }
         // Senders move into the producer, so they drop before the workers are joined.
-        s.spawn(move || produce_slots(walker, job_tx, slot_tx));
+        s.spawn(move || {
+            let jobs = job_tx;
+            let slots = slot_tx;
+            for entry in walker {
+                let slot = dispatch(entry, &jobs);
+                let fatal = matches!(slot, Slot::Error(_));
+                if slots.send(slot).is_err() || fatal {
+                    break;
+                }
+            }
+        });
 
-        let result = settle_slots(slot_rx, init, &mut step);
+        // Consuming `slot_rx` via `into_iter` drops the receiver as soon as `try_fold` exits,
+        // disconnecting the slot channel on early error and unblocking the producer.
+        let result = slot_rx
+            .into_iter()
+            .try_fold(init, |acc, slot| settle(slot, acc, &mut step));
         if result.is_err() {
             aborted.store(true, Ordering::Relaxed);
         }
@@ -141,39 +167,31 @@ fn dispatch<'a>(
 ) -> Slot<'a> {
     let (path, entry_path) = match entry {
         Ok(Candidate::Valid(path, entry_path)) => (path, entry_path),
-        Ok(Candidate::Unstorable(key)) => return Slot::Ready(Ok(Some(Candidate::Unstorable(key)))),
-        Err(err) => return Slot::Ready(Err(err)),
+        Ok(Candidate::Unstorable(key)) => return Slot::Unstorable(key),
+        Err(err) => return Slot::Error(err),
     };
 
     let (reply, pending) = sync_channel(1);
-    let job = Job {
-        path,
-        entry_path,
-        reply,
-    };
+    let job = Job { entry_path, reply };
     if jobs.send(job).is_err() {
-        return Slot::Ready(Err(worker_stopped()));
+        return Slot::Error(worker_stopped());
     }
-    Slot::Pending(pending)
+    Slot::Pending(path, pending)
 }
 
 /// Answers jobs until the job channel closes. After an abort, workers answer without touching the
 /// filesystem, so the remaining queue drains quickly.
 fn run_worker<'a>(jobs: &Mutex<Receiver<Job<'a>>>, aborted: &AtomicBool, pool: &'a BufferPool) {
-    while let Some(job) = next_job(jobs) {
+    // The lock covers only the receive, so workers do not serialize on the reads.
+    while let Some(job) = jobs.lock().ok().and_then(|rx| rx.recv().ok()) {
         let msg = if aborted.load(Ordering::Relaxed) {
             Ok(None)
         } else {
-            read_candidate(&job.entry_path, job.path, pool)
+            read_candidate(&job.entry_path, pool)
         };
         // The settling side may already have stopped after an error; the reply is then unused.
         let _ = job.reply.send(msg);
     }
-}
-
-/// Takes the next job. The lock covers only the receive, so workers do not serialize on the reads.
-fn next_job<'a>(jobs: &Mutex<Receiver<Job<'a>>>) -> Option<Job<'a>> {
-    jobs.lock().ok()?.recv().ok()
 }
 
 fn worker_stopped() -> IngestError {
@@ -186,45 +204,17 @@ fn settle<'a, T>(
     acc: T,
     step: &mut impl FnMut(T, Candidate<Body<PooledBuf<'a>>>) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
-    let msg = match slot {
-        Slot::Ready(msg) => msg,
-        Slot::Pending(reply) => reply.recv().unwrap_or_else(|_| Err(worker_stopped())),
-    };
-    match msg? {
-        Some(candidate) => step(acc, candidate),
-        None => Ok(acc),
-    }
-}
-
-/// Walks and dispatches on its own thread, sending slots in walk order. Stops at the first walk or
-/// classification error, or when the settling side hangs up.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "dropping the senders when the producer exits disconnects both channels"
-)]
-fn produce_slots<'a>(walker: Walk<'_>, jobs: SyncSender<Job<'a>>, slots: SyncSender<Slot<'a>>) {
-    for entry in walker {
-        let slot = dispatch(entry, &jobs);
-        let fatal = matches!(slot, Slot::Ready(Err(_)));
-        if slots.send(slot).is_err() || fatal {
-            break;
+    match slot {
+        Slot::Unstorable(key) => step(acc, Candidate::Unstorable(key)),
+        Slot::Error(err) => Err(err),
+        Slot::Pending(path, reply) => {
+            let msg = reply.recv().unwrap_or_else(|_| Err(worker_stopped()))?;
+            match msg {
+                Some(body) => step(acc, Candidate::Valid(path, body)),
+                None => Ok(acc),
+            }
         }
     }
-}
-
-/// Settles slots in the order they arrive. The first failure in walk order stops the fold.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "dropping the receiver on early error disconnects the slot channel and unblocks the producer"
-)]
-fn settle_slots<'a, T>(
-    slots: Receiver<Slot<'a>>,
-    init: T,
-    step: &mut impl FnMut(T, Candidate<Body<PooledBuf<'a>>>) -> Result<T, IngestError>,
-) -> Result<T, IngestError> {
-    slots
-        .iter()
-        .try_fold(init, |acc, slot| settle(slot, acc, step))
 }
 
 /// Read worker count: available cores capped at `MAX_LOCAL_WORKERS`, or 1 when unknown.
@@ -235,16 +225,12 @@ fn local_worker_count(available: io::Result<NonZeroUsize>) -> usize {
 /// Reads one regular file's metadata and body. `Ok(None)` when the entry is a symlink or non-file
 /// (no longer a regular file); `Err` aborts the run. A file unavailable at metadata, open, or read
 /// (`is_unavailable_file`) is [`Body::Unavailable`].
-fn read_candidate<'a>(
-    entry_path: &Path,
-    path: NormalizedPath,
-    pool: &'a BufferPool,
-) -> Result<Option<Candidate<Body<PooledBuf<'a>>>>, IngestError> {
+fn read_candidate<'a>(entry_path: &Path, pool: &'a BufferPool) -> WorkerReply<'a> {
     let meta = match fs::symlink_metadata(entry_path) {
         Ok(m) => m,
         // Unlinked or locked after discovery: the selector counts it as skipped.
         Err(err) if is_unavailable_file(&err) => {
-            return Ok(Some(Candidate::Valid(path, Body::Unavailable)));
+            return Ok(Some(Body::Unavailable));
         }
         Err(err) => return Err(io_error_at(entry_path, &err)),
     };
@@ -254,11 +240,11 @@ fn read_candidate<'a>(
     }
 
     let file_len = meta.len();
-    if exceeds_file_size(file_len) {
-        return Ok(Some(Candidate::Valid(path, Body::OverLimit)));
+    if file_len > MAX_FILE_SIZE {
+        return Ok(Some(Body::OverLimit));
     }
     let body = read_bounded(entry_path, file_len, pool)?.map_or(Body::Unavailable, Body::Bytes);
-    Ok(Some(Candidate::Valid(path, body)))
+    Ok(Some(body))
 }
 
 /// Errors that make one file unavailable without invalidating the walk. Applied at metadata, open,
@@ -385,13 +371,13 @@ mod tests {
         fs::remove_file(&file)?;
 
         let pool = BufferPool::new();
-        let observation = read_candidate(&file, NormalizedPath::from("a.txt"), &pool)?
+        let body = read_candidate(&file, &pool)?
             .ok_or("unlinked file must reach the selector as a candidate")?;
         assert!(
-            matches!(&observation, Candidate::Valid(_, Body::Unavailable)),
+            matches!(&body, Body::Unavailable),
             "unlinked file must be an unavailable candidate"
         );
-        let selector = Selector::new().observe(observation)?;
+        let selector = Selector::new().observe(Candidate::Valid("a.txt".into(), body))?;
 
         let result = selector.finish("test".to_string(), None)?;
         assert_eq!(result.files.len(), 0);
@@ -406,13 +392,13 @@ mod tests {
         fs::write(&file, vec![b'x'; MAX_FILE_SIZE_USIZE + 1])?;
 
         let pool = BufferPool::new();
-        let observation = read_candidate(&file, NormalizedPath::from("large.txt"), &pool)?
+        let body = read_candidate(&file, &pool)?
             .ok_or("oversized file must reach the selector as a candidate")?;
         assert!(
-            matches!(&observation, Candidate::Valid(_, Body::OverLimit)),
+            matches!(&body, Body::OverLimit),
             "oversized file must be over the limit and carry no read"
         );
-        let selector = Selector::new().observe(observation)?;
+        let selector = Selector::new().observe(Candidate::Valid("large.txt".into(), body))?;
 
         let result = selector.finish("test".to_string(), None)?;
         assert_eq!(result.files.len(), 0);
@@ -442,7 +428,7 @@ mod tests {
         fs::create_dir(&sub)?;
 
         let pool = BufferPool::new();
-        let result = read_candidate(&sub, NormalizedPath::from("subdir"), &pool)?;
+        let result = read_candidate(&sub, &pool)?;
         assert!(result.is_none());
         Ok(())
     }
@@ -457,21 +443,19 @@ mod tests {
         // Opening a FIFO with no writer blocks, so an `open` regression surfaces as a timeout.
         let is_none = run_with_timeout(move || {
             let pool = BufferPool::new();
-            read_candidate(&fifo, NormalizedPath::from("pipe"), &pool).map(|obs| obs.is_none())
+            read_candidate(&fifo, &pool).map(|obs| obs.is_none())
         });
         assert!(is_none?, "a FIFO is not a candidate");
         Ok(())
     }
 
     use crate::core::storage::cmp_path;
-    use crate::shell::local::validate_root;
     use crate::shell::testing::temp_dir;
     use std::fs;
 
     #[test]
     fn candidates_arrive_in_path_order() -> Result<(), Box<dyn std::error::Error>> {
-        let temp = temp_dir("candidate_order")?;
-        let root = validate_root(&temp)?;
+        let root = temp_dir("candidate_order")?;
         for dir in ["b_dir", "a_dir", "src-test", "src", "src/nested"] {
             fs::create_dir_all(root.join(dir))?;
             for file_index in 0..10 {
@@ -507,8 +491,7 @@ mod tests {
     #[test]
     fn earlier_candidate_error_wins_over_later_walk_error() -> Result<(), Box<dyn std::error::Error>>
     {
-        let temp = temp_dir("ordered_candidate_error")?;
-        let root = validate_root(&temp)?;
+        let root = temp_dir("ordered_candidate_error")?;
         fs::write(root.join("a.txt"), "first")?;
         fs::create_dir(root.join("z"))?;
         fs::write(root.join("z/.gitignore"), b"\xff")?;
@@ -534,8 +517,7 @@ mod tests {
     #[test]
     fn early_abort_disconnects_and_joins_when_queue_overflows()
     -> Result<(), Box<dyn std::error::Error>> {
-        let temp = temp_dir("early_abort")?;
-        let root = validate_root(&temp)?;
+        let root = temp_dir("early_abort")?;
         for file_index in 0..(LOCAL_CHANNEL_CAPACITY + 10) {
             fs::write(root.join(format!("file_{file_index:03}.txt")), "content")?;
         }
@@ -571,40 +553,54 @@ mod tests {
         // 1. dispatch when walk entry is Err
         let walk_err = IngestError::Io(io::Error::other("walk failed"));
         let slot = dispatch(Err(walk_err), &job_tx);
-        assert!(matches!(slot, Slot::Ready(Err(_))));
+        assert!(matches!(slot, Slot::Error(_)));
 
-        // settle with Slot::Ready(Err)
+        // settle with Slot::Error
         let res = settle(slot, 0, &mut |_acc, _c| Ok(1));
         assert!(res.is_err());
 
         // 2. dispatch when job_tx is disconnected
         let candidate = Candidate::Valid("test.txt".into(), PathBuf::from("test.txt"));
         let slot = dispatch(Ok(candidate), &job_tx);
-        // jobs.send fails, returning Slot::Ready(Err(worker_stopped()))
-        assert!(matches!(slot, Slot::Ready(Err(_))));
+        // jobs.send fails, returning Slot::Error(worker_stopped())
+        assert!(matches!(slot, Slot::Error(_)));
         let res = settle(slot, 0, &mut |_acc, _c| Ok(1));
         assert!(res.is_err());
 
         // 3. settle with Slot::Pending where reply sender is dropped
         let (reply_tx, reply_rx) = sync_channel(1);
         drop(reply_tx);
-        let res = settle(Slot::Pending(reply_rx), 0, &mut |_acc, _c| Ok(1));
+        let res = settle(
+            Slot::Pending("test.txt".into(), reply_rx),
+            0,
+            &mut |_acc, _c| Ok(1),
+        );
         assert!(res.is_err());
 
-        // 4. settle with Slot::Pending where candidate is None
+        // 4. settle with Slot::Pending where body is None
         let (reply_tx, reply_rx) = sync_channel(1);
         reply_tx.send(Ok(None)).unwrap();
-        let res = settle(Slot::Pending(reply_rx), 42, &mut |_acc, _c| Ok(1)).unwrap();
+        let res = settle(
+            Slot::Pending("test.txt".into(), reply_rx),
+            42,
+            &mut |_acc, _c| Ok(1),
+        )
+        .unwrap();
         assert_eq!(res, 42);
 
-        // 5. settle with Slot::Pending where candidate is Some
+        // 5. settle with Slot::Pending where body is Some, and Slot::Unstorable
         let (reply_tx, reply_rx) = sync_channel(1);
-        reply_tx
-            .send(Ok(Some(Candidate::Unstorable(
-                ("", b"\xff".as_slice()).into(),
-            ))))
-            .unwrap();
-        let res = settle(Slot::Pending(reply_rx), 42, &mut |acc, _c| Ok(acc + 1)).unwrap();
+        reply_tx.send(Ok(Some(Body::Unavailable))).unwrap();
+        let res = settle(
+            Slot::Pending("test.txt".into(), reply_rx),
+            42,
+            &mut |acc, _c| Ok(acc + 1),
+        )
+        .unwrap();
         assert_eq!(res, 43);
+
+        let unstorable = Slot::Unstorable(("", b"\xff".as_slice()).into());
+        let res = settle(unstorable, 43, &mut |acc, _c| Ok(acc + 1)).unwrap();
+        assert_eq!(res, 44);
     }
 }

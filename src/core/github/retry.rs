@@ -46,17 +46,18 @@ pub(crate) enum RateLimitHeaders {
     UnparsedRetryAfter,
     /// Resolved `Retry-After` delay in seconds, which takes precedence over `X-RateLimit-Reset`.
     RetryAfterSecs(u64),
-    /// `X-RateLimit-Remaining` is `0`, with an optional `X-RateLimit-Reset` UNIX epoch in seconds.
-    QuotaExhausted { reset_epoch_secs: Option<u64> },
+    /// `X-RateLimit-Remaining` is `0`, with an optional future `X-RateLimit-Reset` wait in seconds.
+    QuotaExhausted { retry_after_secs: Option<u64> },
 }
 
 impl RateLimitHeaders {
-    /// Parses numeric header values, where `None` means the header was absent.
+    /// Parses numeric header values against `now_secs`, where `None` means the header was absent.
     /// The shell resolves HTTP-date values directly into [`Self::RetryAfterSecs`].
     pub(crate) fn parse(
         retry_after: Option<&str>,
         remaining: Option<&str>,
         reset: Option<&str>,
+        now_secs: u64,
     ) -> Self {
         if let Some(secs) = retry_after.and_then(|value| {
             let value = value.trim();
@@ -68,9 +69,11 @@ impl RateLimitHeaders {
             return Self::RetryAfterSecs(secs);
         }
         if remaining.is_some_and(|v| v.trim() == "0") {
-            return Self::QuotaExhausted {
-                reset_epoch_secs: reset.and_then(|v| v.trim().parse().ok()),
-            };
+            let retry_after_secs = reset
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .filter(|&reset| reset > now_secs)
+                .map(|reset| reset - now_secs);
+            return Self::QuotaExhausted { retry_after_secs };
         }
         if retry_after.is_some() {
             return Self::UnparsedRetryAfter;
@@ -80,30 +83,25 @@ impl RateLimitHeaders {
 
     /// Delay before retrying. `Retry-After` wins; otherwise the reset epoch counts only once quota is exhausted.
     #[must_use]
-    pub(crate) fn retry_after(self, now_secs: u64) -> Option<Duration> {
+    pub(crate) const fn retry_after(self) -> Option<Duration> {
         match self {
-            Self::RetryAfterSecs(secs) => Some(Duration::from_secs(secs)),
-            Self::QuotaExhausted { reset_epoch_secs } => reset_epoch_secs
-                .filter(|&reset| reset > now_secs)
-                .map(|reset| Duration::from_secs(reset - now_secs)),
-            Self::NotLimited | Self::UnparsedRetryAfter => None,
+            Self::RetryAfterSecs(secs)
+            | Self::QuotaExhausted {
+                retry_after_secs: Some(secs),
+            } => Some(Duration::from_secs(secs)),
+            Self::NotLimited
+            | Self::UnparsedRetryAfter
+            | Self::QuotaExhausted {
+                retry_after_secs: None,
+            } => None,
         }
     }
 
     /// Rate-limited when `Retry-After` is present or quota is exhausted.
     #[must_use]
-    pub(crate) const fn is_rate_limited(self) -> bool {
+    const fn is_rate_limited(self) -> bool {
         !matches!(self, Self::NotLimited)
     }
-}
-
-/// Classification of transport-level errors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TransportKind {
-    /// Transient network or timeout errors suitable for retry.
-    Retryable,
-    /// Permanent failures that should not be retried.
-    Permanent,
 }
 
 /// Action outcome from a network / HTTP attempt.
@@ -111,10 +109,11 @@ pub(crate) enum TransportKind {
 pub(crate) enum RequestOutcome {
     HttpStatus {
         status: u16,
-        retry_after: Option<Duration>,
-        is_rate_limit: bool,
+        rate_limit: RateLimitHeaders,
     },
-    TransportError(TransportKind),
+    TransportError {
+        retryable: bool,
+    },
 }
 
 /// Transition outcome from an HTTP attempt state transition.
@@ -148,24 +147,20 @@ impl AttemptState {
             return Transition::Fail;
         }
         match outcome {
-            RequestOutcome::HttpStatus {
-                status,
-                retry_after,
-                is_rate_limit,
-            } => {
-                if !is_retryable_http_status(*status, *is_rate_limit) {
+            RequestOutcome::HttpStatus { status, rate_limit } => {
+                if !is_retryable_http_status(*status, rate_limit.is_rate_limited()) {
                     return Transition::Fail;
                 }
-                match retry_after {
+                match rate_limit.retry_after() {
                     Some(d) if d.as_millis() > RETRY_MAX_DELAY_MS as u128 => Transition::Fail,
-                    Some(d) => self.retry(*d),
+                    Some(d) => self.retry(d),
                     None => self.retry(retry_delay(self.attempt)),
                 }
             }
-            RequestOutcome::TransportError(TransportKind::Retryable) => {
+            RequestOutcome::TransportError { retryable: true } => {
                 self.retry(retry_delay(self.attempt))
             }
-            RequestOutcome::TransportError(TransportKind::Permanent) => Transition::Fail,
+            RequestOutcome::TransportError { retryable: false } => Transition::Fail,
         }
     }
 
@@ -242,8 +237,8 @@ mod tests {
         ];
 
         for (retry_after, remaining, reset, now, expected) in cases {
-            let got = RateLimitHeaders::parse(retry_after, remaining, reset)
-                .retry_after(now)
+            let got = RateLimitHeaders::parse(retry_after, remaining, reset, now)
+                .retry_after()
                 .map(|d| d.as_secs());
             assert_eq!(
                 got, expected,
@@ -255,13 +250,12 @@ mod tests {
     #[test]
     fn overflowing_retry_after_seconds_exceed_the_retry_cap() {
         for value in ["18446744073709551616", "999999999999999999999999999999"] {
-            let facts = RateLimitHeaders::parse(Some(value), Some("0"), Some("1000001"));
-            let delay = facts.retry_after(1_000_000);
+            let facts = RateLimitHeaders::parse(Some(value), Some("0"), Some("1000001"), 1_000_000);
+            let delay = facts.retry_after();
             assert_eq!(delay, Some(Duration::from_secs(u64::MAX)), "{value}");
             let transition = AttemptState::new().step(&RequestOutcome::HttpStatus {
                 status: 429,
-                retry_after: delay,
-                is_rate_limit: facts.is_rate_limited(),
+                rate_limit: facts,
             });
             assert_eq!(transition, Transition::Fail, "{value}");
         }
@@ -279,7 +273,7 @@ mod tests {
             (None, None, false),
         ];
         for (retry_after, remaining, expected) in cases {
-            let got = RateLimitHeaders::parse(retry_after, remaining, None).is_rate_limited();
+            let got = RateLimitHeaders::parse(retry_after, remaining, None, 0).is_rate_limited();
             assert_eq!(
                 got, expected,
                 "retry-after={retry_after:?} remaining={remaining:?}"
@@ -294,14 +288,14 @@ mod tests {
             next: AttemptState { attempt },
             delay,
         };
+        let max_secs = RETRY_MAX_DELAY_MS / 1000;
         let cases = [
             // (attempt, outcome, expected)
             (
                 0,
                 RequestOutcome::HttpStatus {
                     status: 500,
-                    retry_after: None,
-                    is_rate_limit: false,
+                    rate_limit: RateLimitHeaders::NotLimited,
                 },
                 retry(1, retry_delay(0)),
             ),
@@ -309,8 +303,7 @@ mod tests {
                 0,
                 RequestOutcome::HttpStatus {
                     status: 429,
-                    retry_after: Some(Duration::from_secs(2)),
-                    is_rate_limit: true,
+                    rate_limit: RateLimitHeaders::RetryAfterSecs(2),
                 },
                 retry(1, Duration::from_secs(2)),
             ),
@@ -318,8 +311,7 @@ mod tests {
                 0,
                 RequestOutcome::HttpStatus {
                     status: 429,
-                    retry_after: Some(Duration::from_secs(10)),
-                    is_rate_limit: true,
+                    rate_limit: RateLimitHeaders::RetryAfterSecs(10),
                 },
                 Transition::Fail,
             ),
@@ -327,17 +319,15 @@ mod tests {
                 0,
                 RequestOutcome::HttpStatus {
                     status: 429,
-                    retry_after: Some(Duration::from_millis(RETRY_MAX_DELAY_MS)),
-                    is_rate_limit: true,
+                    rate_limit: RateLimitHeaders::RetryAfterSecs(max_secs),
                 },
-                retry(1, Duration::from_millis(RETRY_MAX_DELAY_MS)),
+                retry(1, Duration::from_secs(max_secs)),
             ),
             (
                 0,
                 RequestOutcome::HttpStatus {
                     status: 429,
-                    retry_after: Some(Duration::from_millis(RETRY_MAX_DELAY_MS + 1)),
-                    is_rate_limit: true,
+                    rate_limit: RateLimitHeaders::RetryAfterSecs(max_secs + 1),
                 },
                 Transition::Fail,
             ),
@@ -345,8 +335,9 @@ mod tests {
                 0,
                 RequestOutcome::HttpStatus {
                     status: 403,
-                    retry_after: None,
-                    is_rate_limit: true,
+                    rate_limit: RateLimitHeaders::QuotaExhausted {
+                        retry_after_secs: None,
+                    },
                 },
                 retry(1, retry_delay(0)),
             ),
@@ -354,8 +345,7 @@ mod tests {
                 0,
                 RequestOutcome::HttpStatus {
                     status: 403,
-                    retry_after: None,
-                    is_rate_limit: false,
+                    rate_limit: RateLimitHeaders::NotLimited,
                 },
                 Transition::Fail,
             ),
@@ -363,8 +353,7 @@ mod tests {
                 1,
                 RequestOutcome::HttpStatus {
                     status: 429,
-                    retry_after: None,
-                    is_rate_limit: true,
+                    rate_limit: RateLimitHeaders::UnparsedRetryAfter,
                 },
                 retry(2, retry_delay(1)),
             ),
@@ -372,8 +361,7 @@ mod tests {
                 2,
                 RequestOutcome::HttpStatus {
                     status: 500,
-                    retry_after: None,
-                    is_rate_limit: false,
+                    rate_limit: RateLimitHeaders::NotLimited,
                 },
                 Transition::Fail,
             ),
@@ -381,19 +369,18 @@ mod tests {
                 0,
                 RequestOutcome::HttpStatus {
                     status: 404,
-                    retry_after: None,
-                    is_rate_limit: false,
+                    rate_limit: RateLimitHeaders::NotLimited,
                 },
                 Transition::Fail,
             ),
             (
                 0,
-                RequestOutcome::TransportError(TransportKind::Retryable),
+                RequestOutcome::TransportError { retryable: true },
                 retry(1, retry_delay(0)),
             ),
             (
                 0,
-                RequestOutcome::TransportError(TransportKind::Permanent),
+                RequestOutcome::TransportError { retryable: false },
                 Transition::Fail,
             ),
         ];

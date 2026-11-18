@@ -10,7 +10,7 @@ mod walk;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use self::pipeline::fold_candidates;
+use self::pipeline::collect_candidates;
 use super::error::IngestError;
 use super::output::ResolvedOutput;
 use crate::core::error::DomainError;
@@ -29,13 +29,7 @@ pub(super) fn collect(
 ) -> Result<CollectionResult, IngestError> {
     let canonical_root = validate_root(root)?;
     let label = repository_name(&canonical_root).to_string();
-    let selector = fold_candidates(
-        &canonical_root,
-        output.file(),
-        exclude,
-        Selector::new(),
-        |selector, observation| Ok(selector.observe(observation)?),
-    )?;
+    let selector = collect_candidates(&canonical_root, output.file(), exclude, Selector::new())?;
 
     Ok(selector.finish(label, None)?)
 }

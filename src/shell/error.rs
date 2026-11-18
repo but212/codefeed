@@ -41,22 +41,17 @@ impl From<DomainError> for IngestError {
     }
 }
 
-/// Creates an `io::Error` with message sanitized of control characters.
-pub(super) fn sanitized_io_error(kind: io::ErrorKind, message: &str) -> io::Error {
-    io::Error::new(kind, ErrorDetail::new(message).to_string())
+/// Creates an [`IngestError::Io`] with message sanitized of control characters.
+pub(super) fn sanitized_io_error<'a>(
+    kind: io::ErrorKind,
+    message: impl Into<std::borrow::Cow<'a, str>>,
+) -> IngestError {
+    IngestError::Io(io::Error::new(kind, ErrorDetail::new(message).into_inner()))
 }
 
 /// I/O failure on `path`. Keeps the error kind and names the path, which a bare `io::Error` drops.
 pub(super) fn io_error_at(path: &Path, err: &io::Error) -> IngestError {
-    IngestError::Io(sanitized_io_error(
-        err.kind(),
-        &format!("{}: {err}", path.display()),
-    ))
-}
-
-/// Error for a transport failure. `error_text` is the transport error's `Display`.
-pub(super) fn transport_error(error_text: &str) -> IngestError {
-    IngestError::Http(ErrorDetail::new(error_text))
+    sanitized_io_error(err.kind(), format!("{}: {err}", path.display()))
 }
 
 #[cfg(test)]
@@ -97,14 +92,6 @@ mod tests {
         for (error, expected) in cases {
             assert_eq!(error.to_string(), expected);
         }
-    }
-
-    #[test]
-    fn transport_error_sanitizes_and_wraps_as_http() {
-        assert_eq!(
-            transport_error("bad\nhost").to_string(),
-            IngestError::Http(ErrorDetail::new("bad host")).to_string()
-        );
     }
 
     #[test]

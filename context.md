@@ -131,7 +131,7 @@ Purity rules and one-way Shell-to-Core dependency: [coding convention § 3](docs
 
 - `cli.rs`: CLI argument parsing, help, and version text.
 - `path.rs`: Path types and classification.
-- `policy/`: Limits, exclusions, user exclude patterns, `TOKEN_ENV_VARS`.
+- `policy/`: Limits, exclusions, user exclude patterns, `.gitignore` compilation, `TOKEN_ENV_VARS`.
 - `source.rs`: `Source` and `GitRef` parsing; URLs delegated to `github/`.
 - `model.rs`: Configuration and report types.
 - `selector.rs`: Candidate settlement and budget accounting.
@@ -144,11 +144,10 @@ Purity rules and one-way Shell-to-Core dependency: [coding convention § 3](docs
 
 - `mod.rs`: `ingest` pipeline.
 - `cli.rs`: CLI orchestration, stream selection, exit codes.
-- `error.rs`: `IngestError` and transport error mapping.
+- `error.rs`: `IngestError` and I/O error sanitization.
 - `local/`: Local walk, `.gitignore` loading, producer/worker reads.
 - `github/`: Collection orchestration in `mod.rs`; HTTP configuration, credentials, request execution, retries, and response errors in `client.rs`; metered tarball ingestion in `archive.rs`.
-- `atomic.rs`: Atomic file writes.
-- `output.rs`: Destination resolution and delivery.
+- `output.rs`: Destination resolution, atomic file writes, and delivery.
 - `stdio.rs`: stdout/stderr line writers.
 - `testing.rs`: Test helpers.
 

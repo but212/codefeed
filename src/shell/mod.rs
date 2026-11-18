@@ -7,7 +7,6 @@ use crate::core::github::GITHUB_API_BASE_URL;
 use crate::core::model::{IngestReport, RunConfig};
 use crate::core::source::Source;
 
-mod atomic;
 pub(crate) mod cli;
 mod error;
 mod github;

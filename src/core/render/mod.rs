@@ -12,29 +12,7 @@ mod formats;
 mod tree;
 
 use budget::{BoundedBuffer, OutputLimitExceeded};
-
-fn render_digest(
-    mut buf: BoundedBuffer,
-    collection: &CollectionResult,
-    format: DigestFormat,
-) -> Result<BoundedBuffer, OutputLimitExceeded> {
-    buf = formats::write_header(
-        format,
-        buf,
-        &collection.label,
-        collection.revision.as_deref(),
-        collection.files.len(),
-        collection.skipped,
-    )?;
-    buf = tree::render_tree(buf, &collection.files, |b, name| {
-        formats::write_tree_name(format, b, name)
-    })?;
-    buf = formats::close_tree_section(format, buf)?;
-    for file in collection.files.iter() {
-        buf = formats::write_file_entry(format, buf, file.path, file.content)?;
-    }
-    formats::write_footer(format, buf)
-}
+use formats::render_digest;
 
 impl CollectionResult {
     /// Renders the collected files into [`RenderedDigest`] using the specified format.

@@ -1,6 +1,10 @@
+use std::ops::Range;
+
 use memchr::memchr;
 
 use super::budget::{BoundedBuffer, OutputLimitExceeded};
+use super::formats::write_single_line;
+use crate::core::model::DigestFormat;
 use crate::core::storage::SortedFiles;
 
 const TREE_BRANCH: &str = "├── ";
@@ -9,60 +13,52 @@ const TREE_VERT: &str = "│   ";
 const TREE_SPACE: &str = "    ";
 
 /// Renders an ASCII tree representation of the provided pre-sorted [`SortedFiles`].
-pub(super) fn render_tree<F>(
+pub(super) fn render_tree(
     buf: BoundedBuffer,
     files: &SortedFiles,
-    format_name: F,
-) -> Result<BoundedBuffer, OutputLimitExceeded>
-where
-    F: Fn(BoundedBuffer, &str) -> Result<BoundedBuffer, OutputLimitExceeded> + Copy,
-{
-    let paths: Vec<&str> = files.iter().map(|f| f.path).collect();
-    let mut prefix = String::new();
-    render_level(buf, &paths, 0, &mut prefix, format_name)
+    format: DigestFormat,
+) -> Result<BoundedBuffer, OutputLimitExceeded> {
+    render_level(buf, files, 0..files.len(), 0, String::new(), format).map(|(buf, _)| buf)
 }
 
-fn render_level<F>(
+fn render_level(
     mut buf: BoundedBuffer,
-    paths: &[&str],
+    files: &SortedFiles,
+    range: Range<usize>,
     offset: usize,
-    prefix: &mut String,
-    format_name: F,
-) -> Result<BoundedBuffer, OutputLimitExceeded>
-where
-    F: Fn(BoundedBuffer, &str) -> Result<BoundedBuffer, OutputLimitExceeded> + Copy,
-{
-    let mut i = 0;
-    while i < paths.len() {
-        let (name, is_dir) = component_at_offset(paths[i], offset);
+    mut prefix: String,
+    format: DigestFormat,
+) -> Result<(BoundedBuffer, String), OutputLimitExceeded> {
+    let mut i = range.start;
+    while i < range.end {
+        let first_path = files.path_at(i);
+        let (name, is_dir) = component_at_offset(first_path, offset);
         let start = i;
         i += 1;
         if is_dir {
-            let dir_prefix = &paths[start][offset..=(offset + name.len())];
-            while paths
-                .get(i)
-                .is_some_and(|path| path[offset..].starts_with(dir_prefix))
-            {
+            let dir_prefix = &first_path[offset..=(offset + name.len())];
+            while i < range.end && files.path_at(i)[offset..].starts_with(dir_prefix) {
                 i += 1;
             }
         }
         let end = i;
-        let is_last = end == paths.len();
+        let is_last = end == range.end;
 
-        buf = buf.push_str(prefix)?;
+        buf = buf.push_str(&prefix)?;
         buf = buf.push_str(if is_last { TREE_LAST } else { TREE_BRANCH })?;
-        buf = format_name(buf, name)?;
+        buf = write_single_line(format, buf, name)?;
 
         if is_dir {
             buf = buf.push_bytes(b"/\n")?;
             let saved_len = prefix.len();
             prefix.push_str(if is_last { TREE_SPACE } else { TREE_VERT });
-            buf = render_level(
+            (buf, prefix) = render_level(
                 buf,
-                &paths[start..end],
+                files,
+                start..end,
                 offset + name.len() + 1,
                 prefix,
-                format_name,
+                format,
             )?;
             prefix.truncate(saved_len);
         } else {
@@ -70,7 +66,7 @@ where
         }
     }
 
-    Ok(buf)
+    Ok((buf, prefix))
 }
 
 /// Returns the path component starting at `offset` and whether a `/` follows it.
@@ -98,18 +94,15 @@ mod tests {
     #[test]
     fn renders_ascii_tree_correctly() {
         let storage = FileStorage::new()
-            .push(&crate::core::path::NormalizedPath::from("Cargo.toml"), "")
+            .push(&NormalizedPath::from("Cargo.toml"), "")
             .unwrap()
-            .push(
-                &crate::core::path::NormalizedPath::from("src/core/a.rs"),
-                "",
-            )
+            .push(&NormalizedPath::from("src/core/a.rs"), "")
             .unwrap()
-            .push(&crate::core::path::NormalizedPath::from("src/lib.rs"), "")
+            .push(&NormalizedPath::from("src/lib.rs"), "")
             .unwrap();
         let files = SortedFiles::new(storage).unwrap();
 
-        let buf = render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str).unwrap();
+        let buf = render_tree(BoundedBuffer::default(), &files, DigestFormat::Text).unwrap();
         let digest = buf.finish();
         let tree_str = std::str::from_utf8(&digest.bytes).unwrap();
         let expected = "\
@@ -123,23 +116,21 @@ mod tests {
     }
 
     #[test]
-    fn formats_tree_nodes_custom_formatter() {
+    fn escapes_tree_nodes_for_active_format() {
         let storage = FileStorage::new()
-            .push(
-                &crate::core::path::NormalizedPath::from("dir_name/file_name.txt"),
-                "",
-            )
+            .push(&NormalizedPath::from("dir\\name/file<name>.txt"), "")
             .unwrap();
         let files = SortedFiles::new(storage).unwrap();
 
-        let buf = render_tree(BoundedBuffer::default(), &files, |b, name| {
-            b.push_str(&name.to_uppercase())
-        })
-        .unwrap();
-        let digest = buf.finish();
-        let s = String::from_utf8_lossy(&digest.bytes);
-        assert!(s.contains("DIR_NAME/"));
-        assert!(s.contains("FILE_NAME.TXT"));
+        let text_buf = render_tree(BoundedBuffer::default(), &files, DigestFormat::Text).unwrap();
+        let text_str = String::from_utf8(text_buf.finish().bytes).unwrap();
+        assert!(text_str.contains("dir\\\\name/"));
+        assert!(text_str.contains("file<name>.txt"));
+
+        let xml_buf = render_tree(BoundedBuffer::default(), &files, DigestFormat::Xml).unwrap();
+        let xml_str = String::from_utf8(xml_buf.finish().bytes).unwrap();
+        assert!(xml_str.contains("dir\\name/"));
+        assert!(xml_str.contains("file&lt;name&gt;.txt"));
     }
 
     #[test]
@@ -153,7 +144,7 @@ mod tests {
             .unwrap();
         let files = SortedFiles::new(storage).unwrap();
 
-        let buf = render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str).unwrap();
+        let buf = render_tree(BoundedBuffer::default(), &files, DigestFormat::Text).unwrap();
         let digest = buf.finish();
         let tree_str = std::str::from_utf8(&digest.bytes).unwrap();
         let expected = "\
@@ -168,15 +159,18 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "invariant: NormalizedPath extends past every tree offset")]
-    fn render_level_panics_on_path_that_ends_at_a_directory_offset() {
-        // `a/` is not a NormalizedPath. Its child level would start past the end of the path, which
-        // must fail loudly instead of ending the level and dropping the rest of the tree.
+    fn render_level_panics_on_offset_at_end_of_path() {
+        let storage = FileStorage::new()
+            .push(&NormalizedPath::from("a"), "")
+            .unwrap();
+        let files = SortedFiles::new(storage).unwrap();
         let _ = render_level(
             BoundedBuffer::default(),
-            &["a/"],
-            0,
-            &mut String::new(),
-            BoundedBuffer::push_str,
+            &files,
+            0..1,
+            1,
+            String::new(),
+            DigestFormat::Text,
         );
     }
 
@@ -216,7 +210,7 @@ mod tests {
             .unwrap();
         let files = SortedFiles::new(storage).unwrap();
 
-        let buf = render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str).unwrap();
+        let buf = render_tree(BoundedBuffer::default(), &files, DigestFormat::Text).unwrap();
         let digest = buf.finish();
         let tree_str = std::str::from_utf8(&digest.bytes).unwrap();
         let expected = "\

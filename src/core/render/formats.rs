@@ -1,6 +1,7 @@
 use super::budget::{BoundedBuffer, OutputLimitExceeded};
+use super::tree::render_tree;
 
-use crate::core::model::DigestFormat;
+use crate::core::model::{CollectionResult, DigestFormat};
 
 // Text format markers
 const REPOSITORY_PREFIX: &str = "Repository: ";
@@ -27,114 +28,79 @@ const XML_FILE_START: &str = "<file path=\"";
 const XML_FILE_TAILS: [&[u8]; 2] = [b"</file>\n", b"\n</file>\n"];
 const TEXT_FILE_TAILS: [&[u8]; 2] = [b"\n", b"\n\n"];
 
-pub(super) fn write_header(
+pub(super) fn write_single_line(
     format: DigestFormat,
+    buf: BoundedBuffer,
+    value: &str,
+) -> Result<BoundedBuffer, OutputLimitExceeded> {
+    let lut = match format {
+        DigestFormat::Text => &HEADER_ESCAPE,
+        DigestFormat::Xml => &XML_SINGLE_LINE_ESCAPE,
+    };
+    write_escaped(buf, value, lut)
+}
+
+pub(super) fn render_digest(
     mut buf: BoundedBuffer,
-    label: &str,
-    revision: Option<&str>,
-    file_count: usize,
-    skipped: usize,
+    collection: &CollectionResult,
+    format: DigestFormat,
 ) -> Result<BoundedBuffer, OutputLimitExceeded> {
     match format {
         DigestFormat::Text => {
             buf = buf.push_str(REPOSITORY_PREFIX)?;
-            buf = write_escaped(buf, label, &HEADER_ESCAPE)?;
+            buf = write_escaped(buf, &collection.label, &HEADER_ESCAPE)?;
             buf = buf.push_str(NEWLINE)?;
-            if let Some(rev) = revision {
+            if let Some(rev) = collection.revision.as_deref() {
                 buf = buf.push_str(REVISION_PREFIX)?;
                 buf = write_escaped(buf, rev, &HEADER_ESCAPE)?;
                 buf = buf.push_str(NEWLINE)?;
             }
             buf = buf.push_str(FILES_PREFIX)?;
-            buf = buf.push_usize(file_count)?;
+            buf = buf.push_usize(collection.files.len())?;
             buf = buf.push_str(SKIPPED_PREFIX)?;
-            buf = buf.push_usize(skipped)?;
+            buf = buf.push_usize(collection.skipped)?;
             buf = buf.push_str(METADATA_SUFFIX)?;
             buf = buf.push_str(DIRECTORY_HEADER)?;
+            buf = render_tree(buf, &collection.files, format)?;
+            buf = buf.push_str(FILES_HEADER)?;
+            for file in collection.files.iter() {
+                let missing_nl = usize::from(!file.content.ends_with('\n'));
+                buf = buf.push_str(FILE_BLOCK_PREFIX)?;
+                buf = write_escaped(buf, file.path, &HEADER_ESCAPE)?;
+                buf = buf.push_str(FILE_BLOCK_SUFFIX)?;
+                if !file.content.is_empty() {
+                    buf = buf.push_bytes(file.content.as_bytes())?;
+                    buf = buf.push_bytes(TEXT_FILE_TAILS[missing_nl])?;
+                }
+            }
             Ok(buf)
         }
         DigestFormat::Xml => {
             buf = buf.push_str(XML_REPO_START)?;
-            buf = write_escaped(buf, label, &XML_SINGLE_LINE_ESCAPE)?;
-            if let Some(rev) = revision {
+            buf = write_escaped(buf, &collection.label, &XML_SINGLE_LINE_ESCAPE)?;
+            if let Some(rev) = collection.revision.as_deref() {
                 buf = buf.push_str(XML_REVISION_ATTR)?;
                 buf = write_escaped(buf, rev, &XML_SINGLE_LINE_ESCAPE)?;
             }
             buf = buf.push_str(XML_TAG_CLOSE)?;
             buf = buf.push_str(XML_DIR_START)?;
-            Ok(buf)
-        }
-    }
-}
-
-pub(super) fn write_tree_name(
-    format: DigestFormat,
-    buf: BoundedBuffer,
-    name: &str,
-) -> Result<BoundedBuffer, OutputLimitExceeded> {
-    match format {
-        DigestFormat::Text => write_escaped(buf, name, &HEADER_ESCAPE),
-        DigestFormat::Xml => write_escaped(buf, name, &XML_SINGLE_LINE_ESCAPE),
-    }
-}
-
-pub(super) fn close_tree_section(
-    format: DigestFormat,
-    mut buf: BoundedBuffer,
-) -> Result<BoundedBuffer, OutputLimitExceeded> {
-    match format {
-        DigestFormat::Text => buf.push_str(FILES_HEADER),
-        DigestFormat::Xml => {
+            buf = render_tree(buf, &collection.files, format)?;
             buf = buf.push_str(XML_DIR_END)?;
             buf = buf.push_str(XML_FILES_START)?;
-            Ok(buf)
-        }
-    }
-}
-
-pub(super) fn write_file_entry(
-    format: DigestFormat,
-    mut buf: BoundedBuffer,
-    path: &str,
-    content: &str,
-) -> Result<BoundedBuffer, OutputLimitExceeded> {
-    let missing_nl = usize::from(!content.ends_with('\n'));
-    match format {
-        DigestFormat::Text => {
-            buf = buf.push_str(FILE_BLOCK_PREFIX)?;
-            buf = write_escaped(buf, path, &HEADER_ESCAPE)?;
-            buf = buf.push_str(FILE_BLOCK_SUFFIX)?;
-            if !content.is_empty() {
-                buf = buf.push_bytes(content.as_bytes())?;
-                buf = buf.push_bytes(TEXT_FILE_TAILS[missing_nl])?;
+            for file in collection.files.iter() {
+                let missing_nl = usize::from(!file.content.ends_with('\n'));
+                buf = buf.push_str(XML_FILE_START)?;
+                buf = write_escaped(buf, file.path, &XML_SINGLE_LINE_ESCAPE)?;
+                buf = buf.push_str(XML_TAG_CLOSE)?;
+                if file.content.is_empty() {
+                    buf = buf.push_bytes(XML_FILE_TAILS[0])?;
+                } else {
+                    buf = write_escaped(buf, file.content, &XML_BODY_ESCAPE)?;
+                    buf = buf.push_bytes(XML_FILE_TAILS[missing_nl])?;
+                }
             }
-            Ok(buf)
-        }
-        DigestFormat::Xml => {
-            buf = buf.push_str(XML_FILE_START)?;
-            buf = write_escaped(buf, path, &XML_SINGLE_LINE_ESCAPE)?;
-            buf = buf.push_str(XML_TAG_CLOSE)?;
-            if content.is_empty() {
-                buf = buf.push_bytes(XML_FILE_TAILS[0])?;
-            } else {
-                buf = write_escaped(buf, content, &XML_BODY_ESCAPE)?;
-                buf = buf.push_bytes(XML_FILE_TAILS[missing_nl])?;
-            }
-            Ok(buf)
-        }
-    }
-}
-
-pub(super) fn write_footer(
-    format: DigestFormat,
-    mut buf: BoundedBuffer,
-) -> Result<BoundedBuffer, OutputLimitExceeded> {
-    match format {
-        DigestFormat::Text => Ok(buf),
-        DigestFormat::Xml => {
             buf = buf.push_str(XML_FILES_END)?;
-            buf = buf.push_str(XML_REPO_END)?;
-            Ok(buf)
+            buf.push_str(XML_REPO_END)
         }
     }
 }
@@ -261,7 +227,6 @@ fn write_escaped(
     lut: &[u8; 256],
 ) -> Result<BoundedBuffer, OutputLimitExceeded> {
     let bytes = value.as_bytes();
-    buf = buf.reserve_bounded(bytes.len())?;
     let mut last = 0;
     let mut i = 0;
     while i < bytes.len() {
@@ -458,8 +423,6 @@ mod tests {
         }
     }
 
-    use crate::core::model::CollectionResult;
-    use crate::core::render::render_digest;
     use crate::core::storage::{FileRecord, FileStorage, SortedFiles};
 
     fn render_digest_str(

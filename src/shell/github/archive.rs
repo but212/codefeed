@@ -6,7 +6,7 @@ use std::io::{self, BufReader, Read};
 use flate2::bufread::MultiGzDecoder;
 use tar::{Archive, EntryType};
 
-use crate::core::error::DomainError;
+use crate::core::error::{DomainError, ErrorDetail};
 use crate::core::github::{normalize_tar_entry_path, parse_pax_comment};
 use crate::core::model::CollectionResult;
 use crate::core::path::Candidate;
@@ -14,8 +14,8 @@ use crate::core::policy::{
     ARCHIVE_BUFFER_BYTES, ARCHIVE_MAX_DECOMPRESSED_BYTES, ARCHIVE_MAX_HEADER_BYTES,
     ARCHIVE_PAX_GLOBAL_BYTES, ExcludePatterns, MAX_FILE_SIZE,
 };
-use crate::core::selector::{Body, Selector, exceeds_file_size};
-use crate::shell::error::{IngestError, transport_error};
+use crate::core::selector::{Body, Selector};
+use crate::shell::error::IngestError;
 
 /// Collects files from a tarball reader directly into a [`CollectionResult`].
 ///
@@ -35,7 +35,7 @@ pub(in crate::shell) fn collect<R: Read>(
     });
     let mut entries = archive
         .entries()
-        .map_err(|err: io::Error| stream_error(&err, &meter))?;
+        .map_err(|err: io::Error| meter.stream_error(&err))?;
     let mut parsed_revision = None;
     let mut selector = Selector::new();
     let mut content_scratch = Vec::with_capacity(32 * 1024);
@@ -45,24 +45,43 @@ pub(in crate::shell) fn collect<R: Read>(
         let next = entries.next();
         meter.disarm();
         let Some(entry_res) = next else { break };
-        let mut entry = entry_res.map_err(|err: io::Error| stream_error(&err, &meter))?;
+        let mut entry = entry_res.map_err(|err: io::Error| meter.stream_error(&err))?;
         content_scratch.clear();
-        if entry.header().entry_type() == EntryType::XGlobalHeader {
-            (&mut entry)
-                .take(ARCHIVE_PAX_GLOBAL_BYTES)
-                .read_to_end(&mut content_scratch)
-                .map_err(|err: io::Error| stream_error(&err, &meter))?;
-            parsed_revision = parsed_revision.or_else(|| parse_pax_comment(&content_scratch));
-        } else {
-            selector =
-                process_tar_entry(&mut entry, selector, &mut content_scratch, exclude, &meter)?;
+        match entry.header().entry_type() {
+            EntryType::XGlobalHeader => {
+                (&mut entry)
+                    .take(ARCHIVE_PAX_GLOBAL_BYTES)
+                    .read_to_end(&mut content_scratch)
+                    .map_err(|err: io::Error| meter.stream_error(&err))?;
+                parsed_revision = parsed_revision.or_else(|| parse_pax_comment(&content_scratch));
+            }
+            EntryType::Regular | EntryType::Continuous => {
+                let candidate = normalize_tar_entry_path(&entry.path_bytes(), exclude)?;
+                if let Some(candidate) = candidate {
+                    let settled = match candidate {
+                        Candidate::Unstorable(path) => Candidate::Unstorable(path),
+                        Candidate::Valid(path, ()) if entry.size() > MAX_FILE_SIZE => {
+                            Candidate::Valid(path, Body::OverLimit)
+                        }
+                        Candidate::Valid(path, ()) => {
+                            (&mut entry)
+                                .take(MAX_FILE_SIZE + 1)
+                                .read_to_end(&mut content_scratch)
+                                .map_err(|err: io::Error| meter.stream_error(&err))?;
+                            Candidate::Valid(path, Body::Bytes(content_scratch.as_slice()))
+                        }
+                    };
+                    selector = selector.observe(settled)?;
+                }
+            }
+            // Skip directories, symlinks, and other special entries before path decoding.
+            _ => {}
         }
         drain_entry(&mut entry, &meter)?;
     }
     // Tar stops at its end marker, before gzip necessarily checks every member's checksum and size.
     // Keep all remaining members inside the stream budget while validating their trailers.
-    io::copy(&mut archive.into_inner(), &mut io::sink())
-        .map_err(|err| stream_error(&err, &meter))?;
+    io::copy(&mut archive.into_inner(), &mut io::sink()).map_err(|err| meter.stream_error(&err))?;
 
     let revision = parsed_revision.or_else(|| default_reference.map(str::to_string));
     Ok(selector.finish(label.to_string(), revision)?)
@@ -84,6 +103,10 @@ impl Overrun {
             Self::Header => "tar entry header exceeds ARCHIVE_MAX_HEADER_BYTES",
             Self::Decompressed => "decompressed archive exceeds ARCHIVE_MAX_DECOMPRESSED_BYTES",
         }
+    }
+
+    fn into_error(self) -> IngestError {
+        DomainError::invalid_metadata(self.message()).into()
     }
 }
 
@@ -119,6 +142,17 @@ impl StreamMeter {
     fn fail(&self, overrun: Overrun) -> io::Error {
         self.overrun.set(Some(overrun));
         io::Error::other(overrun.message())
+    }
+
+    /// Maps a failure while streaming the archive to a run error. A limit overrun is a policy violation
+    /// (for a header, the entry's path is never parsed, so it cannot be counted as skipped). Any other
+    /// `io::Error` here comes from the network body, gzip, or tar decoding, so it never surfaces as a
+    /// filesystem error.
+    fn stream_error(&self, err: &io::Error) -> IngestError {
+        self.overrun.get().map_or_else(
+            || IngestError::Http(ErrorDetail::new(err.to_string())),
+            Overrun::into_error,
+        )
     }
 
     /// Largest read allowed now. The total allows one byte past its limit, so an overrun is detected
@@ -164,73 +198,25 @@ impl<R: Read> Read for Metered<'_, R> {
     }
 }
 
-/// Maps a failure while streaming the archive to a run error. A limit overrun is a policy violation
-/// (for a header, the entry's path is never parsed, so it cannot be counted as skipped). Any other
-/// `io::Error` here comes from the network body, gzip, or tar decoding, so it never surfaces as a
-/// filesystem error.
-fn stream_error(err: &io::Error, meter: &StreamMeter) -> IngestError {
-    meter.overrun.get().map_or_else(
-        || transport_error(&err.to_string()),
-        |overrun| DomainError::invalid_metadata(overrun.message()).into(),
-    )
-}
-
 /// Discards the unread body. Sparse holes count toward the stream budget even though tar generates
 /// them without reading the underlying stream. Sparse entries are never read before this call.
 fn drain_entry<R: Read>(entry: &mut tar::Entry<R>, meter: &StreamMeter) -> Result<(), IngestError> {
     let sparse = entry.header().entry_type() == EntryType::GNUSparse;
     let before = meter.total.get();
     if sparse && entry.size() > ARCHIVE_MAX_DECOMPRESSED_BYTES.saturating_sub(before) {
-        return Err(stream_error(&meter.fail(Overrun::Decompressed), meter));
+        meter.overrun.set(Some(Overrun::Decompressed));
+        return Err(Overrun::Decompressed.into_error());
     }
     let drained =
-        io::copy(entry, &mut io::sink()).map_err(|err: io::Error| stream_error(&err, meter))?;
+        io::copy(entry, &mut io::sink()).map_err(|err: io::Error| meter.stream_error(&err))?;
     if sparse {
         // Physical data was already charged by Metered; charge only the synthesized holes.
         let physical = meter.total.get() - before;
         meter
             .record(drained - physical)
-            .map_err(|err| stream_error(&err, meter))?;
+            .map_err(|err| meter.stream_error(&err))?;
     }
     Ok(())
-}
-
-fn process_tar_entry<R: Read>(
-    entry: &mut tar::Entry<R>,
-    selector: Selector,
-    content_scratch: &mut Vec<u8>,
-    exclude: &ExcludePatterns,
-    meter: &StreamMeter,
-) -> Result<Selector, IngestError> {
-    // 1. Skip directories, symlinks, and special entries before path decoding
-    if !matches!(
-        entry.header().entry_type(),
-        EntryType::Regular | EntryType::Continuous
-    ) {
-        return Ok(selector);
-    }
-
-    // 2. Path decoding, root stripping, normalization & policy classification
-    let path_bytes = entry.path_bytes();
-    let Some(candidate) = normalize_tar_entry_path(&path_bytes, exclude)? else {
-        return Ok(selector);
-    };
-
-    // 3. Bounded body read: a declared size over the limit is not read
-    let settled = match candidate {
-        Candidate::Unstorable(path) => Candidate::Unstorable(path),
-        Candidate::Valid(path, ()) if exceeds_file_size(entry.size()) => {
-            Candidate::Valid(path, Body::OverLimit)
-        }
-        Candidate::Valid(path, ()) => {
-            (&mut *entry)
-                .take(MAX_FILE_SIZE + 1)
-                .read_to_end(content_scratch)
-                .map_err(|err: io::Error| stream_error(&err, meter))?;
-            Candidate::Valid(path, Body::Bytes(content_scratch.as_slice()))
-        }
-    };
-    Ok(selector.observe(settled)?)
 }
 
 #[cfg(test)]
@@ -238,7 +224,7 @@ mod tests {
     use super::*;
     use crate::core::error::DomainError;
     use crate::core::policy::MAX_FILE_SIZE_USIZE;
-    use crate::shell::testing::{gzip_archive, gzip_single_entry_stream, gzip_tarball};
+    use crate::shell::testing::{gzip_archive, gzip_tarball};
 
     #[test]
     fn read_cap_after_overrun_does_not_underflow() {
@@ -1046,6 +1032,21 @@ mod tests {
         ]);
 
         assert_header_budget_failure(&mock_data);
+    }
+
+    /// Gzip stream of a tar holding one regular entry, `repo-root/big.txt`, whose body is `body_len` bytes of
+    /// `x`. The decompressed stream is exactly one 512-byte header plus the body, with no padding or end
+    /// blocks. Generated on demand, so a limit-sized archive is never held in memory.
+    fn gzip_single_entry_stream(body_len: u64) -> impl Read {
+        let mut header = tar::Header::new_gnu();
+        header.set_path("repo-root/big.txt").unwrap();
+        header.set_entry_type(EntryType::Regular);
+        header.set_size(body_len);
+        header.set_mode(0o644);
+        header.set_cksum();
+        let raw =
+            io::Cursor::new(header.as_bytes().to_vec()).chain(io::repeat(b'x').take(body_len));
+        flate2::read::GzEncoder::new(raw, flate2::Compression::fast())
     }
 
     /// Body length that makes the single-entry stream exactly `extra` bytes past the decompressed limit

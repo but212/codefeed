@@ -66,17 +66,6 @@ impl BoundedBuffer {
         Ok(self)
     }
 
-    pub(super) fn reserve_bounded(
-        mut self,
-        additional: usize,
-    ) -> Result<Self, OutputLimitExceeded> {
-        if (self.bytes.len() + additional) as u64 > self.limit {
-            return Err(OutputLimitExceeded);
-        }
-        self.bytes.reserve(additional);
-        Ok(self)
-    }
-
     pub(super) fn push_str(self, s: &str) -> Result<Self, OutputLimitExceeded> {
         self.push_bytes(s.as_bytes())
     }

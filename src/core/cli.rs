@@ -76,7 +76,18 @@ impl Parsed {
                     .map_err(|_| DomainError::usage("git reference must be valid utf-8"))?;
                 self.reference = Some(val_str);
             }
-            Flag::Format => self.format = parse_format(&val.to_string_lossy())?,
+            Flag::Format => {
+                let val_str = val.to_string_lossy();
+                self.format = match val_str.as_ref() {
+                    "text" => DigestFormat::Text,
+                    "xml" => DigestFormat::Xml,
+                    _ => {
+                        return Err(DomainError::usage(format!(
+                            "invalid value '{val_str}' for '--format <text|xml>'"
+                        )));
+                    }
+                };
+            }
             Flag::Exclude => {
                 let pattern = val
                     .into_string()
@@ -98,29 +109,27 @@ impl Parsed {
         self.source = Some(arg);
         Ok(self)
     }
-}
 
-fn match_flag(s: &str) -> Option<(Flag, &'static str, Option<&str>)> {
-    for (flag, flag_str) in [
-        (Flag::Output, "-o"),
-        (Flag::Output, "--output"),
-        (Flag::Reference, "-r"),
-        (Flag::Reference, "--ref"),
-        (Flag::Format, "-f"),
-        (Flag::Format, "--format"),
-        (Flag::Exclude, "-x"),
-        (Flag::Exclude, "--exclude"),
-    ] {
-        if s == flag_str {
-            return Some((flag, flag_str, None));
-        }
-        if let Some(rest) = s.strip_prefix(flag_str)
-            && let Some(inline) = rest.strip_prefix('=')
-        {
-            return Some((flag, flag_str, Some(inline)));
-        }
+    /// Resolves accumulated options into a [`CliAction::Run`].
+    fn finish(self) -> Result<CliAction, DomainError> {
+        let source_os = self.source.ok_or_else(|| {
+            DomainError::usage("the following required arguments were not provided: <SOURCE>")
+        })?;
+
+        let output = match self.output {
+            Some(o) if o == "-" => OutputTarget::Stdout,
+            Some(o) => OutputTarget::File(PathBuf::from(o)),
+            None => OutputTarget::File(PathBuf::from("digest.txt")),
+        };
+
+        let source = Source::parse_os(&source_os)?.with_reference(self.reference)?;
+        Ok(CliAction::Run(Box::new(RunConfig {
+            source,
+            output,
+            format: self.format,
+            exclude: ExcludePatterns::new(self.exclude)?,
+        })))
     }
-    None
 }
 
 /// Meaning of one argument seen in `ParseState::Normal`.
@@ -153,8 +162,24 @@ fn classify_arg(arg: &OsStr) -> Arg<'_> {
     if s == "-V" || s == "--version" {
         return Arg::Version;
     }
-    if let Some((flag, flag_str, inline)) = match_flag(s) {
-        return Arg::Flag(flag, flag_str, inline);
+    for (flag, flag_str) in [
+        (Flag::Output, "-o"),
+        (Flag::Output, "--output"),
+        (Flag::Reference, "-r"),
+        (Flag::Reference, "--ref"),
+        (Flag::Format, "-f"),
+        (Flag::Format, "--format"),
+        (Flag::Exclude, "-x"),
+        (Flag::Exclude, "--exclude"),
+    ] {
+        if s == flag_str {
+            return Arg::Flag(flag, flag_str, None);
+        }
+        if let Some(rest) = s.strip_prefix(flag_str)
+            && let Some(inline) = rest.strip_prefix('=')
+        {
+            return Arg::Flag(flag, flag_str, Some(inline));
+        }
     }
     if s.starts_with('-') && s != "-" {
         return Arg::Unknown(s);
@@ -180,105 +205,50 @@ where
     let _bin = args_iter.next(); // Skip binary name
 
     let mut state = ParseState::Normal;
-    let parsed = match fold_args(&mut args_iter, &mut state) {
-        Ok(Folded::Early(action)) => return Ok(action),
-        Ok(Folded::Parsed(parsed)) => parsed,
-        Err(err) => {
-            // `-h` and `-V` win over an earlier error, unless that error came after `--`.
-            return match state {
-                ParseState::PositionalOnly => Err(err),
-                _ => scan_for_early_action(args_iter).ok_or(err),
-            };
-        }
-    };
+    // `-h` and `-V` win over an earlier error unless that error came after `--`, so the loop
+    // remembers the first error and keeps stepping `state` until `--` or end-of-arguments.
+    let mut acc: Result<Parsed, DomainError> = Ok(Parsed::default());
 
-    let Parsed {
-        source,
-        output,
-        reference,
-        format,
-        exclude,
-    } = parsed;
-    let source_os = source.ok_or_else(|| {
-        DomainError::usage("the following required arguments were not provided: <SOURCE>")
-    })?;
-
-    let output_target = match output {
-        Some(o) if o == "-" => OutputTarget::Stdout,
-        Some(o) => OutputTarget::File(PathBuf::from(o)),
-        None => OutputTarget::File(PathBuf::from("digest.txt")),
-    };
-
-    let resolved_source = Source::parse_os(&source_os)?.with_reference(reference)?;
-    Ok(CliAction::Run(Box::new(RunConfig {
-        source: resolved_source,
-        output: output_target,
-        format,
-        exclude: ExcludePatterns::new(exclude)?,
-    })))
-}
-
-/// Result of folding the arguments: either option values, or `-h`/`-V` seen first.
-enum Folded {
-    Parsed(Parsed),
-    Early(CliAction),
-}
-
-/// Folds arguments left to right, stopping at the first error. `state` is left at the point of failure.
-fn fold_args(
-    args: &mut impl Iterator<Item = OsString>,
-    state: &mut ParseState,
-) -> Result<Folded, DomainError> {
-    let mut parsed = Parsed::default();
-    for arg in args {
-        match *state {
+    for arg in args_iter {
+        match state {
             ParseState::ExpectValue(flag, flag_str) => {
-                *state = ParseState::Normal;
-                reject_option_like(flag, flag_str, &arg)?;
-                parsed = parsed.with_value(flag, arg)?;
+                state = ParseState::Normal;
+                acc = acc.and_then(|parsed| {
+                    reject_option_like(flag, flag_str, &arg)?;
+                    parsed.with_value(flag, arg)
+                });
             }
             ParseState::PositionalOnly => {
-                parsed = parsed.with_positional(arg)?;
+                acc = Ok(acc?.with_positional(arg)?);
             }
             ParseState::Normal => match classify_arg(&arg) {
-                Arg::Separator => *state = ParseState::PositionalOnly,
-                Arg::Help => return Ok(Folded::Early(CliAction::Help)),
-                Arg::Version => return Ok(Folded::Early(CliAction::Version)),
+                Arg::Separator => {
+                    acc = Ok(acc?);
+                    state = ParseState::PositionalOnly;
+                }
+                Arg::Help => return Ok(CliAction::Help),
+                Arg::Version => return Ok(CliAction::Version),
                 Arg::Flag(flag, _, Some(inline)) => {
-                    parsed = parsed.with_value(flag, OsString::from(inline))?;
+                    acc = acc.and_then(|parsed| parsed.with_value(flag, OsString::from(inline)));
                 }
                 Arg::Flag(flag, flag_str, None) => {
-                    *state = ParseState::ExpectValue(flag, flag_str);
+                    state = ParseState::ExpectValue(flag, flag_str);
                 }
                 Arg::Unknown(s) => {
-                    return Err(DomainError::usage(format!("unknown option: {s}")));
+                    acc = acc.and_then(|_| Err(DomainError::usage(format!("unknown option: {s}"))));
                 }
-                Arg::Positional => parsed = parsed.with_positional(arg)?,
+                Arg::Positional => {
+                    acc = acc.and_then(|parsed| parsed.with_positional(arg));
+                }
             },
         }
     }
-    if let ParseState::ExpectValue(_, flag_str) = *state {
+
+    let parsed = acc?;
+    if let ParseState::ExpectValue(_, flag_str) = state {
         return Err(missing_value(flag_str));
     }
-    Ok(Folded::Parsed(parsed))
-}
-
-/// Finds the first `-h` or `-V` among the arguments left after an error, stopping at `--`.
-fn scan_for_early_action(args: impl Iterator<Item = OsString>) -> Option<CliAction> {
-    let mut skip_value = false;
-    for arg in args {
-        if std::mem::take(&mut skip_value) {
-            continue;
-        }
-        match classify_arg(&arg) {
-            Arg::Separator => return None,
-            Arg::Help => return Some(CliAction::Help),
-            Arg::Version => return Some(CliAction::Version),
-            Arg::Flag(_, _, None) => skip_value = true,
-            _ => {}
-        }
-    }
-    None
+    parsed.finish()
 }
 
 /// Rejects a separate-argument flag value that starts with `-`, so `-o -x` cannot
@@ -300,16 +270,6 @@ fn missing_value(flag_str: &str) -> DomainError {
     DomainError::usage(format!(
         "a value is required for '{flag_str}' but none was supplied"
     ))
-}
-
-fn parse_format(val: &str) -> Result<DigestFormat, DomainError> {
-    match val {
-        "text" => Ok(DigestFormat::Text),
-        "xml" => Ok(DigestFormat::Xml),
-        _ => Err(DomainError::usage(format!(
-            "invalid value '{val}' for '--format <text|xml>'"
-        ))),
-    }
 }
 
 #[cfg(test)]

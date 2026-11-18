@@ -9,13 +9,30 @@ pub struct ErrorDetail(String);
 impl ErrorDetail {
     /// Creates a detail from `text`, replacing line breaks with spaces and other control characters
     /// with `U+FFFD`.
+    ///
+    /// Note: Unlike digest header escaping which escapes `\n` and `\r` as `\n` / `\r` literals,
+    /// error message formatting converts line breaks to spaces for compact single-line stderr diagnostics.
     #[must_use]
     pub fn new<'a>(text: impl Into<Cow<'a, str>>) -> Self {
         let cow = text.into();
-        match sanitize_error_detail(&cow) {
-            Cow::Borrowed(_) => Self(cow.into_owned()),
-            Cow::Owned(sanitized) => Self(sanitized),
+        if !cow.chars().any(char::is_control) {
+            return Self(cow.into_owned());
         }
+        Self(
+            cow.chars()
+                .map(|c| match c {
+                    '\t' | '\r' | '\n' => ' ',
+                    c if c.is_control() => '\u{FFFD}',
+                    c => c,
+                })
+                .collect(),
+        )
+    }
+
+    /// Returns the sanitized error string, consuming the wrapper.
+    #[must_use]
+    pub(crate) fn into_inner(self) -> String {
+        self.0
     }
 }
 
@@ -76,9 +93,9 @@ impl DomainError {
     /// Constructs a [`CandidateLimitExceeded`](Self::CandidateLimitExceeded) error with diagnostic directory counts.
     /// The directory names are sanitized.
     #[cold]
-    pub(crate) fn candidate_limit_exceeded(
+    pub(crate) fn candidate_limit_exceeded<'a, S: Into<Cow<'a, str>>>(
         limit: usize,
-        largest_directories: Vec<(String, usize)>,
+        largest_directories: impl IntoIterator<Item = (S, usize)>,
     ) -> Self {
         Self::CandidateLimitExceeded(LimitExceededError {
             limit: limit as u64,
@@ -107,7 +124,10 @@ impl DomainError {
     /// Constructs an [`OutputTooLarge`](Self::OutputTooLarge) error with diagnostic largest file entries.
     /// The file names are sanitized.
     #[cold]
-    pub(crate) fn output_too_large(limit: u64, largest_files: Vec<(String, usize)>) -> Self {
+    pub(crate) fn output_too_large<'a, S: Into<Cow<'a, str>>>(
+        limit: u64,
+        largest_files: impl IntoIterator<Item = (S, usize)>,
+    ) -> Self {
         Self::OutputTooLarge(LimitExceededError {
             limit,
             largest: sanitized_counts(largest_files),
@@ -115,33 +135,13 @@ impl DomainError {
     }
 }
 
-fn sanitized_counts(entries: Vec<(String, usize)>) -> Vec<(ErrorDetail, usize)> {
+fn sanitized_counts<'a, S: Into<Cow<'a, str>>>(
+    entries: impl IntoIterator<Item = (S, usize)>,
+) -> Vec<(ErrorDetail, usize)> {
     entries
         .into_iter()
         .map(|(name, count)| (ErrorDetail::new(name), count))
         .collect()
-}
-
-/// Sanitizes control characters in error detail string.
-/// Converts `\t`, `\r`, `\n` to space `' '` for single-line output formatting.
-/// Converts all other Unicode control characters (`c.is_control()`) to `\u{FFFD}`.
-/// Note: Unlike digest header escaping which escapes `\n` and `\r` as `\n` / `\r` literals,
-/// error message formatting converts line breaks to spaces for compact single-line stderr diagnostics.
-#[must_use]
-fn sanitize_error_detail(input: &str) -> Cow<'_, str> {
-    if !input.chars().any(char::is_control) {
-        return Cow::Borrowed(input);
-    }
-    Cow::Owned(
-        input
-            .chars()
-            .map(|c| match c {
-                '\t' | '\r' | '\n' => ' ',
-                c if c.is_control() => '\u{FFFD}',
-                c => c,
-            })
-            .collect(),
-    )
 }
 
 impl Display for DomainError {
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn output_too_large_message_derives_from_payload_limit() {
         assert_eq!(
-            DomainError::output_too_large(7 * 1024 * 1024, Vec::new()).to_string(),
+            DomainError::output_too_large(7 * 1024 * 1024, Vec::<(&str, usize)>::new()).to_string(),
             "digest exceeds the 7 MiB output limit"
         );
     }
@@ -232,15 +232,14 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_error_detail_replaces_newlines_and_controls() {
-        let clean = sanitize_error_detail("plain error message");
-        assert!(matches!(clean, Cow::Borrowed("plain error message")));
+    fn error_detail_replaces_newlines_and_controls() {
+        let clean = ErrorDetail::new("plain error message");
+        assert_eq!(&*clean, "plain error message");
 
         let input = "hello\tworld\r\nfoo\x1b[31mbar\x07baz\x7fdel\u{80}c1";
-        let sanitized = sanitize_error_detail(input);
-        assert!(matches!(sanitized, Cow::Owned(_)));
+        let sanitized = ErrorDetail::new(input);
         assert_eq!(
-            sanitized,
+            &*sanitized,
             "hello world  foo\u{FFFD}[31mbar\u{FFFD}baz\u{FFFD}del\u{FFFD}c1"
         );
     }
@@ -253,6 +252,7 @@ mod tests {
         assert_eq!(&*detail, "a\u{FFFD}[2J b");
         assert_eq!(detail, *"a\u{FFFD}[2J b");
         assert_eq!(detail.to_string(), "a\u{FFFD}[2J b");
+        assert_eq!(detail.into_inner(), "a\u{FFFD}[2J b");
     }
 
     #[test]
@@ -289,11 +289,8 @@ mod tests {
         use std::fmt::Write as _;
 
         let errors = [
-            DomainError::candidate_limit_exceeded(
-                MAX_FILE_COUNT,
-                vec![("dir_a".into(), 3), ("dir_b".into(), 2)],
-            ),
-            DomainError::output_too_large(MAX_OUTPUT_SIZE, vec![("big.txt".into(), 2_000_000)]),
+            DomainError::candidate_limit_exceeded(MAX_FILE_COUNT, [("dir_a", 3), ("dir_b", 2)]),
+            DomainError::output_too_large(MAX_OUTPUT_SIZE, [("big.txt", 2_000_000)]),
         ];
         for err in errors {
             let full = err.to_string();
@@ -318,11 +315,9 @@ mod tests {
 
     #[test]
     fn overflow_diagnostics_sanitize_control_characters() {
-        let candidates = DomainError::candidate_limit_exceeded(
-            MAX_FILE_COUNT,
-            vec![("d\x1b]0;t\x07/".into(), 3)],
-        )
-        .to_string();
+        let candidates =
+            DomainError::candidate_limit_exceeded(MAX_FILE_COUNT, [("d\x1b]0;t\x07/", 3)])
+                .to_string();
         assert_eq!(
             candidates,
             format!(
@@ -332,8 +327,7 @@ mod tests {
 
         let mib = MAX_OUTPUT_SIZE / (1024 * 1024);
         let output =
-            DomainError::output_too_large(MAX_OUTPUT_SIZE, vec![("f\x1b[31m\n.txt".into(), 1)])
-                .to_string();
+            DomainError::output_too_large(MAX_OUTPUT_SIZE, [("f\x1b[31m\n.txt", 1)]).to_string();
         assert_eq!(
             output,
             format!(
@@ -369,12 +363,10 @@ mod tests {
             #[test]
             fn sanitized_detail_has_no_control_characters(input in text()) {
                 let detail = ErrorDetail::new(input.as_str());
-                prop_assert_eq!(&*detail, sanitize_error_detail(&input));
-                prop_assert_eq!(ErrorDetail::new(detail.to_string()), detail);
-                let output = sanitize_error_detail(&input);
-                prop_assert!(!output.chars().any(char::is_control), "{:?}", output);
-                prop_assert_eq!(output.chars().count(), input.chars().count());
-                for (before, after) in input.chars().zip(output.chars()) {
+                prop_assert_eq!(ErrorDetail::new(detail.to_string()), detail.clone());
+                prop_assert!(!detail.chars().any(char::is_control), "{:?}", detail.clone());
+                prop_assert_eq!(detail.chars().count(), input.chars().count());
+                for (before, after) in input.chars().zip(detail.chars()) {
                     if !before.is_control() {
                         prop_assert_eq!(before, after);
                     }
@@ -383,8 +375,8 @@ mod tests {
 
             #[test]
             fn sanitizing_is_idempotent(input in text()) {
-                let once = sanitize_error_detail(&input);
-                prop_assert_eq!(&*sanitize_error_detail(&once), &*once);
+                let once = ErrorDetail::new(input.as_str());
+                prop_assert_eq!(ErrorDetail::new(&*once), once);
             }
         }
     }

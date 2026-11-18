@@ -20,23 +20,6 @@ static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug)]
 pub(super) struct TempDirGuard(PathBuf);
 
-impl TempDirGuard {
-    fn new(label: &str) -> Result<Self, Box<dyn Error>> {
-        let pid = std::process::id();
-        let path = loop {
-            let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let candidate =
-                std::env::temp_dir().join(format!("local_ingest_{label}_{pid}_{counter}"));
-            match fs::create_dir(&candidate) {
-                Ok(()) => break candidate,
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(err) => return Err(Box::new(err)),
-            }
-        };
-        Ok(Self(fs::canonicalize(&path)?))
-    }
-}
-
 impl Deref for TempDirGuard {
     type Target = Path;
 
@@ -58,7 +41,17 @@ impl Drop for TempDirGuard {
 }
 
 pub(super) fn temp_dir(label: &str) -> Result<TempDirGuard, Box<dyn Error>> {
-    TempDirGuard::new(label)
+    let pid = std::process::id();
+    let path = loop {
+        let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let candidate = std::env::temp_dir().join(format!("local_ingest_{label}_{pid}_{counter}"));
+        match fs::create_dir(&candidate) {
+            Ok(()) => break candidate,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(Box::new(err)),
+        }
+    };
+    Ok(TempDirGuard(fs::canonicalize(&path)?))
 }
 
 /// Upper bound for [`run_with_timeout`]. Generous, so a slow runner never trips it.
@@ -99,21 +92,6 @@ pub(super) fn gzip_archive(fill: impl FnOnce(&mut Builder<&mut GzEncoder<Vec<u8>
         tar.finish().unwrap();
     }
     gz.finish().unwrap()
-}
-
-/// Gzip stream of a tar holding one regular entry, `repo-root/big.txt`, whose body is `body_len` bytes of
-/// `x`. The decompressed stream is exactly one 512-byte header plus the body, with no padding or end
-/// blocks. Generated on demand, so a limit-sized archive is never held in memory.
-pub(super) fn gzip_single_entry_stream(body_len: u64) -> impl Read {
-    let mut header = tar::Header::new_gnu();
-    header.set_path("repo-root/big.txt").unwrap();
-    header.set_entry_type(EntryType::Regular);
-    header.set_size(body_len);
-    header.set_mode(0o644);
-    header.set_cksum();
-    let raw = std::io::Cursor::new(header.as_bytes().to_vec())
-        .chain(std::io::repeat(b'x').take(body_len));
-    flate2::read::GzEncoder::new(raw, Compression::fast())
 }
 
 /// Builds a gzipped tarball from `(path, content, entry type)` triples.

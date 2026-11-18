@@ -9,14 +9,15 @@ use ureq::typestate::WithoutBody;
 use ureq::{Agent, RequestBuilder};
 use zeroize::Zeroizing;
 
+use crate::core::error::ErrorDetail;
 use crate::core::github::{
-    AttemptState, Auth, RateLimitHeaders, RequestOutcome, Transition, TransportKind, api_error,
+    AttemptState, Auth, RateLimitHeaders, RequestOutcome, Transition, api_error,
     is_github_api_origin, status_retry_warning, transport_retry_warning,
 };
 use crate::core::policy::{
     ARCHIVE_MAX_SECS, GITHUB_ERROR_BODY_BYTES, GITHUB_TIMEOUT_SECS, TOKEN_ENV_VARS,
 };
-use crate::shell::error::{IngestError, transport_error};
+use crate::shell::error::IngestError;
 use crate::shell::stdio;
 
 const GITHUB_USER_AGENT: &str = concat!("codefeed/", env!("CARGO_PKG_VERSION"));
@@ -40,9 +41,7 @@ impl GithubClient {
             .tls_config(tls)
             .build();
 
-        let auth_header = resolve_token_with(|k| std::env::var(k))
-            .as_ref()
-            .map(bearer_header);
+        let auth_header = resolve_token_with(|k| std::env::var(k));
 
         Self {
             agent: Agent::new_with_config(config),
@@ -118,25 +117,25 @@ impl Attempt {
     ) -> (Self, RequestOutcome) {
         match result {
             Ok(response) => {
-                let now_secs = unix_now_secs();
-                let rate_limit = read_rate_limit_headers(response.headers(), now_secs);
-                let retry_after = rate_limit.retry_after(now_secs);
+                let rate_limit = read_rate_limit_headers(response.headers(), unix_now_secs());
                 let outcome = RequestOutcome::HttpStatus {
                     status: response.status().as_u16(),
-                    retry_after,
-                    is_rate_limit: rate_limit.is_rate_limited(),
+                    rate_limit,
                 };
                 (
                     Self::Status {
                         response,
-                        retry_after,
+                        retry_after: rate_limit.retry_after(),
                     },
                     outcome,
                 )
             }
             Err(error) => {
-                let kind = transport_kind(&error);
-                (Self::Transport(error), RequestOutcome::TransportError(kind))
+                let retryable = is_retryable_transport(&error);
+                (
+                    Self::Transport(error),
+                    RequestOutcome::TransportError { retryable },
+                )
             }
         }
     }
@@ -168,18 +167,16 @@ impl Attempt {
                     .read_to_end(&mut body_bytes);
                 IngestError::Api(api_error(status.as_u16(), &body_bytes, retry_after, auth))
             }
-            Self::Transport(error) => transport_error(&error.to_string()),
+            Self::Transport(error) => IngestError::Http(ErrorDetail::new(error.to_string())),
         }
     }
 }
 
-const fn transport_kind(error: &ureq::Error) -> TransportKind {
-    match error {
-        ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed => {
-            TransportKind::Retryable
-        }
-        _ => TransportKind::Permanent,
-    }
+const fn is_retryable_transport(error: &ureq::Error) -> bool {
+    matches!(
+        error,
+        ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed
+    )
 }
 
 /// Reads rate-limit headers, resolving HTTP-dates against the supplied Unix time.
@@ -195,6 +192,7 @@ fn read_rate_limit_headers(headers: &ureq::http::HeaderMap, now_secs: u64) -> Ra
                     text("retry-after"),
                     text("x-ratelimit-remaining"),
                     text("x-ratelimit-reset"),
+                    now_secs,
                 )
             },
             |date| RateLimitHeaders::RetryAfterSecs(date.as_secs().saturating_sub(now_secs)),
@@ -215,12 +213,8 @@ where
     TOKEN_ENV_VARS.into_iter().find_map(|key| {
         let raw = Zeroizing::new(lookup(key).ok()?);
         let trimmed = raw.trim_ascii();
-        (!trimmed.is_empty()).then(|| Zeroizing::new(trimmed.to_string()))
+        (!trimmed.is_empty()).then(|| Zeroizing::new(format!("Bearer {trimmed}")))
     })
-}
-
-fn bearer_header(token: &Zeroizing<String>) -> Zeroizing<String> {
-    Zeroizing::new(format!("Bearer {}", token.as_str()))
 }
 
 #[cfg(test)]
@@ -240,7 +234,7 @@ mod tests {
         headers.insert("x-ratelimit-reset", "123".parse().expect("header value"));
         assert_eq!(
             read_rate_limit_headers(&headers, 0),
-            RateLimitHeaders::parse(None, Some("0"), Some("123"))
+            RateLimitHeaders::parse(None, Some("0"), Some("123"), 0)
         );
     }
 
@@ -259,9 +253,8 @@ mod tests {
                 headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
                 headers.insert("x-ratelimit-reset", "1000000000".parse().unwrap());
                 let facts = read_rate_limit_headers(&headers, now);
-                assert!(facts.is_rate_limited());
                 assert_eq!(
-                    facts.retry_after(now),
+                    facts.retry_after(),
                     Some(Duration::from_secs(expected)),
                     "{value}: now={now}"
                 );
@@ -278,7 +271,7 @@ mod tests {
             headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
             headers.insert("x-ratelimit-reset", (DATE + 2).to_string().parse().unwrap());
             assert_eq!(
-                read_rate_limit_headers(&headers, DATE).retry_after(DATE),
+                read_rate_limit_headers(&headers, DATE).retry_after(),
                 Some(Duration::from_secs(2)),
                 "{value}"
             );
@@ -457,21 +450,15 @@ mod tests {
 
     #[test]
     fn does_not_retry_non_transient_transport_error() {
-        let retryable = TransportKind::Retryable;
-        let permanent = TransportKind::Permanent;
-        assert_eq!(
-            transport_kind(&ureq::Error::Timeout(ureq::Timeout::Global)),
-            retryable
-        );
-        assert_eq!(transport_kind(&ureq::Error::ConnectionFailed), retryable);
-        assert_eq!(
-            transport_kind(&ureq::Error::Io(std::io::Error::from(
-                std::io::ErrorKind::ConnectionReset
-            ))),
-            retryable
-        );
-        assert_eq!(transport_kind(&ureq::Error::HostNotFound), permanent);
-        assert_eq!(transport_kind(&ureq::Error::Tls("cert error")), permanent);
+        assert!(is_retryable_transport(&ureq::Error::Timeout(
+            ureq::Timeout::Global
+        )));
+        assert!(is_retryable_transport(&ureq::Error::ConnectionFailed));
+        assert!(is_retryable_transport(&ureq::Error::Io(
+            std::io::Error::from(std::io::ErrorKind::ConnectionReset)
+        )));
+        assert!(!is_retryable_transport(&ureq::Error::HostNotFound));
+        assert!(!is_retryable_transport(&ureq::Error::Tls("cert error")));
 
         let server = MockServer::spawn(1, |_index, _req, _port| b"NOT_HTTP/1.1\r\n\r\n".to_vec());
 
@@ -507,12 +494,6 @@ mod tests {
     }
 
     #[test]
-    fn bearer_header_prefixes_the_token() {
-        let header = bearer_header(&Zeroizing::new("ghp_test".into()));
-        assert_eq!(header.as_str(), "Bearer ghp_test");
-    }
-
-    #[test]
     fn resolves_token_with_correct_precedence_and_trimming() {
         let mock_env = |map: HashMap<&'static str, &'static str>| {
             move |key: &str| {
@@ -526,19 +507,19 @@ mod tests {
         let env = HashMap::from([("GITHUB_TOKEN", "token_a"), ("GH_TOKEN", "token_b")]);
         assert_eq!(
             resolve_token_with(mock_env(env)),
-            Some(Zeroizing::new("token_a".into()))
+            Some(Zeroizing::new("Bearer token_a".into()))
         );
 
         let env = HashMap::from([("GH_TOKEN", "token_b")]);
         assert_eq!(
             resolve_token_with(mock_env(env)),
-            Some(Zeroizing::new("token_b".into()))
+            Some(Zeroizing::new("Bearer token_b".into()))
         );
 
         let env = HashMap::from([("GITHUB_TOKEN", "   "), ("GH_TOKEN", "valid_token")]);
         assert_eq!(
             resolve_token_with(mock_env(env)),
-            Some(Zeroizing::new("valid_token".into()))
+            Some(Zeroizing::new("Bearer valid_token".into()))
         );
 
         let env = HashMap::from([("GITHUB_TOKEN", "")]);

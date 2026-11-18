@@ -1,4 +1,6 @@
-//! User exclusion patterns (`--exclude`) in `.gitignore` syntax, matched against source-relative paths.
+//! User exclusion patterns (`--exclude`) and `.gitignore` rule compilation.
+
+use std::path::Path;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
@@ -57,20 +59,39 @@ impl ExcludePatterns {
         Ok(Self { patterns, rules })
     }
 
-    /// Whether no user exclusion patterns were configured.
-    #[must_use]
-    pub(crate) const fn is_empty(&self) -> bool {
-        self.patterns.is_empty()
-    }
-
-    /// Whether the patterns exclude `prefix`, a match prefix built by [`push_match_segment`].
+    /// Advances `prefix` by `segment` and checks whether the user patterns exclude it.
     ///
-    /// Each prefix is matched on its own. Callers test a directory as it is admitted, so an excluded
-    /// directory excludes everything below it, and a `!` pattern cannot re-include such an entry.
+    /// Returns `Some(prefix)` unchanged when no user patterns are configured, `None` when the
+    /// extended prefix is excluded, or `Some(extended)` when it is admitted. Callers test a
+    /// directory as it is admitted, so an excluded directory excludes everything below it and a
+    /// `!` pattern cannot re-include such an entry.
     #[must_use]
-    pub(crate) fn excludes_prefix(&self, prefix: &str, is_dir: bool) -> bool {
-        self.rules.matched(prefix, is_dir).is_ignore()
+    pub(crate) fn advance(&self, prefix: String, segment: &[u8], is_dir: bool) -> Option<String> {
+        if self.patterns.is_empty() {
+            return Some(prefix);
+        }
+        let next = push_match_segment(prefix, segment);
+        (!self.rules.matched(&next, is_dir).is_ignore()).then_some(next)
     }
+}
+
+/// Compiles `bytes` as the `.gitignore` rules of `dir` after stripping leading UTF-8 BOMs.
+///
+/// Invalid UTF-8, unsupported POSIX named character classes, and rule-set compilation failures
+/// return an error message. POSIX classes are rejected before other invalid globs are skipped.
+pub(crate) fn compile_gitignore(dir: &Path, bytes: &[u8]) -> Result<Gitignore, String> {
+    let text = std::str::from_utf8(bytes).map_err(|err| err.to_string())?;
+    // Matches `ignore::gitignore`: every leading BOM on the first line is stripped.
+    let text = text.trim_start_matches('\u{feff}');
+    let mut builder = GitignoreBuilder::new(dir);
+    for (index, line) in text.lines().enumerate() {
+        if has_posix_class(line) {
+            return Err(format!("line {}: {UNSUPPORTED_POSIX_CLASS}", index + 1));
+        }
+        // An invalid glob line is skipped; the other lines still apply.
+        let _ = builder.add_line(None, line);
+    }
+    builder.build().map_err(|err| err.to_string())
 }
 
 /// Appends one path segment to a match prefix, joined with `/` when the prefix is not empty.
@@ -78,7 +99,7 @@ impl ExcludePatterns {
 /// A `\` inside a segment is matched as U+FFFD on every platform, so it is never a separator and never
 /// matches a `\` in a pattern. Invalid UTF-8 is matched by its lossy form.
 #[must_use]
-pub(crate) fn push_match_segment(mut prefix: String, segment: &[u8]) -> String {
+fn push_match_segment(mut prefix: String, segment: &[u8]) -> String {
     if !prefix.is_empty() {
         prefix.push('/');
     }
@@ -118,14 +139,13 @@ fn check_one_rule(pattern: &str) -> Result<(), DomainError> {
     }
 }
 
-pub(crate) const UNSUPPORTED_POSIX_CLASS: &str =
-    "POSIX character classes in globs are not supported";
+const UNSUPPORTED_POSIX_CLASS: &str = "POSIX character classes in globs are not supported";
 
 /// Detects named classes inside bracket expressions, which `globset` would match as literal text.
 ///
 /// A complete named class is unsupported even if its enclosing bracket expression is unclosed.
 #[must_use]
-pub(crate) fn has_posix_class(pattern: &str) -> bool {
+fn has_posix_class(pattern: &str) -> bool {
     if pattern.starts_with('#') || !pattern.contains("[:") {
         return false;
     }
@@ -428,6 +448,32 @@ mod tests {
         assert_ne!(patterns(&["a"]), patterns(&["a", "b"]));
     }
 
+    #[test]
+    fn compile_gitignore_strips_bom_skips_invalid_globs_and_rejects_bad_inputs() {
+        let dir = Path::new("root");
+        let bom = compile_gitignore(dir, "\u{feff}*.bak\n".as_bytes()).expect("BOM line parses");
+        assert!(bom.matched("root/x.bak", false).is_ignore());
+
+        let invalid = compile_gitignore(dir, b"[\n*.dat\n").expect("invalid glob line is skipped");
+        assert!(invalid.matched("root/z.dat", false).is_ignore());
+
+        // Every leading BOM is stripped, matching `ignore::gitignore`.
+        let double_bom = compile_gitignore(dir, "\u{feff}\u{feff}*.bak\n".as_bytes())
+            .expect("double BOM line parses");
+        assert!(double_bom.matched("root/x.bak", false).is_ignore());
+
+        let err = compile_gitignore(dir, b"ok\n\xff\n").expect_err("non-UTF-8 line is rejected");
+        assert_eq!(err, "invalid utf-8 sequence of 1 bytes from index 3");
+
+        let posix_err = compile_gitignore(dir, b"/config[[:digit:]].txt\n")
+            .expect_err("POSIX character class is rejected");
+        assert!(posix_err.contains("POSIX character classes"), "{posix_err}");
+        assert!(compile_gitignore(dir, b"# /config[[:digit:]].txt\n").is_ok());
+
+        let empty = compile_gitignore(dir, b"").expect("empty file parses");
+        assert!(empty.matched("root/a.txt", false).is_none());
+    }
+
     mod properties {
         use super::*;
         use proptest::prelude::*;
@@ -452,8 +498,8 @@ mod tests {
                 let pattern = String::from_iter(pattern);
                 match ExcludePatterns::new([pattern.as_str()]) {
                     Ok(set) => {
-                        let _ = set.excludes_prefix(&candidate, false);
-                        let _ = set.excludes_prefix(&candidate, true);
+                        let _ = set.advance(String::new(), candidate.as_bytes(), false);
+                        let _ = set.advance(String::new(), candidate.as_bytes(), true);
                     }
                     Err(err) => prop_assert!(matches!(err, DomainError::Usage(_)), "{:?}", err),
                 }
