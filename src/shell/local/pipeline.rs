@@ -10,7 +10,7 @@
 //!   thread inside `std::thread::scope`.
 //! - **Determinism & Cancellation**: The first failure in walk order is reported, so the result
 //!   is the same on every run. An error or budget overflow sets `AtomicBool`, so workers skip
-//!   further reads, and the main thread drops its receiver, which stops the producer.
+//!   further reads and the walk stops between entries. Dropping the receiver unblocks slot sends.
 
 use std::fs;
 use std::io::{self, Read};
@@ -113,10 +113,9 @@ pub(super) fn fold_candidates<T>(
     init: T,
     mut step: impl FnMut(T, Candidate<Body<PooledBuf<'_>>>) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
-    let walker = Walk::new(root, exclude)?;
-    let pool = BufferPool::new();
-
     let aborted = AtomicBool::new(false);
+    let walker = Walk::new(root, exclude, &aborted)?;
+    let pool = BufferPool::new();
     let (job_tx, job_rx) = sync_channel::<Job<'_>>(LOCAL_CHANNEL_CAPACITY);
     let jobs = Mutex::new(job_rx);
     let (slot_tx, slot_rx) = sync_channel::<Slot<'_>>(LOCAL_CHANNEL_CAPACITY);

@@ -24,7 +24,7 @@ pub(crate) const MAX_FILE_COUNT: usize = 10_000;
 pub(crate) const OVERFLOW_LARGEST_FILES: usize = 5;
 /// Largest directories listed by the `MAX_FILE_COUNT` overflow diagnostic.
 pub(crate) const OVERFLOW_LARGEST_DIRECTORIES: usize = 3;
-/// Maximum directory nesting depth permitted for archive entry paths.
+/// Maximum directory nesting depth for local descent and classified archive files.
 pub(crate) const MAX_PATH_DEPTH: usize = 256;
 /// Maximum allowable path length in bytes. Paths exceeding this limit are skipped.
 pub(crate) const MAX_PATH_BYTES: usize = 4096;

@@ -35,9 +35,9 @@ Entry (local walk or tar stream)
  +-- Directory (local walk only)
  |     +-- Hidden or ignored by a `.gitignore` -> Pruned, not entered; its `.gitignore` is never read.
  |     +-- Matched by a user exclusion (§ 3.6) -> Pruned, not entered; its `.gitignore` is never read.
+ |     +-- Depth > MAX_PATH_DEPTH -> Run fails (InvalidMetadata) before reading its `.gitignore` or listing entries.
  |     `-- Entered:
- |           +-- `.gitignore` read once; the same bytes validate and compile its rules.
- |           |     `-- Symlink, non-regular file, larger than `MAX_FILE_SIZE`, unreadable, or not valid UTF-8 -> Run fails (Io). § 3.5.
+ |           +-- `.gitignore` read once; the same bytes validate and compile its rules (§ 3.5).
  |           `-- Listing over `MAX_DIR_ENTRIES` entries (hidden and ignored included) -> Run fails (InvalidMetadata).
  |
  +-- Tar header read (GNU `L`/`K` and PAX `x` bodies included). Runs before path classification and applies to every entry type.
@@ -111,7 +111,7 @@ Exact matches against final path segment:
 
 | Rule | Effect |
 | :--- | :--- |
-| Depth > `MAX_PATH_DEPTH` | Run fails (`InvalidMetadata`). Hidden/noise items dropped prior to check. |
+| Depth > `MAX_PATH_DEPTH` | Run fails (`InvalidMetadata`). Local descent checks after pruning and before entering the directory; tar file classification checks after exclusions. |
 | Path > `MAX_PATH_BYTES` | Consumes candidate slot; counted as skipped; body unread. Truncated prefix keys budget (I-05). |
 | Path equal to another candidate's path | Run fails (`InvalidMetadata`). Applies to skipped candidates too; normalized raw bytes determine identity, not accounting prefixes or lossy UTF-8. |
 | Stored path is directory prefix of another (`a` and `a/…`) | Run fails (`InvalidMetadata`) at digest assembly. Skipped candidates excluded. |
@@ -120,11 +120,12 @@ Exact matches against final path segment:
 
 - Applies in-tree `.gitignore` files (Git binary not required). Global gitignore, `.git/info/exclude`, and parent files are ignored.
 - Local walk reads a directory's `.gitignore` once on entry. The bytes validating the file compile its rules.
-- A `.gitignore` that is a symlink, non-regular/non-directory (e.g. FIFO), exceeds `MAX_FILE_SIZE`, is unreadable, or not valid UTF-8 fails the run (`IngestError::Io`). A `.gitignore` directory contributes no rules; invalid globs are skipped.
+- A `.gitignore` that is a symlink, non-regular/non-directory (e.g. FIFO), exceeds `MAX_FILE_SIZE`, is unreadable, or is not valid UTF-8 fails the run (`IngestError::Io`). A `.gitignore` directory contributes no rules.
+- A rule using a POSIX named character class (e.g. `[[:digit:]]`) fails the run (`IngestError::Io`), even if the glob is otherwise malformed. Other invalid globs are skipped. Use a range such as `[0-9]` instead of `[[:digit:]]`. A `[` used as a range endpoint does not start a named class.
 
 ### 3.6 User Exclusions (`--exclude`)
 
-- `.gitignore` syntax relative to source root, case-sensitive. Each pattern yields one rule. Unescaped trailing whitespace trimmed before parsing. Blank lines, comments, bare `!`, unclosed `[`, or invalid globs fail at parse time (`DomainError::Usage`).
+- `.gitignore` syntax relative to source root, case-sensitive. Each pattern yields one rule. Unescaped trailing whitespace trimmed before parsing. Blank lines, comments, bare `!`, unclosed `[`, invalid globs, or POSIX named character classes fail at parse time (`DomainError::Usage`).
 - `\` in path segments matches U+FFFD on all platforms (never a separator; identical on Windows/Unix).
 - Applies identically to local and GitHub sources, independently of `.gitignore`. `!` re-includes only paths excluded by other user patterns; never re-includes files under an excluded ancestor directory.
 - Excluded local directories are pruned without reading their `.gitignore`. Excluded entries are omitted from skipped tallies.
@@ -155,7 +156,7 @@ Candidate budget overflow aborts the run without emitting partial output.
 - **Output Exclusion:** Directory-suffixed output paths (`out/`, `out/.`) are rejected before filesystem resolution. Canonical destination is resolved upfront and excluded from traversal.
 - **Atomic Writes:** Destination written via `.codefeed.{nanos}.{counter}.tmp`, flushed, and renamed. Unix preserves permissions and syncs parent directory (sync failure logs warning without aborting). Temporary file cleaned up on error.
 - **Unavailable vs. Fatal:** `NotFound`, `PermissionDenied`, or Windows sharing (32) / locking (33) mark files unavailable (skipped). Other I/O errors or unreadable directories abort. Deterministic first error in walk order reported.
-- **Bounded Concurrency:** Producer/workers communicate via bounded queues (`LOCAL_CHANNEL_CAPACITY`). Memory holds at most `LOCAL_CHANNEL_CAPACITY + 2` concurrent file bodies, each bounded to `MAX_FILE_SIZE + 1`. Abort signals halt worker reads.
+- **Bounded Concurrency:** Producer/workers communicate via bounded queues (`LOCAL_CHANNEL_CAPACITY`). Memory holds at most `LOCAL_CHANNEL_CAPACITY + 2` concurrent file bodies, each bounded to `MAX_FILE_SIZE + 1`. Abort signals stop the walk between entries and prevent workers from starting further reads.
 
 ---
 
@@ -220,7 +221,7 @@ Sole documentation mirror for numerical limits (authoritative definitions reside
 | :--- | :--- | :--- |
 | `MAX_FILE_SIZE` | 1 MiB | Declared size, bounded read, and `.gitignore` read (a `.gitignore` over the limit fails the run) |
 | `MAX_PATH_BYTES` | 4,096 B | Path classification |
-| `MAX_PATH_DEPTH` | 256 levels | Path classification |
+| `MAX_PATH_DEPTH` | 256 levels | Local directory admission and tar file classification |
 | `MAX_FILE_COUNT` | 10,000 files | Candidate budget |
 | `MAX_OUTPUT_SIZE` | 20 MiB | Storage check & buffer |
 | `ARCHIVE_BUFFER_BYTES` | 64 KiB | Archive read buffer (buffering parameter) |

@@ -48,7 +48,7 @@ Options may appear before or after `<SOURCE>`. Short flags accept `=` syntax (`-
 - `-o`, `--output <PATH|->`: Destination (default: `digest.txt`). `-` streams to stdout.
 - `-r`, `--ref <BRANCH|TAG|COMMIT>`: GitHub revision (default: default branch). Rejects empty, whitespace-only, `.`, and `..`.
 - `-f`, `--format <text|xml>`: Digest format (default: `text`).
-- `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to source root. Repeatable, applied in order. Invalid patterns and patterns yielding no rule (blank, comment, bare `!`) are usage errors. Syntax: [`docs/security_and_filtering.md`](docs/security_and_filtering.md) § 3.6.
+- `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to source root. Repeatable, applied in order. Invalid patterns, patterns yielding no rule (blank, comment, bare `!`), and unsupported POSIX named character classes are usage errors. Syntax: [`docs/security_and_filtering.md`](docs/security_and_filtering.md) § 3.6.
 - `-h`, `--help`: Print usage and exit 0.
 - `-V`, `--version`: Print `codefeed <version>` and exit 0.
 - `--`: Treat subsequent arguments as positionals.
@@ -71,7 +71,7 @@ codefeed -- -my-directory
 ## Output
 
 - **File output** (`-o <PATH>`): Atomic write via temporary file, sync, and rename. Preserves Unix permissions. Parent directory sync failure warns without failing. Prints `Wrote <PATH> (<N> files, <N> skipped, ~<N> tokens)` to stdout (`<PATH>` as given).
-- **Stream output** (`-o -`): Digest to stdout; summary to stderr. Writes nothing on failure.
+- **Stream output** (`-o -`): Digest to stdout; summary to stderr. Writes nothing to stdout if collection or rendering fails. A write failure can leave a partial stream.
 - **Header**: Local digests start with `Repository: <directory name>`; GitHub digests start with `Repository: https://github.com/{owner}/{repo}`.
 - **Text format** (`text`): Verbatim UTF-8 file contents; binary (NUL) or invalid UTF-8 files skipped. Header labels and paths escaped; ANSI sequences preserved.
 - **XML format** (`xml`): `<repository>`, `<directory_structure>`, and `<files>`. Entities escaped; disallowed XML 1.0 characters become `\u{FFFD}`.
@@ -108,7 +108,7 @@ Limits either skip an entry or abort the run. Values and enforcement: [`docs/sec
 | :--- | :--- |
 | `MAX_FILE_SIZE` | File skipped and counted in summary; oversized `.gitignore` fails the run. |
 | `MAX_PATH_BYTES` | File skipped and counted in summary. |
-| `MAX_PATH_DEPTH` | Run fails. |
+| `MAX_PATH_DEPTH` | Run fails, including when a local directory beyond the limit is empty. |
 | `MAX_FILE_COUNT` | Run fails; error lists largest directories. |
 | `MAX_OUTPUT_SIZE` | Run fails; no digest written; error lists largest files. |
 | `ARCHIVE_MAX_HEADER_BYTES` | Run fails. |

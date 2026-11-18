@@ -188,6 +188,17 @@ mod tests {
     }
 
     #[test]
+    fn stdout_reports_non_broken_pipe_error_after_writing_a_prefix() {
+        let mut written = [0; 3];
+        // A fixed-size slice accepts the prefix, then returns zero for the remaining bytes.
+        let result = render_stdout_to(&mut written.as_mut_slice(), b"digest");
+        assert_eq!(&written, b"dig");
+        assert!(
+            matches!(result, Err(IngestError::Io(err)) if err.kind() == io::ErrorKind::WriteZero)
+        );
+    }
+
+    #[test]
     fn resolve_output_target_rejects_directory() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("output_dir_resolve_test")?;
         let existing_dir = root.join("existing_subdir");

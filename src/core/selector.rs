@@ -42,14 +42,14 @@ pub(crate) enum Body<B> {
 const EMPTY_BUCKET: u32 = u32::MAX;
 
 #[derive(Debug)]
-struct ArenaEntry<V> {
+struct CountEntry {
     offset: u32,
     len: u32,
     hash: u64,
-    value: V,
+    count: usize,
 }
 
-impl<V> ArenaEntry<V> {
+impl CountEntry {
     fn key<'a>(&self, arena: &'a str) -> &'a str {
         let start = self.offset as usize;
         &arena[start..start + self.len as usize]
@@ -135,22 +135,22 @@ impl BucketTable {
     }
 }
 
-/// Append-only string-keyed map backed by a contiguous `String` arena and an open-addressed `u32`
-/// index table, avoiding per-key heap allocations over `Selector`'s lifetime.
+/// Directory tallies with keys stored in a shared string arena to avoid per-key allocations.
 #[derive(Debug)]
-struct ArenaMap<V> {
+struct DirectoryCounts {
     arena: String,
-    entries: Vec<ArenaEntry<V>>,
+    entries: Vec<CountEntry>,
     table: BucketTable,
 }
 
-impl<V> Default for ArenaMap<V> {
+#[cfg(test)]
+impl Default for DirectoryCounts {
     fn default() -> Self {
         Self::with_capacity(16, 256)
     }
 }
 
-impl<V> ArenaMap<V> {
+impl DirectoryCounts {
     fn with_capacity(entries_cap: usize, arena_bytes: usize) -> Self {
         Self {
             arena: String::with_capacity(arena_bytes),
@@ -172,7 +172,7 @@ impl<V> ArenaMap<V> {
         })
     }
 
-    fn insert_at_new_key(&mut self, key: &str, hash: u64, bucket_idx: usize, value: V) {
+    fn insert_at_new_key(&mut self, key: &str, hash: u64, bucket_idx: usize) {
         let entry_idx = self.entries.len();
         self.table.insert_slot(
             entry_idx,
@@ -186,18 +186,18 @@ impl<V> ArenaMap<V> {
         let len = u32::try_from(key.len()).expect("invariant: key length <= MAX_PATH_BYTES");
         self.arena.push_str(key);
 
-        self.entries.push(ArenaEntry {
+        self.entries.push(CountEntry {
             offset,
             len,
             hash,
-            value,
+            count: 1,
         });
     }
 
-    fn iter(&self) -> impl Iterator<Item = (&str, &V)> {
+    fn iter(&self) -> impl Iterator<Item = (&str, usize)> {
         self.entries
             .iter()
-            .map(move |entry| (entry.key(&self.arena), &entry.value))
+            .map(move |entry| (entry.key(&self.arena), entry.count))
     }
 
     #[cfg(test)]
@@ -211,18 +211,16 @@ impl<V> ArenaMap<V> {
     }
 
     #[cfg(test)]
-    fn values(&self) -> impl Iterator<Item = &V> {
-        self.entries.iter().map(|entry| &entry.value)
+    fn values(&self) -> impl Iterator<Item = &usize> {
+        self.entries.iter().map(|entry| &entry.count)
     }
-}
 
-impl ArenaMap<usize> {
     /// Increments the count for `key`, inserting `1` if `key` was absent.
     fn increment(&mut self, key: &str) {
         let hash = self.hash_key(key);
         match self.find_bucket(key, hash) {
-            Ok(entry_idx) => self.entries[entry_idx].value += 1,
-            Err(bucket_idx) => self.insert_at_new_key(key, hash, bucket_idx, 1),
+            Ok(entry_idx) => self.entries[entry_idx].count += 1,
+            Err(bucket_idx) => self.insert_at_new_key(key, hash, bucket_idx),
         }
     }
 }
@@ -232,7 +230,7 @@ impl ArenaMap<usize> {
 #[cfg_attr(test, derive(Default))]
 struct CandidateBudget {
     count: usize,
-    dir_counts: ArenaMap<usize>,
+    dir_counts: DirectoryCounts,
 }
 
 impl CandidateBudget {
@@ -269,8 +267,8 @@ fn extract_dir_slice(path: &str) -> &str {
     &dir[..end]
 }
 
-fn top_overflow_directories(dir_counts: &ArenaMap<usize>) -> Vec<(String, usize)> {
-    let mut dirs: Vec<(&str, usize)> = dir_counts.iter().map(|(d, &c)| (d, c)).collect();
+fn top_overflow_directories(dir_counts: &DirectoryCounts) -> Vec<(String, usize)> {
+    let mut dirs: Vec<(&str, usize)> = dir_counts.iter().collect();
     dirs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     dirs.truncate(OVERFLOW_LARGEST_DIRECTORIES);
     dirs.into_iter().map(|(d, c)| (d.to_string(), c)).collect()
@@ -361,7 +359,7 @@ impl Selector {
             storage: FileStorage::new(),
             candidates: CandidateBudget {
                 count: 0,
-                dir_counts: ArenaMap::with_capacity(32, 512),
+                dir_counts: DirectoryCounts::with_capacity(32, 512),
             },
             paths: PathIndex::with_capacity(512),
             unstorable_paths: HashSet::new(),
@@ -751,8 +749,8 @@ mod tests {
     }
 
     #[test]
-    fn arena_map_rehashes_and_preserves_all_entries() {
-        let mut counts = ArenaMap::with_capacity(2, 16);
+    fn directory_counts_rehash_and_preserve_all_entries() {
+        let mut counts = DirectoryCounts::with_capacity(2, 16);
         let initial_buckets = counts.table.buckets.len();
         for i in 0..64 {
             let key = format!("dir_{i}/");
@@ -765,28 +763,28 @@ mod tests {
             let key = format!("dir_{i}/");
             let hash = counts.hash_key(&key);
             let idx = counts.find_bucket(&key, hash).expect("key must exist");
-            assert_eq!(counts.entries[idx].value, 2);
+            assert_eq!(counts.entries[idx].count, 2);
         }
     }
 
     #[test]
-    fn arena_map_resolves_hash_collisions_by_key_equality() {
-        let mut map = ArenaMap::with_capacity(4, 32);
+    fn directory_counts_resolve_hash_collisions_by_key_equality() {
+        let mut counts = DirectoryCounts::with_capacity(4, 32);
         let forced_hash = 0xDEAD_BEEF;
-        let Err(b1) = map.find_bucket("alpha", forced_hash) else {
+        let Err(b1) = counts.find_bucket("alpha", forced_hash) else {
             panic!("expected empty bucket");
         };
-        map.insert_at_new_key("alpha", forced_hash, b1, 10);
+        counts.insert_at_new_key("alpha", forced_hash, b1);
 
-        let Err(b2) = map.find_bucket("beta", forced_hash) else {
+        let Err(b2) = counts.find_bucket("beta", forced_hash) else {
             panic!("expected empty bucket on collision");
         };
-        map.insert_at_new_key("beta", forced_hash, b2, 20);
+        counts.insert_at_new_key("beta", forced_hash, b2);
 
-        let idx_a = map.find_bucket("alpha", forced_hash).unwrap();
-        let idx_b = map.find_bucket("beta", forced_hash).unwrap();
-        assert_eq!(map.entries[idx_a].value, 10);
-        assert_eq!(map.entries[idx_b].value, 20);
+        let idx_a = counts.find_bucket("alpha", forced_hash).unwrap();
+        let idx_b = counts.find_bucket("beta", forced_hash).unwrap();
+        assert_eq!(counts.entries[idx_a].key(&counts.arena), "alpha");
+        assert_eq!(counts.entries[idx_b].key(&counts.arena), "beta");
         assert_ne!(idx_a, idx_b);
     }
 }

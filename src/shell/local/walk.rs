@@ -7,6 +7,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::vec;
 
 use std::io::{self, Read};
@@ -15,7 +16,10 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::core::error::DomainError;
 use crate::core::path::{AdmittedDir, Candidate, admit_dir, classify_leaf};
-use crate::core::policy::{ExcludePatterns, MAX_DIR_ENTRIES, MAX_FILE_SIZE, is_hidden_segment};
+use crate::core::policy::{
+    ExcludePatterns, MAX_DIR_ENTRIES, MAX_FILE_SIZE, UNSUPPORTED_POSIX_CLASS, has_posix_class,
+    is_hidden_segment,
+};
 use crate::shell::error::{IngestError, io_error_at};
 
 /// A regular file found by the walk. The walk yields no other entry kind, so classification never sees one.
@@ -50,6 +54,7 @@ impl RegularFile {
 /// Excluded directories are pruned here, so neither their children nor their `.gitignore` is ever read.
 pub(super) struct Walk<'a> {
     exclude: &'a ExcludePatterns,
+    aborted: &'a AtomicBool,
     frames: Vec<Frame>,
 }
 
@@ -63,9 +68,14 @@ struct Frame {
 
 impl<'a> Walk<'a> {
     /// Enters `root`. Its `.gitignore` and listing are read here, so a failure ends the run before any candidate.
-    pub(super) fn new(root: &Path, exclude: &'a ExcludePatterns) -> Result<Self, IngestError> {
+    pub(super) fn new(
+        root: &Path,
+        exclude: &'a ExcludePatterns,
+        aborted: &'a AtomicBool,
+    ) -> Result<Self, IngestError> {
         Ok(Self {
             exclude,
+            aborted,
             frames: vec![Frame::enter(root, Arc::new(AdmittedDir::root()))?],
         })
     }
@@ -98,6 +108,7 @@ impl<'a> Walk<'a> {
                 name.as_encoded_bytes(),
                 self.exclude,
             ) {
+                admitted.check_depth("local path")?;
                 self.frames.push(Frame::enter(&path, Arc::new(admitted))?);
             }
             Ok(None)
@@ -111,7 +122,8 @@ impl Iterator for Walk<'_> {
     type Item = Result<RegularFile, IngestError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
+        // Check between entries, including ones that never yield a slot to the settling side.
+        while !self.aborted.load(Ordering::Relaxed) {
             let frame = self.frames.last_mut()?;
             let Some(entry) = frame.entries.next() else {
                 self.frames.pop();
@@ -124,6 +136,7 @@ impl Iterator for Walk<'_> {
                 Err(err) => return Some(Err(err)),
             }
         }
+        None
     }
 }
 
@@ -190,7 +203,7 @@ const UTF8_BOM: &str = "\u{feff}";
 
 /// Reads `dir`'s `.gitignore`. A missing file, or a directory, contributes no rules. A symlink, a path
 /// that is neither a regular file nor a directory (such as a FIFO), a file over `MAX_FILE_SIZE`, or
-/// content that fails to parse fails the run, so no rule is skipped silently.
+/// content rejected by [`parse_rules`] fails the run.
 fn read_rules(dir: &Path) -> Result<Gitignore, IngestError> {
     let gitignore = dir.join(".gitignore");
     let meta = match fs::symlink_metadata(&gitignore) {
@@ -221,9 +234,9 @@ fn read_rules(dir: &Path) -> Result<Gitignore, IngestError> {
     parse_rules(dir, bytes.as_slice()).map_err(|err| io_error_at(&gitignore, &err))
 }
 
-/// Compiles `bytes` as the `.gitignore` rules of `dir`. Like `ignore`, it strips a leading BOM and
-/// skips lines that are not valid globs. Unlike `ignore`, a line that is not UTF-8, or a rule set that
-/// fails to compile, is an error, so no rule is dropped silently.
+/// Compiles `bytes` as the `.gitignore` rules of `dir` after stripping a leading BOM.
+/// Invalid UTF-8, unsupported POSIX named character classes, and rule-set compilation failures
+/// are errors. POSIX classes are rejected before other invalid globs are skipped.
 fn parse_rules(dir: &Path, bytes: &[u8]) -> io::Result<Gitignore> {
     let text = std::str::from_utf8(bytes)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
@@ -234,6 +247,12 @@ fn parse_rules(dir: &Path, bytes: &[u8]) -> io::Result<Gitignore> {
         } else {
             line
         };
+        if has_posix_class(line) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("line {}: {UNSUPPORTED_POSIX_CLASS}", index + 1),
+            ));
+        }
         // An invalid glob line is skipped; the other lines still apply.
         let _ = builder.add_line(None, line);
     }
@@ -265,6 +284,8 @@ mod tests {
     use crate::shell::local::validate_root;
     use crate::shell::testing::temp_dir;
     use ignore::WalkBuilder;
+
+    static NOT_CANCELLED: AtomicBool = AtomicBool::new(false);
 
     #[test]
     fn rejects_excessive_path_depth() {
@@ -316,7 +337,7 @@ mod tests {
     }
 
     fn walk_files(root: &Path, exclude: &ExcludePatterns) -> Vec<String> {
-        Walk::new(root, exclude)
+        Walk::new(root, exclude, &NOT_CANCELLED)
             .expect("walk opens the root")
             .map(|file| relative_string(root, &file.expect("walk yields files").into_path()))
             .collect()
@@ -508,6 +529,79 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_posix_class_in_gitignore_fails_the_walk()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = temp_dir("gitignore_posix_class")?;
+        let root = validate_root(&temp)?;
+        fs::write(root.join("config1.txt"), "fixture")?;
+        for rules in [
+            "/config[[:digit:]].txt\n",
+            // The closing bracket of the named class must not stand in for the outer one.
+            "/config[[:digit:].txt\n",
+            // A dangling escape would normally cause the line to be skipped.
+            "/config[[:digit:]].txt\\\nconfig1.txt\n",
+        ] {
+            fs::write(root.join(".gitignore"), rules)?;
+            let Err(err) = Walk::new(&root, &ExcludePatterns::default(), &NOT_CANCELLED) else {
+                panic!("expected unsupported class to abort the walk: {rules:?}");
+            };
+            assert!(
+                matches!(err, IngestError::Io(ref error)
+                if error.kind() == io::ErrorKind::InvalidData
+                    && error.to_string().contains("POSIX character classes")),
+                "{rules:?}: {err:?}"
+            );
+        }
+        assert!(parse_rules(&root, b"# /config[[:digit:]].txt\n").is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn depth_limit_bounds_descent_even_without_any_files() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = temp_dir("walk_depth_limit")?;
+        let root = validate_root(&temp)?;
+        let mut deepest = root.clone();
+        for _ in 0..MAX_PATH_DEPTH {
+            deepest.push("d");
+            fs::create_dir(&deepest)?;
+        }
+        let exclude = ExcludePatterns::default();
+        assert!(Walk::new(&root, &exclude, &NOT_CANCELLED)?.next().is_none());
+        fs::create_dir(deepest.join("pruned"))?;
+        fs::write(deepest.join("pruned/.gitignore"), b"\xff\n")?;
+        let prune = ExcludePatterns::new(["pruned/"])?;
+        assert!(Walk::new(&root, &prune, &NOT_CANCELLED)?.next().is_none());
+
+        let item = Walk::new(&root, &exclude, &NOT_CANCELLED)?.next();
+        assert!(
+            matches!(item, Some(Err(IngestError::Domain(DomainError::InvalidMetadata(ref msg))))
+            if msg.contains("maximum directory depth"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_walk_does_not_open_a_directory_after_its_last_candidate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = temp_dir("walk_cancelled")?;
+        let root = validate_root(&temp)?;
+        fs::write(root.join("a.txt"), "first candidate")?;
+        fs::create_dir(root.join("z"))?;
+        // No more candidates will be yielded. Reading the tail is observable only via this error.
+        fs::write(root.join("z/.gitignore"), b"\xff\n")?;
+
+        let exclude = ExcludePatterns::default();
+        let aborted = AtomicBool::new(false);
+        let mut walk = Walk::new(&root, &exclude, &aborted)?;
+        let first = walk.next().expect("first file is yielded")?;
+        assert_eq!(first.into_path(), root.join("a.txt"));
+        aborted.store(true, Ordering::Relaxed);
+        assert!(walk.next().is_none());
+        Ok(())
+    }
+
+    #[test]
     fn gitignore_is_read_once_per_directory() -> Result<(), Box<dyn std::error::Error>> {
         let temp = temp_dir("gitignore_read_once")?;
         let root = validate_root(&temp)?;
@@ -517,7 +611,7 @@ mod tests {
         fs::write(root.join("sub").join("two.txt"), "two")?;
 
         let binding = ExcludePatterns::default();
-        let mut walk = Walk::new(&root, &binding)?;
+        let mut walk = Walk::new(&root, &binding, &NOT_CANCELLED)?;
         let first = walk.next().expect("one.txt is yielded")?;
         assert_eq!(first.into_path(), root.join("sub").join("one.txt"));
 
@@ -538,7 +632,7 @@ mod tests {
         fs::write(root.join("sub").join("file.txt"), "hello")?;
 
         let exclude = ExcludePatterns::default();
-        let mut walk = Walk::new(&root, &exclude)?;
+        let mut walk = Walk::new(&root, &exclude, &NOT_CANCELLED)?;
         let item = walk.next();
         assert!(item.is_some());
         assert!(item.unwrap().is_err());
@@ -556,7 +650,7 @@ mod tests {
             fs::write(root.join(format!(".h{index}")), "")?;
         }
         let exclude = ExcludePatterns::default();
-        let err = Walk::new(&root, &exclude).err();
+        let err = Walk::new(&root, &exclude, &NOT_CANCELLED).err();
         assert!(
             matches!(&err, Some(IngestError::Domain(DomainError::InvalidMetadata(msg))) if msg.contains("exceeds")),
             "expected directory entry limit failure, got: {err:?}"

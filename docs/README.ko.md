@@ -50,7 +50,7 @@ codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>] [--exc
 - `-o`, `--output <PATH|->`: 출력 대상 (기본값: `digest.txt`). `-`는 stdout으로 스트리밍합니다.
 - `-r`, `--ref <BRANCH|TAG|COMMIT>`: GitHub 리비전 (기본값: 기본 브랜치). 빈 문자열, 공백 전용, `.`, `..`은 거부됩니다.
 - `-f`, `--format <text|xml>`: 다이제스트 포맷 (기본값: `text`).
-- `-x`, `--exclude <PATTERN>`: 소스 루트 기준 `.gitignore` 형식 패턴과 일치하는 경로를 제외합니다. 반복 지정 가능하며 지정 순서대로 적용됩니다. 유효하지 않은 패턴 및 규칙을 생성하지 않는 패턴(빈 줄, 주석, 단독 `!`)은 사용법 오류입니다. 문법: [`security_and_filtering.md`](security_and_filtering.md) 3.6절.
+- `-x`, `--exclude <PATTERN>`: 소스 루트 기준 `.gitignore` 형식 패턴과 일치하는 경로를 제외합니다. 반복 지정 가능하며 지정 순서대로 적용됩니다. 유효하지 않은 패턴, 규칙을 생성하지 않는 패턴(빈 줄, 주석, 단독 `!`), 지원되지 않는 POSIX 이름 기반 문자 클래스는 사용법 오류입니다. 문법: [`security_and_filtering.md`](security_and_filtering.md) 3.6절.
 - `-h`, `--help`: 사용법을 출력하고 0으로 종료합니다.
 - `-V`, `--version`: `codefeed <version>`을 출력하고 0으로 종료합니다.
 - `--`: 이후 인수를 위치 인수로 처리합니다.
@@ -73,7 +73,7 @@ codefeed -- -my-directory
 ## 출력
 
 - **파일 출력** (`-o <PATH>`): 임시 파일 생성, 동기화, 이름 변경을 통한 원자적(atomic) 쓰기. Unix 권한 보존. 상위 디렉터리 동기화 실패 시 실패 없이 stderr에 경고만 출력합니다. stdout에 `Wrote <PATH> (<N> files, <N> skipped, ~<N> tokens)`를 출력합니다(`<PATH>`는 입력값 그대로).
-- **스트림 출력** (`-o -`): 다이제스트는 stdout으로, 요약은 stderr로 출력합니다. 실패 시 아무것도 출력하지 않습니다.
+- **스트림 출력** (`-o -`): 다이제스트는 stdout으로, 요약은 stderr로 출력합니다. 수집 또는 렌더링에 실패하면 stdout에 아무것도 쓰지 않습니다. 쓰기 자체가 실패하면 스트림에 일부 데이터가 남을 수 있습니다.
 - **헤더**: 로컬 다이제스트는 `Repository: <디렉터리 이름>`으로 시작하고, GitHub 다이제스트는 `Repository: https://github.com/{owner}/{repo}`로 시작합니다.
 - **텍스트 포맷** (`text`): UTF-8 파일 본문을 그대로 출력합니다. 바이너리(NUL) 또는 유효하지 않은 UTF-8 파일은 건너뜁니다. 헤더 레이블과 경로는 이스케이프되며, ANSI 시퀀스는 유지됩니다.
 - **XML 포맷** (`xml`): `<repository>`, `<directory_structure>`, `<files>` 요소로 구조화됩니다. 엔티티는 이스케이프되며, XML 1.0 미허용 문자는 `\u{FFFD}`로 변환됩니다.
@@ -110,7 +110,7 @@ codefeed -- -my-directory
 | :--- | :--- |
 | `MAX_FILE_SIZE` | 파일 건너뜀 및 요약에 집계; `.gitignore` 초과 시 실행 중단. |
 | `MAX_PATH_BYTES` | 파일 건너뜀 및 요약에 집계. |
-| `MAX_PATH_DEPTH` | 실행 중단. |
+| `MAX_PATH_DEPTH` | 실행 중단. 한도를 넘은 로컬 디렉터리가 비어 있어도 중단합니다. |
 | `MAX_FILE_COUNT` | 실행 중단; 오류 메시지에 가장 큰 디렉터리 목록 표시. |
 | `MAX_OUTPUT_SIZE` | 실행 중단; 다이제스트 미출력; 가장 큰 파일 목록 표시. |
 | `ARCHIVE_MAX_HEADER_BYTES` | 실행 중단. |

@@ -38,7 +38,7 @@ impl ExcludePatterns {
     ///
     /// Returns [`DomainError::Usage`] naming the first pattern that is not a valid glob or that
     /// yields no rule, such as an empty or whitespace-only pattern, a comment, or a bare `!` (with or
-    /// without trailing whitespace).
+    /// without trailing whitespace). POSIX named character classes such as `[[:digit:]]` are not supported.
     pub fn new<I, S>(patterns: I) -> Result<Self, DomainError>
     where
         I: IntoIterator<Item = S>,
@@ -104,6 +104,9 @@ fn check_one_rule(pattern: &str) -> Result<(), DomainError> {
     if body.is_empty() {
         return Err(no_rule(pattern));
     }
+    if has_posix_class(pattern) {
+        return Err(invalid_pattern(pattern, UNSUPPORTED_POSIX_CLASS));
+    }
     let single = user_builder()
         .add_line(None, pattern)
         .and_then(|line| line.build())
@@ -113,6 +116,63 @@ fn check_one_rule(pattern: &str) -> Result<(), DomainError> {
     } else {
         Err(no_rule(pattern))
     }
+}
+
+pub(crate) const UNSUPPORTED_POSIX_CLASS: &str =
+    "POSIX character classes in globs are not supported";
+
+/// Detects named classes inside bracket expressions, which `globset` would match as literal text.
+///
+/// A complete named class is unsupported even if its enclosing bracket expression is unclosed.
+#[must_use]
+pub(crate) fn has_posix_class(pattern: &str) -> bool {
+    if pattern.starts_with('#') || !pattern.contains("[:") {
+        return false;
+    }
+    let mut tail = pattern.as_bytes();
+    while let Some((&byte, rest)) = tail.split_first() {
+        tail = rest;
+        match byte {
+            b'\\' => tail = tail.get(1..).unwrap_or_default(),
+            b'[' => {
+                if let [b'!' | b'^', rest @ ..] = tail {
+                    tail = rest;
+                }
+                // A closing bracket is literal when it is the first member of a class.
+                let leading_literal = tail.strip_prefix(b"]");
+                tail = leading_literal.unwrap_or(tail);
+                let mut can_start_range = leading_literal.is_some();
+                while let Some((&byte, rest)) = tail.split_first() {
+                    tail = rest;
+                    match (byte, tail) {
+                        (b'\\', _) => tail = tail.get(1..).unwrap_or_default(),
+                        (b']', _) => break,
+                        (b'-', [end, rest @ ..]) if can_start_range && *end != b']' => {
+                            // Git consumes the endpoint literally, even if it is `[`. A
+                            // completed range cannot start another range.
+                            tail = if *end == b'\\' {
+                                rest.get(1..).unwrap_or_default()
+                            } else {
+                                rest
+                            };
+                            can_start_range = false;
+                            continue;
+                        }
+                        (b'[', [b':', name @ ..]) => {
+                            let len = name.iter().take_while(|c| c.is_ascii_alphabetic()).count();
+                            if len > 0 && name[len..].starts_with(b":]") {
+                                return true;
+                            }
+                        }
+                        _ => {}
+                    }
+                    can_start_range = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Builder for user patterns, rooted at the source root. Unlike a `.gitignore` file, an unclosed `[`
@@ -193,6 +253,29 @@ mod tests {
                 matches!(&err, DomainError::Usage(msg) if msg.starts_with(&expected)),
                 "{pattern:?}: {err}"
             );
+        }
+    }
+
+    #[test]
+    fn posix_character_classes_fail_closed() {
+        for pattern in [
+            "/config[[:digit:]].txt",
+            "*[!ab[:upper:]].txt",
+            "[][:alpha:]]",
+            "[-[:digit:]]",
+            "[0-9-[:digit:]]",
+        ] {
+            assert!(
+                matches!(
+                    ExcludePatterns::new([pattern]),
+                    Err(DomainError::Usage(detail)) if detail.contains("POSIX character classes")
+                ),
+                "{pattern:?}"
+            );
+        }
+        // An escaped bracket or the characters ':digit:' in an ordinary class are not a POSIX class.
+        for pattern in [r"config\[[:digit:].txt", "config[:digit:].txt"] {
+            assert!(ExcludePatterns::new([pattern]).is_ok(), "{pattern:?}");
         }
     }
 

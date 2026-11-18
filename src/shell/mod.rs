@@ -22,8 +22,9 @@ pub use error::IngestError;
 /// Executes the end-to-end repository ingestion pipeline.
 ///
 /// Dispatches collection across local filesystem or GitHub remote sources, renders
-/// the digest into the target format (plain text or XML), and atomically emits the
-/// result to standard output or a destination file.
+/// the digest into the target format (plain text or XML), and delivers it only
+/// after rendering succeeds. File replacement is atomic. A stdout write failure
+/// can leave a partial stream.
 ///
 /// # Errors
 ///

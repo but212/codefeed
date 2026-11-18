@@ -4,7 +4,7 @@ Defines domain terms, invariants, and functional-core / imperative-shell boundar
 
 ## 1. Purpose
 
-Converts a local directory or public GitHub repository into a single text digest for LLMs. Every run produces a complete digest or fails atomically; partial output is never emitted.
+Converts a local directory or public GitHub repository into a single text digest for LLMs. Collection and rendering must finish before delivery. File replacement is atomic; stdout delivery follows the [README contract](README.md#output).
 
 ## 2. Glossary
 
@@ -59,7 +59,7 @@ Converts a local directory or public GitHub repository into a single text digest
 
 - Order: [security § 2](docs/security_and_filtering.md#2-evaluation-order). Tar streams classify via `classify_path_segments`. Local walks admit directories via `admit_dir` and files via `classify_leaf`.
 - `Ignored` entries consume no candidate slots and are omitted from skipped counts.
-- Run-aborting checks (depth, tar path normalization, oversized tar headers): [security § 2](docs/security_and_filtering.md#2-evaluation-order); header budget is I-03 ([§ 3.9](#39-network)).
+- Run-aborting checks (depth, tar path normalization, oversized tar headers): [security § 2](docs/security_and_filtering.md#2-evaluation-order); header budget is I-03 ([§ 3.9](#39-network)). `AdmittedDir::check_depth` gates local frame entry and tar leaf classification. `AdmittedDir` itself can track deeper tar ancestors to preserve exclusion order before a leaf is classified.
 - `DirPrefix::NonUtf8(UnstorablePath)` retains the bytes after the first invalid segment, so classification never substitutes a lossy identity. Budget keys use the first valid segment (`"a/"`) or root (`"./"`).
 - **I-10 (`type`, `NormalizedPath`, `classify_leaf`):** A `Valid` path is at most `MAX_PATH_BYTES` bytes. `NormalizedPath` is private and `classify_leaf` is its sole non-test constructor returning `Unstorable` on overflow, so `Selector` needs no path-length check.
 - **I-02 (`boundary`, `admit_dir`, `classify_leaf`):** No classified path or unstorable prefix has a first segment starting with `.`, since hidden directories are never admitted, hidden files are `Ignored`, and empty/`.` segments are dropped. Root entries key as `"./"`, which no real directory produces.
@@ -102,7 +102,7 @@ Converts a local directory or public GitHub repository into a single text digest
 
 1. Depth-first walk in file-name order without link-following (`Walk`, `walk.rs`). Excluded directories pruned before `.gitignore` read. Other directories read `.gitignore` once and compile rules from those bytes (failures: [security § 3.5](docs/security_and_filtering.md#35-ignore-files-local-only)).
 2. Up to `MAX_LOCAL_WORKERS` workers inspect metadata, read bounded bodies, and return on bounded channels (`LOCAL_CHANNEL_CAPACITY`).
-3. Main thread settles slots in walk order into `Selector::observe`. First error halts traversal.
+3. Main thread settles slots in walk order into `Selector::observe`. On error it signals the walker and workers and disconnects the slot receiver.
 4. Final digest order and I-01 established by `SortedFiles::new`; uniqueness by `Selector::observe`.
 
 ### 3.9 Network

@@ -251,10 +251,42 @@ fn exclude_flag_drops_matching_paths_from_the_digest() -> Result<(), Box<dyn std
 }
 
 #[test]
-fn exclude_invalid_pattern_is_a_usage_error() {
-    // (pattern, echoed value): a malformed glob and a bare `!` with trailing whitespace are both rejected.
-    for (pattern, echoed) in [("[", "["), ("! ", "! ")] {
-        let output = run(&[".", "-x", pattern]);
+fn ignore_ranges_allow_an_open_bracket_as_endpoint() -> Result<(), Box<dyn std::error::Error>> {
+    let pattern = "[#-[:digit:]].txt";
+    for use_gitignore in [false, true] {
+        let root = TempDir::new("ignore_range");
+        std::fs::write(root.path.join("A].txt"), "excluded")?;
+        std::fs::write(root.path.join("visible.txt"), "visible")?;
+
+        let mut command = Command::new(env!("CARGO_BIN_EXE_codefeed"));
+        command.current_dir(&root.path).args([".", "-o", "-"]);
+        if use_gitignore {
+            std::fs::write(root.path.join(".gitignore"), format!("{pattern}\n"))?;
+        } else {
+            command.args(["--exclude", pattern]);
+        }
+
+        let output = command.output()?;
+        assert!(
+            output.status.success(),
+            "use_gitignore={use_gitignore}: {output:?}"
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("FILE: visible.txt"), "{stdout}");
+        assert!(!stdout.contains("A].txt"), "{stdout}");
+    }
+    Ok(())
+}
+
+#[test]
+fn exclude_invalid_pattern_is_a_usage_error() -> Result<(), Box<dyn std::error::Error>> {
+    let root = TempDir::new("invalid_exclude");
+    std::fs::write(root.path.join("config1.txt"), "fixture")?;
+    for pattern in ["[", "! ", "/config[[:digit:]].txt", "/config[[:digit:].txt"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+            .current_dir(&root.path)
+            .args([".", "-x", pattern, "-o", "-"])
+            .output()?;
         assert_eq!(
             output.status.code(),
             Some(1),
@@ -263,11 +295,13 @@ fn exclude_invalid_pattern_is_a_usage_error() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             stderr.contains(&format!(
-                "error: invalid value '{echoed}' for '--exclude <PATTERN>'"
+                "error: invalid value '{pattern}' for '--exclude <PATTERN>'"
             )),
             "{pattern:?}: stderr: {stderr}"
         );
+        assert!(output.stdout.is_empty(), "{pattern:?}: output: {output:?}");
     }
+    Ok(())
 }
 
 #[cfg(unix)]

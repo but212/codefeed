@@ -149,6 +149,14 @@ impl AdmittedDir {
             output: DirPrefix::Utf8(String::new()),
         }
     }
+
+    /// Enforces the depth budget after hidden and exclusion checks have run.
+    pub(crate) fn check_depth(&self, subject: &str) -> Result<(), DomainError> {
+        if self.depth > MAX_PATH_DEPTH {
+            return Err(depth_exceeded_error(subject));
+        }
+        Ok(())
+    }
 }
 
 /// Admits directory `name` under `dir`. Returns `None` when it is hidden or user-excluded.
@@ -235,9 +243,7 @@ pub(crate) fn classify_leaf(
         return Ok(None);
     }
 
-    if parent.depth > MAX_PATH_DEPTH {
-        return Err(depth_exceeded_error(subject));
-    }
+    parent.check_depth(subject)?;
 
     match (&parent.output, std::str::from_utf8(name)) {
         (DirPrefix::Utf8(prefix), Ok(segment))
