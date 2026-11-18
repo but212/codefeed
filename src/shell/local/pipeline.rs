@@ -1,7 +1,7 @@
 //! Order-preserving parallel collection: a sorted producer, read workers, in-order settlement.
 //!
 //! # Concurrency & Performance Architecture
-//! - **Ordered Pipeline**: A producer thread walks in sorted order and sends one slot per entry.
+//! - **Ordered Pipeline**: A producer thread walks in sorted order and sends one slot per candidate or walk error.
 //!   Workers read regular files concurrently and answer on their slot. The main thread settles
 //!   slots in walk order, so `Selector` observes candidates in `cmp_path` order.
 //!   Bounded `sync_channel`s of `LOCAL_CHANNEL_CAPACITY` messages keep memory bounded.
@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Mutex, PoisonError};
 
-use super::walk::{RegularFile, Walk, classify_entry};
+use super::walk::Walk;
 use crate::core::path::{Candidate, NormalizedPath};
 use crate::core::policy::{
     ExcludePatterns, LOCAL_CHANNEL_CAPACITY, MAX_FILE_SIZE, MAX_LOCAL_WORKERS,
@@ -38,7 +38,7 @@ const LOCAL_BUFFER_POOL_CAP: usize = LOCAL_CHANNEL_CAPACITY + MAX_LOCAL_WORKERS;
 struct BufferPool(Mutex<Vec<Vec<u8>>>);
 
 impl BufferPool {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self(Mutex::new(Vec::new()))
     }
 
@@ -114,7 +114,7 @@ pub(super) fn fold_candidates<T>(
     mut step: impl FnMut(T, Candidate<Body<PooledBuf<'_>>>) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
     let aborted = AtomicBool::new(false);
-    let walker = Walk::new(root, exclude, &aborted)?;
+    let walker = Walk::new(root, output, exclude, &aborted)?;
     let pool = BufferPool::new();
     let (job_tx, job_rx) = sync_channel::<Job<'_>>(LOCAL_CHANNEL_CAPACITY);
     let jobs = Mutex::new(job_rx);
@@ -124,7 +124,7 @@ pub(super) fn fold_candidates<T>(
             s.spawn(|| run_worker(&jobs, &aborted, &pool));
         }
         // Senders move into the producer, so they drop before the workers are joined.
-        s.spawn(move || produce_slots(walker, output, exclude, job_tx, slot_tx));
+        s.spawn(move || produce_slots(walker, job_tx, slot_tx));
 
         let result = settle_slots(slot_rx, init, &mut step);
         if result.is_err() {
@@ -134,37 +134,27 @@ pub(super) fn fold_candidates<T>(
     })
 }
 
-/// Routes one walk entry: `None` when it is not a candidate, a ready reply when it is decided on
-/// the producer thread, or a pending reply when a worker reads its body.
+/// Only storable candidates need a worker; errors and unstorable paths settle in place.
 fn dispatch<'a>(
-    entry: Result<RegularFile, IngestError>,
-    output: Option<&Path>,
-    exclude: &ExcludePatterns,
+    entry: Result<Candidate<PathBuf>, IngestError>,
     jobs: &SyncSender<Job<'a>>,
-) -> Option<Slot<'a>> {
-    let file = match entry {
-        Ok(file) => file,
-        Err(err) => return Some(Slot::Ready(Err(err))),
-    };
-    let path = match classify_entry(output, exclude, &file) {
-        Ok(None) => return None,
-        Ok(Some(Candidate::Unstorable(prefix))) => {
-            return Some(Slot::Ready(Ok(Some(Candidate::Unstorable(prefix)))));
-        }
-        Ok(Some(Candidate::Valid(path, ()))) => path,
-        Err(err) => return Some(Slot::Ready(Err(err))),
+) -> Slot<'a> {
+    let (path, entry_path) = match entry {
+        Ok(Candidate::Valid(path, entry_path)) => (path, entry_path),
+        Ok(Candidate::Unstorable(key)) => return Slot::Ready(Ok(Some(Candidate::Unstorable(key)))),
+        Err(err) => return Slot::Ready(Err(err)),
     };
 
     let (reply, pending) = sync_channel(1);
     let job = Job {
         path,
-        entry_path: file.into_path(),
+        entry_path,
         reply,
     };
     if jobs.send(job).is_err() {
-        return Some(Slot::Ready(Err(worker_stopped())));
+        return Slot::Ready(Err(worker_stopped()));
     }
-    Some(Slot::Pending(pending))
+    Slot::Pending(pending)
 }
 
 /// Answers jobs until the job channel closes. After an abort, workers answer without touching the
@@ -212,17 +202,9 @@ fn settle<'a, T>(
     clippy::needless_pass_by_value,
     reason = "dropping the senders when the producer exits disconnects both channels"
 )]
-fn produce_slots<'a>(
-    walker: Walk<'_>,
-    output: Option<&Path>,
-    exclude: &ExcludePatterns,
-    jobs: SyncSender<Job<'a>>,
-    slots: SyncSender<Slot<'a>>,
-) {
+fn produce_slots<'a>(walker: Walk<'_>, jobs: SyncSender<Job<'a>>, slots: SyncSender<Slot<'a>>) {
     for entry in walker {
-        let Some(slot) = dispatch(entry, output, exclude, &jobs) else {
-            continue;
-        };
+        let slot = dispatch(entry, &jobs);
         let fatal = matches!(slot, Slot::Ready(Err(_)));
         if slots.send(slot).is_err() || fatal {
             break;
@@ -523,6 +505,33 @@ mod tests {
     }
 
     #[test]
+    fn earlier_candidate_error_wins_over_later_walk_error() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = temp_dir("ordered_candidate_error")?;
+        let root = validate_root(&temp)?;
+        fs::write(root.join("a.txt"), "first")?;
+        fs::create_dir(root.join("z"))?;
+        fs::write(root.join("z/.gitignore"), b"\xff")?;
+
+        let fold = |fail_first| {
+            fold_candidates(&root, None, &ExcludePatterns::default(), (), |(), _| {
+                if fail_first {
+                    Err(IngestError::Io(io::Error::other("first candidate")))
+                } else {
+                    Ok(())
+                }
+            })
+        };
+        assert!(
+            matches!(fold(false), Err(IngestError::Io(err)) if err.kind() == io::ErrorKind::InvalidData)
+        );
+        assert!(
+            matches!(fold(true), Err(IngestError::Io(err)) if err.to_string() == "first candidate")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn early_abort_disconnects_and_joins_when_queue_overflows()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = temp_dir("early_abort")?;
@@ -561,22 +570,19 @@ mod tests {
 
         // 1. dispatch when walk entry is Err
         let walk_err = IngestError::Io(io::Error::other("walk failed"));
-        let slot = dispatch(Err(walk_err), None, &ExcludePatterns::default(), &job_tx);
-        assert!(matches!(slot, Some(Slot::Ready(Err(_)))));
+        let slot = dispatch(Err(walk_err), &job_tx);
+        assert!(matches!(slot, Slot::Ready(Err(_))));
 
         // settle with Slot::Ready(Err)
-        let res = settle(slot.unwrap(), 0, &mut |_acc, _c| Ok(1));
+        let res = settle(slot, 0, &mut |_acc, _c| Ok(1));
         assert!(res.is_err());
 
         // 2. dispatch when job_tx is disconnected
-        let temp = temp_dir("dispatch_disconnect").unwrap();
-        let file = temp.join("test.txt");
-        fs::write(&file, "data").unwrap();
-        let regular = RegularFile::from_parts(file, Path::new("test.txt"));
-        let slot = dispatch(Ok(regular), None, &ExcludePatterns::default(), &job_tx);
+        let candidate = Candidate::Valid("test.txt".into(), PathBuf::from("test.txt"));
+        let slot = dispatch(Ok(candidate), &job_tx);
         // jobs.send fails, returning Slot::Ready(Err(worker_stopped()))
-        assert!(matches!(slot, Some(Slot::Ready(Err(_)))));
-        let res = settle(slot.unwrap(), 0, &mut |_acc, _c| Ok(1));
+        assert!(matches!(slot, Slot::Ready(Err(_))));
+        let res = settle(slot, 0, &mut |_acc, _c| Ok(1));
         assert!(res.is_err());
 
         // 3. settle with Slot::Pending where reply sender is dropped

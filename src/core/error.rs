@@ -370,7 +370,7 @@ mod tests {
             fn sanitized_detail_has_no_control_characters(input in text()) {
                 let detail = ErrorDetail::new(input.as_str());
                 prop_assert_eq!(&*detail, sanitize_error_detail(&input));
-                prop_assert_eq!(ErrorDetail::new(detail.to_string()), detail.clone());
+                prop_assert_eq!(ErrorDetail::new(detail.to_string()), detail);
                 let output = sanitize_error_detail(&input);
                 prop_assert!(!output.chars().any(char::is_control), "{:?}", output);
                 prop_assert_eq!(output.chars().count(), input.chars().count());

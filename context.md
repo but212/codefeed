@@ -21,7 +21,7 @@ Converts a local directory or public GitHub repository into a single text digest
 
 ### Candidate Collection
 
-- `Candidate<B = ()>`: `Valid(NormalizedPath, B)` or `Unstorable(UnstorablePath)` (`()` at classification, `Body<B>` at observation). Ignored entries are `None` at classification and discarded before selection.
+- `Candidate<B = ()>`: `Valid(NormalizedPath, B)` or `Unstorable(UnstorablePath)` (`()` at classification, `PathBuf` for local walk results, `Body<B>` at observation). Ignored entries are `None` at classification and discarded before selection.
 - `UnstorablePath`: Classification-owned value retaining the valid UTF-8 accounting prefix and complete normalized raw-byte identity.
 - `NormalizedPath`: Non-empty, slash-separated UTF-8 relative path without empty or `.` segments, within `MAX_PATH_BYTES` (I-10).
 - `Selector`: Linear state managing `FileStorage`, `CandidateBudget`, `PathIndex` (referencing `FileStorage` for stored paths and `skipped_arena` for skipped paths), and unstorable byte-identity set. Settles candidates via `observe`; `finish` derives the skipped tally as candidate count minus stored file count.
@@ -100,7 +100,7 @@ Converts a local directory or public GitHub repository into a single text digest
 
 ### 3.8 Local Traversal Pipeline
 
-1. Depth-first walk in file-name order without link-following (`Walk`, `walk.rs`). Excluded directories pruned before `.gitignore` read. Other directories read `.gitignore` once and compile rules from those bytes (failures: [security § 3.5](docs/security_and_filtering.md#35-ignore-files-local-only)).
+1. `Walk` (`walk.rs`) classifies leaves during depth-first traversal in file-name order without link-following. It yields a filesystem path only for storable candidates. Excluded directories pruned before `.gitignore` read. Other directories read `.gitignore` once and compile rules from those bytes (failures: [security § 3.5](docs/security_and_filtering.md#35-ignore-files-local-only)).
 2. Up to `MAX_LOCAL_WORKERS` workers inspect metadata, read bounded bodies, and return on bounded channels (`LOCAL_CHANNEL_CAPACITY`).
 3. Main thread settles slots in walk order into `Selector::observe`. On error it signals the walker and workers and disconnects the slot receiver.
 4. Final digest order and I-01 established by `SortedFiles::new`; uniqueness by `Selector::observe`.

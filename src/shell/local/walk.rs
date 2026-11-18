@@ -3,10 +3,8 @@
 //! The walk loads each directory's `.gitignore` rules once, when entering it, and the same bytes
 //! both validate the file and compile its rules. No later step reads it again.
 
-use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::vec;
 
@@ -22,37 +20,10 @@ use crate::core::policy::{
 };
 use crate::shell::error::{IngestError, io_error_at};
 
-/// A regular file found by the walk. The walk yields no other entry kind, so classification never sees one.
-/// `parent` is the admitted directory that holds the file, so classification checks only the file itself.
-pub(super) struct RegularFile {
-    path: PathBuf,
-    parent: Arc<AdmittedDir>,
-    name: OsString,
-}
-
-impl RegularFile {
-    pub(super) fn into_path(self) -> PathBuf {
-        self.path
-    }
-
-    /// Test constructor. `relative` must have no parent directories, so the root is its parent.
-    #[cfg(test)]
-    pub(super) fn from_parts(path: PathBuf, relative: &Path) -> Self {
-        let name = relative
-            .file_name()
-            .expect("test path has a file name")
-            .to_os_string();
-        Self {
-            path,
-            parent: Arc::new(AdmittedDir::root()),
-            name,
-        }
-    }
-}
-
 /// Depth-first walk in file-name order. The frames are the directories on the current path, innermost last.
 /// Excluded directories are pruned here, so neither their children nor their `.gitignore` is ever read.
 pub(super) struct Walk<'a> {
+    output: Option<&'a Path>,
     exclude: &'a ExcludePatterns,
     aborted: &'a AtomicBool,
     frames: Vec<Frame>,
@@ -63,86 +34,81 @@ pub(super) struct Walk<'a> {
 struct Frame {
     entries: vec::IntoIter<fs::DirEntry>,
     rules: Gitignore,
-    admitted: Arc<AdmittedDir>,
+    admitted: AdmittedDir,
 }
 
 impl<'a> Walk<'a> {
     /// Enters `root`. Its `.gitignore` and listing are read here, so a failure ends the run before any candidate.
     pub(super) fn new(
         root: &Path,
+        output: Option<&'a Path>,
         exclude: &'a ExcludePatterns,
         aborted: &'a AtomicBool,
     ) -> Result<Self, IngestError> {
         Ok(Self {
+            output,
             exclude,
             aborted,
-            frames: vec![Frame::enter(root, Arc::new(AdmittedDir::root()))?],
+            frames: vec![Frame::enter(root, AdmittedDir::root())?],
         })
     }
 
-    /// Prunes, enters, or yields one child of the innermost directory. `parent` is the innermost
-    /// directory's admitted state.
-    fn visit(
-        &mut self,
-        entry: &fs::DirEntry,
-        parent: Arc<AdmittedDir>,
-    ) -> Result<Option<RegularFile>, IngestError> {
-        let name = entry.file_name();
-        if is_hidden_segment(name.as_encoded_bytes()) {
-            return Ok(None);
-        }
-        let kind = entry
-            .file_type()
-            .map_err(|err| io_error_at(&entry.path(), &err))?;
-        let is_dir = kind.is_dir();
-        if !is_dir && !kind.is_file() {
-            return Ok(None);
-        }
-        let path = entry.path();
-        if is_ignored(&self.frames, &path, is_dir) {
-            return Ok(None);
-        }
-        if is_dir {
-            if let Some(admitted) = admit_dir(
-                AdmittedDir::clone(&parent),
-                name.as_encoded_bytes(),
-                self.exclude,
-            ) {
-                admitted.check_depth("local path")?;
-                self.frames.push(Frame::enter(&path, Arc::new(admitted))?);
+    fn next_candidate(&mut self) -> Result<Option<Candidate<PathBuf>>, IngestError> {
+        // Check cancellation even between entries that never yield a slot.
+        while !self.frames.is_empty() && !self.aborted.load(Ordering::Relaxed) {
+            let top = self.frames.len() - 1;
+            let Some(entry) = self.frames[top].entries.next() else {
+                self.frames.pop();
+                continue;
+            };
+            let name = entry.file_name();
+            let name = name.as_encoded_bytes();
+            if is_hidden_segment(name) {
+                continue;
             }
-            Ok(None)
-        } else {
-            Ok(Some(RegularFile { path, parent, name }))
+            let kind = entry
+                .file_type()
+                .map_err(|err| io_error_at(&entry.path(), &err))?;
+            if !kind.is_dir() && !kind.is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if is_ignored(&self.frames, &path, kind.is_dir()) {
+                continue;
+            }
+            let parent = &self.frames[top].admitted;
+            if kind.is_dir() {
+                if let Some(child) = admit_dir(parent.clone(), name, self.exclude) {
+                    child.check_depth("local path")?;
+                    self.frames.push(Frame::enter(&path, child)?);
+                }
+            } else if self.output != Some(path.as_path()) {
+                match classify_leaf(parent, name, self.exclude, "local path")? {
+                    Some(Candidate::Valid(relative, ())) => {
+                        return Ok(Some(Candidate::Valid(relative, path)));
+                    }
+                    Some(Candidate::Unstorable(key)) => {
+                        return Ok(Some(Candidate::Unstorable(key)));
+                    }
+                    None => {}
+                }
+            }
         }
+        Ok(None)
     }
 }
 
 impl Iterator for Walk<'_> {
-    type Item = Result<RegularFile, IngestError>;
+    type Item = Result<Candidate<PathBuf>, IngestError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Check between entries, including ones that never yield a slot to the settling side.
-        while !self.aborted.load(Ordering::Relaxed) {
-            let frame = self.frames.last_mut()?;
-            let Some(entry) = frame.entries.next() else {
-                self.frames.pop();
-                continue;
-            };
-            let parent = Arc::clone(&frame.admitted);
-            match self.visit(&entry, parent) {
-                Ok(Some(file)) => return Some(Ok(file)),
-                Ok(None) => {}
-                Err(err) => return Some(Err(err)),
-            }
-        }
-        None
+        self.next_candidate().transpose()
     }
 }
 
 impl Frame {
     /// Reads `dir`'s `.gitignore`, then lists `dir` with children in file-name order.
-    fn enter(dir: &Path, admitted: Arc<AdmittedDir>) -> Result<Self, IngestError> {
+    fn enter(dir: &Path, admitted: AdmittedDir) -> Result<Self, IngestError> {
         let rules = read_rules(dir)?;
         let mut entries = list_dir(dir)?;
         entries.sort_by_key(fs::DirEntry::file_name);
@@ -179,23 +145,6 @@ fn is_ignored(frames: &[Frame], path: &Path, is_dir: bool) -> bool {
         .map(|frame| frame.rules.matched(path, is_dir))
         .find(|found| !found.is_none())
         .is_some_and(|found| found.is_ignore())
-}
-
-/// Classifies one regular file on the producer thread. `None` covers the output file and ignored files.
-pub(super) fn classify_entry(
-    output: Option<&Path>,
-    exclude: &ExcludePatterns,
-    file: &RegularFile,
-) -> Result<Option<Candidate>, IngestError> {
-    if output.is_some_and(|target| file.path.as_path() == target) {
-        return Ok(None);
-    }
-    Ok(classify_leaf(
-        &file.parent,
-        file.name.as_encoded_bytes(),
-        exclude,
-        "local path",
-    )?)
 }
 
 /// Byte order mark that Git ignores at the start of a `.gitignore`.
@@ -287,33 +236,6 @@ mod tests {
 
     static NOT_CANCELLED: AtomicBool = AtomicBool::new(false);
 
-    #[test]
-    fn rejects_excessive_path_depth() {
-        let exclude = ExcludePatterns::default();
-        // Admits `directories` nested directories, as the walk does before it reaches the file.
-        let nested = |directories: usize| {
-            let mut dir = AdmittedDir::root();
-            for _ in 0..directories {
-                dir = admit_dir(dir, b"d", &exclude).expect("d is not excluded");
-            }
-            dir
-        };
-        let file = |directories: usize| RegularFile {
-            path: PathBuf::from("file.txt"),
-            parent: Arc::new(nested(directories)),
-            name: OsString::from("file.txt"),
-        };
-        assert!(classify_entry(None, &exclude, &file(MAX_PATH_DEPTH)).is_ok());
-
-        let err = classify_entry(None, &exclude, &file(MAX_PATH_DEPTH + 1))
-            .expect_err("one level past the limit must be rejected");
-        assert!(
-            err.to_string()
-                .contains("local path exceeds maximum directory depth"),
-            "unexpected message: {err}"
-        );
-    }
-
     /// Regular files under `root` as `ignore::WalkBuilder` reports them with the same settings.
     fn reference_files(root: &Path) -> Vec<String> {
         WalkBuilder::new(root)
@@ -337,9 +259,15 @@ mod tests {
     }
 
     fn walk_files(root: &Path, exclude: &ExcludePatterns) -> Vec<String> {
-        Walk::new(root, exclude, &NOT_CANCELLED)
+        Walk::new(root, None, exclude, &NOT_CANCELLED)
             .expect("walk opens the root")
-            .map(|file| relative_string(root, &file.expect("walk yields files").into_path()))
+            .map(|item| match item.expect("walk succeeds") {
+                Candidate::Valid(relative, path) => {
+                    assert_eq!(&*relative, relative_string(root, &path));
+                    relative.to_string()
+                }
+                Candidate::Unstorable(_) => panic!("fixture paths are storable"),
+            })
             .collect()
     }
 
@@ -513,6 +441,18 @@ mod tests {
     }
 
     #[test]
+    fn walk_yields_only_admitted_leaf_candidates() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = temp_dir("walk_admitted_leaves")?;
+        let root = validate_root(&temp)?;
+        for name in ["keep.txt", "Cargo.lock", "server.pem", "drop.log"] {
+            fs::write(root.join(name), "fixture")?;
+        }
+        let exclude = ExcludePatterns::new(["*.log"])?;
+        assert_eq!(walk_files(&root, &exclude), ["keep.txt"]);
+        Ok(())
+    }
+
+    #[test]
     fn user_excluded_directory_is_pruned_without_reading_its_gitignore()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = temp_dir("excluded_dir_prune")?;
@@ -542,7 +482,8 @@ mod tests {
             "/config[[:digit:]].txt\\\nconfig1.txt\n",
         ] {
             fs::write(root.join(".gitignore"), rules)?;
-            let Err(err) = Walk::new(&root, &ExcludePatterns::default(), &NOT_CANCELLED) else {
+            let Err(err) = Walk::new(&root, None, &ExcludePatterns::default(), &NOT_CANCELLED)
+            else {
                 panic!("expected unsupported class to abort the walk: {rules:?}");
             };
             assert!(
@@ -557,8 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn depth_limit_bounds_descent_even_without_any_files() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn walk_enforces_depth_limit() -> Result<(), Box<dyn std::error::Error>> {
         let temp = temp_dir("walk_depth_limit")?;
         let root = validate_root(&temp)?;
         let mut deepest = root.clone();
@@ -567,17 +507,34 @@ mod tests {
             fs::create_dir(&deepest)?;
         }
         let exclude = ExcludePatterns::default();
-        assert!(Walk::new(&root, &exclude, &NOT_CANCELLED)?.next().is_none());
+        assert!(
+            Walk::new(&root, None, &exclude, &NOT_CANCELLED)?
+                .next()
+                .is_none()
+        );
         fs::create_dir(deepest.join("pruned"))?;
         fs::write(deepest.join("pruned/.gitignore"), b"\xff\n")?;
         let prune = ExcludePatterns::new(["pruned/"])?;
-        assert!(Walk::new(&root, &prune, &NOT_CANCELLED)?.next().is_none());
+        assert!(
+            Walk::new(&root, None, &prune, &NOT_CANCELLED)?
+                .next()
+                .is_none()
+        );
 
-        let item = Walk::new(&root, &exclude, &NOT_CANCELLED)?.next();
+        let item = Walk::new(&root, None, &exclude, &NOT_CANCELLED)?.next();
         assert!(
             matches!(item, Some(Err(IngestError::Domain(DomainError::InvalidMetadata(ref msg))))
-            if msg.contains("maximum directory depth"))
+            if msg.contains("local path exceeds maximum directory depth"))
         );
+
+        let leaf = deepest.join("file.txt");
+        fs::write(&leaf, "at the depth limit")?;
+        let relative = format!("{}file.txt", "d/".repeat(MAX_PATH_DEPTH));
+        let item = Walk::new(&root, None, &prune, &NOT_CANCELLED)?.next();
+        assert!(matches!(
+            item,
+            Some(Ok(Candidate::Valid(path, entry_path))) if *path == relative && entry_path == leaf
+        ));
         Ok(())
     }
 
@@ -593,9 +550,9 @@ mod tests {
 
         let exclude = ExcludePatterns::default();
         let aborted = AtomicBool::new(false);
-        let mut walk = Walk::new(&root, &exclude, &aborted)?;
+        let mut walk = Walk::new(&root, None, &exclude, &aborted)?;
         let first = walk.next().expect("first file is yielded")?;
-        assert_eq!(first.into_path(), root.join("a.txt"));
+        assert!(matches!(first, Candidate::Valid(_, path) if path == root.join("a.txt")));
         aborted.store(true, Ordering::Relaxed);
         assert!(walk.next().is_none());
         Ok(())
@@ -611,9 +568,9 @@ mod tests {
         fs::write(root.join("sub").join("two.txt"), "two")?;
 
         let binding = ExcludePatterns::default();
-        let mut walk = Walk::new(&root, &binding, &NOT_CANCELLED)?;
+        let mut walk = Walk::new(&root, None, &binding, &NOT_CANCELLED)?;
         let first = walk.next().expect("one.txt is yielded")?;
-        assert_eq!(first.into_path(), root.join("sub").join("one.txt"));
+        assert!(matches!(first, Candidate::Valid(_, path) if path == root.join("sub/one.txt")));
 
         // Corrupt the rules after they were read. A second read would fail with InvalidData;
         // the walk must keep the rules it already holds, so two.txt stays excluded and the walk ends.
@@ -632,7 +589,7 @@ mod tests {
         fs::write(root.join("sub").join("file.txt"), "hello")?;
 
         let exclude = ExcludePatterns::default();
-        let mut walk = Walk::new(&root, &exclude, &NOT_CANCELLED)?;
+        let mut walk = Walk::new(&root, None, &exclude, &NOT_CANCELLED)?;
         let item = walk.next();
         assert!(item.is_some());
         assert!(item.unwrap().is_err());
@@ -650,7 +607,7 @@ mod tests {
             fs::write(root.join(format!(".h{index}")), "")?;
         }
         let exclude = ExcludePatterns::default();
-        let err = Walk::new(&root, &exclude, &NOT_CANCELLED).err();
+        let err = Walk::new(&root, None, &exclude, &NOT_CANCELLED).err();
         assert!(
             matches!(&err, Some(IngestError::Domain(DomainError::InvalidMetadata(msg))) if msg.contains("exceeds")),
             "expected directory entry limit failure, got: {err:?}"

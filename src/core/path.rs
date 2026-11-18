@@ -42,7 +42,7 @@ impl From<String> for NormalizedPath {
 
 /// Candidate path outcome from classification, optionally carrying a read body (I-11).
 ///
-/// An entry is either a storable path (with `()` at classification or `Body<B>` at observation)
+/// An entry is either a storable path (with `()` at classification, a local path for dispatch, or `Body<B>` at observation)
 /// or an unstorable candidate carrying its valid directory prefix and raw byte identity.
 /// Ignored entries (hidden, conventional noise, sensitive patterns, or empty/root) are represented by `None`.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -193,11 +193,7 @@ const fn xml_single_line_tag(b: u8) -> u8 {
     }
 }
 
-struct EscapeSpec {
-    lut: [u8; 256],
-}
-
-macro_rules! escape_spec {
+macro_rules! escape_table {
     ($fn:ident) => {{
         let mut lut = [PASS; 256];
         let mut b = 0usize;
@@ -211,13 +207,13 @@ macro_rules! escape_spec {
             }
             b += 1;
         }
-        EscapeSpec { lut }
+        lut
     }};
 }
 
-const HEADER_ESCAPE: EscapeSpec = escape_spec!(header_tag);
-const XML_BODY_ESCAPE: EscapeSpec = escape_spec!(xml_body_tag);
-const XML_SINGLE_LINE_ESCAPE: EscapeSpec = escape_spec!(xml_single_line_tag);
+const HEADER_ESCAPE: [u8; 256] = escape_table!(header_tag);
+const XML_BODY_ESCAPE: [u8; 256] = escape_table!(xml_body_tag);
+const XML_SINGLE_LINE_ESCAPE: [u8; 256] = escape_table!(xml_single_line_tag);
 
 const _: () = {
     let specs = [&HEADER_ESCAPE, &XML_BODY_ESCAPE, &XML_SINGLE_LINE_ESCAPE];
@@ -225,7 +221,7 @@ const _: () = {
     while s < specs.len() {
         let mut b = 0;
         while b < 256 {
-            let tag = specs[s].lut[b];
+            let tag = specs[s][b];
             assert!(
                 tag == PASS
                     || (tag == NONCHAR_TAG && b == 0xEF)
@@ -238,7 +234,7 @@ const _: () = {
 };
 
 #[inline]
-fn find_special(bytes: &[u8], mut i: usize, lut: &[u8; 256]) -> usize {
+const fn find_special(bytes: &[u8], mut i: usize, lut: &[u8; 256]) -> usize {
     while i + 8 <= bytes.len() {
         let mask = lut[bytes[i] as usize]
             | lut[bytes[i + 1] as usize]
@@ -262,18 +258,18 @@ fn find_special(bytes: &[u8], mut i: usize, lut: &[u8; 256]) -> usize {
 fn write_escaped(
     mut buf: BoundedBuffer,
     value: &str,
-    spec: &EscapeSpec,
+    lut: &[u8; 256],
 ) -> Result<BoundedBuffer, OutputLimitExceeded> {
     let bytes = value.as_bytes();
     buf = buf.reserve_bounded(bytes.len())?;
     let mut last = 0;
     let mut i = 0;
     while i < bytes.len() {
-        i = find_special(bytes, i, &spec.lut);
+        i = find_special(bytes, i, lut);
         if i == bytes.len() {
             break;
         }
-        let tag = spec.lut[bytes[i] as usize];
+        let tag = lut[bytes[i] as usize];
         if tag == NONCHAR_TAG {
             if i + 2 < bytes.len()
                 && bytes[i + 1] == 0xBF
@@ -300,7 +296,7 @@ fn write_escaped(
 mod tests {
     use super::*;
 
-    fn escape_with(spec: &EscapeSpec, value: &str) -> String {
+    fn escape_with(spec: &[u8; 256], value: &str) -> String {
         let buf = write_escaped(BoundedBuffer::default(), value, spec).unwrap();
         String::from_utf8(buf.finish().bytes).unwrap()
     }
@@ -414,7 +410,7 @@ mod tests {
             }
         }
 
-        type Escaper = (&'static str, &'static EscapeSpec, fn(char) -> String);
+        type Escaper = (&'static str, &'static [u8; 256], fn(char) -> String);
 
         fn escapers() -> [Escaper; 3] {
             [

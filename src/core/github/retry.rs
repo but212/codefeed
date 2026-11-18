@@ -120,7 +120,7 @@ pub(crate) enum RequestOutcome {
 /// Transition outcome from an HTTP attempt state transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Transition {
-    Retry { attempt: usize, delay: Duration },
+    Retry { next: AttemptState, delay: Duration },
     Fail,
 }
 
@@ -135,11 +135,17 @@ impl AttemptState {
         Self { attempt: 0 }
     }
 
-    /// Advances state given an attempt outcome, returning next transition action.
+    /// Number of retries scheduled so far, used in the retry warning.
     #[must_use]
-    pub(crate) const fn step(self, outcome: &RequestOutcome) -> (Self, Transition) {
+    pub(crate) const fn retry_count(self) -> usize {
+        self.attempt
+    }
+
+    /// Advances state only when another attempt is scheduled.
+    #[must_use]
+    pub(crate) const fn step(self, outcome: &RequestOutcome) -> Transition {
         if self.attempt >= MAX_ATTEMPTS - 1 {
-            return (self, Transition::Fail);
+            return Transition::Fail;
         }
         match outcome {
             RequestOutcome::HttpStatus {
@@ -148,12 +154,10 @@ impl AttemptState {
                 is_rate_limit,
             } => {
                 if !is_retryable_http_status(*status, *is_rate_limit) {
-                    return (self, Transition::Fail);
+                    return Transition::Fail;
                 }
                 match retry_after {
-                    Some(d) if d.as_millis() > RETRY_MAX_DELAY_MS as u128 => {
-                        (self, Transition::Fail)
-                    }
+                    Some(d) if d.as_millis() > RETRY_MAX_DELAY_MS as u128 => Transition::Fail,
                     Some(d) => self.retry(*d),
                     None => self.retry(retry_delay(self.attempt)),
                 }
@@ -161,14 +165,18 @@ impl AttemptState {
             RequestOutcome::TransportError(TransportKind::Retryable) => {
                 self.retry(retry_delay(self.attempt))
             }
-            RequestOutcome::TransportError(TransportKind::Permanent) => (self, Transition::Fail),
+            RequestOutcome::TransportError(TransportKind::Permanent) => Transition::Fail,
         }
     }
 
     /// Consumes one attempt and schedules the next after `delay`.
-    const fn retry(self, delay: Duration) -> (Self, Transition) {
-        let attempt = self.attempt + 1;
-        (Self { attempt }, Transition::Retry { attempt, delay })
+    const fn retry(self, delay: Duration) -> Transition {
+        Transition::Retry {
+            next: Self {
+                attempt: self.attempt + 1,
+            },
+            delay,
+        }
     }
 }
 
@@ -250,7 +258,7 @@ mod tests {
             let facts = RateLimitHeaders::parse(Some(value), Some("0"), Some("1000001"));
             let delay = facts.retry_after(1_000_000);
             assert_eq!(delay, Some(Duration::from_secs(u64::MAX)), "{value}");
-            let (_, transition) = AttemptState::new().step(&RequestOutcome::HttpStatus {
+            let transition = AttemptState::new().step(&RequestOutcome::HttpStatus {
                 status: 429,
                 retry_after: delay,
                 is_rate_limit: facts.is_rate_limited(),
@@ -282,7 +290,10 @@ mod tests {
     #[test]
     #[expect(clippy::too_many_lines, reason = "one table of retry transitions")]
     fn decides_retry_correctly() {
-        let retry = |attempt, delay| Transition::Retry { attempt, delay };
+        let retry = |attempt, delay| Transition::Retry {
+            next: AttemptState { attempt },
+            delay,
+        };
         let cases = [
             // (attempt, outcome, expected)
             (
@@ -387,7 +398,7 @@ mod tests {
             ),
         ];
         for (attempt, outcome, expected) in cases {
-            let (_, got) = AttemptState { attempt }.step(&outcome);
+            let got = AttemptState { attempt }.step(&outcome);
             assert_eq!(got, expected, "attempt={attempt} outcome={outcome:?}");
         }
     }

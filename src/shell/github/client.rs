@@ -62,14 +62,10 @@ impl GithubClient {
                 result => Attempt::from_result(result),
             };
 
-            let (next_state, transition) = attempt_state.step(&outcome);
-            attempt_state = next_state;
-            match transition {
-                Transition::Retry {
-                    attempt: count,
-                    delay,
-                } => {
-                    attempt.warn(count, url, delay);
+            match attempt_state.step(&outcome) {
+                Transition::Retry { next, delay } => {
+                    attempt_state = next;
+                    attempt.warn(next.retry_count(), url, delay);
                     std::thread::sleep(delay);
                 }
                 Transition::Fail => return Err(attempt.into_error(auth)),
