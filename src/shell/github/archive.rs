@@ -17,11 +17,10 @@ use crate::core::policy::{
 use crate::core::selector::{Body, Selector};
 use crate::shell::error::IngestError;
 
-/// Collects files from a tarball reader directly into a [`CollectionResult`].
+/// Collects files from a tarball reader into a [`CollectionResult`].
 ///
-/// Decompresses and streams entries through a tuned [`ARCHIVE_BUFFER_BYTES`] buffer,
-/// extracts commit revision from PAX global headers if present (falling back to `default_reference`),
-/// filters non-regular, user-excluded, or sensitive entries via core policies, and feeds valid candidates to [`Selector`].
+/// Streams entries via [`ARCHIVE_BUFFER_BYTES`], reads PAX global commit revisions (falling back to
+/// `default_reference`), filters entries via core policies, and feeds candidates to [`Selector`].
 pub(in crate::shell) fn collect<R: Read>(
     reader: R,
     label: &str,

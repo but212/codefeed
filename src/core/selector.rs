@@ -336,17 +336,14 @@ impl Selector {
 
     /// Observes one candidate entry and settles it.
     ///
-    /// - [`Candidate::Unstorable`] consumes candidate budget, must have a unique byte identity,
-    ///   and is skipped.
-    /// - [`Candidate::Valid`] consumes candidate budget and must not repeat an earlier file path.
-    ///   [`Body::Bytes`] is stored when it is UTF-8
-    ///   text within the size limit, and skipped otherwise. [`Body::Unavailable`] and
-    ///   [`Body::OverLimit`] are skipped.
+    /// - [`Candidate::Unstorable`]: consumes budget, requires unique byte identity, skipped.
+    /// - [`Candidate::Valid`]: consumes budget, requires unique path; stores UTF-8 [`Body::Bytes`] within
+    ///   size limit, skips non-UTF-8, over-limit, [`Body::Unavailable`], or [`Body::OverLimit`].
     ///
     /// # Errors
     ///
-    /// Returns [`DomainError::CandidateLimitExceeded`], [`DomainError::InvalidMetadata`] for a duplicate path, or
-    /// [`DomainError::OutputTooLarge`].
+    /// Returns [`DomainError::CandidateLimitExceeded`], [`DomainError::InvalidMetadata`] (duplicate path),
+    /// or [`DomainError::OutputTooLarge`].
     pub(crate) fn observe<B: AsRef<[u8]>>(
         mut self,
         candidate: Candidate<Body<B>>,

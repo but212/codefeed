@@ -21,11 +21,10 @@ fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct OutputLimitExceeded;
 
-/// In-memory buffer with value-passing operations, bounded by a byte `limit`.
+/// In-memory buffer with value-passing operations, bounded by `limit`.
 ///
-/// `bytes.len() <= limit` always holds: `push_bytes` is the only growth path and checks it.
-/// Outside tests the limit is always [`MAX_OUTPUT_SIZE`](crate::core::policy::MAX_OUTPUT_SIZE): [`BoundedBuffer::with_capacity`]
-/// is the only constructor, and the arbitrary-limit constructor exists only under `cfg(test)` so tests can sweep every boundary.
+/// `bytes.len() <= limit` holds because `push_bytes` is the only growth path. Outside `cfg(test)`,
+/// [`BoundedBuffer::with_capacity`] is the sole constructor and fixes `limit` to [`MAX_OUTPUT_SIZE`](crate::core::policy::MAX_OUTPUT_SIZE).
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 #[must_use]
@@ -126,10 +125,7 @@ mod tests {
         // Korean text "안녕하세요" (5 characters, 15 UTF-8 bytes) -> 5 tokens
         assert_eq!(estimate_tokens_from_bytes("안녕하세요".as_bytes()), 5);
 
-        // Mixed ASCII + Korean
-        // "Hello 안녕하세요" -> 6 ASCII bytes ('H','e','l','l','o',' ') => 6/4 = 1 token
-        // 5 Korean characters => 5 tokens
-        // Total = 6 tokens
+        // "Hello 안녕하세요" -> 6 ASCII bytes (1 token) + 5 Korean chars (5 tokens) = 6 tokens
         assert_eq!(estimate_tokens_from_bytes("Hello 안녕하세요".as_bytes()), 6);
     }
 

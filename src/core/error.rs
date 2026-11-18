@@ -8,10 +8,7 @@ pub struct ErrorDetail(String);
 
 impl ErrorDetail {
     /// Creates a detail from `text`, replacing line breaks with spaces and other control characters
-    /// with `U+FFFD`.
-    ///
-    /// Note: Unlike digest header escaping which escapes `\n` and `\r` as `\n` / `\r` literals,
-    /// error message formatting converts line breaks to spaces for compact single-line stderr diagnostics.
+    /// with `U+FFFD` (unlike digest header escaping, keeping stderr diagnostics single-line).
     #[must_use]
     pub fn new<'a>(text: impl Into<Cow<'a, str>>) -> Self {
         let cow = text.into();

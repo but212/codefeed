@@ -1,7 +1,4 @@
-//! Digest rendering and token estimation.
-//!
-//! Coordinates layout rendering across text and XML formats,
-//! token estimation, and output size cap enforcement.
+//! Digest rendering (text and XML), token estimation, and output size cap enforcement.
 
 use crate::core::error::DomainError;
 use crate::core::model::{CollectionResult, DigestFormat, RenderedDigest};
@@ -15,24 +12,19 @@ use budget::{BoundedBuffer, OutputLimitExceeded};
 use formats::render_digest;
 
 impl CollectionResult {
-    /// Renders the collected files into [`RenderedDigest`] using the specified format.
-    ///
-    /// Binds output generation to [`MAX_OUTPUT_SIZE`](crate::core::policy::MAX_OUTPUT_SIZE) and calculates the estimated token count.
+    /// Renders collected files into [`RenderedDigest`], enforcing [`MAX_OUTPUT_SIZE`](crate::core::policy::MAX_OUTPUT_SIZE) and estimating tokens.
     ///
     /// # Output Size Invariant
     ///
-    /// Final output size bounding relies on a two-stage guarantee:
-    /// 1. `FileStorage::push` performs early-fail bounding against `MAX_OUTPUT_SIZE` using raw arena byte totals.
-    /// 2. `render` via [`BoundedBuffer`] enforces `MAX_OUTPUT_SIZE` during rendering passes.
+    /// 1. `FileStorage::push` checks raw arena bytes against `MAX_OUTPUT_SIZE` early.
+    /// 2. [`BoundedBuffer`] enforces `MAX_OUTPUT_SIZE` during rendering.
     ///
-    /// For early-fail checks to be sound (never rejecting a collection that would pass final rendering),
-    /// the invariant `rendered_bytes >= raw_bytes` (`files.total_bytes()`) must hold for both Text and XML formats.
-    /// Text rendering appends framing, headers, and tree structure while preserving raw content bytes.
-    /// XML rendering escapes entities and sanitizes control characters, which strictly increases or preserves length.
+    /// Soundness requires `rendered_bytes >= raw_bytes` (`files.total_bytes()`): text adds framing/headers/tree,
+    /// and XML escapes or sanitizes bytes without shrinking length.
     ///
     /// # Errors
     ///
-    /// Returns [`DomainError::OutputTooLarge`] if output exceeds the maximum size limit.
+    /// Returns [`DomainError::OutputTooLarge`] if output exceeds `MAX_OUTPUT_SIZE`.
     pub(crate) fn render(&self, format: DigestFormat) -> Result<RenderedDigest, DomainError> {
         let extra = match format {
             DigestFormat::Text => self.files.len() * 128 + 4096,

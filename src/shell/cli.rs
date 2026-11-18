@@ -1,7 +1,4 @@
-//! Command-line interface execution and entry point.
-//!
-//! Parses CLI arguments, formats completion summaries or error messages,
-//! and determines process exit codes.
+//! CLI execution: argument parsing, output formatting, and exit code mapping.
 
 use std::fmt::Display;
 

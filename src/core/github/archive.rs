@@ -3,16 +3,11 @@ use crate::core::path::{Candidate, classify_path_segments};
 use crate::core::policy::ExcludePatterns;
 use memchr::memchr;
 
-/// Normalizes a raw tar entry path, stripping the root directory prefix,
-/// collapsing multiple slashes, removing `.` segments, and classifying against policy.
+/// Normalizes a raw tar entry path (strips root prefix, collapses slashes/`.`s) and classifies it.
 ///
-/// User exclusions match the path after the root directory is stripped, so their patterns are relative to the source root.
-///
-/// Returns `Err(DomainError)` if the path contains directory traversal, invalid root prefixes, or NUL bytes.
-/// Returns `Ok(None)` if the entry is the root directory itself, empty, hidden, excluded, noise, or sensitive.
-/// Returns an unstorable candidate with its accounting prefix and byte identity if the entry path
-/// contains non-UTF-8 bytes or exceeds `MAX_PATH_BYTES`, and is not hidden.
-/// Returns `Ok(Some(Candidate::Valid(path, ())))` on success.
+/// User exclusions match relative to the stripped root. Returns `Err(DomainError)` on traversal,
+/// invalid root prefix, or NUL; `Ok(None)` if root/empty/ignored; `Candidate::Unstorable` if
+/// non-UTF-8 or over `MAX_PATH_BYTES` (and not hidden); `Ok(Some(Candidate::Valid(path, ())))` otherwise.
 pub(crate) fn normalize_tar_entry_path(
     raw_bytes: &[u8],
     exclude: &ExcludePatterns,

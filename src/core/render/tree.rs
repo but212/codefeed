@@ -69,13 +69,11 @@ fn render_level(
     Ok((buf, prefix))
 }
 
-/// Returns the path component starting at `offset` and whether a `/` follows it.
+/// Returns the path component at `offset` and whether `/` follows it.
 ///
 /// # Panics
 ///
-/// Panics if `offset` is not a char boundary within `path` or leaves no component. Every path in a
-/// [`SortedFiles`] shares its parent prefix up to `offset`, ends in a non-empty segment
-/// (`NormalizedPath`), and is never the directory prefix of another (I-01), so this cannot happen.
+/// Panics if `offset` is off a char boundary or empty; unreachable for [`SortedFiles`] (`NormalizedPath`, I-01).
 #[must_use]
 fn component_at_offset(path: &str, offset: usize) -> (&str, bool) {
     let remainder = &path[offset..];

@@ -5,19 +5,15 @@
 #![warn(clippy::missing_errors_doc)]
 #![warn(clippy::missing_panics_doc)]
 
-//! Fast, memory-efficient repository ingestion and prompt generation for LLMs.
+//! Converts local directories or GitHub repositories into LLM prompt digests (text or XML).
 //!
-//! `codefeed` converts local source directories or remote GitHub repositories into
-//! clean, LLM-optimized prompt digests in plain text or XML format.
-//!
-//! Built on the Functional Core, Imperative Shell (FCIS) pattern:
-//! - Pure logic in `core`, handling policy limits, candidate filtering, ASCII tree rendering,
-//!   and formatting without side effects.
-//! - Effects in `shell`, executing file walking, HTTP tarball streaming, and atomic writes.
+//! Built on Functional Core, Imperative Shell (FCIS):
+//! - `core`: pure policy limits, filtering, ASCII tree rendering, and formatting.
+//! - `shell`: file walking, HTTP tarball streaming, and atomic output writes.
 //!
 //! # Primary Entry Point
 //!
-//! Ingestion is orchestrated via [`ingest`]:
+//! Orchestrated via [`ingest`]:
 //!
 //! ```no_run
 //! use std::path::PathBuf;

@@ -65,12 +65,11 @@ pub(crate) struct FileRecord<'a> {
 pub(crate) struct SortedFiles(FileStorage);
 
 impl SortedFiles {
-    /// Sorts `storage` by path, then checks that no stored path names a file and a directory at once.
+    /// Sorts `storage` by path and rejects any path that is a directory prefix of another.
     ///
     /// # Errors
     ///
-    /// Returns [`DomainError::InvalidMetadata`] when one stored path is a directory prefix of another,
-    /// since the digest tree would show the same entry as both a file and a directory.
+    /// Returns [`DomainError::InvalidMetadata`] if a stored path names both a file and a directory.
     pub(crate) fn new(storage: FileStorage) -> Result<Self, DomainError> {
         let sorted = storage.sort_by_path();
         check_no_file_directory_collision(&sorted)?;
@@ -151,13 +150,12 @@ impl FileStorage {
         self
     }
 
-    /// Appends path and content to the arenas and records a span for them.
+    /// Appends `path` and `content` to the arenas and records their span.
     ///
     /// # Errors
     ///
-    /// Returns [`DomainError::OutputTooLarge`] before appending anything when the raw arena bytes
-    /// would exceed `MAX_OUTPUT_SIZE`; the storage is consumed on error.
-    /// The rejected candidate is included in the largest-file diagnostics.
+    /// Returns [`DomainError::OutputTooLarge`] (consuming `self`) if raw bytes exceed `MAX_OUTPUT_SIZE`,
+    /// including the rejected candidate in largest-file diagnostics.
     pub(crate) fn push(
         mut self,
         path: &NormalizedPath,
@@ -231,11 +229,9 @@ impl<'a> FromIterator<FileRecord<'a>> for FileStorage {
     }
 }
 
-/// Compares two normalized slash-separated relative paths hierarchically by path components.
+/// Compares two normalized slash-separated paths component-wise (`a.split('/').cmp(b.split('/'))`) on bytes.
 ///
-/// Equivalent to `a.split('/').cmp(b.split('/'))`, computed on bytes. At the first differing byte,
-/// a `/` ends a component that the other path continues, so it sorts first. `/` is ASCII, so it
-/// never occurs inside a multi-byte UTF-8 sequence and every `/` byte is a separator.
+/// `/` is ASCII and never appears inside multi-byte UTF-8, so it always separates components and sorts first.
 #[must_use]
 pub(crate) fn cmp_path(a: &str, b: &str) -> Ordering {
     let (a_bytes, b_bytes) = (a.as_bytes(), b.as_bytes());
@@ -371,12 +367,10 @@ mod tests {
         let collected: Vec<FileRecord<'_>> = storage.iter().collect();
         assert_eq!(collected, vec![rec1, rec2]);
 
-        // Storage byte metrics verification via public contract
         let expected_bytes =
             rec1.path.len() + rec1.content.len() + rec2.path.len() + rec2.content.len();
         assert_eq!(storage.total_bytes(), expected_bytes);
 
-        // FromIterator verification
         let reconstructed: FileStorage = collected.into_iter().collect();
         assert_eq!(reconstructed, storage);
         Ok(())

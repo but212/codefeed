@@ -1,16 +1,11 @@
 //! Order-preserving parallel collection: a sorted producer, read workers, in-order settlement.
 //!
-//! # Concurrency & Performance Architecture
-//! - **Ordered Pipeline**: A producer thread walks in sorted order and sends one slot per candidate or walk error.
-//!   Workers read regular files concurrently and answer on their slot. The main thread settles
-//!   slots in walk order, so `Selector` observes candidates in `cmp_path` order.
-//!   Bounded `sync_channel`s of `LOCAL_CHANNEL_CAPACITY` messages keep memory bounded.
-//! - **FCIS Invariant**: Workers perform side-effecting I/O and pre-open symlink checks
-//!   (`fs::symlink_metadata`), delegating pure linear accumulation to `Selector` on the main
-//!   thread inside `std::thread::scope`.
-//! - **Determinism & Cancellation**: The first failure in walk order is reported, so the result
-//!   is the same on every run. An error or budget overflow sets `AtomicBool`, so workers skip
-//!   further reads and the walk stops between entries. Dropping the receiver unblocks slot sends.
+//! - **Ordered Pipeline:** Producer walks in sorted order and emits slots; workers read concurrently
+//!   over `LOCAL_CHANNEL_CAPACITY`-bounded `sync_channel`s; main thread settles in `cmp_path` order.
+//! - **FCIS Invariant:** Workers perform I/O and `fs::symlink_metadata` checks inside
+//!   `std::thread::scope`, keeping pure `Selector` accumulation on the main thread.
+//! - **Determinism & Cancellation:** Reports the first walk-order failure. Errors or budget
+//!   overflows set `AtomicBool` to short-circuit reads; dropping the receiver unblocks sends.
 
 use std::fs;
 use std::io::{self, Read};
@@ -548,14 +543,13 @@ mod tests {
     #[test]
     fn dispatch_and_settle_handle_errors_and_disconnections() {
         let (job_tx, job_rx) = sync_channel(1);
-        drop(job_rx); // Disconnect worker side
+        drop(job_rx);
 
         // 1. dispatch when walk entry is Err
         let walk_err = IngestError::Io(io::Error::other("walk failed"));
         let slot = dispatch(Err(walk_err), &job_tx);
         assert!(matches!(slot, Slot::Error(_)));
 
-        // settle with Slot::Error
         let res = settle(slot, 0, &mut |_acc, _c| Ok(1));
         assert!(res.is_err());
 

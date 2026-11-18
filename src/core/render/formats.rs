@@ -3,7 +3,6 @@ use super::tree::render_tree;
 
 use crate::core::model::{CollectionResult, DigestFormat};
 
-// Text format markers
 const REPOSITORY_PREFIX: &str = "Repository: ";
 const REVISION_PREFIX: &str = "Revision: ";
 const FILES_PREFIX: &str = "Files: ";
@@ -15,7 +14,6 @@ const FILE_BLOCK_SUFFIX: &str = "\n=============================================
 const NEWLINE: &str = "\n";
 const METADATA_SUFFIX: &str = "\n\n";
 
-// XML format markers
 const XML_REPO_START: &str = "<repository name=\"";
 const XML_REVISION_ATTR: &str = "\" revision=\"";
 const XML_TAG_CLOSE: &str = "\">\n";
@@ -109,19 +107,9 @@ const PASS: u8 = 0;
 const NONCHAR_TAG: u8 = u8::MAX;
 
 const REPLACEMENTS: [&str; 13] = [
-    "",         // 0: unused (PASS)
-    "\\\\",     // 1
-    "\\r",      // 2
-    "\\n",      // 3
-    "\u{FFFD}", // 4
-    "&quot;",   // 5
-    "&amp;",    // 6
-    "&apos;",   // 7
-    "&lt;",     // 8
-    "&gt;",     // 9
-    "&#9;",     // 10
-    "&#10;",    // 11
-    "&#13;",    // 12
+    "", // 0: unused (PASS)
+    "\\\\", "\\r", "\\n", "\u{FFFD}", "&quot;", "&amp;", "&apos;", "&lt;", "&gt;", "&#9;", "&#10;",
+    "&#13;",
 ];
 
 #[must_use]

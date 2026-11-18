@@ -1,9 +1,6 @@
 //! Functional core: pure domain logic with no I/O, clock, network, or entropy.
 //!
-//! Core modules never depend on `shell`; the imperative shell depends on the
-//! core in one direction.
-//!
-//! Purity rules, the closed list of mutation exceptions, and the one-way dependency are defined in
+//! Never depends on `shell`; purity rules and mutation exceptions live in
 //! `docs/coding_convention.md` § 3.1.
 
 /// Shared configuration for property tests: a fixed seed and no on-disk failure persistence, so runs
