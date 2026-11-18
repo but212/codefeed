@@ -14,51 +14,51 @@ Scope: `### Library consumers and CLI users` lists observable behavior. `### Con
 
 #### Breaking
 
-- **Unified `LimitExceededError`**: `CandidateLimitExceededError` and `OutputTooLargeError` have been unified into [`LimitExceededError`](src/core/error.rs) (`{ limit: u64, largest: Vec<(ErrorDetail, usize)> }`), carried by `DomainError::CandidateLimitExceeded` and `DomainError::OutputTooLarge` and re-exported from `src/lib.rs`.
-  - **Action:** Replace references to `CandidateLimitExceededError` / `OutputTooLargeError` with `LimitExceededError`, and update field accesses from `largest_directories` / `largest_files` to `largest`.
-- **`ErrorDetail::new`, `GitRef::new`, and `Source::with_reference` accept `Into<Cow<'a, str>>`**: These constructors now take `<'a>(impl Into<Cow<'a, str>>)` instead of `impl Into<String>` to avoid redundant allocations (`src/core/error.rs`, `src/core/source.rs`). Callers passing `String`, `&str`, or `Cow<'_, str>` are unaffected; callers passing `Box<str>`, custom `Into<String>` types, or using turbofish type arguments no longer compile.
-  - **Action:** Convert custom `Into<String>` or `Box<str>` arguments to `String`, `&str`, or `Cow<'_, str>`, and remove explicit turbofish type arguments on these calls.
+- **Unified `LimitExceededError`**: `CandidateLimitExceededError` and `OutputTooLargeError` are unified into [`LimitExceededError`](src/core/error.rs) (`{ limit: u64, largest: Vec<(ErrorDetail, usize)> }`), carried by `DomainError::CandidateLimitExceeded` and `DomainError::OutputTooLarge` and re-exported from `src/lib.rs`.
+  - **Action:** Replace `CandidateLimitExceededError` / `OutputTooLargeError` with `LimitExceededError`; update `largest_directories` / `largest_files` accesses to `largest`.
+- **`ErrorDetail::new`, `GitRef::new`, `Source::with_reference` accept `Into<Cow<'a, str>>`**: Signatures changed from `impl Into<String>` to `<'a>(impl Into<Cow<'a, str>>)` (`src/core/error.rs`, `src/core/source.rs`). `String`, `&str`, and `Cow<'_, str>` callers are unaffected; `Box<str>`, custom `Into<String>` types, and turbofish type arguments fail to compile.
+  - **Action:** Pass `String`, `&str`, or `Cow<'_, str>` and remove explicit turbofish type arguments.
 
 #### Fixed
 
-- **Unsupported POSIX ignore classes fail closed**: Patterns such as `[[:digit:]]` now fail explicitly in `.gitignore` and `--exclude`, even if the enclosing bracket expression is missing its final `]`. Ordinary ranges still work, including `[0-9]` and ranges ending in `[`.
-- **Local traversal stops at the depth limit and on cancellation**: Unpruned directories beyond the depth limit fail before entry, even if empty. After settlement fails, the walker stops between entries, including those that would yield no candidate.
-- **Stdout delivery contract**: Clarified that collection and rendering failures emit no digest bytes, but a stdout write failure can leave a partial stream. File replacement remains atomic.
-- **Concatenated gzip members are fully processed**: GitHub archive ingestion treats all gzip members as one tar stream instead of silently truncating at the first member. Later members share the decompressed stream budget and their trailers are validated even after the tar end marker; corruption fails without creating or replacing output.
-- **Gzip trailers are validated before delivery**: Archive collection now drains the metered gzip decoder after tar termination, rejecting corrupted payloads, invalid checksum/size trailers, and missing trailer bytes without creating or replacing output. Decoded bytes after the tar end marker remain subject to the archive stream budget.
-- **Long `Retry-After` delays are honored**: HTTP-date values and overflowing decimal delays no longer fall back to a short retry. Valid dates take precedence over quota resets, and waits exceeding the retry cap fail on the original response without a second request.
-- **Sparse archive expansion is bounded**: Reconstructed GNU sparse holes now consume the cumulative archive stream budget. Sparse entries whose logical bodies cannot fit the remaining budget fail before expansion instead of allowing a tiny archive to trigger unbounded draining work.
-- **Duplicate unstorable paths are rejected**: Overlong and non-UTF-8 candidate paths now retain their complete normalized byte identity and participate in duplicate detection. Distinct paths sharing an accounting prefix or lossy UTF-8 spelling remain separate candidates.
-- **Directory-suffixed output paths**: `--output` (`-o`) paths ending with a separator (`out/`) or trailing current-directory segment (`out/.`) are now rejected with a usage error before filesystem resolution instead of creating or overwriting a file at the stripped path.
-- **Empty file rendering**: Empty files (`""`) no longer receive synthetic trailing newline padding in Text or XML output, keeping `""` distinct from `"\n"`.
+- **Unsupported POSIX ignore classes fail closed**: Patterns like `[[:digit:]]` fail explicitly in `.gitignore` and `--exclude`, even with an unclosed `[`. Ordinary ranges (`[0-9]`, ranges ending in `[`) still work.
+- **Local traversal stops at depth limit and cancellation**: Unpruned directories beyond the depth limit fail before entry, even when empty. After settlement failure, the walker stops between entries, including ignored/non-candidate ones.
+- **Stdout delivery contract**: Collection and rendering failures emit no digest bytes; stdout write failures can leave a partial stream. File replacement remains atomic.
+- **Concatenated gzip members are fully processed**: GitHub archive ingestion reads all gzip members as one tar stream rather than truncating at the first member.
+- **Gzip trailers are validated before delivery**: Archive collection drains the metered gzip decoder after tar termination within the decompressed stream budget, rejecting corrupted payloads, invalid checksum/size trailers, or missing trailer bytes without creating or replacing output.
+- **Long `Retry-After` delays are honored**: HTTP-date values and overflowing decimal delays no longer fall back to short retries. Valid dates override quota resets; waits exceeding the retry cap fail on the original response without retrying.
+- **Sparse archive expansion is bounded**: Reconstructed GNU sparse holes consume the cumulative archive stream budget; entries whose logical bodies exceed remaining budget fail before expansion.
+- **Duplicate unstorable paths are rejected**: Overlong and non-UTF-8 paths retain full normalized byte identity for duplicate detection; distinct paths sharing an accounting prefix or lossy UTF-8 spelling remain separate candidates.
+- **Directory-suffixed output paths**: `--output` (`-o`) paths ending in a separator (`out/`) or `/.` (`out/.`) fail with a usage error before filesystem resolution instead of writing to the stripped path.
+- **Empty file rendering**: Empty files (`""`) no longer get a synthetic trailing newline in Text or XML output, keeping `""` distinct from `"\n"`.
 
 #### Changed
 
-- **Help/version documentation**: The English and Korean READMEs clarify the existing precedence exceptions for option-value positions and arguments after `--`; CLI behavior is unchanged.
-- **Install docs**: `README.md` and `docs/README.ko.md` lead with `cargo install codefeed` (source build); `cargo binstall codefeed` remains as an optional prebuilt-binary install. The `[package.metadata.binstall]` table is unchanged.
+- **Help/version documentation**: English and Korean READMEs clarify precedence exceptions for option-value positions and arguments after `--`; CLI behavior is unchanged.
+- **Install docs**: `README.md` and `docs/README.ko.md` lead with `cargo install codefeed` (source build); `cargo binstall codefeed` remains optional. `[package.metadata.binstall]` is unchanged.
 
 ### Contributors
 
-Internal change. No consumer action required. Output is unchanged throughout.
+Internal change. No consumer action required. Output is unchanged.
 
 #### Added
 
-- **Code of conduct**: `CODE_OF_CONDUCT.md` and `docs/CODE_OF_CONDUCT.ko.md` define repository-scoped conduct rules, technical debate protections, and maintainer moderation.
-- **Contributor guidelines**: `CONTRIBUTING.md` and `docs/CONTRIBUTING.ko.md` provide contributor onboarding, workflow conventions, and verification checklists.
-- **Security policy**: `SECURITY.md` owns vulnerability reporting (private GitHub Security Advisories, latest release supported).
+- **Code of conduct**: `CODE_OF_CONDUCT.md` and `docs/CODE_OF_CONDUCT.ko.md` define repository-scoped conduct rules, technical debate protections, and moderation.
+- **Contributor guidelines**: `CONTRIBUTING.md` and `docs/CONTRIBUTING.ko.md` define onboarding, workflow conventions, and verification checklists.
+- **Security policy**: `SECURITY.md` owns vulnerability reporting (GitHub Security Advisories, latest release supported).
 
 #### Changed
 
-- **Directory count storage**: Specialized the private arena map for directory tallies while retaining the shared bucket index and collision checks.
-- **GitHub HTTP execution boundary**: `src/shell/github/client.rs` now owns request execution, retry effects, rate-limit header interpretation, and response error handling alongside TLS and credentials. `auth` and `request` are private; collection uses `new` and `stream_url`. HTTP unit tests move with their implementation; collection/archive integration tests remain in `mod.rs`. Core retry policy and observable behavior are unchanged.
-- **Document ownership**: Output format (header, token estimate) is owned by `README.md` Output; limit authority is stated once in the `docs/security_and_filtering.md` header; `AGENTS.md` § 6 routes `CONTRIBUTING.md` and `SECURITY.md` changes. Contributor-facing documents no longer link to `AGENTS.md`: `CONTRIBUTING.md` owns the verification checklist, `AGENTS.md` links to it, and the pull request template mirrors the commands inline. `context.md` § 5 is reduced to module responsibilities, and `docs/security_and_filtering.md` no longer names implementation identifiers.
-- **Unstorable identity and sparse accounting invariants**: `CandidatePath::Unstorable` and `Observation::Unstorable` carry `UnstorablePath` instead of only an accounting prefix. I-09 now records exact byte identity enforcement, and I-12 records cumulative sparse-expansion accounting (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/github/archive.rs`, `context.md`).
-- **Derived skipped tally**: `Selector` no longer stores a separate skipped counter; `finish` derives it from candidate count minus stored file count, removing counter synchronization without changing output (`src/core/selector.rs`).
-- **`Cow<'a, str>` string constructors**: `ErrorDetail::new`, `GitRef::new`, `Source::with_reference`, and `DomainError::{usage, invalid_source, unsupported_source, invalid_metadata}` accept `impl Into<Cow<'a, str>>` instead of `impl Into<String>`, avoiding reallocation when owned inputs need no sanitization or trimming (`src/core/error.rs`, `src/core/source.rs`).
+- **Directory count storage**: Specialized private arena map for directory tallies while retaining shared bucket index and collision checks.
+- **GitHub HTTP execution boundary**: `src/shell/github/client.rs` owns request execution, retries, rate-limit header parsing, and response errors alongside TLS and credentials. `auth` and `request` are private; collection uses `new` and `stream_url`. HTTP unit tests moved to `client.rs`; collection/archive integration tests remain in `mod.rs`. Core retry policy and observable behavior are unchanged.
+- **Document ownership**: `README.md` (Output) owns output format; `docs/security_and_filtering.md` header owns limit authority; `AGENTS.md` § 6 routes `CONTRIBUTING.md` and `SECURITY.md`. Contributor docs no longer link `AGENTS.md`: `CONTRIBUTING.md` owns the verification checklist, `AGENTS.md` links it, and the PR template mirrors the commands inline. `context.md` § 5 lists module responsibilities only; `docs/security_and_filtering.md` drops implementation identifiers.
+- **Unstorable identity and sparse accounting invariants**: `CandidatePath::Unstorable` and `Observation::Unstorable` carry `UnstorablePath`. I-09 records exact byte-identity enforcement; I-12 records cumulative sparse-expansion accounting (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/github/archive.rs`, `context.md`).
+- **Derived skipped tally**: `Selector` drops its skipped counter; `finish` derives it from candidate count minus stored file count (`src/core/selector.rs`).
+- **`Cow<'a, str>` string constructors**: `ErrorDetail::new`, `GitRef::new`, `Source::with_reference`, and `DomainError::{usage, invalid_source, unsupported_source, invalid_metadata}` accept `impl Into<Cow<'a, str>>`, avoiding reallocation when owned inputs need no sanitization or trimming (`src/core/error.rs`, `src/core/source.rs`).
 - **Allocation reductions and `RateLimitHeaders` enum**:
-  - `RateLimitHeaders` is now an enum (`NotLimited`, `UnparsedRetryAfter`, `RetryAfterSecs`, `QuotaExhausted`) so contradictory header states are unrepresentable (`src/core/github/retry.rs`).
-  - `Selector::observe` accepts generic `B: AsRef<[u8]>` bodies (`src/core/selector.rs`), paired with bounded `BufferPool`/`PooledBuf<'a>` buffer reuse in `src/shell/local/pipeline.rs` and `ExcludePatterns::is_empty` in `src/core/policy/exclude.rs`.
-  - `Selector` and `CandidateBudget` replace `HashMap`/`HashSet` with an open-addressed `ArenaMap<V>` backed by `u32` indices, with compile-time bounds assertions in `src/core/policy/limits.rs`.
+  - `RateLimitHeaders` is an enum (`NotLimited`, `UnparsedRetryAfter`, `RetryAfterSecs`, `QuotaExhausted`) making contradictory header states unrepresentable (`src/core/github/retry.rs`).
+  - `Selector::observe` accepts `B: AsRef<[u8]>` (`src/core/selector.rs`), paired with `BufferPool`/`PooledBuf<'a>` reuse in `src/shell/local/pipeline.rs` and `ExcludePatterns::is_empty` in `src/core/policy/exclude.rs`.
+  - `Selector` and `CandidateBudget` replace `HashMap`/`HashSet` with open-addressed `ArenaMap<V>` backed by `u32` indices, with compile-time bounds assertions in `src/core/policy/limits.rs`.
 
 ---
 

@@ -29,53 +29,31 @@
 
 ## 2. Evaluation Order
 
-```
-Entry (local walk or tar stream)
- |
- +-- Directory (local walk only)
- |     +-- Hidden or ignored by a `.gitignore` -> Pruned, not entered; its `.gitignore` is never read.
- |     +-- Matched by a user exclusion (§ 3.6) -> Pruned, not entered; its `.gitignore` is never read.
- |     +-- Depth > MAX_PATH_DEPTH -> Run fails (InvalidMetadata) before reading its `.gitignore` or listing entries.
- |     `-- Entered:
- |           +-- `.gitignore` read once; the same bytes validate and compile its rules (§ 3.5).
- |           `-- Listing over `MAX_DIR_ENTRIES` entries (hidden and ignored included) -> Run fails (InvalidMetadata).
- |
- +-- Tar header read (GNU `L`/`K` and PAX `x` bodies included). Runs before path classification and applies to every entry type.
- |     `-- Over `ARCHIVE_MAX_HEADER_BYTES` for one read -> Run fails (InvalidMetadata), even for entries that would be dropped (I-03).
- +-- Decompressed archive stream over `ARCHIVE_MAX_DECOMPRESSED_BYTES` -> Run fails (InvalidMetadata), entry bodies and reconstructed sparse holes included.
- |
- +-- Non-regular file (symlink, FIFO, socket, device, non-file tar header)
- |     `-- Dropped silently. Omitted from count.
- |
- +-- Tar stream entry normalization
- |     +-- Embedded NUL byte, traversal `..`, or `.` root segment
- |     |     `-- Run fails (InvalidMetadata).
- |     `-- Strips the first path segment (repository root directory).
- |
- +-- Path classification
- |     +-- Hidden segment
- |     |     `-- Ignored. Dropped silently. Omitted from count.
- |     +-- Matched by a user exclusion (§ 3.6)
- |     |     `-- Ignored. Dropped silently. Omitted from count.
- |     +-- Noise lockfile or sensitive pattern
- |     |     `-- Ignored. Dropped silently. Omitted from count.
- |     +-- Depth > MAX_PATH_DEPTH
- |     |     `-- Run fails (InvalidMetadata).
- |     +-- Non-UTF-8 segment, or path > MAX_PATH_BYTES
- |     |     `-- Candidate with accounting prefix (valid segments or "") and complete normalized byte identity.
- |     `-- Valid UTF-8 path
- |           `-- Candidate.
- |
- +-- Candidate observation
- |     +-- Charges candidate slot. Overflowing MAX_FILE_COUNT fails the run.
- |     +-- Path equal to an earlier candidate's path (skipped ones included) -> Run fails (InvalidMetadata).
- |     +-- Declared size > MAX_FILE_SIZE: skipped; body not read.
- |     +-- Body read (bounded by worker or archive stream).
- |     `-- Content check passes -> Included. Otherwise skipped.
- |
- `-- Digest assembly
-       `-- Stored path is a directory prefix of another stored path -> Run fails (InvalidMetadata) (I-01). Skipped candidates are not compared, so the digest tree shows each name as either a file or a directory.
-```
+Each entry (local walk or tar stream) is evaluated in order:
+
+1. **Directory (local walk only):**
+   - Hidden, ignored by `.gitignore`, or matched by a user exclusion (§ 3.6) -> pruned; not entered and `.gitignore` is never read.
+   - Depth > `MAX_PATH_DEPTH` -> run fails (`InvalidMetadata`) before reading `.gitignore` or listing entries.
+   - Entered: `.gitignore` is read once (same bytes validate and compile rules, § 3.5); listing > `MAX_DIR_ENTRIES` entries (hidden and ignored included) -> run fails (`InvalidMetadata`).
+2. **Tar stream limits (archive only, before path classification, all entry types):**
+   - Single tar header read (GNU `L`/`K` and PAX `x` bodies included) > `ARCHIVE_MAX_HEADER_BYTES` -> run fails (`InvalidMetadata`), even for entries that would be dropped (I-03).
+   - Decompressed stream (entry bodies and reconstructed sparse holes included) > `ARCHIVE_MAX_DECOMPRESSED_BYTES` -> run fails (`InvalidMetadata`).
+3. **Non-regular file** (symlink, FIFO, socket, device, non-file tar header) -> dropped silently, omitted from count.
+4. **Tar stream entry normalization:**
+   - Embedded NUL byte, traversal `..`, or `.` root segment -> run fails (`InvalidMetadata`).
+   - Strips the first path segment (repository root directory).
+5. **Path classification:**
+   - Hidden segment, user exclusion (§ 3.6), or noise lockfile / sensitive pattern -> ignored (dropped silently, omitted from count).
+   - Depth > `MAX_PATH_DEPTH` -> run fails (`InvalidMetadata`).
+   - Non-UTF-8 segment or path > `MAX_PATH_BYTES` -> candidate with accounting prefix (valid segments or `""`) and complete normalized byte identity.
+   - Valid UTF-8 path -> candidate.
+6. **Candidate observation:**
+   - Charges candidate slot; overflowing `MAX_FILE_COUNT` fails the run.
+   - Path equal to an earlier candidate (including skipped ones) -> run fails (`InvalidMetadata`).
+   - Declared size > `MAX_FILE_SIZE` -> skipped; body not read.
+   - Body read (bounded by worker or archive stream): passes content check -> included; otherwise skipped.
+7. **Digest assembly:**
+   - Stored path is a directory prefix of another stored path -> run fails (`InvalidMetadata`) (I-01). Skipped candidates are not compared, so each digest tree name is either a file or a directory.
 
 ---
 
@@ -178,17 +156,17 @@ Enforces built-in Mozilla root certificates (`rustls-webpki-roots`). OS stores a
 
 ### 6.4 Streaming
 
-- Fetches tarball via `/repos/{owner}/{repo}/tarball/{ref}`. Streams via gzip/tar directly into candidate observation without disk spooling.
-- Concatenated gzip members form one decoded tar stream. Tar termination does not finalize collection: all remaining members are drained and every member's trailer is validated before any digest is delivered. A missing or invalid gzip checksum or uncompressed-size trailer fails the run (`IngestError::Http`). Decoded bytes after the tar end marker still consume the decompressed stream budget, not the tar header budget.
-- Each tar header read is metered against `ARCHIVE_MAX_HEADER_BYTES` (I-03), covering padding, GNU `L`/`K`, PAX `x`, and sparse blocks. Overruns abort with `InvalidMetadata`.
-- The entire decompressed stream, including holes reconstructed by GNU sparse entries, shares the `ARCHIVE_MAX_DECOMPRESSED_BYTES` budget. A sparse entry whose logical body cannot fit the remaining budget fails with `InvalidMetadata` before expansion. Entries within the budget remain excluded as non-regular files and consume no candidate slots.
+- Fetches tarball via `/repos/{owner}/{repo}/tarball/{ref}`, streaming through gzip/tar into candidate observation without disk spooling.
+- Concatenated gzip members form one tar stream. After tar termination, remaining members are drained and every trailer is validated before delivery; missing or invalid checksum/size trailers fail with `IngestError::Http`. Bytes decoded after the tar end marker still count against `ARCHIVE_MAX_DECOMPRESSED_BYTES`, not the tar header budget.
+- Each tar header read is metered against `ARCHIVE_MAX_HEADER_BYTES` (I-03), including padding, GNU `L`/`K`, PAX `x`, and sparse blocks; overruns abort with `InvalidMetadata`.
+- The decompressed stream, including reconstructed GNU sparse holes, shares `ARCHIVE_MAX_DECOMPRESSED_BYTES`. Sparse entries exceeding remaining budget fail with `InvalidMetadata` before expansion; entries within budget remain excluded as non-regular files with no candidate slot.
 
 ### 6.5 Retries
 
 - **Retried:** Transport timeouts/errors, HTTP 429, HTTP 5xx, HTTP 403 with `Retry-After` or zero quota.
 - **Not Retried:** Other HTTP 4xx, non-transient transport errors.
-- `Retry-After` accepts decimal seconds and HTTP-date (including legacy HTTP-date forms), taking precedence over quota reset headers when valid. Dates resolve against the current Unix time; a due or past date requests no wait. All-digit seconds exceeding the representable range saturate rather than falling back to backoff. Malformed values retain the existing quota-reset or backoff fallback.
-- Attempts capped by `MAX_ATTEMPTS`. Exponential backoff spans `RETRY_INITIAL_DELAY_MS` to `RETRY_MAX_DELAY_MS`. Server wait delays from `Retry-After` or `x-ratelimit-reset` exceeding `RETRY_MAX_DELAY_MS` abort immediately.
+- Valid `Retry-After` (decimal seconds or HTTP-date, including legacy forms) overrides quota-reset headers. Dates resolve against current Unix time (due/past dates wait 0); overflowing all-digit seconds saturate instead of falling back to backoff; malformed values fall back to quota-reset or backoff.
+- Attempts cap at `MAX_ATTEMPTS`; exponential backoff spans `RETRY_INITIAL_DELAY_MS` to `RETRY_MAX_DELAY_MS`. Server waits (`Retry-After` or `x-ratelimit-reset`) exceeding `RETRY_MAX_DELAY_MS` abort immediately.
 
 ### 6.6 Time Limits
 
@@ -209,7 +187,7 @@ Sanitization runs in a single pass:
    - Entities escaped (`&`, `<`, `>`, `"`, `'`). Attribute whitespace (`\t`, `\n`, `\r`) encoded as character references (`&#9;`, `&#10;`, `&#13;`). Disallowed XML 1.0 characters (C0 controls and `U+FFFE`/`U+FFFF`) map to `\u{FFFD}`.
 3. **Tree Labels:** Follow the active format's single-line escaping (header backslash/control rules in text format; XML entity, attribute-whitespace, and disallowed-character rules in XML format).
 4. **Error and Warning Diagnostics (I-04):**
-   - Single-line diagnostics emitted to stderr (paths in I/O errors, root validation errors, HTTP status messages, transport error text, domain messages, overflow lists) convert `\t`, `\r`, `\n` to space `' '` and other control characters to `\u{FFFD}` to prevent terminal injection or log forgery. Destination in stdout completion summary (`Wrote <PATH>`) is sanitized identically.
+   - Single-line stderr diagnostics (I/O error paths, root validation errors, HTTP status messages, transport errors, domain messages, overflow lists) and the stdout `Wrote <PATH>` destination convert `\t`, `\r`, `\n` to `' '` and other controls to `\u{FFFD}` to prevent terminal injection or log forgery.
 
 ---
 

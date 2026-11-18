@@ -91,7 +91,7 @@ codefeed -- -my-directory
 - 저장소 내 `.gitignore` 규칙에 일치하는 파일(로컬 전용; 안전하지 않거나 읽을 수 없는 `.gitignore`는 실패, 3.5절).
 - `--exclude` 패턴에 일치하는 경로(3.6절).
 
-필터링은 경로만 대상으로 하며 파일 내용은 검사하지 않습니다. 평범한 이름의 파일에 든 비밀은 `.gitignore` 또는 `--exclude`로 다이제스트에서 제외하십시오([`security_and_filtering.md`](security_and_filtering.md) 1.2절).
+필터링은 경로와 파일명만 검사하며 파일 내용은 검사하지 않습니다. 평범한 이름의 파일에 든 비밀은 `.gitignore` 또는 `--exclude`로 다이제스트에서 제외하십시오([`security_and_filtering.md`](security_and_filtering.md) 1.2절; 전체 규칙: 3절).
 
 건너뛴 항목(요약 줄에 skipped로 집계):
 
@@ -99,8 +99,6 @@ codefeed -- -my-directory
 - 바이너리(NUL 바이트) 또는 유효하지 않은 UTF-8 파일.
 - `MAX_PATH_BYTES` 초과 또는 비-UTF-8 경로.
 - 읽기 불가 파일(권한 거부, 잠금 등).
-
-> **참고:** 필터링은 경로와 파일명만 검사하며 파일 내용은 검사하지 않습니다. 완전한 규칙: [`security_and_filtering.md`](security_and_filtering.md) 3절.
 
 ## 제한값
 
