@@ -21,6 +21,7 @@ Scope: `### Library consumers and CLI users` lists observable behavior. `### Con
 
 #### Fixed
 
+- **Concatenated gzip members are fully processed**: GitHub archive ingestion treats all gzip members as one tar stream instead of silently truncating at the first member. Later members share the decompressed stream budget and their trailers are validated even after the tar end marker; corruption fails without creating or replacing output.
 - **Gzip trailers are validated before delivery**: Archive collection now drains the metered gzip decoder after tar termination, rejecting corrupted payloads, invalid checksum/size trailers, and missing trailer bytes without creating or replacing output. Decoded bytes after the tar end marker remain subject to the archive stream budget.
 - **Long `Retry-After` delays are honored**: HTTP-date values and overflowing decimal delays no longer fall back to a short retry. Valid dates take precedence over quota resets, and waits exceeding the retry cap fail on the original response without a second request.
 - **Sparse archive expansion is bounded**: Reconstructed GNU sparse holes now consume the cumulative archive stream budget. Sparse entries whose logical bodies cannot fit the remaining budget fail before expansion instead of allowing a tiny archive to trigger unbounded draining work.

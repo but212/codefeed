@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::io::{self, BufReader, Read};
 
-use flate2::read::GzDecoder;
+use flate2::bufread::MultiGzDecoder;
 use tar::{Archive, EntryType};
 
 use crate::core::error::DomainError;
@@ -30,7 +30,7 @@ pub(in crate::shell) fn collect<R: Read>(
 ) -> Result<CollectionResult, IngestError> {
     let meter = StreamMeter::new();
     let mut archive = Archive::new(Metered {
-        inner: GzDecoder::new(BufReader::with_capacity(ARCHIVE_BUFFER_BYTES, reader)),
+        inner: MultiGzDecoder::new(BufReader::with_capacity(ARCHIVE_BUFFER_BYTES, reader)),
         meter: &meter,
     });
     let mut entries = archive
@@ -59,8 +59,8 @@ pub(in crate::shell) fn collect<R: Read>(
         }
         drain_entry(&mut entry, &meter)?;
     }
-    // Tar stops at its end marker, before gzip necessarily checks its checksum and size.
-    // Keep the remaining decoded bytes inside the stream budget while validating the trailer.
+    // Tar stops at its end marker, before gzip necessarily checks every member's checksum and size.
+    // Keep all remaining members inside the stream budget while validating their trailers.
     io::copy(&mut archive.into_inner(), &mut io::sink())
         .map_err(|err| stream_error(&err, &meter))?;
 
@@ -734,6 +734,102 @@ mod tests {
 
         assert_eq!(result.files.len(), 0);
         assert_eq!(result.skipped, 0);
+    }
+
+    fn gzip_members(parts: &[&[u8]]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for &part in parts {
+            flate2::read::GzEncoder::new(part, flate2::Compression::fast())
+                .read_to_end(&mut bytes)
+                .unwrap();
+        }
+        bytes
+    }
+
+    #[test]
+    fn concatenated_gzip_members_preserve_files() {
+        let expected = [("a.txt", "hello"), ("b.txt", "world")];
+        let mut tar = tar::Builder::new(Vec::new());
+        for (name, content) in expected {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_cksum();
+            tar.append_data(&mut header, format!("repo-root/{name}"), content.as_bytes())
+                .unwrap();
+        }
+        let raw = tar.into_inner().unwrap();
+        // Cover boundaries between entries and within a header, body, padding, and end marker.
+        for split in [1024, 0, 1, 513, 519, raw.len() - 1, raw.len()] {
+            let bytes = gzip_members(&[&raw[..split], &raw[split..]]);
+            let collection = collect_default(&bytes, "label", None)
+                .unwrap_or_else(|error| panic!("split {split}: {error}"));
+            let files: Vec<_> = collection
+                .files
+                .iter()
+                .map(|f| (f.path, f.content))
+                .collect();
+            assert_eq!(files, expected, "split {split}");
+            assert_eq!(collection.skipped, 0);
+        }
+    }
+
+    #[test]
+    fn concatenated_gzip_members_validate_later_trailers() {
+        let first = gzip_tarball(&[("repo-root/a.txt", b"hello", EntryType::Regular)]);
+        let intact = gzip_members(&[b"bytes after the tar end marker"]);
+        let mut bad_crc = intact.clone();
+        bad_crc[intact.len() - 8] ^= 1;
+        let mut bad_size = intact.clone();
+        bad_size[intact.len() - 4] ^= 1;
+        for (case, later) in [
+            ("checksum", bad_crc),
+            ("size", bad_size),
+            ("truncated", intact[..intact.len() - 1].to_vec()),
+        ] {
+            let result = collect(
+                first.as_slice().chain(later.as_slice()),
+                "label",
+                None,
+                &ExcludePatterns::default(),
+            );
+            assert!(
+                matches!(result, Err(IngestError::Http(_))),
+                "{case}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn concatenated_gzip_members_share_the_decompressed_stream_budget() {
+        let first_len = ARCHIVE_MAX_DECOMPRESSED_BYTES / 2;
+        let mut first = Vec::new();
+        flate2::read::GzEncoder::new(io::repeat(0).take(first_len), flate2::Compression::fast())
+            .read_to_end(&mut first)
+            .unwrap();
+        for extra in [0, 1] {
+            // Each member fits separately; only their combined decoded size can exceed the limit.
+            let later = flate2::read::GzEncoder::new(
+                io::repeat(0).take(ARCHIVE_MAX_DECOMPRESSED_BYTES - first_len + extra),
+                flate2::Compression::fast(),
+            );
+            let result = collect(
+                first.as_slice().chain(later),
+                "label",
+                None,
+                &ExcludePatterns::default(),
+            );
+            if extra == 0 {
+                let collection = result.expect("members totaling exactly the stream limit fit");
+                assert_eq!(collection.files.len(), 0);
+                assert_eq!(collection.skipped, 0);
+            } else {
+                assert!(
+                    matches!(&result, Err(IngestError::Domain(DomainError::InvalidMetadata(message)))
+                        if message.contains("ARCHIVE_MAX_DECOMPRESSED_BYTES")),
+                    "{result:?}"
+                );
+            }
+        }
     }
 
     #[test]

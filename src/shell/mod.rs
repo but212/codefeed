@@ -108,7 +108,9 @@ mod tests {
             DigestFormat::Text,
         );
 
-        for archive in [bad_crc, truncated] {
+        let later_bad_crc = [intact.as_slice(), bad_crc.as_slice()].concat();
+        let later_truncated = [intact.as_slice(), truncated.as_slice()].concat();
+        for archive in [bad_crc, truncated, later_bad_crc, later_truncated] {
             for previous in [None, Some("previous digest")] {
                 if let Some(contents) = previous {
                     fs::write(&output, contents)?;

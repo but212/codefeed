@@ -178,7 +178,7 @@ Enforces built-in Mozilla root certificates (`rustls-webpki-roots`). OS stores a
 ### 6.4 Streaming
 
 - Fetches tarball via `/repos/{owner}/{repo}/tarball/{ref}`. Streams via gzip/tar directly into candidate observation without disk spooling.
-- Tar termination does not finalize collection: the gzip stream is drained through its trailer before any digest is delivered. A missing or invalid gzip checksum or uncompressed-size trailer fails the run (`IngestError::Http`). Decoded bytes after the tar end marker still consume the decompressed stream budget, not the tar header budget.
+- Concatenated gzip members form one decoded tar stream. Tar termination does not finalize collection: all remaining members are drained and every member's trailer is validated before any digest is delivered. A missing or invalid gzip checksum or uncompressed-size trailer fails the run (`IngestError::Http`). Decoded bytes after the tar end marker still consume the decompressed stream budget, not the tar header budget.
 - Each tar header read is metered against `ARCHIVE_MAX_HEADER_BYTES` (I-03), covering padding, GNU `L`/`K`, PAX `x`, and sparse blocks. Overruns abort with `InvalidMetadata`.
 - The entire decompressed stream, including holes reconstructed by GNU sparse entries, shares the `ARCHIVE_MAX_DECOMPRESSED_BYTES` budget. A sparse entry whose logical body cannot fit the remaining budget fails with `InvalidMetadata` before expansion. Entries within the budget remain excluded as non-regular files and consume no candidate slots.
 
