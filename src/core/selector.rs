@@ -11,7 +11,7 @@ use crate::core::path::Candidate;
 use crate::core::policy::{
     MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, OVERFLOW_LARGEST_DIRECTORIES,
 };
-use crate::core::storage::{FileStorage, SortedFiles};
+use crate::core::storage::{FileStorage, SortedFiles, arena_slice};
 
 /// UTF-8 text predicate: NUL-free bytes within size limit, returning string slice.
 fn classify_content(bytes: &[u8]) -> Option<&str> {
@@ -33,11 +33,6 @@ pub(crate) enum Body<B> {
 }
 
 const EMPTY_BUCKET: u32 = u32::MAX;
-
-fn arena_slice(arena: &str, offset: u32, len: u32) -> &str {
-    let start = offset as usize;
-    &arena[start..start + len as usize]
-}
 
 #[derive(Debug)]
 struct CountEntry {

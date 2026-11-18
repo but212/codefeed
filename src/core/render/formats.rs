@@ -26,18 +26,6 @@ const XML_FILE_START: &str = "<file path=\"";
 const XML_FILE_TAILS: [&[u8]; 2] = [b"</file>\n", b"\n</file>\n"];
 const TEXT_FILE_TAILS: [&[u8]; 2] = [b"\n", b"\n\n"];
 
-pub(super) fn write_single_line(
-    format: DigestFormat,
-    buf: BoundedBuffer,
-    value: &str,
-) -> Result<BoundedBuffer, OutputLimitExceeded> {
-    let lut = match format {
-        DigestFormat::Text => &HEADER_ESCAPE,
-        DigestFormat::Xml => &XML_SINGLE_LINE_ESCAPE,
-    };
-    write_escaped(buf, value, lut)
-}
-
 pub(super) fn render_digest(
     mut buf: BoundedBuffer,
     collection: &CollectionResult,
@@ -59,7 +47,9 @@ pub(super) fn render_digest(
             buf = buf.push_usize(collection.skipped)?;
             buf = buf.push_str(METADATA_SUFFIX)?;
             buf = buf.push_str(DIRECTORY_HEADER)?;
-            buf = render_tree(buf, &collection.files, format)?;
+            buf = render_tree(buf, &collection.files, |buf, name| {
+                write_escaped(buf, name, &HEADER_ESCAPE)
+            })?;
             buf = buf.push_str(FILES_HEADER)?;
             for file in collection.files.iter() {
                 let missing_nl = usize::from(!file.content.ends_with('\n'));
@@ -82,7 +72,9 @@ pub(super) fn render_digest(
             }
             buf = buf.push_str(XML_TAG_CLOSE)?;
             buf = buf.push_str(XML_DIR_START)?;
-            buf = render_tree(buf, &collection.files, format)?;
+            buf = render_tree(buf, &collection.files, |buf, name| {
+                write_escaped(buf, name, &XML_SINGLE_LINE_ESCAPE)
+            })?;
             buf = buf.push_str(XML_DIR_END)?;
             buf = buf.push_str(XML_FILES_START)?;
             for file in collection.files.iter() {
@@ -447,6 +439,27 @@ mod tests {
         skipped: usize,
     ) -> Result<String, OutputLimitExceeded> {
         render_digest_str(DigestFormat::Xml, label, revision, files, skipped)
+    }
+
+    #[test]
+    fn escapes_tree_nodes_for_active_format() {
+        let files = [FileRecord {
+            path: "dir\\name/file<name>.txt",
+            content: "",
+        }];
+        for (format, tree) in [
+            (
+                DigestFormat::Text,
+                "└── dir\\\\name/\n    └── file<name>.txt\n",
+            ),
+            (
+                DigestFormat::Xml,
+                "└── dir\\name/\n    └── file&lt;name&gt;.txt\n",
+            ),
+        ] {
+            let digest = render_digest_str(format, "repo", None, &files, 0).unwrap();
+            assert!(digest.contains(tree), "{format:?}: {digest}");
+        }
     }
 
     #[test]

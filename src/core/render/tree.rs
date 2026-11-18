@@ -3,8 +3,6 @@ use std::ops::Range;
 use memchr::memchr;
 
 use super::budget::{BoundedBuffer, OutputLimitExceeded};
-use super::formats::write_single_line;
-use crate::core::model::DigestFormat;
 use crate::core::storage::SortedFiles;
 
 const TREE_BRANCH: &str = "├── ";
@@ -12,13 +10,15 @@ const TREE_LAST: &str = "└── ";
 const TREE_VERT: &str = "│   ";
 const TREE_SPACE: &str = "    ";
 
-/// Renders an ASCII tree representation of the provided pre-sorted [`SortedFiles`].
+type WriteName = fn(BoundedBuffer, &str) -> Result<BoundedBuffer, OutputLimitExceeded>;
+
+/// Renders the tree of pre-sorted files using the caller's label escaping.
 pub(super) fn render_tree(
     buf: BoundedBuffer,
     files: &SortedFiles,
-    format: DigestFormat,
+    write_name: WriteName,
 ) -> Result<BoundedBuffer, OutputLimitExceeded> {
-    render_level(buf, files, 0..files.len(), 0, String::new(), format).map(|(buf, _)| buf)
+    render_level(buf, files, 0..files.len(), 0, String::new(), write_name).map(|(buf, _)| buf)
 }
 
 fn render_level(
@@ -27,7 +27,7 @@ fn render_level(
     range: Range<usize>,
     offset: usize,
     mut prefix: String,
-    format: DigestFormat,
+    write_name: WriteName,
 ) -> Result<(BoundedBuffer, String), OutputLimitExceeded> {
     let mut i = range.start;
     while i < range.end {
@@ -46,7 +46,7 @@ fn render_level(
 
         buf = buf.push_str(&prefix)?;
         buf = buf.push_str(if is_last { TREE_LAST } else { TREE_BRANCH })?;
-        buf = write_single_line(format, buf, name)?;
+        buf = write_name(buf, name)?;
 
         if is_dir {
             buf = buf.push_bytes(b"/\n")?;
@@ -58,7 +58,7 @@ fn render_level(
                 start..end,
                 offset + name.len() + 1,
                 prefix,
-                format,
+                write_name,
             )?;
             prefix.truncate(saved_len);
         } else {
@@ -133,28 +133,11 @@ mod tests {
                 storage = storage.push(&NormalizedPath::from(*path), "").unwrap();
             }
             let files = SortedFiles::new(storage).unwrap();
-            let buf = render_tree(BoundedBuffer::default(), &files, DigestFormat::Text).unwrap();
+            let buf =
+                render_tree(BoundedBuffer::default(), &files, BoundedBuffer::push_str).unwrap();
             let digest = buf.finish();
             assert_eq!(std::str::from_utf8(&digest.bytes).unwrap(), expected);
         }
-    }
-
-    #[test]
-    fn escapes_tree_nodes_for_active_format() {
-        let storage = FileStorage::new()
-            .push(&NormalizedPath::from("dir\\name/file<name>.txt"), "")
-            .unwrap();
-        let files = SortedFiles::new(storage).unwrap();
-
-        let text_buf = render_tree(BoundedBuffer::default(), &files, DigestFormat::Text).unwrap();
-        let text_str = String::from_utf8(text_buf.finish().bytes).unwrap();
-        assert!(text_str.contains("dir\\\\name/"));
-        assert!(text_str.contains("file<name>.txt"));
-
-        let xml_buf = render_tree(BoundedBuffer::default(), &files, DigestFormat::Xml).unwrap();
-        let xml_str = String::from_utf8(xml_buf.finish().bytes).unwrap();
-        assert!(xml_str.contains("dir\\name/"));
-        assert!(xml_str.contains("file&lt;name&gt;.txt"));
     }
 
     #[test]
@@ -170,7 +153,7 @@ mod tests {
             0..1,
             1,
             String::new(),
-            DigestFormat::Text,
+            BoundedBuffer::push_str,
         );
     }
 

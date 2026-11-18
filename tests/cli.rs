@@ -1,38 +1,11 @@
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 
-static CLI_TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+#[path = "../src/shell/testing/temp_dir.rs"]
+mod temp_dir;
+use temp_dir::TempDirGuard;
 
-// Local fixture: integration tests cannot access `pub(super)` `shell::testing::temp_dir`.
-struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    fn new(label: &str) -> Self {
-        let pid = std::process::id();
-        let path = loop {
-            let counter = CLI_TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let candidate =
-                std::env::temp_dir().join(format!("codefeed_cli_{label}_{pid}_{counter}"));
-            match std::fs::create_dir(&candidate) {
-                Ok(()) => break candidate,
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(err) => panic!(
-                    "failed to create temporary directory {}: {err}",
-                    candidate.display()
-                ),
-            }
-        };
-        Self { path }
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
+fn temp_dir(label: &str) -> TempDirGuard {
+    TempDirGuard::create_in(&std::env::temp_dir(), label).expect("create CLI fixture directory")
 }
 
 fn run(args: &[&str]) -> std::process::Output {
@@ -46,10 +19,10 @@ fn run(args: &[&str]) -> std::process::Output {
 fn help_exits_successfully_without_ingesting() {
     let cases: &[&[&str]] = &[&["--help"], &[".", "--help"]];
     for args in cases {
-        let dir = TempDir::new("help");
+        let dir = temp_dir("help");
         let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
             .args(*args)
-            .current_dir(&dir.path)
+            .current_dir(&dir)
             .output()
             .expect("CLI process should start");
         assert!(
@@ -64,7 +37,7 @@ fn help_exits_successfully_without_ingesting() {
             "args: {args:?}"
         );
         assert!(output.stderr.is_empty(), "args: {args:?}");
-        assert!(!dir.path.join("digest.txt").exists(), "args: {args:?}");
+        assert!(!dir.join("digest.txt").exists(), "args: {args:?}");
     }
 }
 
@@ -72,10 +45,10 @@ fn help_exits_successfully_without_ingesting() {
 fn version_exits_successfully_without_ingesting() {
     let expected = format!("codefeed {}\n", env!("CARGO_PKG_VERSION"));
     for args in [&["--version"][..], &[".", "-V"][..]] {
-        let dir = TempDir::new("version");
+        let dir = temp_dir("version");
         let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
             .args(args)
-            .current_dir(&dir.path)
+            .current_dir(&dir)
             .output()
             .expect("CLI process should start");
         assert!(
@@ -88,7 +61,7 @@ fn version_exits_successfully_without_ingesting() {
             "args: {args:?}"
         );
         assert!(output.stderr.is_empty(), "args: {args:?}");
-        assert!(!dir.path.join("digest.txt").exists(), "args: {args:?}");
+        assert!(!dir.join("digest.txt").exists(), "args: {args:?}");
     }
 }
 
@@ -139,13 +112,13 @@ fn invalid_invocations_exit_one_with_an_error_line() {
 #[test]
 fn double_dash_treats_leading_dash_source_as_positional() -> Result<(), Box<dyn std::error::Error>>
 {
-    let root = TempDir::new("double_dash");
-    let dash_dir = root.path.join("-dash-dir");
+    let root = temp_dir("double_dash");
+    let dash_dir = root.join("-dash-dir");
     std::fs::create_dir(&dash_dir)?;
     std::fs::write(dash_dir.join("hello.txt"), "hello")?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .current_dir(&root.path)
+        .current_dir(&root)
         .args(["-o", "-", "--", "-dash-dir"])
         .output()
         .expect("CLI process should start");
@@ -158,8 +131,8 @@ fn double_dash_treats_leading_dash_source_as_positional() -> Result<(), Box<dyn 
 
 #[test]
 fn nonexistent_local_source_exits_with_invalid_source() {
-    let root = TempDir::new("missing_source");
-    let missing = root.path.join("does_not_exist");
+    let root = temp_dir("missing_source");
+    let missing = root.join("does_not_exist");
 
     let output = run(&[missing.to_str().expect("temp path is UTF-8")]);
 
@@ -174,16 +147,16 @@ fn nonexistent_local_source_exits_with_invalid_source() {
 
 #[test]
 fn creates_default_output_without_subcommand() -> Result<(), Box<dyn std::error::Error>> {
-    let root = TempDir::new("default");
-    std::fs::write(root.path.join("visible.txt"), "visible")?;
+    let root = temp_dir("default");
+    std::fs::write(root.join("visible.txt"), "visible")?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .current_dir(&root.path)
+        .current_dir(&root)
         .arg(".")
         .output()?;
 
     assert!(output.status.success(), "output: {output:?}");
-    assert!(root.path.join("digest.txt").is_file());
+    assert!(root.join("digest.txt").is_file());
     // File mode reports its summary on stdout; stream mode uses stderr.
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -195,11 +168,11 @@ fn creates_default_output_without_subcommand() -> Result<(), Box<dyn std::error:
 
 #[test]
 fn writes_digest_only_to_stdout_for_dash_output() -> Result<(), Box<dyn std::error::Error>> {
-    let root = TempDir::new("stdout");
-    std::fs::write(root.path.join("visible.txt"), "visible")?;
+    let root = temp_dir("stdout");
+    std::fs::write(root.join("visible.txt"), "visible")?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .current_dir(&root.path)
+        .current_dir(&root)
         .arg(".")
         .arg("--output")
         .arg("-")
@@ -214,23 +187,20 @@ fn writes_digest_only_to_stdout_for_dash_output() -> Result<(), Box<dyn std::err
         stderr.contains("Wrote to stdout (1 files, 0 skipped, ~"),
         "stderr: {stderr}"
     );
-    assert!(
-        !root.path.join("digest.txt").exists(),
-        "no output file expected"
-    );
+    assert!(!root.join("digest.txt").exists(), "no output file expected");
     Ok(())
 }
 
 #[test]
 fn exclude_flag_drops_matching_paths_from_the_digest() -> Result<(), Box<dyn std::error::Error>> {
-    let root = TempDir::new("exclude");
-    std::fs::create_dir(root.path.join("build"))?;
-    std::fs::write(root.path.join("build").join("out.txt"), "generated")?;
-    std::fs::write(root.path.join("app.log"), "log line")?;
-    std::fs::write(root.path.join("visible.txt"), "visible")?;
+    let root = temp_dir("exclude");
+    std::fs::create_dir(root.join("build"))?;
+    std::fs::write(root.join("build").join("out.txt"), "generated")?;
+    std::fs::write(root.join("app.log"), "log line")?;
+    std::fs::write(root.join("visible.txt"), "visible")?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .current_dir(&root.path)
+        .current_dir(&root)
         .arg(".")
         .args(["-x", "build/", "--exclude=*.log", "-o", "-"])
         .output()?;
@@ -252,14 +222,14 @@ fn exclude_flag_drops_matching_paths_from_the_digest() -> Result<(), Box<dyn std
 fn ignore_ranges_allow_an_open_bracket_as_endpoint() -> Result<(), Box<dyn std::error::Error>> {
     let pattern = "[#-[:digit:]].txt";
     for use_gitignore in [false, true] {
-        let root = TempDir::new("ignore_range");
-        std::fs::write(root.path.join("A].txt"), "excluded")?;
-        std::fs::write(root.path.join("visible.txt"), "visible")?;
+        let root = temp_dir("ignore_range");
+        std::fs::write(root.join("A].txt"), "excluded")?;
+        std::fs::write(root.join("visible.txt"), "visible")?;
 
         let mut command = Command::new(env!("CARGO_BIN_EXE_codefeed"));
-        command.current_dir(&root.path).args([".", "-o", "-"]);
+        command.current_dir(&root).args([".", "-o", "-"]);
         if use_gitignore {
-            std::fs::write(root.path.join(".gitignore"), format!("{pattern}\n"))?;
+            std::fs::write(root.join(".gitignore"), format!("{pattern}\n"))?;
         } else {
             command.args(["--exclude", pattern]);
         }
@@ -278,11 +248,11 @@ fn ignore_ranges_allow_an_open_bracket_as_endpoint() -> Result<(), Box<dyn std::
 
 #[test]
 fn exclude_invalid_pattern_is_a_usage_error() -> Result<(), Box<dyn std::error::Error>> {
-    let root = TempDir::new("invalid_exclude");
-    std::fs::write(root.path.join("config1.txt"), "fixture")?;
+    let root = temp_dir("invalid_exclude");
+    std::fs::write(root.join("config1.txt"), "fixture")?;
     for pattern in ["[", "! ", "/config[[:digit:]].txt", "/config[[:digit:].txt"] {
         let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-            .current_dir(&root.path)
+            .current_dir(&root)
             .args([".", "-x", pattern, "-o", "-"])
             .output()?;
         assert_eq!(
@@ -329,10 +299,8 @@ fn accepts_non_utf8_local_source_path() {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
 
-    let parent = TempDir::new("non_utf8");
-    let source = parent
-        .path
-        .join(OsString::from_vec(b"source-\xff".to_vec()));
+    let parent = temp_dir("non_utf8");
+    let source = parent.join(OsString::from_vec(b"source-\xff".to_vec()));
     let output = source.join("digest.txt");
     std::fs::create_dir_all(&source).expect("source directory should be created");
     std::fs::write(source.join("visible.txt"), "visible").expect("source file should be written");
@@ -350,8 +318,8 @@ fn accepts_non_utf8_local_source_path() {
 
 #[test]
 fn text_and_xml_stdout_bytes_are_stable() -> Result<(), Box<dyn std::error::Error>> {
-    let temp = TempDir::new("golden");
-    let root = temp.path.join("fixture");
+    let temp = temp_dir("golden");
+    let root = temp.join("fixture");
     std::fs::create_dir_all(root.join("src/nested/deep"))?;
     std::fs::create_dir_all(root.join("bin"))?;
     std::fs::write(root.join("README.md"), "# fixture\n")?;
@@ -429,12 +397,12 @@ pub mod deep;
 
 #[test]
 fn file_output_bytes_match_stdout_bytes() -> Result<(), Box<dyn std::error::Error>> {
-    let temp = TempDir::new("file_matches_stdout");
-    let root = temp.path.join("fixture");
+    let temp = temp_dir("file_matches_stdout");
+    let root = temp.join("fixture");
     std::fs::create_dir_all(root.join("src"))?;
     std::fs::write(root.join("src/lib.rs"), "pub fn lib() {}\n")?;
     let root = root.to_str().expect("UTF-8 temp path");
-    let output = temp.path.join("digest.txt");
+    let output = temp.join("digest.txt");
     let output = output.to_str().expect("UTF-8 temp path");
 
     let stdout = run(&[root, "-o", "-"]);
@@ -447,13 +415,13 @@ fn file_output_bytes_match_stdout_bytes() -> Result<(), Box<dyn std::error::Erro
 
 #[test]
 fn ingest_fails_fast_on_directory_output_target() -> Result<(), Box<dyn std::error::Error>> {
-    let root = TempDir::new("dir_output");
-    let out_dir = root.path.join("out_dir");
+    let root = temp_dir("dir_output");
+    let out_dir = root.join("out_dir");
     std::fs::create_dir(&out_dir)?;
-    let missing_source = root.path.join("does_not_exist");
+    let missing_source = root.join("does_not_exist");
     let missing_arg = missing_source.to_str().expect("temp path is UTF-8");
     let out_dir_arg = out_dir.to_str().expect("temp path is UTF-8");
-    let suffixed_out = format!("{}/", root.path.join("out").display());
+    let suffixed_out = format!("{}/", root.join("out").display());
 
     for (output_arg, expected_msg) in [
         (out_dir_arg, "output path is a directory"),
@@ -476,9 +444,9 @@ fn ingest_fails_fast_on_directory_output_target() -> Result<(), Box<dyn std::err
 
 #[test]
 fn closed_output_pipes_do_not_panic() {
-    let fixture = TempDir::new("closed_pipe");
-    std::fs::write(fixture.path.join("a.txt"), "hello\n").expect("fixture should be written");
-    let fixture_arg = fixture.path.to_str().expect("temp path should be UTF-8");
+    let fixture = temp_dir("closed_pipe");
+    std::fs::write(fixture.join("a.txt"), "hello\n").expect("fixture should be written");
+    let fixture_arg = fixture.to_str().expect("temp path should be UTF-8");
 
     // The read ends are dropped before spawn, so every child write sees a broken pipe.
     let cases: [(&[&str], i32); 2] = [(&[fixture_arg, "-o", "-"], 0), (&["--bogus"], 1)];

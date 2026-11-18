@@ -140,7 +140,6 @@ mod tests {
         assert_eq!(report.included_files, 1);
         assert_eq!(report.skipped_files, 0);
 
-        let (_, count) = server.join();
-        assert_eq!(count, 1);
+        assert_eq!(server.join().len(), 1);
     }
 }

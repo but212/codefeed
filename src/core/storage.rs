@@ -32,7 +32,7 @@ impl FileSpan {
     ///
     /// Panics if the span's range is out of bounds for `arena`.
     fn path<'a>(&self, arena: &'a str) -> &'a str {
-        slice(arena, self.path_offset, self.path_len)
+        arena_slice(arena, self.path_offset, self.path_len)
     }
 
     /// Slices this span's content out of `arena`.
@@ -41,11 +41,12 @@ impl FileSpan {
     ///
     /// Panics if the span's range is out of bounds for `arena`.
     fn content<'a>(&self, arena: &'a str) -> &'a str {
-        slice(arena, self.content_offset, self.content_len)
+        arena_slice(arena, self.content_offset, self.content_len)
     }
 }
 
-fn slice(arena: &str, offset: u32, len: u32) -> &str {
+#[must_use]
+pub(super) fn arena_slice(arena: &str, offset: u32, len: u32) -> &str {
     let start = offset as usize;
     &arena[start..start + len as usize]
 }

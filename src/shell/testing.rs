@@ -4,9 +4,8 @@ use std::error::Error;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(unix)]
+use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
@@ -15,43 +14,12 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use tar::{Builder, EntryType};
 
-static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Debug)]
-pub(super) struct TempDirGuard(PathBuf);
-
-impl Deref for TempDirGuard {
-    type Target = Path;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl AsRef<Path> for TempDirGuard {
-    fn as_ref(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDirGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+mod temp_dir;
+use temp_dir::TempDirGuard;
 
 pub(super) fn temp_dir(label: &str) -> Result<TempDirGuard, Box<dyn Error>> {
-    let pid = std::process::id();
-    let path = loop {
-        let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let candidate = std::env::temp_dir().join(format!("local_ingest_{label}_{pid}_{counter}"));
-        match fs::create_dir(&candidate) {
-            Ok(()) => break candidate,
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(err) => return Err(Box::new(err)),
-        }
-    };
-    Ok(TempDirGuard(fs::canonicalize(&path)?))
+    let parent = fs::canonicalize(std::env::temp_dir())?;
+    Ok(TempDirGuard::create_in(&parent, label)?)
 }
 
 /// Upper bound for [`run_with_timeout`]. Generous, so a slow runner never trips it.
@@ -120,7 +88,7 @@ pub(super) fn tarball_response(gz: &[u8]) -> Vec<u8> {
 
 pub(super) struct MockServer {
     port: u16,
-    handle: thread::JoinHandle<(Vec<String>, usize)>,
+    handle: thread::JoinHandle<Vec<String>>,
 }
 
 impl MockServer {
@@ -133,13 +101,11 @@ impl MockServer {
 
         let handle = thread::spawn(move || {
             let mut recorded = Vec::new();
-            let mut count = 0;
 
             for index in 0..expected_connections {
                 let Ok((mut stream, _)) = listener.accept() else {
                     break;
                 };
-                count += 1;
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
 
                 let mut req_buf = Vec::new();
@@ -162,21 +128,20 @@ impl MockServer {
                 }
 
                 let req_str = String::from_utf8_lossy(&req_buf).to_string();
-                recorded.push(req_str.clone());
-
                 let response_bytes = handler(index, &req_str, port);
+                recorded.push(req_str);
                 if !response_bytes.is_empty() {
                     let _ = stream.write_all(&response_bytes);
                 }
             }
 
-            (recorded, count)
+            recorded
         });
 
         Self { port, handle }
     }
 
-    pub(super) fn join(self) -> (Vec<String>, usize) {
+    pub(super) fn join(self) -> Vec<String> {
         self.handle.join().expect("mock server thread finish")
     }
 
@@ -203,7 +168,7 @@ mod tests {
         );
 
         // 2. Panic cleanup
-        let mut panic_path = PathBuf::new();
+        let mut panic_path = std::path::PathBuf::new();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let guard = temp_dir("test_guard_panic").unwrap();
             panic_path = guard.to_path_buf();
