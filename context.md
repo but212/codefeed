@@ -149,7 +149,7 @@ Purity rules and one-way Shell-to-Core dependency: [coding convention § 3](docs
 - `github/`: Collection orchestration in `mod.rs`; HTTP configuration, credentials, request execution, retries, and response errors in `client.rs`; metered tarball ingestion in `archive.rs`.
 - `output.rs`: Destination resolution, atomic file writes, and delivery.
 - `stdio.rs`: stdout/stderr line writers.
-- `testing.rs`: Test helpers.
+- `testing.rs`, `testing/temp_dir.rs`: Test helpers and shared `TempDirGuard`.
 
 ### Public API (`src/lib.rs`)
 
