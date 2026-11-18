@@ -12,11 +12,10 @@ mod url;
 
 use crate::core::error::ErrorDetail;
 pub(crate) use archive::{normalize_tar_entry_path, parse_pax_comment};
-pub(crate) use retry::{AttemptState, RateLimitHeaders, RequestOutcome, Transition, TransportKind};
+pub(crate) use retry::{AttemptState, RateLimitHeaders, RequestOutcome, Transition};
 pub use url::GithubName;
 pub(crate) use url::{
-    GITHUB_API_BASE_URL, is_github_api_origin, parse_github_url, repository_url,
-    strip_prefix_ignore_case, tarball_url,
+    GITHUB_API_BASE_URL, is_github_api_origin, parse_github_url, repository_url, tarball_url,
 };
 
 /// Non-success GitHub API response. `Display` renders the message without the error-kind prefix.
@@ -90,6 +89,12 @@ pub(crate) fn api_error(
     }
 }
 
+fn retry_warning(reason: impl Display, attempt: usize, url: &str, delay: Duration) -> String {
+    format!(
+        "warning: GitHub {reason} on attempt {attempt}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}"
+    )
+}
+
 /// Warning printed before retrying a non-success response.
 #[must_use]
 pub(crate) fn status_retry_warning(
@@ -98,9 +103,7 @@ pub(crate) fn status_retry_warning(
     url: &str,
     delay: Duration,
 ) -> String {
-    format!(
-        "warning: GitHub HTTP status {status} on attempt {attempt}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}"
-    )
+    retry_warning(format_args!("HTTP status {status}"), attempt, url, delay)
 }
 
 /// Warning printed before retrying a transport failure. `error_text` is the transport error's `Display`.
@@ -111,9 +114,11 @@ pub(crate) fn transport_retry_warning(
     url: &str,
     delay: Duration,
 ) -> String {
-    format!(
-        "warning: GitHub transport error: {} on attempt {attempt}/{MAX_ATTEMPTS} for {url}; retrying in {delay:?}",
-        ErrorDetail::new(error_text)
+    retry_warning(
+        format_args!("transport error: {}", ErrorDetail::new(error_text)),
+        attempt,
+        url,
+        delay,
     )
 }
 

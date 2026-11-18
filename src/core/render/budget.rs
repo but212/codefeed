@@ -5,7 +5,7 @@ use crate::core::policy::ASCII_BYTES_PER_TOKEN;
 
 /// Token estimation heuristic calculating ASCII bytes and non-ASCII character counts.
 #[must_use]
-pub(super) fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
+fn estimate_tokens_from_bytes(bytes: &[u8]) -> usize {
     if bytes.is_empty() {
         return 0;
     }
@@ -63,17 +63,6 @@ impl BoundedBuffer {
             return Err(OutputLimitExceeded);
         }
         self.bytes.extend_from_slice(slice);
-        Ok(self)
-    }
-
-    pub(super) fn reserve_bounded(
-        mut self,
-        additional: usize,
-    ) -> Result<Self, OutputLimitExceeded> {
-        if (self.bytes.len() + additional) as u64 > self.limit {
-            return Err(OutputLimitExceeded);
-        }
-        self.bytes.reserve(additional);
         Ok(self)
     }
 
@@ -189,15 +178,24 @@ mod tests {
     }
 
     #[test]
-    fn finish_reports_bytes_and_tokens() {
-        let digest = BoundedBuffer::default()
-            .push_str("test output")
-            .expect("fixture fits the output limit")
-            .finish();
-        assert_eq!(digest.bytes, b"test output");
+    fn render_reports_tokens_of_the_rendered_bytes() -> Result<(), crate::core::error::DomainError>
+    {
+        use crate::core::model::{CollectionResult, DigestFormat};
+        use crate::core::path::NormalizedPath;
+        use crate::core::storage::{FileStorage, SortedFiles};
+
+        let storage = FileStorage::new().push(&NormalizedPath::from("a.txt"), "abc")?;
+        let collection = CollectionResult {
+            label: "repo".into(),
+            revision: None,
+            files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
+            skipped: 2,
+        };
+        let digest = collection.render(DigestFormat::Text)?;
         assert_eq!(
             digest.estimated_tokens,
-            estimate_tokens_from_bytes(b"test output")
+            estimate_tokens_from_bytes(&digest.bytes)
         );
+        Ok(())
     }
 }

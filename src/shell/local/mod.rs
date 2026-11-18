@@ -10,7 +10,7 @@ mod walk;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use self::pipeline::fold_candidates;
+use self::pipeline::collect_candidates;
 use super::error::IngestError;
 use super::output::ResolvedOutput;
 use crate::core::error::DomainError;
@@ -29,13 +29,7 @@ pub(super) fn collect(
 ) -> Result<CollectionResult, IngestError> {
     let canonical_root = validate_root(root)?;
     let label = repository_name(&canonical_root).to_string();
-    let selector = fold_candidates(
-        &canonical_root,
-        output.file(),
-        exclude,
-        Selector::new(),
-        |selector, observation| Ok(selector.observe(observation)?),
-    )?;
+    let selector = collect_candidates(&canonical_root, output.file(), exclude, Selector::new())?;
 
     Ok(selector.finish(label, None)?)
 }
@@ -538,6 +532,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("comprehensive_local_policies")?;
         fs::create_dir_all(root.join(".git"))?;
+        fs::create_dir_all(root.join(".hidden_dir"))?;
         fs::create_dir_all(root.join("certs"))?;
         fs::create_dir_all(root.join("sub"))?;
 
@@ -560,8 +555,10 @@ mod tests {
         fs::write(root.join("id_rsa"), "SSH")?;
         fs::write(root.join("id_ecdsa"), "SSH_ECDSA")?;
 
-        // 5. Git metadata: ignored
+        // 5. Git metadata & hidden files/directories: ignored without incrementing skipped
         fs::write(root.join(".git/config"), "secret")?;
+        fs::write(root.join(".hidden_dir").join("nested.txt"), "nested")?;
+        fs::write(root.join(".dotfile"), "secret")?;
 
         // 6. Gitignore: ignored without git directory
         fs::write(root.join(".gitignore"), "ignored.txt\n")?;
@@ -574,7 +571,9 @@ mod tests {
             DigestFormat::Text,
         ))?;
         let digest = fs::read_to_string(output)?;
+        let expected_basename = root.file_name().unwrap().to_str().unwrap();
 
+        assert!(digest.starts_with(&format!("Repository: {expected_basename}\n")));
         assert_eq!(report.included_files, 1);
         assert_eq!(report.skipped_files, 1);
         assert!(digest.contains("FILE: README.md"));
@@ -588,6 +587,8 @@ mod tests {
         assert!(!digest.contains("id_rsa"));
         assert!(!digest.contains("id_ecdsa"));
         assert!(!digest.contains(".git/config"));
+        assert!(!digest.contains("nested.txt"));
+        assert!(!digest.contains(".dotfile"));
         assert!(!digest.contains("ignored.txt"));
         Ok(())
     }
@@ -608,22 +609,6 @@ mod tests {
 
         assert_eq!(report.included_files, 1);
         assert!(digest.contains("FILE: important.txt"));
-        Ok(())
-    }
-
-    #[test]
-    fn label_uses_directory_basename() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("custom_repo_name")?;
-        fs::write(root.join("file.txt"), "hello")?;
-        let output = root.join("digest.txt");
-        let _ = ingest(&RunConfig::new(
-            Source::Local(root.to_path_buf()),
-            OutputTarget::File(output.clone()),
-            DigestFormat::Text,
-        ))?;
-        let digest = fs::read_to_string(&output)?;
-        let expected_basename = root.file_name().unwrap().to_str().unwrap();
-        assert!(digest.starts_with(&format!("Repository: {expected_basename}\n")));
         Ok(())
     }
 
@@ -651,22 +636,6 @@ mod tests {
         ))?;
         assert_eq!(report.included_files, 0);
         assert_eq!(report.skipped_files, 2);
-        Ok(())
-    }
-
-    #[test]
-    fn hidden_directories_and_files_are_pruned_by_policy() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = temp_dir("hidden_pruning")?;
-        fs::create_dir_all(root.join(".hidden_dir"))?;
-        fs::write(root.join(".hidden_dir").join("nested.txt"), "nested")?;
-        fs::write(root.join(".dotfile"), "secret")?;
-        fs::write(root.join("visible.txt"), "visible")?;
-
-        let result = collect_default(&root, &ResolvedOutput::STDOUT)?;
-        assert_eq!(result.files.len(), 1);
-        assert_eq!(result.files.iter().next().unwrap().path, "visible.txt");
-        assert_eq!(result.skipped, 0);
         Ok(())
     }
 

@@ -49,41 +49,41 @@ impl std::ops::Deref for GithubName {
 
 /// Validates whether the given string conforms to valid GitHub owner or repository name rules.
 #[must_use]
-const fn valid_github_name(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.is_empty() {
-        return false;
-    }
-    if bytes.len() == 1 && bytes[0] == b'.' {
-        return false;
-    }
-    if bytes.len() == 2 && bytes[0] == b'.' && bytes[1] == b'.' {
-        return false;
-    }
-    let mut i = 0;
-    while i < bytes.len() {
-        if !is_name_byte(bytes[i]) {
-            return false;
-        }
-        i += 1;
-    }
-    true
+fn valid_github_name(value: &str) -> bool {
+    !matches!(value, "" | "." | "..") && value.bytes().all(is_name_byte)
 }
 
 /// Strips an ASCII `prefix` from `value`, ignoring ASCII case (URL schemes are case-insensitive).
 #[must_use]
-pub(crate) fn strip_prefix_ignore_case<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+fn strip_prefix_ignore_case<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
     let head = value.as_bytes().get(..prefix.len())?;
     // A match means the first `prefix.len()` bytes are ASCII, so the split is on a char boundary.
     head.eq_ignore_ascii_case(prefix.as_bytes())
         .then(|| &value[prefix.len()..])
 }
 
-/// Parses a GitHub repository URL into a validated `(owner, repo)` pair.
-pub(crate) fn parse_github_url(value: &str) -> Result<(GithubName, GithubName), DomainError> {
-    let remainder = strip_prefix_ignore_case(value, "https://").ok_or_else(|| {
-        DomainError::unsupported_source("only https://github.com/{owner}/{repo} is supported")
-    })?;
+/// Classifies and parses a remote URL into a validated GitHub `(owner, repo)` pair.
+///
+/// Returns `Ok(None)` when `value` carries no recognized remote scheme (`https://`, `http://`,
+/// `git@`, `ssh://`), allowing the caller to treat it as a local path.
+pub(crate) fn parse_github_url(
+    value: &str,
+) -> Result<Option<(GithubName, GithubName)>, DomainError> {
+    let Some(remainder) = strip_prefix_ignore_case(value, "https://") else {
+        if strip_prefix_ignore_case(value, "http://").is_some() {
+            return Err(DomainError::unsupported_source(
+                "only https://github.com/{owner}/{repo} is supported",
+            ));
+        }
+        if strip_prefix_ignore_case(value, "git@").is_some()
+            || strip_prefix_ignore_case(value, "ssh://").is_some()
+        {
+            return Err(DomainError::unsupported_source(
+                "only local paths and public HTTPS GitHub URLs are supported",
+            ));
+        }
+        return Ok(None);
+    };
     let (authority, path) = memchr(b'/', remainder.as_bytes()).map_or((remainder, ""), |index| {
         (&remainder[..index], &remainder[index..])
     });
@@ -124,7 +124,7 @@ pub(crate) fn parse_github_url(value: &str) -> Result<(GithubName, GithubName), 
     };
 
     let repo = repo_segment.strip_suffix(".git").unwrap_or(repo_segment);
-    Ok((GithubName::new(owner)?, GithubName::new(repo)?))
+    Ok(Some((GithubName::new(owner)?, GithubName::new(repo)?)))
 }
 
 /// Canonical public web URL for a repository, used as the digest label for remote sources.
@@ -222,30 +222,29 @@ mod tests {
     }
 
     #[test]
-    fn github_name_validates_and_provides_slice_access() {
-        let name = GithubName::new("rust-lang").unwrap();
-        assert_eq!(&*name, "rust-lang");
-
-        let repo = GithubName::new("codefeed-2.0").unwrap();
-        assert_eq!(&*repo, "codefeed-2.0");
-    }
-
-    #[test]
     fn parses_owner_and_repo() {
-        let (owner, repo) = parse_github_url("https://github.com/rust-lang/cargo").unwrap();
+        let name = GithubName::new("codefeed-2.0").unwrap();
+        assert_eq!(&*name, "codefeed-2.0");
+
+        let (owner, repo) = parse_github_url("https://github.com/rust-lang/cargo")
+            .unwrap()
+            .unwrap();
         assert_eq!(&*owner, "rust-lang");
         assert_eq!(&*repo, "cargo");
 
-        let (owner, repo) = parse_github_url("https://github.com/owner/repo.git").unwrap();
+        let (owner, repo) = parse_github_url("https://github.com/owner/repo.git")
+            .unwrap()
+            .unwrap();
         assert_eq!(&*owner, "owner");
         assert_eq!(&*repo, "repo");
 
+        assert_eq!(parse_github_url("local/path").unwrap(), None);
         assert!(parse_github_url("https://notgithub.com/a/b").is_err());
         assert!(parse_github_url("https://github.com/a/b/c").is_err());
     }
 
     #[test]
-    fn rejects_malformed_repository_urls() {
+    fn rejects_invalid_repository_urls() {
         for value in [
             "https://github.com/bad name/repo",
             "https://github.com/owner/re%70o",
@@ -254,23 +253,15 @@ mod tests {
             "https://github.com/owner/.git",
             "https://github.com/owner/repo?tab=readme",
             "https://github.com/owner/repo#readme",
+            "https:///owner/repo",
         ] {
             let err = parse_github_url(value).unwrap_err();
             assert!(matches!(err, DomainError::InvalidSource(_)), "{value}");
         }
-    }
 
-    #[test]
-    fn rejects_non_https_scheme_and_malformed_authority() {
         let unsupported = parse_github_url("http://github.com/owner/repo").unwrap_err();
         assert!(matches!(unsupported, DomainError::UnsupportedSource(_)));
 
-        let empty_authority = parse_github_url("https:///owner/repo").unwrap_err();
-        assert!(matches!(empty_authority, DomainError::InvalidSource(_)));
-    }
-
-    #[test]
-    fn rejected_url_echo_is_sanitized() {
         let err = parse_github_url("https://github.com:99999/o/r\x1b[2J").unwrap_err();
         let rendered = err.to_string();
         assert!(!rendered.contains('\x1b'), "ESC leaked: {rendered:?}");

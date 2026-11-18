@@ -4,7 +4,7 @@ Defines domain terms, invariants, and functional-core / imperative-shell boundar
 
 ## 1. Purpose
 
-Converts a local directory or public GitHub repository into a single text digest for LLMs. Every run produces a complete digest or fails atomically; partial output is never emitted.
+Converts a local directory or public GitHub repository into a single text digest for LLMs. Collection and rendering must finish before delivery. File replacement is atomic; stdout delivery follows the [README contract](README.md#output).
 
 ## 2. Glossary
 
@@ -21,7 +21,7 @@ Converts a local directory or public GitHub repository into a single text digest
 
 ### Candidate Collection
 
-- `Candidate<B = ()>`: `Valid(NormalizedPath, B)` or `Unstorable(UnstorablePath)` (`()` at classification, `Body<B>` at observation). Ignored entries are `None` at classification and discarded before selection.
+- `Candidate<B = ()>`: `Valid(NormalizedPath, B)` or `Unstorable(UnstorablePath)` (`()` at classification, `PathBuf` for local walk results, `Body<B>` at observation). Ignored entries are `None` at classification and discarded before selection.
 - `UnstorablePath`: Classification-owned value retaining the valid UTF-8 accounting prefix and complete normalized raw-byte identity.
 - `NormalizedPath`: Non-empty, slash-separated UTF-8 relative path without empty or `.` segments, within `MAX_PATH_BYTES` (I-10).
 - `Selector`: Linear state managing `FileStorage`, `CandidateBudget`, `PathIndex` (referencing `FileStorage` for stored paths and `skipped_arena` for skipped paths), and unstorable byte-identity set. Settles candidates via `observe`; `finish` derives the skipped tally as candidate count minus stored file count.
@@ -59,7 +59,7 @@ Converts a local directory or public GitHub repository into a single text digest
 
 - Order: [security § 2](docs/security_and_filtering.md#2-evaluation-order). Tar streams classify via `classify_path_segments`. Local walks admit directories via `admit_dir` and files via `classify_leaf`.
 - `Ignored` entries consume no candidate slots and are omitted from skipped counts.
-- Run-aborting checks (depth, tar path normalization, oversized tar headers): [security § 2](docs/security_and_filtering.md#2-evaluation-order); header budget is I-03 ([§ 3.9](#39-network)).
+- Run-aborting checks (depth, tar path normalization, oversized tar headers): [security § 2](docs/security_and_filtering.md#2-evaluation-order); header budget is I-03 ([§ 3.9](#39-network)). `AdmittedDir::check_depth` gates local frame entry and tar leaf classification. `AdmittedDir` itself can track deeper tar ancestors to preserve exclusion order before a leaf is classified.
 - `DirPrefix::NonUtf8(UnstorablePath)` retains the bytes after the first invalid segment, so classification never substitutes a lossy identity. Budget keys use the first valid segment (`"a/"`) or root (`"./"`).
 - **I-10 (`type`, `NormalizedPath`, `classify_leaf`):** A `Valid` path is at most `MAX_PATH_BYTES` bytes. `NormalizedPath` is private and `classify_leaf` is its sole non-test constructor returning `Unstorable` on overflow, so `Selector` needs no path-length check.
 - **I-02 (`boundary`, `admit_dir`, `classify_leaf`):** No classified path or unstorable prefix has a first segment starting with `.`, since hidden directories are never admitted, hidden files are `Ignored`, and empty/`.` segments are dropped. Root entries key as `"./"`, which no real directory produces.
@@ -100,9 +100,9 @@ Converts a local directory or public GitHub repository into a single text digest
 
 ### 3.8 Local Traversal Pipeline
 
-1. Depth-first walk in file-name order without link-following (`Walk`, `walk.rs`). Excluded directories pruned before `.gitignore` read. Other directories read `.gitignore` once and compile rules from those bytes (failures: [security § 3.5](docs/security_and_filtering.md#35-ignore-files-local-only)).
+1. `Walk` (`walk.rs`) classifies leaves during depth-first traversal in file-name order without link-following. It yields a filesystem path only for storable candidates. Excluded directories pruned before `.gitignore` read. Other directories read `.gitignore` once and compile rules from those bytes (failures: [security § 3.5](docs/security_and_filtering.md#35-ignore-files-local-only)).
 2. Up to `MAX_LOCAL_WORKERS` workers inspect metadata, read bounded bodies, and return on bounded channels (`LOCAL_CHANNEL_CAPACITY`).
-3. Main thread settles slots in walk order into `Selector::observe`. First error halts traversal.
+3. Main thread settles slots in walk order into `Selector::observe`. On error it signals the walker and workers and disconnects the slot receiver.
 4. Final digest order and I-01 established by `SortedFiles::new`; uniqueness by `Selector::observe`.
 
 ### 3.9 Network
@@ -110,8 +110,8 @@ Converts a local directory or public GitHub repository into a single text digest
 - Request parameters, retry classes, timeouts: [security § 6](docs/security_and_filtering.md#6-github-network-safety).
 - Archive entries stream into `Selector::observe` without disk writes.
 - Revision SHA extracts from first `ARCHIVE_PAX_GLOBAL_BYTES` of PAX header, falling back to requested ref.
-- Stream/gzip/tar failures map to `IngestError::Http`. After tar termination, `shell/github/archive.rs::collect` drains the metered decoder before `Selector::finish`, validating the gzip trailer without escaping the stream budget.
-- `shell/github/mod.rs::read_rate_limit_headers` resolves HTTP-date headers into `RateLimitHeaders::RetryAfterSecs` using explicitly supplied Unix time. Core numeric parsing saturates overflowing decimal delays; retry policy reads no clock.
+- Stream/gzip/tar failures map to `IngestError::Http`. After tar termination, `shell/github/archive.rs::collect` drains the metered multi-member decoder before `Selector::finish`, validating all gzip trailers without escaping the stream budget.
+- `shell/github/client.rs::read_rate_limit_headers` resolves HTTP-date headers into `RateLimitHeaders::RetryAfterSecs` using explicitly supplied Unix time. Core numeric parsing saturates overflowing decimal delays; retry policy reads no clock.
 - **I-03 (`runtime`, `shell/github/archive.rs`):** One `Entries::next` call reads at most `ARCHIVE_MAX_HEADER_BYTES`. tar reads extension bodies internally, so no type or boundary can express the bound. A byte budget on the shared reader enforces it, and each entry body is drained before the next call so only headers are metered. Behavior: [security § 2 and 6.4](docs/security_and_filtering.md#64-streaming).
 - **I-12 (`runtime`, `StreamMeter`, `drain_entry`):** The archive budget includes bytes synthesized by tar's sparse reader. Before draining an untouched sparse entry, its logical size is checked against the remaining budget; afterwards only synthesized bytes are added, since physical reads already passed through the meter. The cumulative budget relates separate entries and reader activity, so no per-entry type can express it. Behavior: [security § 6.4](docs/security_and_filtering.md#64-streaming).
 - **I-04 (`type`, `ErrorDetail::new`):** Every error text that may echo user input or remote payloads is an `ErrorDetail`, whose sole constructor sanitizes. Direct `DomainError` builds cannot store unsanitized text, and `Display` does not sanitize again. Non-`DomainError` effects (`io::Error`, `GithubApiError`, retry warnings) sanitize via `ErrorDetail::new`. Behavior: [security § 7](docs/security_and_filtering.md#7-output-sanitization).
@@ -131,7 +131,7 @@ Purity rules and one-way Shell-to-Core dependency: [coding convention § 3](docs
 
 - `cli.rs`: CLI argument parsing, help, and version text.
 - `path.rs`: Path types and classification.
-- `policy/`: Limits, exclusions, user exclude patterns, `TOKEN_ENV_VARS`.
+- `policy/`: Limits, exclusions, user exclude patterns, `.gitignore` compilation, `TOKEN_ENV_VARS`.
 - `source.rs`: `Source` and `GitRef` parsing; URLs delegated to `github/`.
 - `model.rs`: Configuration and report types.
 - `selector.rs`: Candidate settlement and budget accounting.
@@ -144,11 +144,10 @@ Purity rules and one-way Shell-to-Core dependency: [coding convention § 3](docs
 
 - `mod.rs`: `ingest` pipeline.
 - `cli.rs`: CLI orchestration, stream selection, exit codes.
-- `error.rs`: `IngestError` and transport error mapping.
+- `error.rs`: `IngestError` and I/O error sanitization.
 - `local/`: Local walk, `.gitignore` loading, producer/worker reads.
-- `github/`: Archive fetch with retries, tarball streaming, TLS client, token handling.
-- `atomic.rs`: Atomic file writes.
-- `output.rs`: Destination resolution and delivery.
+- `github/`: Collection orchestration in `mod.rs`; HTTP configuration, credentials, request execution, retries, and response errors in `client.rs`; metered tarball ingestion in `archive.rs`.
+- `output.rs`: Destination resolution, atomic file writes, and delivery.
 - `stdio.rs`: stdout/stderr line writers.
 - `testing.rs`: Test helpers.
 

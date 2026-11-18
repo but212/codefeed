@@ -33,7 +33,6 @@ Follow `C-CONV` and `C-CONV-TRAITS`. Prefer `From`, `TryFrom`, `AsRef`, `AsMut` 
   1. `Display::fmt(&self, f: &mut Formatter<'_>)`.
   2. Local `let mut` variables and owned value parameters (`mut self`, `mut val`).
   3. Internal dependency buffers unobservable through APIs (e.g. `ignore::gitignore::Gitignore` buffer pool in `policy/exclude.rs`).
-  4. Private module-internal helpers borrowing a caller's local `mut` state or iterator across an early-exit path (e.g. `cli::fold_args`).
 
 ### 3.2 `src/shell/` (Imperative Shell)
 

@@ -21,6 +21,10 @@ Scope: `### Library consumers and CLI users` lists observable behavior. `### Con
 
 #### Fixed
 
+- **Unsupported POSIX ignore classes fail closed**: Patterns such as `[[:digit:]]` now fail explicitly in `.gitignore` and `--exclude`, even if the enclosing bracket expression is missing its final `]`. Ordinary ranges still work, including `[0-9]` and ranges ending in `[`.
+- **Local traversal stops at the depth limit and on cancellation**: Unpruned directories beyond the depth limit fail before entry, even if empty. After settlement fails, the walker stops between entries, including those that would yield no candidate.
+- **Stdout delivery contract**: Clarified that collection and rendering failures emit no digest bytes, but a stdout write failure can leave a partial stream. File replacement remains atomic.
+- **Concatenated gzip members are fully processed**: GitHub archive ingestion treats all gzip members as one tar stream instead of silently truncating at the first member. Later members share the decompressed stream budget and their trailers are validated even after the tar end marker; corruption fails without creating or replacing output.
 - **Gzip trailers are validated before delivery**: Archive collection now drains the metered gzip decoder after tar termination, rejecting corrupted payloads, invalid checksum/size trailers, and missing trailer bytes without creating or replacing output. Decoded bytes after the tar end marker remain subject to the archive stream budget.
 - **Long `Retry-After` delays are honored**: HTTP-date values and overflowing decimal delays no longer fall back to a short retry. Valid dates take precedence over quota resets, and waits exceeding the retry cap fail on the original response without a second request.
 - **Sparse archive expansion is bounded**: Reconstructed GNU sparse holes now consume the cumulative archive stream budget. Sparse entries whose logical bodies cannot fit the remaining budget fail before expansion instead of allowing a tiny archive to trigger unbounded draining work.
@@ -45,6 +49,8 @@ Internal change. No consumer action required. Output is unchanged throughout.
 
 #### Changed
 
+- **Directory count storage**: Specialized the private arena map for directory tallies while retaining the shared bucket index and collision checks.
+- **GitHub HTTP execution boundary**: `src/shell/github/client.rs` now owns request execution, retry effects, rate-limit header interpretation, and response error handling alongside TLS and credentials. `auth` and `request` are private; collection uses `new` and `stream_url`. HTTP unit tests move with their implementation; collection/archive integration tests remain in `mod.rs`. Core retry policy and observable behavior are unchanged.
 - **Document ownership**: Output format (header, token estimate) is owned by `README.md` Output; limit authority is stated once in the `docs/security_and_filtering.md` header; `AGENTS.md` § 6 routes `CONTRIBUTING.md` and `SECURITY.md` changes. Contributor-facing documents no longer link to `AGENTS.md`: `CONTRIBUTING.md` owns the verification checklist, `AGENTS.md` links to it, and the pull request template mirrors the commands inline. `context.md` § 5 is reduced to module responsibilities, and `docs/security_and_filtering.md` no longer names implementation identifiers.
 - **Unstorable identity and sparse accounting invariants**: `CandidatePath::Unstorable` and `Observation::Unstorable` carry `UnstorablePath` instead of only an accounting prefix. I-09 now records exact byte identity enforcement, and I-12 records cumulative sparse-expansion accounting (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/github/archive.rs`, `context.md`).
 - **Derived skipped tally**: `Selector` no longer stores a separate skipped counter; `finish` derives it from candidate count minus stored file count, removing counter synchronization without changing output (`src/core/selector.rs`).

@@ -3,7 +3,6 @@
 use crate::core::error::DomainError;
 use crate::core::policy::{
     ExcludePatterns, MAX_PATH_BYTES, MAX_PATH_DEPTH, is_hidden_segment, is_ignored_filename,
-    push_match_segment,
 };
 
 /// Non-empty, normalized slash-separated relative UTF-8 path of at most `MAX_PATH_BYTES` bytes (I-10).
@@ -42,7 +41,7 @@ impl From<String> for NormalizedPath {
 
 /// Candidate path outcome from classification, optionally carrying a read body (I-11).
 ///
-/// An entry is either a storable path (with `()` at classification or `Body<B>` at observation)
+/// An entry is either a storable path (with `()` at classification, a local path for dispatch, or `Body<B>` at observation)
 /// or an unstorable candidate carrying its valid directory prefix and raw byte identity.
 /// Ignored entries (hidden, conventional noise, sensitive patterns, or empty/root) are represented by `None`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,11 +81,6 @@ impl From<(&str, &[u8])> for UnstorablePath {
             identity: identity.into(),
         }
     }
-}
-
-#[cold]
-fn depth_exceeded_error(subject: &str) -> DomainError {
-    DomainError::invalid_metadata(format!("{subject} exceeds maximum directory depth"))
 }
 
 /// Classifies a sequence of raw path segment bytes into [`Option<Candidate>`].
@@ -149,6 +143,16 @@ impl AdmittedDir {
             output: DirPrefix::Utf8(String::new()),
         }
     }
+
+    /// Enforces the depth budget after hidden and exclusion checks have run.
+    pub(crate) fn check_depth(&self, subject: &str) -> Result<(), DomainError> {
+        if self.depth > MAX_PATH_DEPTH {
+            return Err(DomainError::invalid_metadata(format!(
+                "{subject} exceeds maximum directory depth"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Admits directory `name` under `dir`. Returns `None` when it is hidden or user-excluded.
@@ -175,11 +179,8 @@ pub(crate) fn admit_dir(
     if is_hidden_segment(name) {
         return None;
     }
-    if !exclude.is_empty() && depth <= MAX_PATH_DEPTH {
-        match_prefix = push_match_segment(match_prefix, name);
-        if exclude.excludes_prefix(&match_prefix, true) {
-            return None;
-        }
+    if depth <= MAX_PATH_DEPTH {
+        match_prefix = exclude.advance(match_prefix, name, true)?;
     }
     let output = match output {
         DirPrefix::Utf8(mut prefix) if depth <= MAX_PATH_DEPTH => {
@@ -222,22 +223,19 @@ pub(crate) fn classify_leaf(
     if is_hidden_segment(name) {
         return Ok(None);
     }
-    if !exclude.is_empty() && parent.depth <= MAX_PATH_DEPTH {
-        let full = push_match_segment(parent.match_prefix.clone(), name);
-        if exclude.excludes_prefix(&full, false) {
-            return Ok(None);
-        }
-    }
-
-    // Lossy decoding keeps the ASCII name rules exact: invalid bytes become U+FFFD, which never
-    // equals a noise name, and prefix and extension matches see the same ASCII bytes.
-    if is_ignored_filename(&String::from_utf8_lossy(name)) {
+    if parent.depth <= MAX_PATH_DEPTH
+        && exclude
+            .advance(parent.match_prefix.clone(), name, false)
+            .is_none()
+    {
         return Ok(None);
     }
 
-    if parent.depth > MAX_PATH_DEPTH {
-        return Err(depth_exceeded_error(subject));
+    if is_ignored_filename(name) {
+        return Ok(None);
     }
+
+    parent.check_depth(subject)?;
 
     match (&parent.output, std::str::from_utf8(name)) {
         (DirPrefix::Utf8(prefix), Ok(segment))
@@ -265,15 +263,6 @@ pub(crate) fn classify_leaf(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn depth_exceeded_error_names_its_entry_kind() {
-        let err = depth_exceeded_error("Tar entry path");
-        assert!(
-            matches!(&err, DomainError::InvalidMetadata(msg) if msg == "Tar entry path exceeds maximum directory depth"),
-            "{err:?}"
-        );
-    }
 
     #[test]
     fn user_exclusion_applies_to_paths_longer_than_max_path_bytes() {

@@ -257,14 +257,14 @@ pub(crate) fn cmp_path(a: &str, b: &str) -> Ordering {
 /// Called only on output limit exceeded error paths to format error diagnostics.
 /// Sorts by descending file size, tie-breaking by hierarchical path order (`cmp_path`).
 #[must_use]
-fn largest_files<'a>(files: impl IntoIterator<Item = FileRecord<'a>>) -> Vec<(String, usize)> {
-    let mut sized: Vec<(&str, usize)> = files
+fn largest_files<'a>(files: impl IntoIterator<Item = FileRecord<'a>>) -> Vec<(&'a str, usize)> {
+    let mut sized: Vec<(&'a str, usize)> = files
         .into_iter()
         .map(|f| (f.path, f.content.len()))
         .collect();
     sized.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| cmp_path(a.0, b.0)));
     sized.truncate(OVERFLOW_LARGEST_FILES);
-    sized.into_iter().map(|(p, s)| (p.to_string(), s)).collect()
+    sized
 }
 
 #[cfg(test)]
@@ -305,7 +305,7 @@ mod tests {
             },
         ];
         // Full order: descending size, ties by path. The diagnostic keeps the first `OVERFLOW_LARGEST_FILES`.
-        let expected: Vec<(String, usize)> = [
+        let expected: Vec<(&str, usize)> = [
             ("f6.txt", 6),
             ("f5_a.txt", 5),
             ("f5_b.txt", 5),
@@ -316,7 +316,6 @@ mod tests {
         ]
         .into_iter()
         .take(OVERFLOW_LARGEST_FILES)
-        .map(|(path, size)| (path.to_string(), size))
         .collect();
         assert_eq!(largest_files(files), expected);
     }

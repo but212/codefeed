@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 
 use crate::core::error::DomainError;
-use crate::core::github::{GithubName, parse_github_url, strip_prefix_ignore_case};
+use crate::core::github::{GithubName, parse_github_url};
 
 /// Validated non-empty Git revision reference (branch, tag, or commit SHA).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -84,19 +84,12 @@ impl Source {
 
     /// Parses a string slice into either a [`Source::Local`] or [`Source::Github`].
     fn parse(value: &str) -> Result<Self, DomainError> {
-        let has_scheme = |scheme| strip_prefix_ignore_case(value, scheme).is_some();
-        if has_scheme("http://") || has_scheme("https://") {
-            let (owner, repo) = parse_github_url(value)?;
+        if let Some((owner, repo)) = parse_github_url(value)? {
             return Ok(Self::Github {
                 owner,
                 repo,
                 reference: None,
             });
-        }
-        if has_scheme("git@") || has_scheme("ssh://") {
-            return Err(DomainError::unsupported_source(
-                "only local paths and public HTTPS GitHub URLs are supported",
-            ));
         }
         Ok(Self::Local(value.into()))
     }
@@ -240,25 +233,16 @@ mod tests {
     fn parse_rejects_malformed_urls() {
         let invalid_cases = [
             "git@github.com:owner/repo.git",
-            "https://gitlab.com/owner/repo",
-            "https://github.com/owner/repo/issues",
-            "https://github.com/owner/..",
             "https://github.com/owner/.",
             "https://github.com/./repo",
-            "https://github.com/../repo",
             "https://github.com:99999/owner/repo",
             "https://github.com:abc/owner/repo",
             "https://github.com:8080/owner/repo",
-            "https://tok@github.com/owner/repo",
-            "https://tok@github.com:abc/owner/repo",
         ];
         for url in invalid_cases {
             assert!(Source::parse(url).is_err(), "expected error for: {url}");
         }
-    }
 
-    #[test]
-    fn credential_rejection_does_not_echo_the_url() {
         for url in [
             "https://tok@github.com/owner/repo",
             "https://tok@github.com:abc/owner/repo",

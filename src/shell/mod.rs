@@ -7,7 +7,6 @@ use crate::core::github::GITHUB_API_BASE_URL;
 use crate::core::model::{IngestReport, RunConfig};
 use crate::core::source::Source;
 
-mod atomic;
 pub(crate) mod cli;
 mod error;
 mod github;
@@ -22,8 +21,9 @@ pub use error::IngestError;
 /// Executes the end-to-end repository ingestion pipeline.
 ///
 /// Dispatches collection across local filesystem or GitHub remote sources, renders
-/// the digest into the target format (plain text or XML), and atomically emits the
-/// result to standard output or a destination file.
+/// the digest into the target format (plain text or XML), and delivers it only
+/// after rendering succeeds. File replacement is atomic. A stdout write failure
+/// can leave a partial stream.
 ///
 /// # Errors
 ///
@@ -108,7 +108,9 @@ mod tests {
             DigestFormat::Text,
         );
 
-        for archive in [bad_crc, truncated] {
+        let later_bad_crc = [intact.as_slice(), bad_crc.as_slice()].concat();
+        let later_truncated = [intact.as_slice(), truncated.as_slice()].concat();
+        for archive in [bad_crc, truncated, later_bad_crc, later_truncated] {
             for previous in [None, Some("previous digest")] {
                 if let Some(contents) = previous {
                     fs::write(&output, contents)?;

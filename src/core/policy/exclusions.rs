@@ -26,29 +26,6 @@ const SENSITIVE_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pkcs12", "pfx", "c
 /// Known sensitive filename prefixes (case-insensitive) excluded prior to reading or download.
 const SENSITIVE_PREFIXES: &[&str] = &["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "credentials"];
 
-fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
-    value
-        .get(..prefix.len())
-        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
-}
-
-/// Returns `true` if `file_name` indicates a sensitive credentials file.
-fn is_sensitive_file(file_name: &str) -> bool {
-    if SENSITIVE_PREFIXES
-        .iter()
-        .any(|&prefix| starts_with_ignore_ascii_case(file_name, prefix))
-    {
-        return true;
-    }
-    let Some(dot_idx) = memrchr(b'.', file_name.as_bytes()) else {
-        return false;
-    };
-    let extension = &file_name[dot_idx + 1..];
-    SENSITIVE_EXTENSIONS
-        .iter()
-        .any(|&s| s.eq_ignore_ascii_case(extension))
-}
-
 /// Returns `true` if raw path segment bytes start with a dot (`.`), marking a hidden file or directory.
 #[must_use]
 pub(crate) const fn is_hidden_segment(segment: &[u8]) -> bool {
@@ -57,8 +34,23 @@ pub(crate) const fn is_hidden_segment(segment: &[u8]) -> bool {
 
 /// Returns `true` if `file_name` matches a known noise file or a sensitive credentials pattern.
 #[must_use]
-pub(crate) fn is_ignored_filename(file_name: &str) -> bool {
-    NOISE.contains(&file_name) || is_sensitive_file(file_name)
+pub(crate) fn is_ignored_filename(file_name: &[u8]) -> bool {
+    if NOISE.iter().any(|&noise| noise.as_bytes() == file_name)
+        || SENSITIVE_PREFIXES.iter().any(|&prefix| {
+            file_name
+                .get(..prefix.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
+        })
+    {
+        return true;
+    }
+    let Some(dot_idx) = memrchr(b'.', file_name) else {
+        return false;
+    };
+    let extension = &file_name[dot_idx + 1..];
+    SENSITIVE_EXTENSIONS
+        .iter()
+        .any(|&ext| extension.eq_ignore_ascii_case(ext.as_bytes()))
 }
 
 #[cfg(test)]
@@ -123,9 +115,15 @@ mod tests {
     fn is_ignored_filename_applies_each_rule() {
         // Noise names match the whole final segment, case-sensitively.
         for name in NOISE {
-            assert!(is_ignored_filename(name), "{name}");
-            assert!(!is_ignored_filename(&name.to_ascii_uppercase()), "{name}");
-            assert!(!is_ignored_filename(&format!("{name}.orig")), "{name}");
+            assert!(is_ignored_filename(name.as_bytes()), "{name}");
+            assert!(
+                !is_ignored_filename(name.to_ascii_uppercase().as_bytes()),
+                "{name}"
+            );
+            assert!(
+                !is_ignored_filename(format!("{name}.orig").as_bytes()),
+                "{name}"
+            );
         }
         // Sensitive prefixes match the start of the name, ignoring ASCII case.
         for prefix in SENSITIVE_PREFIXES {
@@ -134,9 +132,12 @@ mod tests {
                 prefix.to_ascii_uppercase(),
                 format!("{prefix}.pub"),
             ] {
-                assert!(is_ignored_filename(&name), "{name}");
+                assert!(is_ignored_filename(name.as_bytes()), "{name}");
             }
-            assert!(!is_ignored_filename(&format!("x{prefix}")), "x{prefix}");
+            assert!(
+                !is_ignored_filename(format!("x{prefix}").as_bytes()),
+                "x{prefix}"
+            );
         }
         // Sensitive extensions match after the final dot, ignoring ASCII case.
         for ext in SENSITIVE_EXTENSIONS {
@@ -144,12 +145,15 @@ mod tests {
                 format!("x.{ext}"),
                 format!("X.{}", ext.to_ascii_uppercase()),
             ] {
-                assert!(is_ignored_filename(&name), "{name}");
+                assert!(is_ignored_filename(name.as_bytes()), "{name}");
             }
-            assert!(!is_ignored_filename(&format!("x.{ext}s")), "x.{ext}s");
+            assert!(
+                !is_ignored_filename(format!("x.{ext}s").as_bytes()),
+                "x.{ext}s"
+            );
         }
         for name in ["Cargo.toml", "main.rs", "Makefile", "environment.rs"] {
-            assert!(!is_ignored_filename(name), "{name}");
+            assert!(!is_ignored_filename(name.as_bytes()), "{name}");
         }
     }
 
