@@ -83,14 +83,10 @@ impl From<(&str, &[u8])> for UnstorablePath {
     }
 }
 
-/// Classifies a sequence of raw path segment bytes into [`Option<Candidate>`].
+/// Classifies raw path segment bytes into [`Option<Candidate>`] after dropping empty and `.` segments.
 ///
-/// Checks run in this order: hidden segment, user exclusion, noise or sensitive name, depth. Each
-/// check that matches returns `None` before the later ones run, so a path excluded within the first
-/// `MAX_PATH_DEPTH + 1` segments is never reported as a depth error. A match past that window is not
-/// seen, and the path fails its depth limit. Builds a normalized UTF-8 path string for valid
-/// candidates or prefix strings for non-UTF-8 candidates. Empty and `.` segments are dropped, so a
-/// [`NormalizedPath`] never contains them.
+/// Check order: hidden, user exclusion, noise/sensitive, depth (`MAX_PATH_DEPTH + 1` match window;
+/// matches past that fail the depth limit). Produces a [`NormalizedPath`] or an unstorable prefix.
 pub(crate) fn classify_path_segments<'a, I>(
     segments: I,
     exclude: &ExcludePatterns,
@@ -155,16 +151,10 @@ impl AdmittedDir {
     }
 }
 
-/// Admits directory `name` under `dir`. Returns `None` when it is hidden or user-excluded.
+/// Admits directory `name` under `dir`, returning `None` if hidden or user-excluded.
 ///
-/// Consumes `dir` and returns the admitted child. Each prefix is extended in place, so admitting one
-/// directory costs time linear in the bytes it appends. Callers that keep `dir` clone it first.
-///
-/// Only the new prefix is matched. The prefixes of `dir`'s ancestors were matched when `dir` was
-/// admitted, and a match there would have returned `None` already. Matching stops after the first
-/// `MAX_PATH_DEPTH + 1` segments: deeper, the match prefix stops growing and is not matched. The
-/// output prefix stops growing at the same depth, because [`classify_leaf`] fails the depth limit
-/// before it reads it.
+/// Extends `dir`'s prefixes in place (O(len(name))). Only the new prefix is matched; matching and
+/// output-prefix growth stop after `MAX_PATH_DEPTH + 1` segments because [`classify_leaf`] fails depth first.
 #[must_use]
 pub(crate) fn admit_dir(
     dir: AdmittedDir,

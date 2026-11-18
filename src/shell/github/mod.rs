@@ -54,8 +54,8 @@ mod tests {
         assert_eq!(first.path, "file.txt");
         assert_eq!(first.content, "hello github");
 
-        let (requests, count) = server.join();
-        assert_eq!(count, 1);
+        let requests = server.join();
+        assert_eq!(requests.len(), 1);
         assert!(requests[0].contains("/repos/test-owner/test-repo/tarball/main"));
     }
 
@@ -74,7 +74,7 @@ mod tests {
         .expect("github collection succeeds");
 
         assert_eq!(result.files.len(), 1);
-        let (requests, _) = server.join();
+        let requests = server.join();
         assert!(requests[0].contains("/repos/test-owner/test-repo/tarball/feature%2Fx"));
     }
 

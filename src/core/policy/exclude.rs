@@ -34,13 +34,12 @@ impl PartialEq for ExcludePatterns {
 impl Eq for ExcludePatterns {}
 
 impl ExcludePatterns {
-    /// Compiles `patterns` in the given order. Each pattern must yield exactly one rule.
+    /// Compiles `patterns` in order; each must yield exactly one rule.
     ///
     /// # Errors
     ///
-    /// Returns [`DomainError::Usage`] naming the first pattern that is not a valid glob or that
-    /// yields no rule, such as an empty or whitespace-only pattern, a comment, or a bare `!` (with or
-    /// without trailing whitespace). POSIX named character classes such as `[[:digit:]]` are not supported.
+    /// Returns [`DomainError::Usage`] for the first invalid glob, empty/comment/bare-`!` pattern,
+    /// or unsupported POSIX character class (`[[:digit:]]`).
     pub fn new<I, S>(patterns: I) -> Result<Self, DomainError>
     where
         I: IntoIterator<Item = S>,
@@ -59,12 +58,10 @@ impl ExcludePatterns {
         Ok(Self { patterns, rules })
     }
 
-    /// Advances `prefix` by `segment` and checks whether the user patterns exclude it.
+    /// Advances `prefix` by `segment` and checks user exclusion patterns.
     ///
-    /// Returns `Some(prefix)` unchanged when no user patterns are configured, `None` when the
-    /// extended prefix is excluded, or `Some(extended)` when it is admitted. Callers test a
-    /// directory as it is admitted, so an excluded directory excludes everything below it and a
-    /// `!` pattern cannot re-include such an entry.
+    /// Returns `Some(prefix)` when empty, `None` when excluded, or `Some(extended)` when admitted.
+    /// Excluded directories prune all descendants (`!` cannot re-include them).
     #[must_use]
     pub(crate) fn advance(&self, prefix: String, segment: &[u8], is_dir: bool) -> Option<String> {
         if self.patterns.is_empty() {
@@ -111,11 +108,10 @@ fn push_match_segment(mut prefix: String, segment: &[u8]) -> String {
     prefix
 }
 
-/// Compiles one pattern on its own and requires exactly one rule from it. A pattern whose body is
-/// empty once trailing whitespace, `!`, and the surrounding `/` are removed (such as `!` or `! `)
-/// would compile to a glob that matches everything or nothing, so it is rejected before compilation.
-/// The body is taken after the trailing whitespace that `add_line` trims, so the check and the
-/// compiled rule agree. An escaped `\ ` keeps its backslash, so it never empties the body.
+/// Compiles one pattern and requires exactly one rule.
+///
+/// Rejects patterns whose body is empty after `add_line`-equivalent trailing-whitespace trimming,
+/// `!`, and `/` stripping (e.g., `!`, `! `); escaped `\ ` preserves its backslash.
 fn check_one_rule(pattern: &str) -> Result<(), DomainError> {
     let trimmed = pattern.trim_end();
     let body = trimmed

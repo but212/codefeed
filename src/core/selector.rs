@@ -11,7 +11,7 @@ use crate::core::path::Candidate;
 use crate::core::policy::{
     MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, OVERFLOW_LARGEST_DIRECTORIES,
 };
-use crate::core::storage::{FileStorage, SortedFiles};
+use crate::core::storage::{FileStorage, SortedFiles, arena_slice};
 
 /// UTF-8 text predicate: NUL-free bytes within size limit, returning string slice.
 fn classify_content(bytes: &[u8]) -> Option<&str> {
@@ -33,11 +33,6 @@ pub(crate) enum Body<B> {
 }
 
 const EMPTY_BUCKET: u32 = u32::MAX;
-
-fn arena_slice(arena: &str, offset: u32, len: u32) -> &str {
-    let start = offset as usize;
-    &arena[start..start + len as usize]
-}
 
 #[derive(Debug)]
 struct CountEntry {
@@ -336,17 +331,14 @@ impl Selector {
 
     /// Observes one candidate entry and settles it.
     ///
-    /// - [`Candidate::Unstorable`] consumes candidate budget, must have a unique byte identity,
-    ///   and is skipped.
-    /// - [`Candidate::Valid`] consumes candidate budget and must not repeat an earlier file path.
-    ///   [`Body::Bytes`] is stored when it is UTF-8
-    ///   text within the size limit, and skipped otherwise. [`Body::Unavailable`] and
-    ///   [`Body::OverLimit`] are skipped.
+    /// - [`Candidate::Unstorable`]: consumes budget, requires unique byte identity, skipped.
+    /// - [`Candidate::Valid`]: consumes budget, requires unique path; stores UTF-8 [`Body::Bytes`] within
+    ///   size limit, skips non-UTF-8, over-limit, [`Body::Unavailable`], or [`Body::OverLimit`].
     ///
     /// # Errors
     ///
-    /// Returns [`DomainError::CandidateLimitExceeded`], [`DomainError::InvalidMetadata`] for a duplicate path, or
-    /// [`DomainError::OutputTooLarge`].
+    /// Returns [`DomainError::CandidateLimitExceeded`], [`DomainError::InvalidMetadata`] (duplicate path),
+    /// or [`DomainError::OutputTooLarge`].
     pub(crate) fn observe<B: AsRef<[u8]>>(
         mut self,
         candidate: Candidate<Body<B>>,

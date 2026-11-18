@@ -1,7 +1,4 @@
-//! Imperative shell: process, filesystem, network, and orchestration.
-//!
-//! Shell modules perform all effects and feed observations to the functional
-//! core in `crate::core`.
+//! Imperative shell: process, filesystem, network, and orchestration feeding `crate::core`.
 
 use crate::core::github::GITHUB_API_BASE_URL;
 use crate::core::model::{IngestReport, RunConfig};
@@ -18,17 +15,14 @@ mod testing;
 
 pub use error::IngestError;
 
-/// Executes the end-to-end repository ingestion pipeline.
+/// Executes the end-to-end repository ingestion pipeline (collect, render, deliver).
 ///
-/// Dispatches collection across local filesystem or GitHub remote sources, renders
-/// the digest into the target format (plain text or XML), and delivers it only
-/// after rendering succeeds. File replacement is atomic. A stdout write failure
-/// can leave a partial stream.
+/// Delivers output only after rendering succeeds; file replacement is atomic, while a stdout
+/// failure can leave a partial stream.
 ///
 /// # Errors
 ///
-/// Returns [`IngestError`] if input sources are invalid, candidate budgets or output size
-/// limits are exceeded, filesystem operations fail, or network requests error.
+/// Returns [`IngestError`] on invalid sources, budget/size limit overflow, I/O errors, or network errors.
 pub fn ingest(config: &RunConfig) -> Result<IngestReport, IngestError> {
     ingest_from(config, GITHUB_API_BASE_URL)
 }
@@ -146,7 +140,6 @@ mod tests {
         assert_eq!(report.included_files, 1);
         assert_eq!(report.skipped_files, 0);
 
-        let (_, count) = server.join();
-        assert_eq!(count, 1);
+        assert_eq!(server.join().len(), 1);
     }
 }

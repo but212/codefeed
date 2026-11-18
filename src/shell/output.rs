@@ -147,9 +147,7 @@ impl TempPath {
             let path = parent.join(format!(".codefeed.{timestamp}.{counter}.tmp"));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(file) => return Ok((Self(path), file)),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    // Try again with a new counter.
-                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(io_error_at(&path, &error)),
             }
         }
@@ -185,13 +183,12 @@ fn sync_warning(parent: &Path, synced: io::Result<()>) -> Option<String> {
     })
 }
 
-/// Replaces `output` with `bytes`, so a failed write leaves the previous file in place.
+/// Replaces `output` atomically with `bytes`, leaving the previous file intact on failure.
 ///
 /// # Errors
 ///
-/// Returns [`IngestError::Io`] if creating, writing, syncing, or renaming fails. A parent-directory
-/// sync failure after the rename is a warning on stderr, not an error, because the target already holds
-/// the new digest and the run has succeeded.
+/// Returns [`IngestError::Io`] on create, write, sync, or rename failure; a post-rename
+/// parent-directory sync failure logs a warning to stderr and succeeds.
 fn write_atomic(output: &Path, bytes: &[u8]) -> Result<(), IngestError> {
     let parent = parent_dir(output);
     let (temp, mut file) = TempPath::create(parent)?;

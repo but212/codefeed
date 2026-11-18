@@ -187,22 +187,18 @@ fn classify_arg(arg: &OsStr) -> Arg<'_> {
     Arg::Positional
 }
 
-/// Parses command-line arguments into a [`CliAction`].
-///
-/// Skips the first element (the binary name) and interprets remaining arguments
-/// according to the CLI specification.
+/// Parses `args` (skipping the binary name) into a [`CliAction`].
 ///
 /// # Errors
 ///
-/// Returns [`DomainError::Usage`] if required arguments are missing, unknown options
-/// are passed, or flags receive invalid values.
+/// Returns [`DomainError::Usage`] on missing arguments, unknown options, or invalid flag values.
 pub(crate) fn parse<I, T>(args: I) -> Result<CliAction, DomainError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
     let mut args_iter = args.into_iter().map(Into::into);
-    let _bin = args_iter.next(); // Skip binary name
+    let _bin = args_iter.next();
 
     let mut state = ParseState::Normal;
     // `-h` and `-V` win over an earlier error unless that error came after `--`, so the loop

@@ -195,7 +195,9 @@ fn read_rate_limit_headers(headers: &ureq::http::HeaderMap, now_secs: u64) -> Ra
                     now_secs,
                 )
             },
-            |date| RateLimitHeaders::RetryAfterSecs(date.as_secs().saturating_sub(now_secs)),
+            |date| RateLimitHeaders::Limited {
+                retry_after: Some(Duration::from_secs(date.as_secs().saturating_sub(now_secs))),
+            },
         )
 }
 
@@ -265,7 +267,7 @@ mod tests {
             headers.insert("retry-after", value.parse().unwrap());
             assert_eq!(
                 read_rate_limit_headers(&headers, DATE),
-                RateLimitHeaders::UnparsedRetryAfter,
+                RateLimitHeaders::Limited { retry_after: None },
                 "{value}"
             );
             headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
@@ -299,8 +301,7 @@ mod tests {
                     .is_some_and(|delay| delay.as_millis() > u128::from(RETRY_MAX_DELAY_MS)),
                 "{value}: requested delay was discarded"
             );
-            let (_, connections) = server.join();
-            assert_eq!(connections, 1, "{value}");
+            assert_eq!(server.join().len(), 1, "{value}");
         }
     }
 
@@ -337,8 +338,7 @@ mod tests {
             reader.read_to_string(&mut body).expect("read body");
             assert_eq!(body, "success", "{case}");
 
-            let (_, connections) = server.join();
-            assert_eq!(connections, 2, "{case}");
+            assert_eq!(server.join().len(), 2, "{case}");
         }
     }
 
@@ -394,8 +394,7 @@ mod tests {
                 "{case}"
             );
 
-            let (_, connections) = server.join();
-            assert_eq!(connections, 1, "{case}");
+            assert_eq!(server.join().len(), 1, "{case}");
         }
     }
 
@@ -417,8 +416,7 @@ mod tests {
         assert_eq!(api.retry_after(), None);
         assert_eq!(err.to_string(), "GitHub API error: HTTP 503: unavailable");
 
-        let (_, connections) = server.join();
-        assert_eq!(connections, MAX_ATTEMPTS);
+        assert_eq!(server.join().len(), MAX_ATTEMPTS);
     }
 
     #[test]
@@ -444,8 +442,7 @@ mod tests {
             "GitHub API error: HTTP 429: rate limited (retry available in 3600s) (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
         );
 
-        let (_, connections) = server.join();
-        assert_eq!(connections, 1);
+        assert_eq!(server.join().len(), 1);
     }
 
     #[test]
@@ -466,8 +463,7 @@ mod tests {
         let url = server.url("/test");
         assert!(client.stream_url(&url).is_err());
 
-        let (_, connections) = server.join();
-        assert_eq!(connections, 1);
+        assert_eq!(server.join().len(), 1);
     }
 
     #[test]
@@ -489,8 +485,7 @@ mod tests {
         reader.read_to_string(&mut body).expect("read body");
         assert_eq!(body, "success");
 
-        let (_, connections) = server.join();
-        assert_eq!(connections, 2);
+        assert_eq!(server.join().len(), 2);
     }
 
     #[test]
@@ -555,8 +550,8 @@ mod tests {
         reader.read_to_string(&mut body).expect("read body");
         assert_eq!(body, "ok");
 
-        let (requests, connections) = server.join();
-        assert_eq!(connections, 1);
+        let requests = server.join();
+        assert_eq!(requests.len(), 1);
 
         let req = &requests[0];
         let expected_ua_header = format!("user-agent: {GITHUB_USER_AGENT}");
@@ -588,8 +583,8 @@ mod tests {
             .expect("call should follow redirect and succeed");
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let (requests, connections) = server.join();
-        assert_eq!(connections, 2);
+        let requests = server.join();
+        assert_eq!(requests.len(), 2);
 
         let req1 = &requests[0];
         assert!(

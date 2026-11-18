@@ -53,6 +53,13 @@ jobs:
             exit 1
           fi
 
+      - name: Upload release notes
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: RELEASE_NOTES.md
+          if-no-files-found: error
+
       - name: Run test suite
         run: cargo test --lib --bins --tests --locked
 
@@ -164,38 +171,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
+      - name: Download release notes
+        uses: actions/download-artifact@v8
         with:
-          persist-credentials: false
-
-      - name: Extract release notes from CHANGELOG.md
-        run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          awk -v ver="$TAG_VERSION" '
-            BEGIN {
-              target1 = ver
-              target2 = "[" ver "]"
-            }
-            /^## / {
-              if ($1 == "##" && ($2 == target1 || $2 == target2)) {
-                flag = 1
-                next
-              } else if (flag) {
-                flag = 0
-              }
-            }
-            flag { print }
-          ' CHANGELOG.md > RELEASE_NOTES.md
-
-          if ! grep -q '[^[:space:]]' RELEASE_NOTES.md; then
-            echo "Error: CHANGELOG.md section for $TAG_VERSION is empty"
-            exit 1
-          fi
+          name: release-notes
 
       - name: Download all built assets
         uses: actions/download-artifact@v8
         with:
+          pattern: codefeed-*
           path: dist
           merge-multiple: true
 
