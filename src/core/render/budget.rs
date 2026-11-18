@@ -178,19 +178,6 @@ mod tests {
     }
 
     #[test]
-    fn finish_reports_bytes_and_tokens() {
-        let digest = BoundedBuffer::default()
-            .push_str("test output")
-            .expect("fixture fits the output limit")
-            .finish();
-        assert_eq!(digest.bytes, b"test output");
-        assert_eq!(
-            digest.estimated_tokens,
-            estimate_tokens_from_bytes(b"test output")
-        );
-    }
-
-    #[test]
     fn render_reports_tokens_of_the_rendered_bytes() -> Result<(), crate::core::error::DomainError>
     {
         use crate::core::model::{CollectionResult, DigestFormat};

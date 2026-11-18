@@ -985,53 +985,41 @@ mod tests {
         }
     }
 
-    /// Asserts that the run fails because a header exceeds the `ARCHIVE_MAX_HEADER_BYTES` budget.
-    fn assert_header_budget_failure(mock_data: &[u8]) {
-        let err = collect_default(mock_data, "https://github.com/owner/repo", None).unwrap_err();
-        assert!(
-            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(msg)) if msg.contains("ARCHIVE_MAX_HEADER_BYTES")),
-            "expected header budget failure, got: {err:?}"
-        );
-    }
-
     #[test]
-    fn oversized_gnu_long_name_header_fails_the_run() {
-        // tar reads the `L` extension body whole before the path reaches policy, so the header budget bounds it.
+    fn oversized_header_fails_the_run() {
         let long_name = format!("repo-root/{}", "a".repeat(70_000));
-        let mock_data = gzip_tarball(&[(long_name.as_str(), b"content", EntryType::Regular)]);
-
-        assert_header_budget_failure(&mock_data);
-    }
-
-    #[test]
-    fn oversized_pax_header_fails_the_run() {
-        // The PAX `x` body is read whole by tar, so an oversized path record fails the run.
-        let long_path = format!("repo-root/{}", "a".repeat(70_000));
-        let mock_data = gzip_archive(|tar| {
-            tar.append_pax_extensions([("path", long_path.as_bytes())])
-                .unwrap();
-            let mut header = tar::Header::new_gnu();
-            header.set_entry_type(EntryType::Regular);
-            header.set_size(7);
-            header.set_mode(0o644);
-            header.set_cksum();
-            tar.append_data(&mut header, "repo-root/x.txt", &b"content"[..])
-                .unwrap();
-        });
-
-        assert_header_budget_failure(&mock_data);
-    }
-
-    #[test]
-    fn oversized_header_of_hidden_entry_fails_the_run() {
-        // The budget runs before classification, so a hidden entry that policy would drop still fails the run.
         let hidden_name = format!("repo-root/.cache/{}/f.txt", "a".repeat(70_000));
-        let mock_data = gzip_tarball(&[
-            (hidden_name.as_str(), b"content", EntryType::Regular),
-            ("repo-root/src/main.rs", b"fn main() {}", EntryType::Regular),
-        ]);
 
-        assert_header_budget_failure(&mock_data);
+        let cases = [
+            // tar reads the `L` extension body whole before the path reaches policy.
+            gzip_tarball(&[(long_name.as_str(), b"content", EntryType::Regular)]),
+            // The PAX `x` body is read whole by tar, so an oversized path record fails the run.
+            gzip_archive(|tar| {
+                tar.append_pax_extensions([("path", long_name.as_bytes())])
+                    .unwrap();
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(EntryType::Regular);
+                header.set_size(7);
+                header.set_mode(0o644);
+                header.set_cksum();
+                tar.append_data(&mut header, "repo-root/x.txt", &b"content"[..])
+                    .unwrap();
+            }),
+            // The budget runs before classification, so a hidden entry that policy would drop still fails.
+            gzip_tarball(&[
+                (hidden_name.as_str(), b"content", EntryType::Regular),
+                ("repo-root/src/main.rs", b"fn main() {}", EntryType::Regular),
+            ]),
+        ];
+
+        for mock_data in cases {
+            let err =
+                collect_default(&mock_data, "https://github.com/owner/repo", None).unwrap_err();
+            assert!(
+                matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(msg)) if msg.contains("ARCHIVE_MAX_HEADER_BYTES")),
+                "expected header budget failure, got: {err:?}"
+            );
+        }
     }
 
     /// Gzip stream of a tar holding one regular entry, `repo-root/big.txt`, whose body is `body_len` bytes of
@@ -1058,22 +1046,16 @@ mod tests {
     }
 
     #[test]
-    fn decompressed_stream_at_the_limit_is_accepted() {
+    fn decompressed_stream_enforces_limit_at_boundary() {
         // One oversized entry is skipped, but its body is still drained from the stream.
-        let stream = gzip_single_entry_stream(body_len_for_stream_len(0));
-
-        let result = collect(stream, "label", None, &ExcludePatterns::default())
+        let at_limit = gzip_single_entry_stream(body_len_for_stream_len(0));
+        let result = collect(at_limit, "label", None, &ExcludePatterns::default())
             .expect("a stream of exactly the limit is accepted");
-
         assert_eq!(result.files.len(), 0);
         assert_eq!(result.skipped, 1);
-    }
 
-    #[test]
-    fn decompressed_stream_one_byte_beyond_the_limit_fails_the_run() {
-        let stream = gzip_single_entry_stream(body_len_for_stream_len(1));
-
-        let err = collect(stream, "label", None, &ExcludePatterns::default()).unwrap_err();
+        let beyond_limit = gzip_single_entry_stream(body_len_for_stream_len(1));
+        let err = collect(beyond_limit, "label", None, &ExcludePatterns::default()).unwrap_err();
         assert!(
             matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(msg)) if msg.contains("ARCHIVE_MAX_DECOMPRESSED_BYTES")),
             "expected decompressed limit failure, got: {err:?}"

@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn error_detail_replaces_newlines_and_controls() {
+    fn error_detail_is_sanitized_at_construction() {
         let clean = ErrorDetail::new("plain error message");
         assert_eq!(&*clean, "plain error message");
 
@@ -242,10 +242,7 @@ mod tests {
             &*sanitized,
             "hello world  foo\u{FFFD}[31mbar\u{FFFD}baz\u{FFFD}del\u{FFFD}c1"
         );
-    }
 
-    #[test]
-    fn error_detail_is_sanitized_at_construction() {
         let raw = "a\x1b[2J\nb";
         let detail = ErrorDetail::new(raw);
         // The stored text, the `Deref` view, and the rendering are all the sanitized text.

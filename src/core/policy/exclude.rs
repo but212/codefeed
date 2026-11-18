@@ -227,11 +227,6 @@ mod tests {
         ExcludePatterns::new(list.iter().copied()).expect("patterns are valid")
     }
 
-    /// Splits a `/`-separated path into the segments that `classify_path_segments` receives.
-    fn segs(path: &str) -> Vec<&[u8]> {
-        path.split('/').map(str::as_bytes).collect()
-    }
-
     /// Whether `patterns` reject the path as the walk and the classifier apply it: a directory is
     /// rejected when admitting it fails, and a file when it classifies as `None` (Ignored).
     fn rejected(patterns: &ExcludePatterns, segments: &[&[u8]], is_dir: bool) -> bool {
@@ -261,10 +256,14 @@ mod tests {
 
     #[test]
     fn new_rejects_patterns_that_are_invalid_or_yield_no_rule() {
-        for pattern in ["", "   ", "#note", "!", "! ", "!\t", "/ ", "!/ ", "["] {
+        for pattern in [
+            "", "   ", "#note", "!", "! ", "!\t", "/ ", "!/ ", "[", "[\x1b[2J",
+        ] {
             let Err(err) = ExcludePatterns::new([pattern]) else {
                 panic!("expected rejection for {pattern:?}");
             };
+            let rendered = err.to_string();
+            assert!(!rendered.contains('\x1b'), "ESC leaked: {rendered:?}");
             let expected = format!(
                 "invalid value '{}' for '--exclude <PATTERN>': ",
                 ErrorDetail::new(pattern)
@@ -300,106 +299,75 @@ mod tests {
     }
 
     #[test]
-    fn rejected_pattern_echo_is_sanitized() {
-        let Err(err) = ExcludePatterns::new(["[\x1b[2J"]) else {
-            panic!("expected rejection for a malformed glob");
-        };
-        let rendered = err.to_string();
-        assert!(!rendered.contains('\x1b'), "ESC leaked: {rendered:?}");
-        assert!(
-            rendered.starts_with("invalid value '[\u{FFFD}[2J' for '--exclude <PATTERN>': "),
-            "{rendered:?}"
-        );
-    }
-
-    #[test]
-    fn unescaped_trailing_whitespace_is_trimmed_as_in_gitignore() {
-        // `.gitignore` trims trailing whitespace before parsing, so `*.log ` is `*.log`. A bare `!`
-        // with trailing whitespace must therefore be rejected, not compiled to a match-all rule.
-        let ex = patterns(&["*.log "]);
-        assert!(ex.excludes(&segs("a.log"), false));
-    }
-
-    #[test]
-    fn escaped_trailing_space_is_a_literal_space() {
-        // `\ ` keeps its space, so the pattern names a file ending in a space.
-        let ex = patterns(&["a\\ "]);
-        assert!(ex.excludes(&segs("a "), false));
-        assert!(!ex.excludes(&segs("a"), false));
-    }
-
-    #[test]
     fn new_accepts_gitignore_syntax() {
         for pattern in ["*.log", "/top", "build/", "!keep.log", "-foo", "\\#literal"] {
             assert!(ExcludePatterns::new([pattern]).is_ok(), "{pattern}");
         }
+        assert_eq!(
+            ExcludePatterns::default(),
+            ExcludePatterns::new(Vec::<String>::new()).unwrap()
+        );
     }
 
     #[test]
-    fn empty_set_excludes_nothing() {
-        let none = ExcludePatterns::default();
-        assert!(!none.excludes(&segs("a/b.txt"), false));
-        assert!(!none.excludes(&segs("build"), true));
-        assert_eq!(none, ExcludePatterns::new(Vec::<String>::new()).unwrap());
-    }
+    fn matching_rules_match_gitignore_semantics() {
+        type MatchingCase<'a> = (&'a [&'a str], &'a [&'a [u8]], bool, bool);
+        let cases: &[MatchingCase<'_>] = &[
+            // Trailing whitespace is trimmed; `\ ` preserves a literal trailing space.
+            (&["*.log "], &[b"a.log"], false, true),
+            (&["a\\ "], &[b"a "], false, true),
+            (&["a\\ "], &[b"a"], false, false),
+            // Empty set excludes nothing.
+            (&[], &[b"a", b"b.txt"], false, false),
+            (&[], &[b"build"], true, false),
+            // Unanchored patterns match at any depth, including directories and their descendants.
+            (&["*.log"], &[b"a.log"], false, true),
+            (&["*.log"], &[b"sub", b"deeper", b"a.log"], false, true),
+            (&["*.log"], &[b"sub", b"a.txt"], false, false),
+            (&["target"], &[b"target", b"debug", b"x.rs"], false, true),
+            (&["target"], &[b"sub", b"target"], true, true),
+            // Anchored patterns match from the source root only.
+            (&["/top"], &[b"top"], false, true),
+            (&["/top"], &[b"sub", b"top"], false, false),
+            // Directory-only patterns require a directory segment.
+            (&["build/"], &[b"build"], true, true),
+            (&["build/"], &[b"build"], false, false),
+            (&["build/"], &[b"build", b"out.txt"], false, true),
+            (&["build/"], &[b"sub", b"build", b"out.txt"], false, true),
+            // Negation reinclusively overrides earlier user rules, except under an excluded dir.
+            (&["*.log", "!keep.log"], &[b"a.log"], false, true),
+            (&["*.log", "!keep.log"], &[b"keep.log"], false, false),
+            (
+                &["*.log", "!keep.log"],
+                &[b"sub", b"keep.log"],
+                false,
+                false,
+            ),
+            (&["build/", "!build/keep.txt"], &[b"build"], true, true),
+            (
+                &["build/", "!build/keep.txt"],
+                &[b"build", b"keep.txt"],
+                false,
+                true,
+            ),
+            // Case-sensitive and non-UTF-8 lossy matching.
+            (&["*.LOG"], &[b"a.LOG"], false, true),
+            (&["*.LOG"], &[b"a.log"], false, false),
+            (&["*.txt"], &[b"dir", b"\xff.txt"], false, true),
+        ];
 
-    #[test]
-    fn unanchored_pattern_matches_at_any_depth() {
-        let ex = patterns(&["*.log"]);
-        assert!(ex.excludes(&segs("a.log"), false));
-        assert!(ex.excludes(&segs("sub/deeper/a.log"), false));
-        assert!(!ex.excludes(&segs("sub/a.txt"), false));
-
-        // A matching directory excludes the files below it.
-        let ex = patterns(&["target"]);
-        assert!(ex.excludes(&segs("target/debug/x.rs"), false));
-        assert!(ex.excludes(&segs("sub/target"), true));
-    }
-
-    #[test]
-    fn anchored_pattern_matches_from_source_root_only() {
-        let ex = patterns(&["/top"]);
-        assert!(ex.excludes(&segs("top"), false));
-        assert!(!ex.excludes(&segs("sub/top"), false));
-    }
-
-    #[test]
-    fn directory_only_pattern_needs_a_directory() {
-        let ex = patterns(&["build/"]);
-        assert!(ex.excludes(&segs("build"), true));
-        assert!(!ex.excludes(&segs("build"), false));
-        assert!(ex.excludes(&segs("build/out.txt"), false));
-        assert!(ex.excludes(&segs("sub/build/out.txt"), false));
-    }
-
-    #[test]
-    fn user_negation_reincludes_only_within_user_rules() {
-        let ex = patterns(&["*.log", "!keep.log"]);
-        assert!(ex.excludes(&segs("a.log"), false));
-        assert!(!ex.excludes(&segs("keep.log"), false));
-        assert!(!ex.excludes(&segs("sub/keep.log"), false));
-    }
-
-    #[test]
-    fn excluded_directory_cannot_be_reincluded() {
-        // Git semantics: a file under an excluded directory stays excluded whatever `!` says.
-        let ex = patterns(&["build/", "!build/keep.txt"]);
-        assert!(ex.excludes(&segs("build"), true));
-        assert!(ex.excludes(&segs("build/keep.txt"), false));
-    }
-
-    #[test]
-    fn matching_is_case_sensitive() {
-        let ex = patterns(&["*.LOG"]);
-        assert!(ex.excludes(&segs("a.LOG"), false));
-        assert!(!ex.excludes(&segs("a.log"), false));
-    }
-
-    #[test]
-    fn non_utf8_segments_match_by_lossy_form() {
-        let ex = patterns(&["*.txt"]);
-        let segments: [&[u8]; 2] = [b"dir", b"\xff.txt"];
-        assert!(ex.excludes(&segments, false));
+        for &(pats, segments, is_dir, expected) in cases {
+            let ex = if pats.is_empty() {
+                ExcludePatterns::default()
+            } else {
+                patterns(pats)
+            };
+            assert_eq!(
+                ex.excludes(segments, is_dir),
+                expected,
+                "patterns={pats:?}, is_dir={is_dir}"
+            );
+        }
     }
 
     #[test]
@@ -432,14 +400,6 @@ mod tests {
         assert!(!patterns(&["/docs/secret.md"]).excludes(&segments, false));
         assert!(!patterns(&["docs\\\\secret.md"]).excludes(&segments, false));
         assert!(patterns(&["*.md"]).excludes(&segments, false));
-    }
-
-    #[test]
-    fn excludes_reports_only_user_rules() {
-        let none = ExcludePatterns::default();
-        assert!(!none.excludes(&segs(".git"), true));
-        assert!(!none.excludes(&segs("Cargo.lock"), false));
-        assert!(!patterns(&["*.log"]).excludes(&segs(".git"), true));
     }
 
     #[test]

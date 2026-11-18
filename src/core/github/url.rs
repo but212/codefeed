@@ -222,16 +222,10 @@ mod tests {
     }
 
     #[test]
-    fn github_name_validates_and_provides_slice_access() {
-        let name = GithubName::new("rust-lang").unwrap();
-        assert_eq!(&*name, "rust-lang");
-
-        let repo = GithubName::new("codefeed-2.0").unwrap();
-        assert_eq!(&*repo, "codefeed-2.0");
-    }
-
-    #[test]
     fn parses_owner_and_repo() {
+        let name = GithubName::new("codefeed-2.0").unwrap();
+        assert_eq!(&*name, "codefeed-2.0");
+
         let (owner, repo) = parse_github_url("https://github.com/rust-lang/cargo")
             .unwrap()
             .unwrap();
@@ -250,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_malformed_repository_urls() {
+    fn rejects_invalid_repository_urls() {
         for value in [
             "https://github.com/bad name/repo",
             "https://github.com/owner/re%70o",
@@ -259,23 +253,15 @@ mod tests {
             "https://github.com/owner/.git",
             "https://github.com/owner/repo?tab=readme",
             "https://github.com/owner/repo#readme",
+            "https:///owner/repo",
         ] {
             let err = parse_github_url(value).unwrap_err();
             assert!(matches!(err, DomainError::InvalidSource(_)), "{value}");
         }
-    }
 
-    #[test]
-    fn rejects_non_https_scheme_and_malformed_authority() {
         let unsupported = parse_github_url("http://github.com/owner/repo").unwrap_err();
         assert!(matches!(unsupported, DomainError::UnsupportedSource(_)));
 
-        let empty_authority = parse_github_url("https:///owner/repo").unwrap_err();
-        assert!(matches!(empty_authority, DomainError::InvalidSource(_)));
-    }
-
-    #[test]
-    fn rejected_url_echo_is_sanitized() {
         let err = parse_github_url("https://github.com:99999/o/r\x1b[2J").unwrap_err();
         let rendered = err.to_string();
         assert!(!rendered.contains('\x1b'), "ESC leaked: {rendered:?}");

@@ -253,18 +253,40 @@ mod tests {
     }
 
     #[test]
-    fn resolve_output_target_rejects_non_existent_parent() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = temp_dir("non_existent_parent")?;
-        let non_existent_parent = root.join("missing_dir").join("out.txt");
+    fn resolve_output_target_rejects_invalid_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("output_invalid_paths")?;
+        let existing_dir = root.join("existing_subdir");
+        fs::create_dir(&existing_dir)?;
+        let file_parent = root.join("file.txt");
+        fs::write(&file_parent, "not a directory")?;
 
-        let result = resolve_output_target(&OutputTarget::File(non_existent_parent));
-        match result {
-            Err(IngestError::Io(err)) => {
-                assert_eq!(err.kind(), io::ErrorKind::NotFound);
-                assert!(err.to_string().contains("missing_dir"));
+        let cases = [
+            (
+                root.join("missing_dir").join("out.txt"),
+                io::ErrorKind::NotFound,
+                Some("missing_dir"),
+            ),
+            (existing_dir, io::ErrorKind::IsADirectory, None),
+            (
+                file_parent.join("out.txt"),
+                io::ErrorKind::NotADirectory,
+                Some("file.txt"),
+            ),
+        ];
+
+        for (path, expected_kind, expected_fragment) in cases {
+            match resolve_output_target(&OutputTarget::File(path)) {
+                Err(IngestError::Io(err)) => {
+                    assert_eq!(err.kind(), expected_kind);
+                    if let Some(fragment) = expected_fragment {
+                        assert!(
+                            err.to_string().contains(fragment),
+                            "unexpected message: {err}"
+                        );
+                    }
+                }
+                other => panic!("expected IngestError::Io({expected_kind:?}), got {other:?}"),
             }
-            other => panic!("expected IngestError::Io(NotFound), got {other:?}"),
         }
         Ok(())
     }
@@ -309,42 +331,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_output_target_rejects_directory() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("output_dir_resolve_test")?;
-        let existing_dir = root.join("existing_subdir");
-        fs::create_dir(&existing_dir)?;
-
-        let result = resolve_output_target(&OutputTarget::File(existing_dir));
-        match result {
-            Err(IngestError::Io(err)) => {
-                assert_eq!(err.kind(), io::ErrorKind::IsADirectory);
-            }
-            other => panic!("expected IngestError::Io(IsADirectory), got {other:?}"),
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn resolve_output_target_rejects_file_parent() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("output_file_parent")?;
-        let file_parent = root.join("file.txt");
-        fs::write(&file_parent, "not a directory")?;
-
-        let result = resolve_output_target(&OutputTarget::File(file_parent.join("out.txt")));
-        match result {
-            Err(IngestError::Io(err)) => {
-                assert_eq!(err.kind(), io::ErrorKind::NotADirectory);
-                assert!(
-                    err.to_string().contains("file.txt"),
-                    "unexpected message: {err}"
-                );
-            }
-            other => panic!("expected IngestError::Io(NotADirectory), got {other:?}"),
-        }
-        Ok(())
-    }
-
-    #[test]
     fn resolve_output_target_handles_stdout_and_file() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(resolve_output_target(&OutputTarget::Stdout)?.file(), None);
 
@@ -352,20 +338,6 @@ mod tests {
         let output = root.join("digest.txt");
         let resolved = resolve_output_target(&OutputTarget::File(output.clone()))?;
         assert_eq!(resolved.file(), Some(output.as_path()));
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "macos"))]
-    #[test]
-    fn matches_non_ascii_cased_files_pointing_to_same_file()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("output_non_ascii")?;
-        let file_a = root.join("вывод.txt");
-        fs::write(&file_a, "test")?;
-        let file_b = root.join("ВЫВОД.TXT");
-        let resolved = resolve_file(file_b)?;
-        let canonical_a = fs::canonicalize(&file_a)?;
-        assert_eq!(resolved, canonical_a);
         Ok(())
     }
 
@@ -390,6 +362,11 @@ mod tests {
             let cased_output = root.join("DIGEST.TXT");
             let cased_resolved = resolve_file(cased_output)?;
             assert_eq!(cased_resolved, canonical_output);
+
+            let file_a = root.join("вывод.txt");
+            fs::write(&file_a, "test")?;
+            let resolved_non_ascii = resolve_file(root.join("ВЫВОД.TXT"))?;
+            assert_eq!(resolved_non_ascii, fs::canonicalize(&file_a)?);
         }
 
         Ok(())
@@ -490,9 +467,8 @@ mod tests {
     }
 
     #[test]
-    fn temp_path_cleans_up_with_open_handle_on_scope_exit() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = temp_dir("temp_path_scope")?;
+    fn temp_path_cleans_up_on_scope_exit_and_panic() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("temp_path_cleanup")?;
         let temp_path = {
             let (temp, _file) = TempPath::create(&root)?;
             assert!(temp.path().exists());
@@ -502,12 +478,6 @@ mod tests {
             !temp_path.exists(),
             "temporary file must be removed when its guard is dropped"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn atomic_write_cleans_up_temporary_file_on_panic() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("atomic_cleanup")?;
 
         let panic_result = std::panic::catch_unwind(|| {
             let (_temp, mut file) = TempPath::create(&root).unwrap();

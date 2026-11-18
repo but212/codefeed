@@ -93,26 +93,52 @@ mod tests {
 
     #[test]
     fn renders_ascii_tree_correctly() {
-        let storage = FileStorage::new()
-            .push(&NormalizedPath::from("Cargo.toml"), "")
-            .unwrap()
-            .push(&NormalizedPath::from("src/core/a.rs"), "")
-            .unwrap()
-            .push(&NormalizedPath::from("src/lib.rs"), "")
-            .unwrap();
-        let files = SortedFiles::new(storage).unwrap();
-
-        let buf = render_tree(BoundedBuffer::default(), &files, DigestFormat::Text).unwrap();
-        let digest = buf.finish();
-        let tree_str = std::str::from_utf8(&digest.bytes).unwrap();
-        let expected = "\
+        let cases: &[(&[&str], &str)] = &[
+            (
+                &["Cargo.toml", "src/core/a.rs", "src/lib.rs"],
+                "\
 ├── Cargo.toml
 └── src/
     ├── core/
     │   └── a.rs
     └── lib.rs
-";
-        assert_eq!(tree_str, expected);
+",
+            ),
+            (
+                &["a/x.txt", "a/y.txt", "b/z.txt"],
+                "\
+├── a/
+│   ├── x.txt
+│   └── y.txt
+└── b/
+    └── z.txt
+",
+            ),
+            (
+                &["a/b/c/d/e.txt", "a/b/c/f.txt", "a/b/g.txt", "root.txt"],
+                "\
+├── a/
+│   └── b/
+│       ├── c/
+│       │   ├── d/
+│       │   │   └── e.txt
+│       │   └── f.txt
+│       └── g.txt
+└── root.txt
+",
+            ),
+        ];
+
+        for &(paths, expected) in cases {
+            let mut storage = FileStorage::new();
+            for path in paths {
+                storage = storage.push(&NormalizedPath::from(*path), "").unwrap();
+            }
+            let files = SortedFiles::new(storage).unwrap();
+            let buf = render_tree(BoundedBuffer::default(), &files, DigestFormat::Text).unwrap();
+            let digest = buf.finish();
+            assert_eq!(std::str::from_utf8(&digest.bytes).unwrap(), expected);
+        }
     }
 
     #[test]
@@ -131,30 +157,6 @@ mod tests {
         let xml_str = String::from_utf8(xml_buf.finish().bytes).unwrap();
         assert!(xml_str.contains("dir\\name/"));
         assert!(xml_str.contains("file&lt;name&gt;.txt"));
-    }
-
-    #[test]
-    fn renders_nested_siblings_in_alphabetical_order() {
-        let storage = FileStorage::new()
-            .push(&NormalizedPath::from("a/x.txt"), "")
-            .unwrap()
-            .push(&NormalizedPath::from("a/y.txt"), "")
-            .unwrap()
-            .push(&NormalizedPath::from("b/z.txt"), "")
-            .unwrap();
-        let files = SortedFiles::new(storage).unwrap();
-
-        let buf = render_tree(BoundedBuffer::default(), &files, DigestFormat::Text).unwrap();
-        let digest = buf.finish();
-        let tree_str = std::str::from_utf8(&digest.bytes).unwrap();
-        let expected = "\
-├── a/
-│   ├── x.txt
-│   └── y.txt
-└── b/
-    └── z.txt
-";
-        assert_eq!(tree_str, expected);
     }
 
     #[test]
@@ -195,34 +197,5 @@ mod tests {
     #[should_panic(expected = "out of bounds")]
     fn component_at_offset_panics_when_offset_passes_the_path() {
         let _ = component_at_offset("root_file.txt", 100);
-    }
-
-    #[test]
-    fn renders_deep_multi_level_tree_correctly() {
-        let storage = FileStorage::new()
-            .push(&NormalizedPath::from("a/b/c/d/e.txt"), "")
-            .unwrap()
-            .push(&NormalizedPath::from("a/b/c/f.txt"), "")
-            .unwrap()
-            .push(&NormalizedPath::from("a/b/g.txt"), "")
-            .unwrap()
-            .push(&NormalizedPath::from("root.txt"), "")
-            .unwrap();
-        let files = SortedFiles::new(storage).unwrap();
-
-        let buf = render_tree(BoundedBuffer::default(), &files, DigestFormat::Text).unwrap();
-        let digest = buf.finish();
-        let tree_str = std::str::from_utf8(&digest.bytes).unwrap();
-        let expected = "\
-├── a/
-│   └── b/
-│       ├── c/
-│       │   ├── d/
-│       │   │   └── e.txt
-│       │   └── f.txt
-│       └── g.txt
-└── root.txt
-";
-        assert_eq!(tree_str, expected);
     }
 }
