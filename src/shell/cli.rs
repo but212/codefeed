@@ -46,6 +46,6 @@ where
 
 /// Writes one `error:` line to stderr and returns the failure exit code.
 fn report_error(error: &impl Display) -> i32 {
-    stdio::write_stderr_line(&format!("error: {error}"));
+    stdio::write_stderr_line(format_args!("error: {error}"));
     1
 }

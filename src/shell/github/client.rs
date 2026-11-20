@@ -183,13 +183,14 @@ const fn is_retryable_transport(error: &ureq::Error) -> bool {
 /// A present but non-UTF-8 header counts as present with no value.
 fn read_rate_limit_headers(headers: &ureq::http::HeaderMap, now_secs: u64) -> RateLimitHeaders {
     let text = |name: &str| headers.get(name).map(|v| v.to_str().unwrap_or(""));
-    text("retry-after")
+    let retry_after = text("retry-after");
+    retry_after
         .and_then(|value| httpdate::parse_http_date(value.trim()).ok())
         .and_then(|date| date.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or_else(
             || {
                 RateLimitHeaders::parse(
-                    text("retry-after"),
+                    retry_after,
                     text("x-ratelimit-remaining"),
                     text("x-ratelimit-reset"),
                     now_secs,

@@ -33,10 +33,10 @@ pub(crate) mod core;
 pub(crate) mod shell;
 
 pub use core::error::{DomainError, ErrorDetail, LimitExceededError};
-pub use core::github::{GithubApiError, GithubName};
+pub use core::github::GithubApiError;
 pub use core::model::{DigestFormat, IngestReport, OutputTarget, RunConfig};
 pub use core::policy::ExcludePatterns;
-pub use core::source::{GitRef, Source};
+pub use core::source::{GitRef, GithubName, Source};
 pub use shell::{IngestError, ingest};
 
 #[doc(hidden)]

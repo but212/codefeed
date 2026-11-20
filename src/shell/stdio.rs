@@ -10,7 +10,7 @@ pub(super) fn write_stdout_line(line: &str) {
 }
 
 /// Writes one line to stderr. A closed stderr is not an error, so the failure is dropped.
-pub(super) fn write_stderr_line(line: &str) {
+pub(super) fn write_stderr_line(line: impl std::fmt::Display) {
     let stderr = io::stderr();
     let mut lock = stderr.lock();
     let _ = writeln!(lock, "{line}");

@@ -16,7 +16,7 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Mutex, PoisonError};
 
 use super::walk::Walk;
-use crate::core::path::{Candidate, NormalizedPath, UnstorablePath};
+use crate::core::path::Candidate;
 use crate::core::policy::{
     ExcludePatterns, LOCAL_CHANNEL_CAPACITY, MAX_FILE_SIZE, MAX_LOCAL_WORKERS,
 };
@@ -94,22 +94,21 @@ struct Job<'a> {
 }
 
 /// One walk entry in walk order: decided on the producer thread, or waiting for a worker.
-enum Slot<'a> {
-    Pending(NormalizedPath, Receiver<WorkerReply<'a>>),
-    Unstorable(UnstorablePath),
-    Error(IngestError),
-}
+type Slot<'a> = Result<Candidate<Receiver<WorkerReply<'a>>>, IngestError>;
 
-/// Walks `root` in sorted order and settles each candidate into `selector` in that order.
+/// Walks `root` in sorted order and settles each candidate into a new `Selector` in that order.
 pub(super) fn collect_candidates(
     root: &Path,
     output: Option<&Path>,
     exclude: &ExcludePatterns,
-    selector: Selector,
 ) -> Result<Selector, IngestError> {
-    fold_candidates(root, output, exclude, selector, |selector, observation| {
-        Ok(selector.observe(observation)?)
-    })
+    fold_candidates(
+        root,
+        output,
+        exclude,
+        Selector::new(),
+        |selector, observation| Ok(selector.observe(observation)?),
+    )
 }
 
 /// Walks `root` in sorted order and folds each candidate through `step` in that order.
@@ -136,7 +135,7 @@ fn fold_candidates<T>(
             let slots = slot_tx;
             for entry in walker {
                 let slot = dispatch(entry, &jobs);
-                let fatal = matches!(slot, Slot::Error(_));
+                let fatal = slot.is_err();
                 if slots.send(slot).is_err() || fatal {
                     break;
                 }
@@ -160,18 +159,15 @@ fn dispatch<'a>(
     entry: Result<Candidate<PathBuf>, IngestError>,
     jobs: &SyncSender<Job<'a>>,
 ) -> Slot<'a> {
-    let (path, entry_path) = match entry {
-        Ok(Candidate::Valid(path, entry_path)) => (path, entry_path),
-        Ok(Candidate::Unstorable(key)) => return Slot::Unstorable(key),
-        Err(err) => return Slot::Error(err),
-    };
-
-    let (reply, pending) = sync_channel(1);
-    let job = Job { entry_path, reply };
-    if jobs.send(job).is_err() {
-        return Slot::Error(worker_stopped());
+    match entry? {
+        Candidate::Unstorable(key) => Ok(Candidate::Unstorable(key)),
+        Candidate::Valid(path, entry_path) => {
+            let (reply, pending) = sync_channel(1);
+            let job = Job { entry_path, reply };
+            jobs.send(job).map_err(|_| worker_stopped())?;
+            Ok(Candidate::Valid(path, pending))
+        }
     }
-    Slot::Pending(path, pending)
 }
 
 /// Answers jobs until the job channel closes. After an abort, workers answer without touching the
@@ -199,10 +195,9 @@ fn settle<'a, T>(
     acc: T,
     step: &mut impl FnMut(T, Candidate<Body<PooledBuf<'a>>>) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
-    match slot {
-        Slot::Unstorable(key) => step(acc, Candidate::Unstorable(key)),
-        Slot::Error(err) => Err(err),
-        Slot::Pending(path, reply) => {
+    match slot? {
+        Candidate::Unstorable(key) => step(acc, Candidate::Unstorable(key)),
+        Candidate::Valid(path, reply) => {
             let msg = reply.recv().unwrap_or_else(|_| Err(worker_stopped()))?;
             match msg {
                 Some(body) => step(acc, Candidate::Valid(path, body)),
@@ -548,7 +543,7 @@ mod tests {
         // 1. dispatch when walk entry is Err
         let walk_err = IngestError::Io(io::Error::other("walk failed"));
         let slot = dispatch(Err(walk_err), &job_tx);
-        assert!(matches!(slot, Slot::Error(_)));
+        assert!(slot.is_err());
 
         let res = settle(slot, 0, &mut |_acc, _c| Ok(1));
         assert!(res.is_err());
@@ -556,44 +551,48 @@ mod tests {
         // 2. dispatch when job_tx is disconnected
         let candidate = Candidate::Valid("test.txt".into(), PathBuf::from("test.txt"));
         let slot = dispatch(Ok(candidate), &job_tx);
-        // jobs.send fails, returning Slot::Error(worker_stopped())
-        assert!(matches!(slot, Slot::Error(_)));
+        // jobs.send fails, returning Err(worker_stopped())
+        assert!(slot.is_err());
         let res = settle(slot, 0, &mut |_acc, _c| Ok(1));
         assert!(res.is_err());
 
-        // 3. settle with Slot::Pending where reply sender is dropped
+        // 3. settle with Valid candidate where reply sender is dropped
         let (reply_tx, reply_rx) = sync_channel(1);
         drop(reply_tx);
         let res = settle(
-            Slot::Pending("test.txt".into(), reply_rx),
+            Ok(Candidate::Valid("test.txt".into(), reply_rx)),
             0,
             &mut |_acc, _c| Ok(1),
         );
         assert!(res.is_err());
 
-        // 4. settle with Slot::Pending where body is None
+        // 4. settle with Valid candidate where body is None
         let (reply_tx, reply_rx) = sync_channel(1);
         reply_tx.send(Ok(None)).unwrap();
         let res = settle(
-            Slot::Pending("test.txt".into(), reply_rx),
+            Ok(Candidate::Valid("test.txt".into(), reply_rx)),
             42,
             &mut |_acc, _c| Ok(1),
         )
         .unwrap();
         assert_eq!(res, 42);
 
-        // 5. settle with Slot::Pending where body is Some, and Slot::Unstorable
+        // 5. settle with Valid candidate where body is Some, and Unstorable candidate
         let (reply_tx, reply_rx) = sync_channel(1);
         reply_tx.send(Ok(Some(Body::Unavailable))).unwrap();
         let res = settle(
-            Slot::Pending("test.txt".into(), reply_rx),
+            Ok(Candidate::Valid("test.txt".into(), reply_rx)),
             42,
             &mut |acc, _c| Ok(acc + 1),
         )
         .unwrap();
         assert_eq!(res, 43);
 
-        let unstorable = Slot::Unstorable(("", b"\xff".as_slice()).into());
+        let unstorable = dispatch(
+            Ok(Candidate::Unstorable(("", b"\xff".as_slice()).into())),
+            &job_tx,
+        );
+        assert!(matches!(unstorable, Ok(Candidate::Unstorable(_))));
         let res = settle(unstorable, 43, &mut |acc, _c| Ok(acc + 1)).unwrap();
         assert_eq!(res, 44);
     }

@@ -63,12 +63,34 @@ impl ExcludePatterns {
     /// Returns `Some(prefix)` when empty, `None` when excluded, or `Some(extended)` when admitted.
     /// Excluded directories prune all descendants (`!` cannot re-include them).
     #[must_use]
-    pub(crate) fn advance(&self, prefix: String, segment: &[u8], is_dir: bool) -> Option<String> {
+    pub(crate) fn advance(&self, prefix: String, segment: &[u8]) -> Option<String> {
         if self.patterns.is_empty() {
             return Some(prefix);
         }
         let next = push_match_segment(prefix, segment);
-        (!self.rules.matched(&next, is_dir).is_ignore()).then_some(next)
+        (!self.rules.matched(&next, true).is_ignore()).then_some(next)
+    }
+
+    /// Returns `true` if leaf file `segment` directly under `parent_prefix` is excluded by user patterns.
+    ///
+    /// Borrows `parent_prefix` without cloning when no patterns are configured or when a root-level
+    /// UTF-8 segment contains no backslashes, and allocates once otherwise.
+    #[must_use]
+    pub(crate) fn excludes_leaf(&self, parent_prefix: &str, segment: &[u8]) -> bool {
+        if self.patterns.is_empty() {
+            return false;
+        }
+        if parent_prefix.is_empty()
+            && let Ok(name) = std::str::from_utf8(segment)
+            && !name.contains('\\')
+        {
+            return self.rules.matched(name, false).is_ignore();
+        }
+        let sep = usize::from(!parent_prefix.is_empty());
+        let mut path = String::with_capacity(parent_prefix.len() + sep + segment.len());
+        path.push_str(parent_prefix);
+        let path = push_match_segment(path, segment);
+        self.rules.matched(&path, false).is_ignore()
     }
 }
 
@@ -100,11 +122,17 @@ fn push_match_segment(mut prefix: String, segment: &[u8]) -> String {
     if !prefix.is_empty() {
         prefix.push('/');
     }
-    prefix.extend(
-        String::from_utf8_lossy(segment)
-            .chars()
-            .map(|c| if c == '\\' { '\u{FFFD}' } else { c }),
-    );
+    if let Ok(name) = std::str::from_utf8(segment)
+        && !name.contains('\\')
+    {
+        prefix.push_str(name);
+    } else {
+        prefix.extend(
+            String::from_utf8_lossy(segment)
+                .chars()
+                .map(|c| if c == '\\' { '\u{FFFD}' } else { c }),
+        );
+    }
     prefix
 }
 
@@ -127,7 +155,7 @@ fn check_one_rule(pattern: &str) -> Result<(), DomainError> {
     let single = user_builder()
         .add_line(None, pattern)
         .and_then(|line| line.build())
-        .map_err(|err| invalid_pattern(pattern, &err.to_string()))?;
+        .map_err(|err| invalid_pattern(pattern, err))?;
     if single.len() == 1 {
         Ok(())
     } else {
@@ -206,7 +234,7 @@ fn no_rule(pattern: &str) -> DomainError {
     )
 }
 
-fn invalid_pattern(pattern: &str, reason: &str) -> DomainError {
+fn invalid_pattern(pattern: &str, reason: impl std::fmt::Display) -> DomainError {
     DomainError::usage(format!(
         "invalid value '{pattern}' for '--exclude <PATTERN>': {reason}"
     ))
@@ -216,7 +244,7 @@ fn invalid_pattern(pattern: &str, reason: &str) -> DomainError {
 mod tests {
     use super::*;
     use crate::core::error::ErrorDetail;
-    use crate::core::path::{AdmittedDir, admit_dir, classify_path_segments};
+    use crate::core::path::{AdmittedDir, admit_dir, classify_leaf};
     use crate::core::policy::{MAX_PATH_BYTES, MAX_PATH_DEPTH};
 
     fn patterns(list: &[&str]) -> ExcludePatterns {
@@ -227,10 +255,22 @@ mod tests {
     /// rejected when admitting it fails, and a file when it classifies as `None` (Ignored).
     fn rejected(patterns: &ExcludePatterns, segments: &[&[u8]], is_dir: bool) -> bool {
         if !is_dir {
-            return matches!(
-                classify_path_segments(segments.iter().copied(), patterns, "test path"),
-                Ok(None)
-            );
+            let mut filtered = segments
+                .iter()
+                .copied()
+                .filter(|seg| !seg.is_empty() && *seg != b".");
+            let Some(mut leaf) = filtered.next() else {
+                return false;
+            };
+            let mut dir = AdmittedDir::root();
+            for next in filtered {
+                let Some(admitted) = admit_dir(dir, leaf, patterns) else {
+                    return true;
+                };
+                dir = admitted;
+                leaf = next;
+            }
+            return matches!(classify_leaf(&dir, leaf, patterns, "test path"), Ok(None));
         }
         let mut dir = AdmittedDir::root();
         for name in segments {
@@ -454,8 +494,8 @@ mod tests {
                 let pattern = String::from_iter(pattern);
                 match ExcludePatterns::new([pattern.as_str()]) {
                     Ok(set) => {
-                        let _ = set.advance(String::new(), candidate.as_bytes(), false);
-                        let _ = set.advance(String::new(), candidate.as_bytes(), true);
+                        let _ = set.excludes_leaf("", candidate.as_bytes());
+                        let _ = set.advance(String::new(), candidate.as_bytes());
                     }
                     Err(err) => prop_assert!(matches!(err, DomainError::Usage(_)), "{:?}", err),
                 }
@@ -488,6 +528,35 @@ mod tests {
                 prop_assert_eq!(
                     rejected(&set, &[n.as_bytes()], false),
                     rejected(&none, &[n.as_bytes()], false)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn excludes_leaf_matches_advance_across_fast_and_fallback_paths() {
+        let sets = [
+            ExcludePatterns::default(),
+            patterns(&["*.log", "/root.txt", "sub/*.tmp", "*\u{FFFD}*"]),
+        ];
+        let cases: &[(&str, &[u8])] = &[
+            ("", b"root.txt"),
+            ("", b"keep.rs"),
+            ("", b"app.log"),
+            ("", b"a\\b.txt"),
+            ("", b"bad\xffname"),
+            ("sub", b"root.txt"),
+            ("sub", b"a.tmp"),
+            ("sub", b"a\\b.txt"),
+            ("sub/deep", b"bad\xff.log"),
+        ];
+        for set in &sets {
+            for &(prefix, segment) in cases {
+                let path = push_match_segment(prefix.to_string(), segment);
+                assert_eq!(
+                    set.excludes_leaf(prefix, segment),
+                    !set.patterns.is_empty() && set.rules.matched(&path, false).is_ignore(),
+                    "prefix={prefix:?}, segment={segment:?}"
                 );
             }
         }

@@ -16,7 +16,6 @@ use super::output::ResolvedOutput;
 use crate::core::error::DomainError;
 use crate::core::model::CollectionResult;
 use crate::core::policy::ExcludePatterns;
-use crate::core::selector::Selector;
 
 /// Collects files from a local directory root, excluding the output file if located inside it.
 ///
@@ -29,7 +28,7 @@ pub(super) fn collect(
 ) -> Result<CollectionResult, IngestError> {
     let canonical_root = validate_root(root)?;
     let label = repository_name(&canonical_root).to_string();
-    let selector = collect_candidates(&canonical_root, output.file(), exclude, Selector::new())?;
+    let selector = collect_candidates(&canonical_root, output.file(), exclude)?;
 
     Ok(selector.finish(label, None)?)
 }

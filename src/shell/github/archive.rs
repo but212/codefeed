@@ -7,9 +7,9 @@ use flate2::bufread::MultiGzDecoder;
 use tar::{Archive, EntryType};
 
 use crate::core::error::{DomainError, ErrorDetail};
-use crate::core::github::{normalize_tar_entry_path, parse_pax_comment};
+use crate::core::github::parse_pax_comment;
 use crate::core::model::CollectionResult;
-use crate::core::path::Candidate;
+use crate::core::path::{Candidate, normalize_tar_entry_path};
 use crate::core::policy::{
     ARCHIVE_BUFFER_BYTES, ARCHIVE_MAX_DECOMPRESSED_BYTES, ARCHIVE_MAX_HEADER_BYTES,
     ARCHIVE_PAX_GLOBAL_BYTES, ExcludePatterns, MAX_FILE_SIZE,
@@ -23,7 +23,7 @@ use crate::shell::error::IngestError;
 /// `default_reference`), filters entries via core policies, and feeds candidates to [`Selector`].
 pub(in crate::shell) fn collect<R: Read>(
     reader: R,
-    label: &str,
+    label: impl Into<String>,
     default_reference: Option<&str>,
     exclude: &ExcludePatterns,
 ) -> Result<CollectionResult, IngestError> {
@@ -83,7 +83,7 @@ pub(in crate::shell) fn collect<R: Read>(
     io::copy(&mut archive.into_inner(), &mut io::sink()).map_err(|err| meter.stream_error(&err))?;
 
     let revision = parsed_revision.or_else(|| default_reference.map(str::to_string));
-    Ok(selector.finish(label.to_string(), revision)?)
+    Ok(selector.finish(label.into(), revision)?)
 }
 
 /// Which stream limit a read overran. Recorded on the [`StreamMeter`] so the failure cannot be mistaken

@@ -24,7 +24,7 @@ Converts a local directory or public GitHub repository into a single text digest
 - `Candidate<B = ()>`: `Valid(NormalizedPath, B)` or `Unstorable(UnstorablePath)` (`()` at classification, `PathBuf` for local walk results, `Body<B>` at observation). Ignored entries are `None` at classification and discarded before selection.
 - `UnstorablePath`: Classification-owned value retaining the valid UTF-8 accounting prefix and complete normalized raw-byte identity.
 - `NormalizedPath`: Non-empty, slash-separated UTF-8 relative path without empty or `.` segments, within `MAX_PATH_BYTES` (I-10).
-- `Selector`: Linear state managing `FileStorage`, `CandidateBudget`, `PathIndex` (referencing `FileStorage` for stored paths and `skipped_arena` for skipped paths), and unstorable byte-identity set. Settles candidates via `observe`; `finish` derives the skipped tally as candidate count minus stored file count.
+- `Selector`: Linear state managing `FileStorage`, `CandidateBudget`, `seen_paths` (`HashMap<NormalizedPath, ()>`), and unstorable byte-identity set. Settles candidates via `observe`; `finish` derives the skipped tally as candidate count minus stored file count.
 - `CandidateBudget`: Candidate counter and per-directory tallies (`selector.rs` private).
 - `CollectionResult`: `label`, optional `revision`, `files: SortedFiles`, and `skipped` (`model.rs`).
 
@@ -57,7 +57,7 @@ Converts a local directory or public GitHub repository into a single text digest
 
 ### 3.2 Path Classification
 
-- Order: [security § 2](docs/security_and_filtering.md#2-evaluation-order). Tar streams classify via `classify_path_segments`. Local walks admit directories via `admit_dir` and files via `classify_leaf`.
+- Order: [security § 2](docs/security_and_filtering.md#2-evaluation-order). Tar streams classify via `normalize_tar_entry_path`. Local walks admit directories via `admit_dir` and files via `classify_leaf`.
 - `Ignored` entries consume no candidate slots and are omitted from skipped counts.
 - Run-aborting checks (depth, tar path normalization, oversized tar headers): [security § 2](docs/security_and_filtering.md#2-evaluation-order); header budget is I-03 ([§ 3.9](#39-network)). `AdmittedDir::check_depth` gates local frame entry and tar leaf classification. `AdmittedDir` itself can track deeper tar ancestors to preserve exclusion order before a leaf is classified.
 - `DirPrefix::NonUtf8(UnstorablePath)` retains the bytes after the first invalid segment, so classification never substitutes a lossy identity. Budget keys use the first valid segment (`"a/"`) or root (`"./"`).
@@ -76,7 +76,7 @@ Converts a local directory or public GitHub repository into a single text digest
 - `FileStorage::push` rejects candidates before allocation if raw arena bytes would exceed `MAX_OUTPUT_SIZE`.
 - `SortedFiles::new` sorts spans via `cmp_path` (component-wise), ensuring deterministic output across concurrency timings.
 - **I-01 (`runtime`, `SortedFiles::new`):** No stored path is a directory prefix of another. Enforced after sorting on adjacent pairs; per-entry types/boundaries cannot express cross-entry prefix relations. Behavior: [security § 3.4](docs/security_and_filtering.md#34-path-limits).
-- **I-09 (`runtime`, `Selector::observe`):** No two candidates share a path. Storable paths use `PathIndex` (referencing `FileStorage` and `skipped_arena`); unstorable paths use an exact raw-byte set distinct from accounting prefixes. Per-entry types cannot express cross-entry uniqueness. Behavior: [security § 3.4](docs/security_and_filtering.md#34-path-limits).
+- **I-09 (`runtime`, `Selector::observe`):** No two candidates share a path. Storable paths use `seen_paths` (`HashMap<NormalizedPath, ()>`); unstorable paths use an exact raw-byte set distinct from accounting prefixes. Per-entry types cannot express cross-entry uniqueness. Behavior: [security § 3.4](docs/security_and_filtering.md#34-path-limits).
 - **I-05 (`boundary`, `extract_dir_slice`):** Candidate budget keys are at most `MAX_PATH_BYTES` bytes ending on a UTF-8 char boundary, sliced from the first segment at creation (bounding key storage to candidates × `MAX_PATH_BYTES`). A `type` or `schema` cannot cap a `&str` key, so `CandidateBudget::add` needs no check.
 - Arena indices are `u32`. Assertions in `policy/limits.rs` verify `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX` ([coding convention § 3.3](docs/coding_convention.md#33-type-invariants)).
 
@@ -121,7 +121,7 @@ Converts a local directory or public GitHub repository into a single text digest
 
 ## 4. Limits and Tunables
 
-Authority and mirror rules: [security header](docs/security_and_filtering.md). Limit relations verified by compile-time assertions in `policy/limits.rs` and `github/retry.rs` ([coding convention § 3.3](docs/coding_convention.md#33-type-invariants)).
+Authority and mirror rules: [security header](docs/security_and_filtering.md). Limit relations verified by compile-time assertions in `policy/limits.rs` and `github.rs` ([coding convention § 3.3](docs/coding_convention.md#33-type-invariants)).
 
 ## 5. Functional Core and Imperative Shell
 
@@ -130,14 +130,14 @@ Purity rules and one-way Shell-to-Core dependency: [coding convention § 3](docs
 ### Core (`src/core/`)
 
 - `cli.rs`: CLI argument parsing, help, and version text.
-- `path.rs`: Path types and classification.
+- `path.rs`: Path types, classification, and tar entry path normalization.
 - `policy/`: Limits, exclusions, user exclude patterns, `.gitignore` compilation, `TOKEN_ENV_VARS`.
-- `source.rs`: `Source` and `GitRef` parsing; URLs delegated to `github/`.
+- `source.rs`: `Source`, `GithubName`, `GitRef`, and GitHub URL parsing.
 - `model.rs`: Configuration and report types.
 - `selector.rs`: Candidate settlement and budget accounting.
 - `storage.rs`: Arena storage and path ordering.
 - `error.rs`: Domain errors and `ErrorDetail`.
-- `github/`: URL grammar, tar normalization, retry logic, API error types.
+- `github.rs`: API/tarball URL helpers, PAX revision parsing, retry policy, API error types.
 - `render/`: Text/XML formatting, escaping, tree rendering, output budget, token estimation.
 
 ### Shell (`src/shell/`)

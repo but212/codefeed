@@ -1,12 +1,14 @@
 //! Relative path normalization, depth enforcement, and segment classification.
 
+use memchr::memchr;
+
 use crate::core::error::DomainError;
 use crate::core::policy::{
     ExcludePatterns, MAX_PATH_BYTES, MAX_PATH_DEPTH, is_hidden_segment, is_ignored_filename,
 };
 
 /// Non-empty, normalized slash-separated relative UTF-8 path of at most `MAX_PATH_BYTES` bytes (I-10).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct NormalizedPath(String);
 
 impl std::ops::Deref for NormalizedPath {
@@ -83,11 +85,56 @@ impl From<(&str, &[u8])> for UnstorablePath {
     }
 }
 
+/// Normalizes a raw tar entry path (strips root prefix, collapses slashes/`.`s) and classifies it.
+///
+/// User exclusions match relative to the stripped root. Returns `Err(DomainError)` on traversal,
+/// invalid root prefix, or NUL; `Ok(None)` if root/empty/ignored; `Candidate::Unstorable` if
+/// non-UTF-8 or over `MAX_PATH_BYTES` (and not hidden); `Ok(Some(Candidate::Valid(path, ())))` otherwise.
+pub(crate) fn normalize_tar_entry_path(
+    raw_bytes: &[u8],
+    exclude: &ExcludePatterns,
+) -> Result<Option<Candidate>, DomainError> {
+    if memchr(0, raw_bytes).is_some() {
+        return Err(DomainError::invalid_metadata(
+            "Tar entry path contains NUL byte",
+        ));
+    }
+    let start = raw_bytes
+        .iter()
+        .position(|&b| b != b'/')
+        .unwrap_or(raw_bytes.len());
+    let end = raw_bytes
+        .iter()
+        .rposition(|&b| b != b'/')
+        .map_or(start, |i| i + 1);
+    let trimmed = &raw_bytes[start..end];
+
+    if trimmed.split(|&b| b == b'/').any(|seg| seg == b"..") {
+        return Err(DomainError::invalid_metadata(
+            "Tar entry contains directory traversal (..)",
+        ));
+    }
+
+    let Some(slash_index) = memchr(b'/', trimmed) else {
+        return Ok(None);
+    };
+
+    if trimmed[..slash_index] == *b"." {
+        return Err(DomainError::invalid_metadata(
+            "Tar entry root segment cannot be '.'",
+        ));
+    }
+
+    let rel = &trimmed[slash_index + 1..];
+
+    classify_path_segments(rel.split(|&b| b == b'/'), exclude, "Tar entry path")
+}
+
 /// Classifies raw path segment bytes into [`Option<Candidate>`] after dropping empty and `.` segments.
 ///
 /// Check order: hidden, user exclusion, noise/sensitive, depth (`MAX_PATH_DEPTH + 1` match window;
 /// matches past that fail the depth limit). Produces a [`NormalizedPath`] or an unstorable prefix.
-pub(crate) fn classify_path_segments<'a, I>(
+fn classify_path_segments<'a, I>(
     segments: I,
     exclude: &ExcludePatterns,
     subject: &str,
@@ -170,7 +217,7 @@ pub(crate) fn admit_dir(
         return None;
     }
     if depth <= MAX_PATH_DEPTH {
-        match_prefix = exclude.advance(match_prefix, name, true)?;
+        match_prefix = exclude.advance(match_prefix, name)?;
     }
     let output = match output {
         DirPrefix::Utf8(mut prefix) if depth <= MAX_PATH_DEPTH => {
@@ -213,11 +260,7 @@ pub(crate) fn classify_leaf(
     if is_hidden_segment(name) {
         return Ok(None);
     }
-    if parent.depth <= MAX_PATH_DEPTH
-        && exclude
-            .advance(parent.match_prefix.clone(), name, false)
-            .is_none()
-    {
+    if parent.depth <= MAX_PATH_DEPTH && exclude.excludes_leaf(&parent.match_prefix, name) {
         return Ok(None);
     }
 
@@ -512,6 +555,145 @@ mod tests {
             let actual = classify_path_segments(segments.iter().copied(), exclude, "test path")
                 .map_err(|err| assert!(matches!(err, DomainError::InvalidMetadata(_))));
             assert_eq!(actual, expected, "segments: {segments:?}");
+        }
+    }
+
+    fn normalize(raw: &[u8]) -> Result<Option<Candidate>, DomainError> {
+        normalize_tar_entry_path(raw, &ExcludePatterns::default())
+    }
+
+    #[test]
+    fn user_exclusions_are_relative_to_the_archive_root() {
+        let exclude = ExcludePatterns::new(["build/", "/src/", "repo-root"]).unwrap();
+        let cases: [(&[u8], Option<Candidate>); 4] = [
+            (b"repo-root/build/x.txt", None),
+            (b"repo-root/src/main.rs", None),
+            (
+                b"repo-root/lib/src/x.rs",
+                Some(Candidate::Valid("lib/src/x.rs".into(), ())),
+            ),
+            // The root directory itself is never matched, so the `repo-root` pattern keeps nothing out.
+            (
+                b"repo-root/lib/main.rs",
+                Some(Candidate::Valid("lib/main.rs".into(), ())),
+            ),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(
+                normalize_tar_entry_path(raw, &exclude).unwrap(),
+                expected,
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn trailing_separators_never_change_the_classification() {
+        let cases: [(&[u8], Option<Candidate>); 6] = [
+            (
+                b"repo-root/src/a.rs/",
+                Some(Candidate::Valid("src/a.rs".into(), ())),
+            ),
+            (
+                b"repo-root/src/a.rs///",
+                Some(Candidate::Valid("src/a.rs".into(), ())),
+            ),
+            (b"repo-root/", None),
+            (b"repo-root//", None),
+            (b"///", None),
+            (b"./", None),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(normalize(raw).unwrap(), expected, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn normalizes_archive_entry_path_correctly() {
+        // (raw entry path, expected status). Covers root stripping, slash and `.` collapsing,
+        // policy exclusion (noise lockfile, sensitive credential), and non-UTF-8 prefixes.
+        let ok_cases: [(&[u8], Option<Candidate>); 10] = [
+            (
+                b"but212-codefeed-c1863c8/src/main.rs",
+                Some(Candidate::Valid("src/main.rs".into(), ())),
+            ),
+            (
+                b"repo-root//src/main.rs",
+                Some(Candidate::Valid("src/main.rs".into(), ())),
+            ),
+            (
+                b"repo-root///deep//nested/./file.txt",
+                Some(Candidate::Valid("deep/nested/file.txt".into(), ())),
+            ),
+            (
+                b"repo-root/././a.rs",
+                Some(Candidate::Valid("a.rs".into(), ())),
+            ),
+            (b"but212-codefeed-c1863c8/", None),
+            (b"but212-codefeed-c1863c8///", None),
+            (b"but212-codefeed-c1863c8", None),
+            (b"", None),
+            // Classification itself is pinned by `path::classification_corpus_is_stable`; one
+            // ignored and one unstorable row show that the archive delegates to it.
+            (b"repo-root/Cargo.lock", None),
+            (
+                b"repo-root/\xff\xfe",
+                Some(Candidate::Unstorable(("", b"\xff\xfe".as_slice()).into())),
+            ),
+        ];
+        for (raw, expected) in ok_cases {
+            assert_eq!(normalize(raw).unwrap(), expected, "{raw:?}");
+        }
+
+        // Rejected: path traversal (`..`, `.` root) and embedded NUL
+        let err_cases: [&[u8]; 7] = [
+            b"../etc/passwd",
+            b"./etc/passwd",
+            b"repo-root/../etc/passwd",
+            b"repo-root/src/../../root",
+            b"repo-root/.hidden/../etc/passwd",
+            b"repo-root/certs/privkey.key\0",
+            b"repo-root\0/src/main.rs",
+        ];
+        for raw in err_cases {
+            assert!(normalize(raw).is_err(), "{raw:?}");
+        }
+
+        let dot_root_err = normalize(b"./etc/passwd").unwrap_err();
+        assert_eq!(
+            dot_root_err.to_string(),
+            "invalid repository metadata: Tar entry root segment cannot be '.'"
+        );
+    }
+
+    #[test]
+    fn normalizes_archive_entry_depth_limit() {
+        // The limit itself is pinned by `path::classification_corpus_is_stable`; this checks that
+        // the archive reports a depth failure as invalid metadata naming the entry kind.
+        let excessive_depth_path = format!(
+            "repo-root/{}/file.txt",
+            vec!["d"; MAX_PATH_DEPTH + 1].join("/")
+        );
+        let err = normalize(excessive_depth_path.as_bytes())
+            .expect_err("one level past the limit must be rejected");
+        assert!(
+            err.to_string()
+                .contains("Tar entry path exceeds maximum directory depth"),
+            "unexpected message: {err}"
+        );
+    }
+
+    #[test]
+    fn dots_inside_a_name_are_not_traversal() {
+        for (raw, expected) in [
+            (&b"repo-root/a..b.txt"[..], "a..b.txt"),
+            (b"repo-root/dir../x", "dir../x"),
+        ] {
+            assert_eq!(
+                normalize(raw).unwrap(),
+                Some(Candidate::Valid(expected.into(), ())),
+                "{raw:?}"
+            );
         }
     }
 

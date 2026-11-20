@@ -25,7 +25,7 @@ pub(super) fn collect(
     let url = tarball_url(api_base, owner, repo, reference);
     let reader = client.stream_url(&url)?;
     let label = repository_url(owner, repo);
-    archive::collect(reader, &label, reference, exclude)
+    archive::collect(reader, label, reference, exclude)
 }
 
 #[cfg(test)]
