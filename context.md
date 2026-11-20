@@ -24,7 +24,7 @@ Converts a local directory or public GitHub repository into a single text digest
 - `Candidate<B = ()>`: `Valid(NormalizedPath, B)` or `Unstorable(UnstorablePath)` (`()` at classification, `PathBuf` for local walk results, `Body<B>` at observation). Ignored entries are `None` at classification and discarded before selection.
 - `UnstorablePath`: Classification-owned value retaining the valid UTF-8 accounting prefix and complete normalized raw-byte identity.
 - `NormalizedPath`: Non-empty, slash-separated UTF-8 relative path without empty or `.` segments, within `MAX_PATH_BYTES` (I-10).
-- `Selector`: Linear state managing `FileStorage`, `CandidateBudget`, `seen_paths` (`HashMap<NormalizedPath, ()>`), and unstorable byte-identity set. Settles candidates via `observe`; `finish` derives the skipped tally as candidate count minus stored file count.
+- `Selector`: Linear state managing `FileStorage`, `CandidateBudget`, `seen_paths` (`HashSet<NormalizedPath>`), and unstorable byte-identity set. Settles candidates via `observe`; `finish` derives the skipped tally as candidate count minus stored file count.
 - `CandidateBudget`: Candidate counter and per-directory tallies (`selector.rs` private).
 - `CollectionResult`: `label`, optional `revision`, `files: SortedFiles`, and `skipped` (`model.rs`).
 
@@ -76,7 +76,7 @@ Converts a local directory or public GitHub repository into a single text digest
 - `FileStorage::push` rejects candidates before allocation if raw arena bytes would exceed `MAX_OUTPUT_SIZE`.
 - `SortedFiles::new` sorts spans via `cmp_path` (component-wise), ensuring deterministic output across concurrency timings.
 - **I-01 (`runtime`, `SortedFiles::new`):** No stored path is a directory prefix of another. Enforced after sorting on adjacent pairs; per-entry types/boundaries cannot express cross-entry prefix relations. Behavior: [security § 3.4](docs/security_and_filtering.md#34-path-limits).
-- **I-09 (`runtime`, `Selector::observe`):** No two candidates share a path. Storable paths use `seen_paths` (`HashMap<NormalizedPath, ()>`); unstorable paths use an exact raw-byte set distinct from accounting prefixes. Per-entry types cannot express cross-entry uniqueness. Behavior: [security § 3.4](docs/security_and_filtering.md#34-path-limits).
+- **I-09 (`runtime`, `Selector::observe`):** No two candidates share a path. Storable paths use `seen_paths` (`HashSet<NormalizedPath>`); unstorable paths use an exact raw-byte set distinct from accounting prefixes. Per-entry types cannot express cross-entry uniqueness. Behavior: [security § 3.4](docs/security_and_filtering.md#34-path-limits).
 - **I-05 (`boundary`, `extract_dir_slice`):** Candidate budget keys are at most `MAX_PATH_BYTES` bytes ending on a UTF-8 char boundary, sliced from the first segment at creation (bounding key storage to candidates × `MAX_PATH_BYTES`). A `type` or `schema` cannot cap a `&str` key, so `CandidateBudget::add` needs no check.
 - Arena indices are `u32`. Assertions in `policy/limits.rs` verify `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX` ([coding convention § 3.3](docs/coding_convention.md#33-type-invariants)).
 

@@ -1,6 +1,5 @@
 //! Candidate observation, budget accounting, and storage accumulation.
 
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
 use memchr::memchr;
@@ -106,7 +105,7 @@ fn extract_dir_slice(path: &str) -> &str {
 pub(crate) struct Selector {
     storage: FileStorage,
     candidates: CandidateBudget,
-    seen_paths: HashMap<NormalizedPath, ()>,
+    seen_paths: HashSet<NormalizedPath>,
     unstorable_paths: HashSet<Vec<u8>>,
 }
 
@@ -116,7 +115,7 @@ impl Selector {
         Self {
             storage: FileStorage::new(),
             candidates: CandidateBudget::with_capacity(32),
-            seen_paths: HashMap::with_capacity(512),
+            seen_paths: HashSet::with_capacity(512),
             unstorable_paths: HashSet::new(),
         }
     }
@@ -148,24 +147,21 @@ impl Selector {
             Candidate::Valid(path, body) => (path, body),
         };
         self.candidates = self.candidates.add(&path)?;
-        let entry = match self.seen_paths.entry(path) {
-            Entry::Occupied(occupied) => {
-                return Err(DomainError::invalid_metadata(format!(
-                    "duplicate entry path: {}",
-                    &**occupied.key()
-                )));
-            }
-            Entry::Vacant(vacant) => vacant,
-        };
+        if self.seen_paths.contains(&path) {
+            return Err(DomainError::invalid_metadata(format!(
+                "duplicate entry path: {}",
+                &*path
+            )));
+        }
 
         if let Body::Bytes(bytes) = body
             && let Some(content) = classify_content(bytes.as_ref())
         {
             // Raw arena bytes are a strict lower bound for the rendered digest size, so
             // `push` rejects over-limit content before the final rendering pass.
-            self.storage = self.storage.push(entry.key(), content)?;
+            self.storage = self.storage.push(&path, content)?;
         }
-        entry.insert(());
+        self.seen_paths.insert(path);
         Ok(self)
     }
 
