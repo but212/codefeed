@@ -18,14 +18,13 @@ use std::sync::{Mutex, PoisonError};
 use super::walk::Walk;
 use crate::core::path::Candidate;
 use crate::core::policy::{
-    ExcludePatterns, LOCAL_CHANNEL_CAPACITY, MAX_FILE_SIZE, MAX_LOCAL_WORKERS,
+    ExcludePatterns, LOCAL_BUFFER_RETAIN_BYTES, LOCAL_CHANNEL_CAPACITY, MAX_FILE_SIZE,
+    MAX_LOCAL_WORKERS,
 };
 use crate::core::selector::{Body, Selector};
 use crate::shell::error::{IngestError, io_error_at};
 
-/// Upper bound on buffer capacity retained in [`BufferPool`], preventing large files from
-/// pinning up to `LOCAL_CHANNEL_CAPACITY * MAX_FILE_SIZE` bytes of RSS.
-const LOCAL_BUFFER_RETAIN_BYTES: usize = 128 * 1024;
+/// Bounded pool capacity matching the maximum concurrent in-flight slots and workers.
 const LOCAL_BUFFER_POOL_CAP: usize = LOCAL_CHANNEL_CAPACITY + MAX_LOCAL_WORKERS;
 
 /// Bounded pool of reusable `Vec<u8>` read buffers scoped to a single local collection run.
@@ -174,7 +173,7 @@ fn dispatch<'a>(
 /// filesystem, so the remaining queue drains quickly.
 fn run_worker<'a>(jobs: &Mutex<Receiver<Job<'a>>>, aborted: &AtomicBool, pool: &'a BufferPool) {
     // The lock covers only the receive, so workers do not serialize on the reads.
-    while let Some(job) = jobs.lock().ok().and_then(|rx| rx.recv().ok()) {
+    while let Ok(job) = jobs.lock().unwrap_or_else(PoisonError::into_inner).recv() {
         let msg = if aborted.load(Ordering::Relaxed) {
             Ok(None)
         } else {
@@ -265,8 +264,11 @@ fn read_bounded<'a>(
         Err(err) if is_unavailable_file(&err) => return Ok(None),
         Err(err) => return Err(io_error_at(path, &err)),
     };
-    let capacity =
-        usize::try_from(file_len).expect("invariant: caller checked file_len <= MAX_FILE_SIZE");
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "caller checked file_len <= MAX_FILE_SIZE and limits.rs asserts MAX_FILE_SIZE fits in usize"
+    )]
+    let capacity = file_len as usize;
     let mut pooled = pool.take(capacity);
     match file.take(MAX_FILE_SIZE + 1).read_to_end(&mut pooled.buf) {
         Ok(_) => Ok(Some(pooled)),
@@ -589,7 +591,7 @@ mod tests {
         assert_eq!(res, 43);
 
         let unstorable = dispatch(
-            Ok(Candidate::Unstorable(("", b"\xff".as_slice()).into())),
+            Ok(Candidate::Unstorable(b"\xff".as_slice().into())),
             &job_tx,
         );
         assert!(matches!(unstorable, Ok(Candidate::Unstorable(_))));

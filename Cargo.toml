@@ -16,35 +16,23 @@ ignore = "0.4" # .gitignore rule matching without invoking git
 ureq = { version = "3", default-features = false, features = ["rustls", "rustls-webpki-roots"] } # Minimal synchronous HTTP client for GitHub tarball streams
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] } # Gzip decompression for GitHub archive streams
 tar = "0.4" # Tarball entry streaming without temporary disk extraction
-httpdate = "1" # Standards-compliant HTTP-date parsing for Retry-After at the network boundary
+httpdate = "1" # Standards-compliant HTTP-date parsing for Retry-After
 zeroize = "1" # Secure clearing of GitHub authorization tokens from process memory
 memchr = "2" # SIMD-accelerated byte searching for delimiters, NUL byte detection, and fast path scanning
 
 
 [package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.tar.gz"
-pkg-fmt = "tgz"
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }{ archive-suffix }"
 bin-dir = "{ bin }{ binary-ext }"
 
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
-pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.zip"
 pkg-fmt = "zip"
-
-[lib]
-path = "src/lib.rs"
-bench = false
-
-[[bin]]
-name = "codefeed"
-bench = false
 
 [profile.release]
 lto = true
 codegen-units = 1
 opt-level = "s"
 panic = "abort"
-debug = "full"
-split-debuginfo = "packed"
 strip = "symbols"
 
 [dev-dependencies]

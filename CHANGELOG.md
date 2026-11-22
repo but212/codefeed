@@ -34,8 +34,10 @@ Scope: `### Library consumers and CLI users` lists observable behavior. `### Con
 
 #### Changed
 
+- **Uniform directory depth enforcement**: Tar entry classification now enforces `MAX_PATH_DEPTH` at each directory admission step (after hidden and `--exclude` checks on that directory), matching local directory traversal. Ignored files nested beyond `MAX_PATH_DEPTH` (such as `Cargo.lock` or hidden entries) now fail with `InvalidMetadata` instead of being silently ignored.
+- **Unified `x-ratelimit-reset` wait resolution**: When quota is exhausted (`x-ratelimit-remaining: 0`), due or past `x-ratelimit-reset` timestamps now resolve to a 0-second wait and overflowing all-digit timestamps saturate to `u64::MAX` (aborting immediately instead of falling back to backoff), matching `Retry-After` HTTP-date and decimal-seconds semantics.
 - **Help/version documentation**: English and Korean READMEs clarify precedence exceptions for option-value positions and arguments after `--`; CLI behavior is unchanged.
-- **Install docs**: `README.md` and `docs/README.ko.md` lead with `cargo install codefeed` (source build); `cargo binstall codefeed` remains optional. `[package.metadata.binstall]` is unchanged.
+- **Install docs**: `README.md` and `docs/README.ko.md` lead with `cargo install codefeed` (source build); `cargo binstall codefeed` remains optional.
 
 ### Contributors
 
@@ -49,16 +51,16 @@ Internal change. No consumer action required. Output is unchanged.
 
 #### Changed
 
-- **Directory count storage**: Specialized private arena map for directory tallies while retaining shared bucket index and collision checks.
-- **GitHub HTTP execution boundary**: `src/shell/github/client.rs` owns request execution, retries, rate-limit header parsing, and response errors alongside TLS and credentials. `auth` and `request` are private; collection uses `new` and `stream_url`. HTTP unit tests moved to `client.rs`; collection/archive integration tests remain in `mod.rs`. Core retry policy and observable behavior are unchanged.
+- **Path admission and unstorable identity simplification**: `admit_dir` enforces `MAX_PATH_DEPTH` directly (eliminating `AdmittedDir::check_depth`, the `MAX_PATH_DEPTH + 1` match-window guards, and `Result` from `classify_leaf`). `DirPrefix` transitions to `Unstorable(Vec<u8>)` on either non-UTF-8 or `> MAX_PATH_BYTES`, and `UnstorablePath` stores only raw byte identity while deriving its accounting prefix from the first segment (`src/core/path.rs`, `src/shell/local/walk.rs`, `context.md`, `docs/security_and_filtering.md`).
+- **GitHub HTTP execution boundary**: `src/shell/github/client.rs` owns request execution, retries, and response errors alongside TLS and credentials. `policy` and `RequestPolicy` are private; collection uses `new` and `stream_url`. HTTP unit tests moved to `client.rs`; collection/archive integration tests remain in `mod.rs`. Core retry policy and observable behavior are unchanged.
 - **Document ownership**: `README.md` (Output) owns output format; `docs/security_and_filtering.md` header owns limit authority; `AGENTS.md` § 6 routes `CONTRIBUTING.md` and `SECURITY.md`. Contributor docs no longer link `AGENTS.md`: `CONTRIBUTING.md` owns the verification checklist, `AGENTS.md` links it, and the PR template mirrors the commands inline. `context.md` § 5 lists module responsibilities only; `docs/security_and_filtering.md` drops implementation identifiers.
 - **Unstorable identity and sparse accounting invariants**: `CandidatePath::Unstorable` and `Observation::Unstorable` carry `UnstorablePath`. I-09 records exact byte-identity enforcement; I-12 records cumulative sparse-expansion accounting (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/github/archive.rs`, `context.md`).
 - **Derived skipped tally**: `Selector` drops its skipped counter; `finish` derives it from candidate count minus stored file count (`src/core/selector.rs`).
 - **`Cow<'a, str>` string constructors**: `ErrorDetail::new`, `GitRef::new`, `Source::with_reference`, and `DomainError::{usage, invalid_source, unsupported_source, invalid_metadata}` accept `impl Into<Cow<'a, str>>`, avoiding reallocation when owned inputs need no sanitization or trimming (`src/core/error.rs`, `src/core/source.rs`).
-- **Allocation reductions and `RateLimitHeaders` enum**:
-  - `RateLimitHeaders` is an enum (`NotLimited`, `UnparsedRetryAfter`, `RetryAfterSecs`, `QuotaExhausted`) making contradictory header states unrepresentable (`src/core/github/retry.rs`).
-  - `Selector::observe` accepts `B: AsRef<[u8]>` (`src/core/selector.rs`), paired with `BufferPool`/`PooledBuf<'a>` reuse in `src/shell/local/pipeline.rs` and `ExcludePatterns::is_empty` in `src/core/policy/exclude.rs`.
-  - `Selector` and `CandidateBudget` replace `HashMap`/`HashSet` with open-addressed `ArenaMap<V>` backed by `u32` indices, with compile-time bounds assertions in `src/core/policy/limits.rs`.
+- **Boundary and prefix encapsulation**:
+  - Flattened `src/core/github.rs` exposes a two-variant `RateLimitHeaders` (`NotLimited`, `Limited { retry_after }`) and parses raw HTTP-date and numeric header bytes directly in `RateLimitHeaders::parse`.
+  - `DirPrefix::advance` and `DirPrefix::into_unstorable` encapsulate closed path-prefix transitions in `src/core/path.rs`.
+- **Selection storage and local allocation reuse**: `Selector` and `CandidateBudget` are backed by a unified `HashSet<Vec<u8>>` (`seen_paths`) and `HashMap<String, usize>` (`src/core/selector.rs`), with `Selector::observe` accepting `Candidate<Body<B>>` (`B: AsRef<[u8]>`), `BufferPool`/`PooledBuf<'a>` reuse in `src/shell/local/pipeline.rs`, and `ExcludePatterns::excludes_leaf` in `src/core/policy/exclude.rs`.
 
 ---
 

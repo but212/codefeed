@@ -1,0 +1,34 @@
+name: Setup Rust
+description: Install Rust toolchain and optionally configure Cargo cache
+
+inputs:
+  toolchain:
+    description: Rust toolchain version or channel
+    required: false
+    default: stable
+  targets:
+    description: Comma-separated additional targets
+    required: false
+    default: ""
+  components:
+    description: Comma-separated additional components
+    required: false
+    default: ""
+  cache:
+    description: Whether to enable swatinem/rust-cache
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        targets: ${{ inputs.targets }}
+        components: ${{ inputs.components }}
+
+    - name: Rust cache
+      if: inputs.cache == 'true'
+      uses: swatinem/rust-cache@v2

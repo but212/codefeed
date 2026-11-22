@@ -22,9 +22,9 @@ Converts a local directory or public GitHub repository into a single text digest
 ### Candidate Collection
 
 - `Candidate<B = ()>`: `Valid(NormalizedPath, B)` or `Unstorable(UnstorablePath)` (`()` at classification, `PathBuf` for local walk results, `Body<B>` at observation). Ignored entries are `None` at classification and discarded before selection.
-- `UnstorablePath`: Classification-owned value retaining the valid UTF-8 accounting prefix and complete normalized raw-byte identity.
+- `UnstorablePath`: Classification-owned value retaining complete normalized raw-byte identity, deriving its bounded accounting key (`BudgetDirKey`) from its first segment.
 - `NormalizedPath`: Non-empty, slash-separated UTF-8 relative path without empty or `.` segments, within `MAX_PATH_BYTES` (I-10).
-- `Selector`: Linear state managing `FileStorage`, `CandidateBudget`, `seen_paths` (`HashSet<NormalizedPath>`), and unstorable byte-identity set. Settles candidates via `observe`; `finish` derives the skipped tally as candidate count minus stored file count.
+- `Selector`: Linear state managing `FileStorage`, `CandidateBudget`, and `seen_paths` (`HashSet<Vec<u8>>`, unified raw-byte identity set). Settles candidates via `observe`; `finish` derives the skipped tally as candidate count minus stored file count.
 - `CandidateBudget`: Candidate counter and per-directory tallies (`selector.rs` private).
 - `CollectionResult`: `label`, optional `revision`, `files: SortedFiles`, and `skipped` (`model.rs`).
 
@@ -48,76 +48,41 @@ Converts a local directory or public GitHub repository into a single text digest
 
 ## 3. Invariants
 
-### 3.1 Input Parsing
+### 3.0 Overarching Laws
 
-- Arguments and URLs parse into value types at boundary (`cli::parse`, `Source::parse`, `GitRef::new`, `GithubName::new`). Core assumes validity without re-validation.
-- `--ref` rejected for local sources.
-- `-x`/`--exclude` patterns accumulate in argument order and compile once via `ExcludePatterns::new`. Invalid patterns cause usage errors.
-- GitHub URL grammar: [README Sources](README.md#sources).
+All domain invariants derive from five overarching laws (extending [AGENTS.md § 1.3](AGENTS.md) SSOT and [coding convention § 3](docs/coding_convention.md#3-architecture-functional-core-imperative-shell)):
 
-### 3.2 Path Classification
+- **L1 (Boundary Construction & Algebraic Closure):** Untrusted inputs, tainted text, paths, and credentials pass once through a single encapsulated constructor or boundary resolver; invalid combinations are unrepresentable via sum types and typestates.
+- **L2 (Lossless Raw-Byte Identity):** Path identity, deduplication, and diagnostic tie-break sorting operate on normalized raw bytes—never lossy UTF-8 or truncated accounting prefixes.
+- **L3 (Pre-Charge & Bounded Metering):** Resource slots, depths, allocations, and stream budgets are checked and charged *before* reading, expanding, or allocating; worker pools and channels remain bounded.
+- **L4 (Concurrent I/O, Deterministic Serial Settlement):** Shell workers/streams perform bounded reads without mutating output; Core settles slots serially (`Selector::observe`), sorts deterministically (`SortedFiles::new`), buffers (`BoundedBuffer`), and delivers atomically only on success.
+- **L5 (Runtime Delegation for Cross-Entry & Opaque-Crate Bounds):** Cross-entry relations (uniqueness, prefix-freedom, cumulative budget) and opaque external-crate reads (`tar`) that per-entry types cannot express are enforced by stateful runtime accumulators and shared meters.
 
-- Order: [security § 2](docs/security_and_filtering.md#2-evaluation-order). Tar streams classify via `normalize_tar_entry_path`. Local walks admit directories via `admit_dir` and files via `classify_leaf`.
-- `Ignored` entries consume no candidate slots and are omitted from skipped counts.
-- Run-aborting checks (depth, tar path normalization, oversized tar headers): [security § 2](docs/security_and_filtering.md#2-evaluation-order); header budget is I-03 ([§ 3.9](#39-network)). `AdmittedDir::check_depth` gates local frame entry and tar leaf classification. `AdmittedDir` itself can track deeper tar ancestors to preserve exclusion order before a leaf is classified.
-- `DirPrefix::NonUtf8(UnstorablePath)` retains the bytes after the first invalid segment, so classification never substitutes a lossy identity. Budget keys use the first valid segment (`"a/"`) or root (`"./"`).
-- **I-10 (`type`, `NormalizedPath`, `classify_leaf`):** A `Valid` path is at most `MAX_PATH_BYTES` bytes. `NormalizedPath` is private and `classify_leaf` is its sole non-test constructor returning `Unstorable` on overflow, so `Selector` needs no path-length check.
-- **I-02 (`boundary`, `admit_dir`, `classify_leaf`):** No classified path or unstorable prefix has a first segment starting with `.`, since hidden directories are never admitted, hidden files are `Ignored`, and empty/`.` segments are dropped. Root entries key as `"./"`, which no real directory produces.
+### 3.1 Invariant Registry
 
-### 3.3 Accounting
+| ID | Law | Mechanism | Owner | Irreducible Contract |
+| :--- | :--- | :--- | :--- | :--- |
+| **I-01** | L4, L5 | `runtime` | `SortedFiles::new` | No stored path is a directory prefix of another; enforced on adjacent pairs after `cmp_path` sorting ([security § 3.4](docs/security_and_filtering.md#34-path-limits)). |
+| **I-02** | L1 | `boundary` | `admit_dir`, `classify_leaf` | No classified path or unstorable prefix has a first segment starting with `.` (hidden dirs/files dropped, empty/`.` stripped); root entries key as `"./"`. |
+| **I-03** | L3, L5 | `runtime` | `shell/github/archive.rs` | One `Entries::next` call reads `<= ARCHIVE_MAX_HEADER_BYTES` via a shared-reader meter; each entry body is drained before the next call so `tar` extension reads are bounded ([security § 2, 6.4](docs/security_and_filtering.md#64-streaming)). |
+| **I-04** | L1 | `type` | `ErrorDetail::new` | Sole sanitizing constructor for untrusted error/path diagnostics; `Display` does not re-sanitize; shell effects (`io::Error`, `GithubApiError`, warnings, `Wrote <PATH>`) also sanitize through it ([security § 7](docs/security_and_filtering.md#7-output-sanitization)). |
+| **I-05** | L1, L3 | `type` | `BudgetDirKey` | Candidate budget keys are `<= MAX_PATH_BYTES` ending on a UTF-8 char boundary, constructed from the first segment (or `"./"`) at `path.rs` (bounds key map to `candidates × MAX_PATH_BYTES`). |
+| **I-06** | L1 | `type` | `Auth`, `api_error` | `api_error` is the sole constructor of token hints and requires `Auth`; requests bearing a token (including redirect targets) never receive hints ([security § 6.1](docs/security_and_filtering.md#61-authentication)). |
+| **I-07** | L1 | `boundary` | `RequestTarget`, `RequestPolicy` | Only GitHub API origins receive tokens; `Authorization`, `X-Github-Api-Version`, and error `Auth` derive from a single `RequestPolicy` (fields private to `client.rs`). |
+| **I-08** | SSOT | `boundary` | `TOKEN_ENV_VARS` | Token env var names exist solely in `TOKEN_ENV_VARS` (`src/core/policy/mod.rs`), read by both lookup order and token hints. |
+| **I-09** | L2, L5 | `runtime` | `Selector::observe` | No two candidates share a path: both storable and unstorable paths share a single exact raw-byte `seen_paths` set distinct from accounting prefixes ([security § 3.4](docs/security_and_filtering.md#34-path-limits)). |
+| **I-10** | L1 | `type` | `NormalizedPath`, `classify_leaf` | `Valid` paths are `<= MAX_PATH_BYTES`; `NormalizedPath` is private and `classify_leaf` is its sole non-test constructor returning `Unstorable` on overflow. |
+| **I-11** | L1 | `type` | `Candidate<B>` | Unstorable paths carry no body; storable paths carry `B` (`Body<B>` at observation). |
+| **I-12** | L3, L5 | `runtime` | `StreamMeter`, `drain_entry` | Archive budget includes bytes synthesized by `tar`'s sparse reader; logical size is checked against remaining budget before draining untouched sparse entries, then only synthesized bytes are added ([security § 6.4](docs/security_and_filtering.md#64-streaming)). |
 
-- Slot allocation and skipped rules: [security § 4](docs/security_and_filtering.md#4-candidate-and-skipped-accounting).
-- `Selector::observe` charges a candidate slot prior to inspecting content.
-- Read timing: Sources read bounded bodies before `Selector::observe`, except when declared size exceeds `MAX_FILE_SIZE` (`OverLimit`, skipped without reading). Local workers read concurrently; archive streams read in-place and drain to next header.
-- **I-11 (`type`, `Candidate<B>`):** Unstorable paths carry no body; storable paths carry `B` (`Body<B>` at observation). Neither bodies for unstorable paths nor storable paths without read outcomes can be constructed at `Selector::observe`.
+### 3.2 Non-Reducible Domain & Pipeline Contracts
 
-### 3.4 Storage and Ordering
-
-- `FileStorage::push` rejects candidates before allocation if raw arena bytes would exceed `MAX_OUTPUT_SIZE`.
-- `SortedFiles::new` sorts spans via `cmp_path` (component-wise), ensuring deterministic output across concurrency timings.
-- **I-01 (`runtime`, `SortedFiles::new`):** No stored path is a directory prefix of another. Enforced after sorting on adjacent pairs; per-entry types/boundaries cannot express cross-entry prefix relations. Behavior: [security § 3.4](docs/security_and_filtering.md#34-path-limits).
-- **I-09 (`runtime`, `Selector::observe`):** No two candidates share a path. Storable paths use `seen_paths` (`HashSet<NormalizedPath>`); unstorable paths use an exact raw-byte set distinct from accounting prefixes. Per-entry types cannot express cross-entry uniqueness. Behavior: [security § 3.4](docs/security_and_filtering.md#34-path-limits).
-- **I-05 (`boundary`, `extract_dir_slice`):** Candidate budget keys are at most `MAX_PATH_BYTES` bytes ending on a UTF-8 char boundary, sliced from the first segment at creation (bounding key storage to candidates × `MAX_PATH_BYTES`). A `type` or `schema` cannot cap a `&str` key, so `CandidateBudget::add` needs no check.
-- Arena indices are `u32`. Assertions in `policy/limits.rs` verify `MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX` ([coding convention § 3.3](docs/coding_convention.md#33-type-invariants)).
-
-### 3.5 Rendering
-
-- **Escaping:** Single-pass via `write_escaped` per [security § 7](docs/security_and_filtering.md#7-output-sanitization).
-- **Tree:** Deterministic tree generated from `SortedFiles` in one pass (`tree.rs`). Relies on `NormalizedPath` non-empty segments without trailing `/`.
-- **Header and token estimate:** [README Output](README.md#output). Local root uses `root`.
-
-### 3.6 Output Delivery
-
-- `resolve_output_target` resolves destination once at startup, excluding it from traversal. `write_atomic` writes atomically: [security § 5](docs/security_and_filtering.md#5-local-filesystem-safety).
-- `CollectionResult::render` buffers rendered digest in memory (`BoundedBuffer`); `deliver` emits only on success. Summary streams and broken pipe handling: [README Output](README.md#output). File target path in summary sanitized via `ErrorDetail::new`.
-
-### 3.7 Diagnostics
-
-- Overflow diagnostics generate only on error paths: [README Limits](README.md#limits).
-- `MAX_OUTPUT_SIZE` lists `OVERFLOW_LARGEST_FILES` files (sorted size descending, then path).
-- `MAX_FILE_COUNT` lists `OVERFLOW_LARGEST_DIRECTORIES` directories (sorted count descending, then name).
-- Overflow names stored as `ErrorDetail`, sanitized during construction. Sort runs on raw names first.
-
-### 3.8 Local Traversal Pipeline
-
-1. `Walk` (`walk.rs`) classifies leaves during depth-first traversal in file-name order without link-following. It yields a filesystem path only for storable candidates. Excluded directories pruned before `.gitignore` read. Other directories read `.gitignore` once and compile rules from those bytes (failures: [security § 3.5](docs/security_and_filtering.md#35-ignore-files-local-only)).
-2. Up to `MAX_LOCAL_WORKERS` workers inspect metadata, read bounded bodies, and return on bounded channels (`LOCAL_CHANNEL_CAPACITY`).
-3. Main thread settles slots in walk order into `Selector::observe`. On error it signals the walker and workers and disconnects the slot receiver.
-4. Final digest order and I-01 established by `SortedFiles::new`; uniqueness by `Selector::observe`.
-
-### 3.9 Network
-
-- Request parameters, retry classes, timeouts: [security § 6](docs/security_and_filtering.md#6-github-network-safety).
-- Archive entries stream into `Selector::observe` without disk writes.
-- Revision SHA extracts from first `ARCHIVE_PAX_GLOBAL_BYTES` of PAX header, falling back to requested ref.
-- Stream/gzip/tar failures map to `IngestError::Http`. After tar termination, `shell/github/archive.rs::collect` drains the metered multi-member decoder before `Selector::finish`, validating all gzip trailers within the stream budget.
-- `shell/github/client.rs::read_rate_limit_headers` resolves HTTP-date headers to a wait duration from an explicit Unix timestamp. Core numeric parsing saturates overflowing decimal delays; retry policy reads no clock.
-- **I-03 (`runtime`, `shell/github/archive.rs`):** One `Entries::next` call reads at most `ARCHIVE_MAX_HEADER_BYTES`. `tar` reads extension bodies internally, so no type or boundary can enforce the bound; a shared-reader byte budget enforces it, and each entry body is drained before the next call so only headers are metered. Behavior: [security § 2 and 6.4](docs/security_and_filtering.md#64-streaming).
-- **I-12 (`runtime`, `StreamMeter`, `drain_entry`):** Archive budget includes bytes synthesized by `tar`'s sparse reader. Before draining an untouched sparse entry, its logical size is checked against remaining budget; afterwards only synthesized bytes are added (physical reads already hit the meter). Per-entry types cannot express a cumulative cross-entry budget. Behavior: [security § 6.4](docs/security_and_filtering.md#64-streaming).
-- **I-04 (`type`, `ErrorDetail::new`):** Error text that may echo user input or remote payloads is an `ErrorDetail`, whose sole constructor sanitizes. Direct `DomainError` builds cannot store unsanitized text, and `Display` does not re-sanitize. Non-`DomainError` effects (`io::Error`, `GithubApiError`, retry warnings) sanitize via `ErrorDetail::new`. Behavior: [security § 7](docs/security_and_filtering.md#7-output-sanitization).
-- **I-06 (`type`, `Auth`, `api_error`):** `api_error` is the sole constructor of token hints and requires `Auth`. A request bearing a token never receives the hint, including errors from redirect targets. Behavior: [security § 6.1](docs/security_and_filtering.md#61-authentication).
-- **I-07 (`boundary`, `GithubClient::credentials`):** Only GitHub API origins receive tokens. Authorization headers and error `Auth` derive from `credentials(url)`, preventing divergence. Fields are private to `client.rs`.
-- **I-08 (`boundary`, `TOKEN_ENV_VARS`):** Token variable names exist solely in `TOKEN_ENV_VARS` (`src/core/policy/mod.rs`), read by lookup order and token hints. A type cannot express a name list, making single definition the enforcement.
+- **Input & Exclusions:** `--ref` is rejected for local sources; `-x`/`--exclude` patterns accumulate in argument order and compile once via `ExcludePatterns::new` (invalid patterns cause usage errors). GitHub URL grammar: [README Sources](README.md#sources).
+- **Classification & Path Mechanics:** Evaluation order: [security § 2](docs/security_and_filtering.md#2-evaluation-order). `Ignored` entries consume no slots and are omitted from skipped counts. Tar streams classify via `normalize_tar_entry_path`; local walks use `admit_dir` and `classify_leaf`. `admit_dir` enforces `MAX_PATH_DEPTH` uniformly on directory admission after exclusions, so `AdmittedDir` guarantees valid depth and `classify_leaf` is total. `DirPrefix::Unstorable` retains raw bytes after the first invalid or overlong (`> MAX_PATH_BYTES`) segment; budget keys derive from the first valid segment (`"a/"`) or `"./"`.
+- **Storage, Ordering & Diagnostics:** `FileStorage::push` rejects before allocation if raw arena bytes exceed `MAX_OUTPUT_SIZE`. `SortedFiles::new` sorts component-wise (`cmp_path`). Arena `u32` bounds (`MAX_OUTPUT_SIZE + MAX_FILE_SIZE + MAX_PATH_BYTES <= u32::MAX`) are verified by `const` assertions in `policy/limits.rs`. Overflow diagnostics generate only on error paths ([README Limits](README.md#limits)): `MAX_OUTPUT_SIZE` lists `OVERFLOW_LARGEST_FILES` (size desc, then path); `MAX_FILE_COUNT` lists `OVERFLOW_LARGEST_DIRECTORIES` (count desc, then name), sorted on raw names before `ErrorDetail` sanitization.
+- **Rendering & Delivery:** Escaping: [security § 7](docs/security_and_filtering.md#7-output-sanitization). One-pass tree (`tree.rs`) relies on `NormalizedPath` non-empty segments without trailing `/`; local root uses `root`. `resolve_output_target` resolves destination once at startup and excludes it from traversal; `CollectionResult::render` buffers in `BoundedBuffer` and `deliver` emits only on success ([security § 5](docs/security_and_filtering.md#5-local-filesystem-safety), [README Output](README.md#output)).
+- **Local Traversal Pipeline:** (1) `Walk` (`walk.rs`) traverses depth-first in file-name order without following symlinks, yielding paths only for storable candidates; excluded dirs are pruned before reading `.gitignore` (read once per dir; failures: [security § 3.5](docs/security_and_filtering.md#35-ignore-files-local-only)). (2) Up to `MAX_LOCAL_WORKERS` workers inspect metadata and read bounded bodies on `LOCAL_CHANNEL_CAPACITY` channels (skipping reads when declared size `> MAX_FILE_SIZE`). (3) Main thread settles slots in walk order via `Selector::observe`, signaling walker/workers and disconnecting the slot receiver on error.
+- **Network & Archive Mechanics:** Parameters, retry classes, and timeouts: [security § 6](docs/security_and_filtering.md#6-github-network-safety). Archives stream into `Selector::observe` without disk writes; revision SHA extracts from the first `ARCHIVE_PAX_GLOBAL_BYTES` of the PAX header, falling back to the requested ref. Stream/gzip/tar failures map to `IngestError::Http`; after tar termination, `shell/github/archive.rs::collect` drains the metered multi-member decoder before `Selector::finish` to validate all gzip trailers within the stream budget. `shell/github/client.rs::read_rate_limit_headers` forwards raw header bytes to `RateLimitHeaders::parse` in `src/core/github.rs`, which resolves HTTP-date and numeric headers against `now_secs` and saturates overflowing decimal delays.
 
 ## 4. Limits and Tunables
 

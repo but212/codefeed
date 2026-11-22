@@ -46,6 +46,8 @@ pub(crate) const GITHUB_ERROR_BODY_BYTES: u64 = 4 * 1024;
 pub(crate) const LOCAL_CHANNEL_CAPACITY: usize = 64;
 /// Maximum local read workers. Fewer available cores use fewer workers (security §8).
 pub(crate) const MAX_LOCAL_WORKERS: usize = 12;
+/// Upper bound on buffer capacity retained in the local read pool (security §8).
+pub(crate) const LOCAL_BUFFER_RETAIN_BYTES: usize = 128 * 1024;
 
 /// Maximum duration in seconds allowed for whole-archive Tarball transfer.
 pub(crate) const ARCHIVE_MAX_SECS: u64 = 300;
@@ -85,6 +87,8 @@ const _: () = {
     assert!(ARCHIVE_MAX_DECOMPRESSED_BYTES >= MAX_OUTPUT_SIZE);
     assert!(LOCAL_CHANNEL_CAPACITY > 0);
     assert!(MAX_LOCAL_WORKERS > 0);
+    assert!(LOCAL_BUFFER_RETAIN_BYTES > 0);
+    assert!(LOCAL_BUFFER_RETAIN_BYTES as u64 <= MAX_FILE_SIZE);
     assert!(MAX_FILE_SIZE as usize as u64 == MAX_FILE_SIZE);
     assert!(MAX_OUTPUT_SIZE as usize as u64 == MAX_OUTPUT_SIZE);
     assert!(ARCHIVE_MAX_HEADER_BYTES as usize as u64 == ARCHIVE_MAX_HEADER_BYTES);
@@ -190,6 +194,10 @@ mod tests {
                 format!("{LOCAL_CHANNEL_CAPACITY} messages"),
             ),
             ("MAX_LOCAL_WORKERS", format!("{MAX_LOCAL_WORKERS} threads")),
+            (
+                "LOCAL_BUFFER_RETAIN_BYTES",
+                format!("{} KiB", LOCAL_BUFFER_RETAIN_BYTES / 1024),
+            ),
             ("ARCHIVE_MAX_SECS", format!("{ARCHIVE_MAX_SECS} s")),
             ("GITHUB_TIMEOUT_SECS", format!("{GITHUB_TIMEOUT_SECS} s")),
             ("MAX_ATTEMPTS", format!("{MAX_ATTEMPTS} attempts")),

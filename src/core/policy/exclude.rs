@@ -72,19 +72,10 @@ impl ExcludePatterns {
     }
 
     /// Returns `true` if leaf file `segment` directly under `parent_prefix` is excluded by user patterns.
-    ///
-    /// Borrows `parent_prefix` without cloning when no patterns are configured or when a root-level
-    /// UTF-8 segment contains no backslashes, and allocates once otherwise.
     #[must_use]
     pub(crate) fn excludes_leaf(&self, parent_prefix: &str, segment: &[u8]) -> bool {
         if self.patterns.is_empty() {
             return false;
-        }
-        if parent_prefix.is_empty()
-            && let Ok(name) = std::str::from_utf8(segment)
-            && !name.contains('\\')
-        {
-            return self.rules.matched(name, false).is_ignore();
         }
         let sep = usize::from(!parent_prefix.is_empty());
         let mut path = String::with_capacity(parent_prefix.len() + sep + segment.len());
@@ -252,7 +243,8 @@ mod tests {
     }
 
     /// Whether `patterns` reject the path as the walk and the classifier apply it: a directory is
-    /// rejected when admitting it fails, and a file when it classifies as `None` (Ignored).
+    /// rejected when admitting it returns `Ok(None)`, and a file when it classifies as `None` (Ignored).
+    /// Paths exceeding `MAX_PATH_DEPTH` fail admission with `Err(DomainError)`.
     fn rejected(patterns: &ExcludePatterns, segments: &[&[u8]], is_dir: bool) -> bool {
         if !is_dir {
             let mut filtered = segments
@@ -264,19 +256,19 @@ mod tests {
             };
             let mut dir = AdmittedDir::root();
             for next in filtered {
-                let Some(admitted) = admit_dir(dir, leaf, patterns) else {
+                let Ok(Some(admitted)) = admit_dir(dir, leaf, patterns, "test path") else {
                     return true;
                 };
                 dir = admitted;
                 leaf = next;
             }
-            return matches!(classify_leaf(&dir, leaf, patterns, "test path"), Ok(None));
+            return classify_leaf(&dir, leaf, patterns).is_none();
         }
         let mut dir = AdmittedDir::root();
         for name in segments {
-            match admit_dir(dir, name, patterns) {
-                Some(admitted) => dir = admitted,
-                None => return true,
+            match admit_dir(dir, name, patterns, "test path") {
+                Ok(Some(admitted)) => dir = admitted,
+                _ => return true,
             }
         }
         false
@@ -407,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn match_window_is_the_first_depth_limit_segments() {
+    fn matching_applies_up_to_depth_limit_regardless_of_byte_length() {
         let ex = patterns(&["file.txt"]);
 
         let shallow: Vec<&[u8]> = std::iter::repeat_n(b"d".as_slice(), MAX_PATH_DEPTH)
@@ -415,13 +407,7 @@ mod tests {
             .collect();
         assert!(ex.excludes(&shallow, false));
 
-        // The match sits past the first `MAX_PATH_DEPTH + 1` segments, so it is not tested.
-        let deep: Vec<&[u8]> = std::iter::repeat_n(b"d".as_slice(), MAX_PATH_DEPTH + 1)
-            .chain(std::iter::once(b"file.txt".as_slice()))
-            .collect();
-        assert!(!ex.excludes(&deep, false));
-
-        // Byte length does not end the window: a match inside it is found however long the prefix is.
+        // Byte length does not block matching: a match within depth is found however long the prefix is.
         let head = "a".repeat(MAX_PATH_BYTES + 1);
         let long: [&[u8]; 2] = [head.as_bytes(), b"file.txt"];
         assert!(ex.excludes(&long, false));

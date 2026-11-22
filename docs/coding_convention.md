@@ -2,22 +2,21 @@
 
 **Scope:** Rust rules, architecture, and coupling. Domain behavior is in [`context.md`](../context.md); security, filesystem, and network rules are in [`security_and_filtering.md`](security_and_filtering.md); verification commands are in [`CONTRIBUTING.md`](../CONTRIBUTING.md#verification-checklist).
 
-Rules tagged with `(clippy: <lint>)` or `(rustc: <lint>)` are enforced in CI with `-D warnings`.
+**Governing Laws & Enforcement:**
+
+- **CI Lints (`-D warnings`):** `src/lib.rs` (`forbid(unsafe_code)`, `missing_docs`, `unreachable_pub`, `clippy::unwrap_used`, `clippy::missing_errors_doc`, `clippy::missing_panics_doc`), `clippy.toml` (`disallowed-macros`, `allow-unwrap-in-tests`), and `RUSTDOCFLAGS="-D warnings" cargo doc`.
+- **Baseline Principles:** Rust API Guidelines, Functional Core / Imperative Shell (FCIS), Parse Don't Validate (unrepresentable invalid states), acyclic SSOT modules without hollow indirection, and deterministic isolated tests.
+- This document specifies only **project-specific contracts, thresholds, exceptions, and conventions not enforced by tooling**.
 
 ---
 
 ## 1. Naming
 
-Follow [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/naming.html) (`C-CASE`, `C-GETTER`, `C-CTOR`, `C-ITER`; RFC 430):
-
-- **Predicates:** Prefix with `is_` or `has_`; avoid negated names (`is_empty`, not `is_not_empty`).
-- **Abbreviations:** Standard only (`id`, `url`, `len`, `src`, `dst`, `err`). Spell out domain terms (`extension`, not `ext`).
-- **Scope Duplication:** Avoid redundant prefixes (`cli::parse`, not `cli::parse_cli`).
-- **Mutation:** `_mut`, `set_`, and `iter_mut` belong in `src/shell/`; `src/core/` has no `&mut` parameters outside § 3.1 exceptions.
+Follow [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/naming.html) (`C-CASE`, `C-GETTER`, `C-CTOR`, `C-ITER`; RFC 430). Spell out domain terms (`extension`, not `ext`).
 
 ## 2. Conversions
 
-Follow `C-CONV` and `C-CONV-TRAITS`. Prefer `From`, `TryFrom`, `AsRef`, `AsMut` over ad-hoc methods. Implement conversions on the most specific invariant-bearing type (`str::as_bytes`). Non-panicking unwrap uses `into_inner()`.
+Follow `C-CONV` and `C-CONV-TRAITS` (`From`, `TryFrom`, `AsRef`, `AsMut`) on the most specific invariant-bearing type. Non-panicking unwrap uses `into_inner()`.
 
 ---
 
@@ -25,98 +24,63 @@ Follow `C-CONV` and `C-CONV-TRAITS`. Prefer `From`, `TryFrom`, `AsRef`, `AsMut` 
 
 ### 3.1 `src/core/` (Functional Core)
 
-- Referentially transparent: no I/O, clock, environment, or network state. Never imports `crate::shell`.
-- State transitions consume ownership: `self -> Self` or linear typestates; `&mut self` is forbidden.
-- Forbidden: `std::fs`, `std::net`, `std::env`, `SystemTime`, `eprintln!` (clippy: `disallowed-macros`), interior mutability (`Cell`, `RefCell`, `Atomic*`, `Mutex`, `RwLock`), `static mut`, and `unsafe` (rustc: `forbid(unsafe_code)`).
-- Deterministic parameters: pass explicitly (`retry_delay(attempt)`), never via ambient state.
-- Permitted exceptions:
-  1. `Display::fmt(&self, f: &mut Formatter<'_>)`.
-  2. Local `let mut` variables and owned value parameters (`mut self`, `mut val`).
-  3. Internal dependency buffers unobservable through APIs (e.g. `ignore::gitignore::Gitignore` buffer pool in `policy/exclude.rs`).
+Referentially transparent and pure: no I/O, clock, environment, network, `crate::shell` imports, `&mut self`, interior mutability, or `static mut`. Pass parameters explicitly and transition state by value (`self -> Self`).
+
+**Permitted exceptions:**
+
+1. `Display::fmt(&self, f: &mut Formatter<'_>)`.
+2. Local `let mut` variables and owned value parameters (`mut self`, `mut val`).
+3. Internal dependency buffers unobservable through APIs (e.g. `ignore::gitignore::Gitignore` buffer pool in `policy/exclude.rs`).
 
 ### 3.2 `src/shell/` (Imperative Shell)
 
-- Encapsulates all I/O, network calls, filesystem access, and process boundaries.
-- Drives candidate traversal, worker reads, and settlement via `Selector::observe` in walk order.
+Encapsulates all I/O and process boundaries. Drives candidate traversal, worker reads, and settlement via `Selector::observe` in walk order.
 
 ### 3.3 Type Invariants
 
-Parse untrusted input into valid-by-construction types at the boundary; make invalid states unrepresentable:
+Parse untrusted input at the boundary into valid-by-construction types (enums/newtypes over sentinels, linear typestates, closed value transitions, immutable invariant wrappers).
 
-- **Types over Sentinels:** Enums and newtypes (`OutputTarget::Stdout`, not `"-"`). Parse CLI inputs, URLs, and headers once at ingress into `GitRef`, `Source`.
-- **Linear Typestates:** Accumulating transitions consume `self` by value (`Selector::observe` -> `Selector::finish` -> `CollectionResult`, `BoundedBuffer` -> `RenderedDigest`); subsequent phases (`CollectionResult::render(&self)`, `IngestReport`) read immutable outputs.
-- **`#[must_use]`:** Required on phase types (`Selector`, `CollectionResult`, `RenderedDigest`, `BoundedBuffer`, `SortedFiles`) and pure non-mutating query functions; omitted on `Result`-returning functions (clippy: `double_must_use`).
-- **Invariant Wrappers:** Encapsulate ordering or structural invariants in types with immutable interfaces (`SortedFiles`).
-- **Limit Relations:** Enforce with `const _: () = { assert!(...); };`, never runtime tests (exception: runtime comparison against mirrored table in [`security_and_filtering.md`](security_and_filtering.md) § 8).
+- **`#[must_use]`:** Required on phase types (`Selector`, `CollectionResult`, `RenderedDigest`, `BoundedBuffer`, `SortedFiles`) and pure non-mutating query functions (omitted on `Result`; `clippy::double_must_use`).
+- **Limit Relations:** Enforce via `const _: () = { assert!(...); };` (exception: runtime comparison against mirrored table in [`security_and_filtering.md`](security_and_filtering.md) § 8).
 
 ### 3.4 Cohesion and Coupling
 
-A module is a file or directory directly below `src/core/` or `src/shell/`. Precedence on conflict: purity (§ 3.1) > coupling > cohesion > size.
+A module is a direct child of `src/core/` or `src/shell/`. Precedence on conflict: purity (§ 3.1) > coupling > cohesion > size.
 
-#### Coupling
-
-- **Acyclic:** Dependency graph has no cycles. Imports via parent re-exports depend on the parent.
-- **Import Definitions:** Import items from their defining module, not parent re-exports (which exist solely for public API).
-- **No `super::super`:** Use `crate::` paths.
-- **Single Owner:** Each rule or limit is defined in one module ([`security_and_filtering.md`](security_and_filtering.md)).
-- **Hub Stability:** Modules imported by many files hold data, constants, and pure functions, importing only same- or lower-level modules.
-- **Fan-Out Threshold:** >5 internal modules in `src/core/`, or >6 in `src/shell/`, prompts review.
-
-#### Cohesion
-
-- **Single Responsibility:** A module's entry in [`context.md`](../context.md) § 5 describes it cleanly. Split when public items divide into disjoint caller sets with no cross-references.
-- **Invariants with Type:** Constructors and validations reside in the type's module.
-- **Single-Caller Items:** `pub(crate)`/`pub(super)` items with one caller file should move to that caller (exempt: `src/core/policy/`, same-directory helpers, shell calls to core, `src/lib.rs` exports).
-- **Minimal Visibility:** Private by default; unneeded `pub` caught by rustc `unreachable_pub`.
-- **File Size Threshold:** >400 non-test lines prompts review.
-
-#### Checks
-
-- Direction, `super::super`, visibility: `grep` over `src/`.
-- Cycles and fan-out: Import graph from `use` statements, `mod` declarations, and relative paths.
+- **Coupling & Visibility:** Acyclic DAG, single rule owner ([`security_and_filtering.md`](security_and_filtering.md)), no hollow indirection (single-impl traits or pass-through wrappers in `src/core/`), and minimal visibility (`unreachable_pub`). Import from defining modules (not parent re-exports) and use `crate::` paths (no `super::super`).
+- **Single-Caller Items:** Move `pub(crate)`/`pub(super)` items with one caller file into that caller (exempt: `src/core/policy/`, same-directory helpers, `shell` -> `core` calls, `src/lib.rs` exports).
+- **Review Thresholds:** Fan-out `>5` internal modules (`src/core/`) or `>6` (`src/shell/`); file size `>400` non-test lines.
+- **Checks:** `grep` over `src/` for direction, `super::super`, and visibility; import graph for cycles and fan-out.
 
 ---
 
 ## 4. Dependencies
 
-Prefer the standard library. Every `Cargo.toml` dependency requires an explanatory rationale comment.
+Prefer `std`. Every `Cargo.toml` dependency requires an explanatory rationale comment.
 
 ---
 
 ## 5. Errors and Panics
 
-- Structured domain errors ([`context.md`](../context.md) § 2); no stringly-typed errors on public APIs.
-- Shell decorates I/O errors with the associated path or operation.
-- No `unwrap()` (clippy: `unwrap_used`; tests exempt). `expect()` is permitted solely for provably unreachable invariant branches with explanatory messages.
+- Structured domain errors ([`context.md`](../context.md) § 2); `shell` decorates I/O errors with the associated path or operation.
+- `unwrap()` is forbidden outside tests (`clippy::unwrap_used`). `expect()` is permitted solely for provably unreachable invariant branches with explanatory messages.
 
 ---
 
 ## 6. Documentation and Comments
 
-### 6.1 Rustdoc
+Enforced by `rustc` (`missing_docs`), `clippy` (`missing_errors_doc`, `missing_panics_doc`), and `cargo doc` (`-D warnings`).
 
-- `///` for items; `//!` for modules and crate root.
-- First line: single third-person declarative sentence ending with a period. English only.
-- Public items must be documented (rustc: `missing_docs`).
-
-### 6.2 Required Sections
-
-- **`# Errors`:** Public functions returning `Result` (clippy: `missing_errors_doc`).
-- **`# Panics`:** Functions capable of panicking (clippy: `missing_panics_doc` for public functions).
-- **`# Examples`:** Public APIs; verified as doctests (`no_run` when external state is required).
-
-### 6.3 Guidelines
-
-- Public docs use intra-doc links (`` [`Type`] ``); never link to private items.
-- Comments explain rationale, not syntax. Number multi-phase algorithm steps. Never commit dead code.
+- **Rustdoc Style:** `///` for items (`//!` for modules and crate root). First line is a single third-person declarative sentence ending with a period, English only.
+- **Examples:** Public APIs require `# Examples` verified as doctests (`no_run` when external state is required).
+- **Comments:** Explain non-obvious rationale, not syntax; number multi-phase algorithm steps; never commit dead code.
 
 ---
 
 ## 7. Testing
 
-- **Table-Driven Tests:** Aggregate cases into `cases = [...]` slices over multiple one-off functions.
-- **Contract over Wording:** Assert exact text only for README-specified output (summary line, digest bytes, exit codes). For other errors, assert unique variant or fragment.
-- **Property Tests:** Open input spaces (escaping, sanitization, path normalization, exclude patterns) use `proptest` with `crate::core::proptest_config()` (fixed seed, no persistence) in `core` `properties` modules alongside example tables.
+Prefer deterministic, table-driven tests (`cases = [...]`) asserting behavioral contracts (exact text only for README-specified output; unique variant or fragment otherwise).
+
+- **Property Tests:** Open input spaces (escaping, sanitization, path normalization, exclude patterns) use `proptest` with `crate::core::proptest_config()` in `core` `properties` modules.
 - **In-Memory Limits:** Validate `MAX_FILE_COUNT` and `MAX_OUTPUT_SIZE` via `Selector` and `CandidateBudget` without disk I/O.
-- **Filesystem Isolation:** Shell tests use `crate::shell::testing::temp_dir`.
-- **Network Mocking:** Mock HTTP via local `TcpListener` on `127.0.0.1:0` (`MockServer`); external network calls are forbidden.
+- **Isolation & Mocking:** Shell tests use `crate::shell::testing::temp_dir`; mock HTTP via local `TcpListener` on `127.0.0.1:0` (`MockServer`), never external network calls.

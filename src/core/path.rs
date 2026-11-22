@@ -11,6 +11,22 @@ use crate::core::policy::{
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct NormalizedPath(String);
 
+impl NormalizedPath {
+    /// Consumes the path and returns its underlying UTF-8 bytes without allocation.
+    #[must_use]
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        self.0.into_bytes()
+    }
+
+    /// Budget directory key for `self` (I-02, I-05): `NormalizedPath` is already UTF-8 and
+    /// `<= MAX_PATH_BYTES` (I-10), so only the first segment or `"./"` is needed.
+    #[must_use]
+    pub(crate) fn budget_dir(&self) -> BudgetDirKey<'_> {
+        let key = memchr(b'/', self.0.as_bytes()).map_or("./", |index| &self.0[..=index]);
+        BudgetDirKey(key)
+    }
+}
+
 impl std::ops::Deref for NormalizedPath {
     type Target = str;
 
@@ -41,6 +57,47 @@ impl From<String> for NormalizedPath {
     }
 }
 
+/// Budget directory key: first path segment with trailing `/` capped at `MAX_PATH_BYTES` on a
+/// UTF-8 char boundary (I-05), or `"./"` for root-level or non-UTF-8-first-segment entries (I-02).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BudgetDirKey<'a>(&'a str);
+
+impl<'a> BudgetDirKey<'a> {
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'a str {
+        self.0
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn from_raw(path: &'a str) -> Self {
+        budget_dir_from_bytes(path.as_bytes())
+    }
+}
+
+impl std::ops::Deref for BudgetDirKey<'_> {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+/// Extracts a bounded UTF-8 first-segment key from normalized raw path bytes, falling back to `"./"`.
+fn budget_dir_from_bytes(bytes: &[u8]) -> BudgetDirKey<'_> {
+    let Some(slash) = memchr(b'/', bytes) else {
+        return BudgetDirKey("./");
+    };
+    let Ok(dir) = std::str::from_utf8(&bytes[..=slash]) else {
+        return BudgetDirKey("./");
+    };
+    let mut end = dir.len().min(MAX_PATH_BYTES);
+    while !dir.is_char_boundary(end) {
+        end -= 1;
+    }
+    BudgetDirKey(&dir[..end])
+}
+
 /// Candidate path outcome from classification, optionally carrying a read body (I-11).
 ///
 /// An entry is either a storable path (with `()` at classification, a local path for dispatch, or `Body<B>` at observation)
@@ -55,33 +112,41 @@ pub(crate) enum Candidate<B = ()> {
     Unstorable(UnstorablePath),
 }
 
-/// Unstorable candidate with an accounting prefix and its complete normalized byte identity.
-/// Only classification constructs it, preserving non-UTF-8 segments without lossy collisions.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct UnstorablePath {
-    prefix: String,
-    identity: Vec<u8>,
+impl<B> Candidate<B> {
+    /// Returns the bounded candidate-budget directory key for this candidate (I-02, I-05).
+    #[must_use]
+    pub(crate) fn budget_dir(&self) -> BudgetDirKey<'_> {
+        match self {
+            Self::Valid(path, _) => path.budget_dir(),
+            Self::Unstorable(path) => path.budget_dir(),
+        }
+    }
 }
 
+/// Unstorable candidate carrying its complete normalized raw-byte identity.
+///
+/// Only classification constructs it, preserving non-UTF-8 and overlong paths without lossy collisions.
+/// Its accounting prefix for candidate budgeting is derived from the first segment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct UnstorablePath(Vec<u8>);
+
 impl UnstorablePath {
+    /// Bounded first-segment UTF-8 prefix for candidate budget accounting (I-02, I-05).
     #[must_use]
-    pub(crate) fn prefix(&self) -> &str {
-        &self.prefix
+    pub(crate) fn budget_dir(&self) -> BudgetDirKey<'_> {
+        budget_dir_from_bytes(&self.0)
     }
 
     #[must_use]
     pub(crate) fn into_identity(self) -> Vec<u8> {
-        self.identity
+        self.0
     }
 }
 
 #[cfg(test)]
-impl From<(&str, &[u8])> for UnstorablePath {
-    fn from((prefix, identity): (&str, &[u8])) -> Self {
-        Self {
-            prefix: prefix.into(),
-            identity: identity.into(),
-        }
+impl From<&[u8]> for UnstorablePath {
+    fn from(identity: &[u8]) -> Self {
+        Self(identity.to_vec())
     }
 }
 
@@ -132,8 +197,8 @@ pub(crate) fn normalize_tar_entry_path(
 
 /// Classifies raw path segment bytes into [`Option<Candidate>`] after dropping empty and `.` segments.
 ///
-/// Check order: hidden, user exclusion, noise/sensitive, depth (`MAX_PATH_DEPTH + 1` match window;
-/// matches past that fail the depth limit). Produces a [`NormalizedPath`] or an unstorable prefix.
+/// Check order per segment: hidden, user exclusion, depth (`MAX_PATH_DEPTH`), then noise/sensitive
+/// on the leaf. Produces a [`NormalizedPath`] or an [`UnstorablePath`].
 fn classify_path_segments<'a, I>(
     segments: I,
     exclude: &ExcludePatterns,
@@ -150,18 +215,19 @@ where
     };
     let mut dir = AdmittedDir::root();
     for next in filtered {
-        let Some(admitted) = admit_dir(dir, pending, exclude) else {
+        let Some(admitted) = admit_dir(dir, pending, exclude, subject)? else {
             return Ok(None);
         };
         dir = admitted;
         pending = next;
     }
-    classify_leaf(&dir, pending, exclude, subject)
+    Ok(classify_leaf(&dir, pending, exclude))
 }
 
-/// A directory that passed the hidden and user-exclusion checks, with the prefixes a file below it needs.
+/// A directory that passed hidden, user-exclusion, and depth (`<= MAX_PATH_DEPTH`) checks.
 ///
-/// Built only by [`AdmittedDir::root`] and [`admit_dir`], so holding one means every ancestor was checked.
+/// Built only by [`AdmittedDir::root`] and [`admit_dir`], so holding one guarantees every ancestor
+/// was checked and `depth <= MAX_PATH_DEPTH`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AdmittedDir {
     depth: usize,
@@ -170,11 +236,48 @@ pub(crate) struct AdmittedDir {
 }
 
 /// Output prefix of an admitted directory, ending in `/` or empty at the root.
-/// `NonUtf8` retains both the valid prefix and all raw segments for candidate identity.
+///
+/// Transitions monotonically to `Unstorable` on the first non-UTF-8 segment or when exceeding
+/// `MAX_PATH_BYTES`, retaining raw bytes for lossless candidate identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DirPrefix {
     Utf8(String),
-    NonUtf8(UnstorablePath),
+    Unstorable(Vec<u8>),
+}
+
+impl DirPrefix {
+    /// Extends the prefix with directory segment `name`, transitioning to `Unstorable` on invalid
+    /// UTF-8 or when the prefix would exceed `MAX_PATH_BYTES`.
+    #[must_use]
+    fn advance(self, name: &[u8]) -> Self {
+        let mut bytes = match self {
+            Self::Utf8(mut prefix) => {
+                if let Ok(segment) = std::str::from_utf8(name)
+                    && prefix.len() + segment.len() < MAX_PATH_BYTES
+                {
+                    prefix.push_str(segment);
+                    prefix.push('/');
+                    return Self::Utf8(prefix);
+                }
+                prefix.into_bytes()
+            }
+            Self::Unstorable(bytes) => bytes,
+        };
+        bytes.extend_from_slice(name);
+        bytes.push(b'/');
+        Self::Unstorable(bytes)
+    }
+
+    /// Converts the prefix into an [`UnstorablePath`] terminated by `name`.
+    #[must_use]
+    fn into_unstorable(self, name: &[u8]) -> UnstorablePath {
+        let mut identity = match self {
+            Self::Utf8(prefix) => prefix.into_bytes(),
+            Self::Unstorable(bytes) => bytes,
+        };
+        identity.extend_from_slice(name);
+        UnstorablePath(identity)
+    }
 }
 
 impl AdmittedDir {
@@ -186,111 +289,75 @@ impl AdmittedDir {
             output: DirPrefix::Utf8(String::new()),
         }
     }
-
-    /// Enforces the depth budget after hidden and exclusion checks have run.
-    pub(crate) fn check_depth(&self, subject: &str) -> Result<(), DomainError> {
-        if self.depth > MAX_PATH_DEPTH {
-            return Err(DomainError::invalid_metadata(format!(
-                "{subject} exceeds maximum directory depth"
-            )));
-        }
-        Ok(())
-    }
 }
 
-/// Admits directory `name` under `dir`, returning `None` if hidden or user-excluded.
+/// Admits directory `name` under `dir`, returning `Ok(None)` if hidden or user-excluded, or
+/// `Err(DomainError::InvalidMetadata)` if entering it would exceed `MAX_PATH_DEPTH`.
 ///
-/// Extends `dir`'s prefixes in place (O(len(name))). Only the new prefix is matched; matching and
-/// output-prefix growth stop after `MAX_PATH_DEPTH + 1` segments because [`classify_leaf`] fails depth first.
-#[must_use]
+/// Extends `dir`'s prefixes in place (O(len(name))).
 pub(crate) fn admit_dir(
     dir: AdmittedDir,
     name: &[u8],
     exclude: &ExcludePatterns,
-) -> Option<AdmittedDir> {
+    subject: &str,
+) -> Result<Option<AdmittedDir>, DomainError> {
     let AdmittedDir {
         depth,
-        mut match_prefix,
+        match_prefix,
         output,
     } = dir;
     if is_hidden_segment(name) {
-        return None;
+        return Ok(None);
     }
-    if depth <= MAX_PATH_DEPTH {
-        match_prefix = exclude.advance(match_prefix, name)?;
-    }
-    let output = match output {
-        DirPrefix::Utf8(mut prefix) if depth <= MAX_PATH_DEPTH => {
-            if let Ok(segment) = std::str::from_utf8(name) {
-                prefix.push_str(segment);
-                prefix.push('/');
-                DirPrefix::Utf8(prefix)
-            } else {
-                let mut identity = prefix.as_bytes().to_vec();
-                identity.extend_from_slice(name);
-                identity.push(b'/');
-                DirPrefix::NonUtf8(UnstorablePath { prefix, identity })
-            }
-        }
-        DirPrefix::NonUtf8(mut unstorable) if depth <= MAX_PATH_DEPTH => {
-            unstorable.identity.extend_from_slice(name);
-            unstorable.identity.push(b'/');
-            DirPrefix::NonUtf8(unstorable)
-        }
-        unchanged => unchanged,
+    let Some(match_prefix) = exclude.advance(match_prefix, name) else {
+        return Ok(None);
     };
-    Some(AdmittedDir {
-        depth: depth + 1,
+    let next_depth = depth + 1;
+    if next_depth > MAX_PATH_DEPTH {
+        return Err(DomainError::invalid_metadata(format!(
+            "{subject} exceeds maximum directory depth"
+        )));
+    }
+    Ok(Some(AdmittedDir {
+        depth: next_depth,
         match_prefix,
-        output,
-    })
+        output: output.advance(name),
+    }))
 }
 
-/// Classifies file `name` directly under `parent`. The checks on `parent`'s ancestors already ran in
-/// [`admit_dir`], so only the file itself is matched here.
+/// Classifies file `name` directly under `parent`. The checks on `parent`'s ancestors (including
+/// `MAX_PATH_DEPTH`) already ran in [`admit_dir`], so only the file itself is classified here.
 ///
-/// Check order: hidden segment, user exclusion, noise or sensitive name, depth, then non-UTF-8 and
-/// length prefixing.
+/// Check order: hidden segment, user exclusion, noise or sensitive name, then UTF-8 and
+/// `MAX_PATH_BYTES` check.
+#[must_use]
 pub(crate) fn classify_leaf(
     parent: &AdmittedDir,
     name: &[u8],
     exclude: &ExcludePatterns,
-    subject: &str,
-) -> Result<Option<Candidate>, DomainError> {
+) -> Option<Candidate> {
     if is_hidden_segment(name) {
-        return Ok(None);
+        return None;
     }
-    if parent.depth <= MAX_PATH_DEPTH && exclude.excludes_leaf(&parent.match_prefix, name) {
-        return Ok(None);
+    if exclude.excludes_leaf(&parent.match_prefix, name) {
+        return None;
     }
-
     if is_ignored_filename(name) {
-        return Ok(None);
+        return None;
     }
 
-    parent.check_depth(subject)?;
-
-    match (&parent.output, std::str::from_utf8(name)) {
-        (DirPrefix::Utf8(prefix), Ok(segment))
-            if prefix.len() + segment.len() <= MAX_PATH_BYTES =>
-        {
-            Ok(Some(Candidate::Valid(
-                NormalizedPath(format!("{prefix}{segment}")),
-                (),
-            )))
-        }
-        (output, _) => {
-            let mut unstorable = match output {
-                DirPrefix::Utf8(prefix) => UnstorablePath {
-                    prefix: prefix.clone(),
-                    identity: prefix.as_bytes().to_vec(),
-                },
-                DirPrefix::NonUtf8(unstorable) => unstorable.clone(),
-            };
-            unstorable.identity.extend_from_slice(name);
-            Ok(Some(Candidate::Unstorable(unstorable)))
-        }
+    if let (DirPrefix::Utf8(prefix), Ok(segment)) = (&parent.output, std::str::from_utf8(name))
+        && prefix.len() + segment.len() <= MAX_PATH_BYTES
+    {
+        return Some(Candidate::Valid(
+            NormalizedPath(format!("{prefix}{segment}")),
+            (),
+        ));
     }
+
+    Some(Candidate::Unstorable(
+        parent.output.clone().into_unstorable(name),
+    ))
 }
 
 #[cfg(test)]
@@ -342,17 +409,18 @@ mod tests {
                 "prefix {prefix:?}: at the limit"
             );
             let over = classify(MAX_PATH_BYTES + 1).expect("within depth limit");
+            let expected_identity =
+                format!("{prefix}{}", "f".repeat(MAX_PATH_BYTES + 1 - prefix.len()));
             assert_eq!(
                 over,
-                Some(Candidate::Unstorable(
-                    (
-                        prefix,
-                        format!("{prefix}{}", "f".repeat(MAX_PATH_BYTES + 1 - prefix.len()))
-                            .as_bytes(),
-                    )
-                        .into()
-                )),
+                Some(Candidate::Unstorable(expected_identity.as_bytes().into())),
                 "prefix {prefix:?}: one byte over the limit"
+            );
+            let expected_budget = if prefix.is_empty() { "./" } else { prefix };
+            assert_eq!(
+                over.as_ref().map(|c| c.budget_dir().as_str()),
+                Some(expected_budget),
+                "prefix {prefix:?}: accounting prefix"
             );
         }
     }
@@ -381,60 +449,57 @@ mod tests {
     }
 
     #[test]
-    fn admit_dir_checks_only_the_match_window_and_hidden_names() {
+    fn admit_dir_enforces_exclusions_before_depth_limit() {
         let exclude = ExcludePatterns::new(["build/"]).unwrap();
         let root = AdmittedDir::root();
-        assert!(admit_dir(root.clone(), b"build", &exclude).is_none());
-        assert!(admit_dir(root.clone(), b".git", &exclude).is_none());
-        assert!(admit_dir(root, b"src", &exclude).is_some());
+        assert!(matches!(
+            admit_dir(root.clone(), b"build", &exclude, "test path"),
+            Ok(None)
+        ));
+        assert!(matches!(
+            admit_dir(root.clone(), b".git", &exclude, "test path"),
+            Ok(None)
+        ));
+        assert!(matches!(
+            admit_dir(root, b"src", &exclude, "test path"),
+            Ok(Some(_))
+        ));
 
-        // A match past the first `MAX_PATH_DEPTH + 1` directories is not seen, as in the file check.
+        // At depth MAX_PATH_DEPTH, hidden and excluded directories are still ignored before the
+        // depth limit fails, while any admitted directory is rejected.
         let mut deep = AdmittedDir::root();
-        for _ in 0..=MAX_PATH_DEPTH {
-            deep = admit_dir(deep, b"d", &exclude).expect("d is not excluded");
+        for _ in 0..MAX_PATH_DEPTH {
+            deep = admit_dir(deep, b"d", &exclude, "test path")
+                .expect("within depth limit")
+                .expect("d is not excluded");
         }
-        assert!(admit_dir(deep.clone(), b"build", &exclude).is_some());
-        assert!(
-            admit_dir(deep, b".git", &exclude).is_none(),
-            "hidden names are checked at every depth"
-        );
+        assert!(matches!(
+            admit_dir(deep.clone(), b"build", &exclude, "test path"),
+            Ok(None)
+        ));
+        assert!(matches!(
+            admit_dir(deep.clone(), b".git", &exclude, "test path"),
+            Ok(None)
+        ));
+        assert!(matches!(
+            admit_dir(deep, b"extra", &exclude, "test path"),
+            Err(DomainError::InvalidMetadata(_))
+        ));
     }
 
     #[test]
-    fn admit_dir_stops_growing_match_prefix_past_window() {
+    fn dir_prefix_transitions_to_unstorable_past_max_path_bytes() {
         let exclude = ExcludePatterns::default();
-        let mut dir = AdmittedDir::root();
-        for _ in 0..=MAX_PATH_DEPTH {
-            dir = admit_dir(dir, b"d", &exclude).expect("d is not excluded");
-        }
-        let window_len = dir.match_prefix.len();
-        let depth = dir.depth;
-        for _ in 0..8 {
-            dir = admit_dir(dir, b"d", &exclude).expect("d is not excluded");
-        }
-        assert_eq!(
-            dir.match_prefix.len(),
-            window_len,
-            "the match prefix grows only inside the window"
-        );
-        assert_eq!(dir.depth, depth + 8);
-    }
-
-    #[test]
-    fn admit_dir_stops_growing_output_prefix_past_window() {
-        let exclude = ExcludePatterns::default();
-        let mut dir = AdmittedDir::root();
-        for _ in 0..=MAX_PATH_DEPTH {
-            dir = admit_dir(dir, b"d", &exclude).expect("d is not excluded");
-        }
-        let window_output = dir.output.clone();
-        for _ in 0..8 {
-            dir = admit_dir(dir, b"d", &exclude).expect("d is not excluded");
-        }
-        assert_eq!(
-            dir.output, window_output,
-            "no leaf below the window reads the output prefix"
-        );
+        let long_dir = "d".repeat(MAX_PATH_BYTES);
+        let dir = admit_dir(
+            AdmittedDir::root(),
+            long_dir.as_bytes(),
+            &exclude,
+            "test path",
+        )
+        .expect("within depth limit")
+        .expect("not excluded");
+        assert!(matches!(dir.output, DirPrefix::Unstorable(_)));
     }
 
     #[test]
@@ -452,8 +517,8 @@ mod tests {
         }
         let valid =
             |p: &str| -> Result<Option<Candidate>, ()> { Ok(Some(Candidate::Valid(p.into(), ()))) };
-        let nonutf8 = |prefix: &str, identity: &[u8]| -> Result<Option<Candidate>, ()> {
-            Ok(Some(Candidate::Unstorable((prefix, identity).into())))
+        let nonutf8 = |identity: &[u8]| -> Result<Option<Candidate>, ()> {
+            Ok(Some(Candidate::Unstorable(identity.into())))
         };
         let ignored = || -> Result<Option<Candidate>, ()> { Ok(None) };
         let depth_err = || -> Result<Option<Candidate>, ()> { Err(()) };
@@ -462,10 +527,10 @@ mod tests {
         let none = ExcludePatterns::default();
         let max = MAX_PATH_DEPTH;
 
-        let mut build_past_window = deep(max + 1, b"build");
-        build_past_window.push(b"x.txt");
-        let mut hidden_past_window = deep(max + 1, b".h");
-        hidden_past_window.push(b"x");
+        let mut build_past_depth = deep(max, b"build");
+        build_past_depth.push(b"x.txt");
+        let mut hidden_past_depth = deep(max, b".h");
+        hidden_past_depth.push(b"x");
         let max_valid = format!("{}file.txt", "d/".repeat(max));
         let hidden_deep: Vec<&[u8]> = std::iter::once(b".hidden".as_slice())
             .chain(std::iter::repeat_n(b"d".as_slice(), 300))
@@ -492,28 +557,24 @@ mod tests {
             (
                 segs(&[b"src", b"\xff\xfe", b"main.rs"]),
                 &exclude,
-                nonutf8("src/", b"src/\xff\xfe/main.rs"),
+                nonutf8(b"src/\xff\xfe/main.rs"),
             ),
-            (
-                segs(&[b"\xff", b"x.rs"]),
-                &exclude,
-                nonutf8("", b"\xff/x.rs"),
-            ),
+            (segs(&[b"\xff", b"x.rs"]), &exclude, nonutf8(b"\xff/x.rs")),
             (
                 segs(&[b"src", b"\xff.rs"]),
                 &exclude,
-                nonutf8("src/", b"src/\xff.rs"),
+                nonutf8(b"src/\xff.rs"),
             ),
             (segs(&[b"a", b"b", b"c.rs"]), &none, valid("a/b/c.rs")),
             (
                 segs(&[b"a", b"b", b"\xff", b"x.rs"]),
                 &none,
-                nonutf8("a/b/", b"a/b/\xff/x.rs"),
+                nonutf8(b"a/b/\xff/x.rs"),
             ),
             (
                 segs(&[b"a", b"\xff", b"b", b"c.rs"]),
                 &none,
-                nonutf8("a/", b"a/\xff/b/c.rs"),
+                nonutf8(b"a/\xff/b/c.rs"),
             ),
             (segs(&[b"\xff", b"build", b"x"]), &exclude, ignored()),
             (segs(&[b"build", b"\xff"]), &exclude, ignored()),
@@ -529,26 +590,22 @@ mod tests {
             (deep(max, b"a.log"), &exclude, ignored()),
             (deep(max + 1, b"x.rs"), &none, depth_err()),
             (deep(max + 1, b"a.log"), &exclude, depth_err()),
-            (build_past_window, &exclude, depth_err()),
-            (hidden_past_window, &none, ignored()),
+            (deep(max + 1, b"Cargo.lock"), &none, depth_err()),
+            (build_past_depth, &exclude, ignored()),
+            (hidden_past_depth, &none, ignored()),
             (hidden_deep, &none, ignored()),
-            (deep(max + 1, b"Cargo.lock"), &none, ignored()),
             (excluded_past_depth.clone(), &exclude, ignored()),
             (excluded_past_depth, &none, depth_err()),
             // A sensitive name is ignored even when its final segment is not UTF-8.
             (segs(&[b"dir", b"id_rsa\xff.key"]), &none, ignored()),
             (segs(&[b"secret\xff.key"]), &none, ignored()),
             (segs(&[b"dir", b"credentials\xff"]), &none, ignored()),
-            (
-                segs(&[b"notes\xff.txt"]),
-                &none,
-                nonutf8("", b"notes\xff.txt"),
-            ),
+            (segs(&[b"notes\xff.txt"]), &none, nonutf8(b"notes\xff.txt")),
             // Noise names match exactly: an invalid byte makes `Cargo.lock` a different name.
             (
                 segs(&[b"Cargo.lock\xff"]),
                 &none,
-                nonutf8("", b"Cargo.lock\xff"),
+                nonutf8(b"Cargo.lock\xff"),
             ),
         ];
         for (segments, exclude, expected) in cases {
@@ -638,7 +695,7 @@ mod tests {
             (b"repo-root/Cargo.lock", None),
             (
                 b"repo-root/\xff\xfe",
-                Some(Candidate::Unstorable(("", b"\xff\xfe".as_slice()).into())),
+                Some(Candidate::Unstorable(b"\xff\xfe".as_slice().into())),
             ),
         ];
         for (raw, expected) in ok_cases {
@@ -745,9 +802,10 @@ mod tests {
                         prop_assert!(path.split('/').all(|seg| !seg.is_empty() && seg != "."));
                     }
                     Ok(Some(Candidate::Unstorable(path))) => {
-                        let prefix = path.prefix();
-                        prop_assert!(prefix.is_empty() || prefix.ends_with('/'));
-                        prop_assert!(!prefix.contains("//") && !prefix.starts_with('/'));
+                        let budget_dir = path.budget_dir();
+                        prop_assert!(budget_dir.ends_with('/'));
+                        prop_assert!(budget_dir.len() <= MAX_PATH_BYTES);
+                        prop_assert!(!budget_dir.contains("//") && !budget_dir.starts_with('/'));
                         prop_assert_eq!(path.into_identity(), kept.join(&b'/'));
                     }
                     Ok(None) => {}

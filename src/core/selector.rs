@@ -6,10 +6,8 @@ use memchr::memchr;
 
 use crate::core::error::{DomainError, top_largest};
 use crate::core::model::CollectionResult;
-use crate::core::path::{Candidate, NormalizedPath};
-use crate::core::policy::{
-    MAX_FILE_COUNT, MAX_FILE_SIZE, MAX_PATH_BYTES, OVERFLOW_LARGEST_DIRECTORIES,
-};
+use crate::core::path::{BudgetDirKey, Candidate};
+use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE, OVERFLOW_LARGEST_DIRECTORIES};
 use crate::core::storage::{FileStorage, SortedFiles};
 
 /// UTF-8 text predicate: NUL-free bytes within size limit, returning string slice.
@@ -63,11 +61,10 @@ impl CandidateBudget {
         self
     }
 
-    /// Adds a single observed candidate path to the budget accounting.
-    fn add(mut self, path: &str) -> Result<Self, DomainError> {
+    /// Adds a single observed candidate directory key to the budget accounting.
+    fn add(mut self, dir: BudgetDirKey<'_>) -> Result<Self, DomainError> {
         self.count += 1;
-        let dir = extract_dir_slice(path);
-        self = self.increment(dir);
+        self = self.increment(dir.as_str());
 
         if self.count > MAX_FILE_COUNT {
             return Err(self.overflow_error());
@@ -85,19 +82,6 @@ impl CandidateBudget {
     }
 }
 
-/// Budget key for `path`: its first segment with a trailing `/`, or `./` for root-level entries.
-/// No classified first segment starts with `.` (I-02), so `./` never names a real directory.
-/// The key is capped at `MAX_PATH_BYTES` on a char boundary (I-05), so overlong segments cannot
-/// grow the key store beyond the candidate count times `MAX_PATH_BYTES`.
-fn extract_dir_slice(path: &str) -> &str {
-    let dir = memchr(b'/', path.as_bytes()).map_or("./", |index| &path[..=index]);
-    let mut end = dir.len().min(MAX_PATH_BYTES);
-    while !dir.is_char_boundary(end) {
-        end -= 1;
-    }
-    &dir[..end]
-}
-
 /// Pure per-item selection and budget accounting. Owns no I/O; the shell feeds
 /// candidates and reads the outcome through [`Selector::finish`].
 #[derive(Debug)]
@@ -105,8 +89,7 @@ fn extract_dir_slice(path: &str) -> &str {
 pub(crate) struct Selector {
     storage: FileStorage,
     candidates: CandidateBudget,
-    seen_paths: HashSet<NormalizedPath>,
-    unstorable_paths: HashSet<Vec<u8>>,
+    seen_paths: HashSet<Vec<u8>>,
 }
 
 impl Selector {
@@ -116,7 +99,6 @@ impl Selector {
             storage: FileStorage::new(),
             candidates: CandidateBudget::with_capacity(32),
             seen_paths: HashSet::with_capacity(512),
-            unstorable_paths: HashSet::new(),
         }
     }
 
@@ -134,34 +116,32 @@ impl Selector {
         mut self,
         candidate: Candidate<Body<B>>,
     ) -> Result<Self, DomainError> {
-        let (path, body) = match candidate {
+        self.candidates = self.candidates.add(candidate.budget_dir())?;
+        match candidate {
             Candidate::Unstorable(path) => {
-                self.candidates = self.candidates.add(path.prefix())?;
-                if !self.unstorable_paths.insert(path.into_identity()) {
+                if !self.seen_paths.insert(path.into_identity()) {
                     return Err(DomainError::invalid_metadata(
                         "duplicate entry path (unstorable)",
                     ));
                 }
-                return Ok(self);
             }
-            Candidate::Valid(path, body) => (path, body),
-        };
-        self.candidates = self.candidates.add(&path)?;
-        if self.seen_paths.contains(&path) {
-            return Err(DomainError::invalid_metadata(format!(
-                "duplicate entry path: {}",
-                &*path
-            )));
+            Candidate::Valid(path, body) => {
+                if self.seen_paths.contains(path.as_bytes()) {
+                    return Err(DomainError::invalid_metadata(format!(
+                        "duplicate entry path: {}",
+                        &*path
+                    )));
+                }
+                if let Body::Bytes(bytes) = body
+                    && let Some(content) = classify_content(bytes.as_ref())
+                {
+                    // Raw arena bytes are a strict lower bound for the rendered digest size, so
+                    // `push` rejects over-limit content before the final rendering pass.
+                    self.storage = self.storage.push(&path, content)?;
+                }
+                self.seen_paths.insert(path.into_bytes());
+            }
         }
-
-        if let Body::Bytes(bytes) = body
-            && let Some(content) = classify_content(bytes.as_ref())
-        {
-            // Raw arena bytes are a strict lower bound for the rendered digest size, so
-            // `push` rejects over-limit content before the final rendering pass.
-            self.storage = self.storage.push(&path, content)?;
-        }
-        self.seen_paths.insert(path);
         Ok(self)
     }
 
@@ -199,12 +179,14 @@ mod tests {
         let src = MAX_FILE_COUNT - vendor;
         let mut budget = CandidateBudget::default();
         for index in 0..vendor {
-            budget = budget.add(&format!("vendor/pkg_{index}.rs"))?;
+            budget = budget.add(BudgetDirKey::from_raw(&format!("vendor/pkg_{index}.rs")))?;
         }
         for index in 0..src {
-            budget = budget.add(&format!("src/file_{index}.rs"))?;
+            budget = budget.add(BudgetDirKey::from_raw(&format!("src/file_{index}.rs")))?;
         }
-        let err = budget.add("extra/one.rs").unwrap_err();
+        let err = budget
+            .add(BudgetDirKey::from_raw("extra/one.rs"))
+            .unwrap_err();
         let message = err.to_string();
         assert!(message.contains(&format!(
             "repository contains more than {MAX_FILE_COUNT} files"
@@ -220,9 +202,11 @@ mod tests {
         let mut budget = CandidateBudget::default();
         for i in 0..MAX_FILE_COUNT {
             let path = format!("dir_{i:05}/file.rs");
-            budget = budget.add(&path).unwrap();
+            budget = budget.add(BudgetDirKey::from_raw(&path)).unwrap();
         }
-        let err = budget.add("dir_00000/extra.rs").unwrap_err();
+        let err = budget
+            .add(BudgetDirKey::from_raw("dir_00000/extra.rs"))
+            .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains(&format!(
             "repository contains more than {MAX_FILE_COUNT} files"
@@ -232,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_dir_slice_takes_the_first_segment_capped_at_a_char_boundary() {
+    fn budget_dir_key_takes_the_first_segment_capped_at_a_char_boundary() {
         // `a` followed by two-byte `é` puts every character start at an odd offset, so byte
         // `MAX_PATH_BYTES` lands inside a character and the cut moves back one byte.
         let accented = format!("a{}", "é".repeat(MAX_PATH_BYTES));
@@ -249,10 +233,14 @@ mod tests {
             (format!("{accented}/file.rs"), accented_cut),
         ];
         for (path, expected) in cases {
-            assert_eq!(extract_dir_slice(&path), expected, "{path:.40}");
+            assert_eq!(
+                BudgetDirKey::from_raw(&path).as_str(),
+                expected,
+                "{path:.40}"
+            );
         }
         assert_eq!(
-            extract_dir_slice(&format!("{}/file.rs", "é".repeat(MAX_PATH_BYTES))).len(),
+            BudgetDirKey::from_raw(&format!("{}/file.rs", "é".repeat(MAX_PATH_BYTES))).len(),
             MAX_PATH_BYTES
         );
     }
@@ -263,7 +251,7 @@ mod tests {
         let head = "a".repeat(MAX_PATH_BYTES + 5);
         let mut budget = CandidateBudget::default();
         for index in 0..3 {
-            budget = budget.add(&format!("{head}{index}/file.rs"))?;
+            budget = budget.add(BudgetDirKey::from_raw(&format!("{head}{index}/file.rs")))?;
         }
         assert_eq!(budget.count, 3);
         assert_eq!(budget.dirs.len(), 1);
@@ -279,12 +267,15 @@ mod tests {
         let root_files = MAX_FILE_COUNT - named_root;
         let mut budget = CandidateBudget::default();
         for index in 0..named_root {
-            budget = budget.add(&format!("<root>/pkg_{index}.rs"))?;
+            budget = budget.add(BudgetDirKey::from_raw(&format!("<root>/pkg_{index}.rs")))?;
         }
         for index in 0..root_files {
-            budget = budget.add(&format!("f_{index}.rs"))?;
+            budget = budget.add(BudgetDirKey::from_raw(&format!("f_{index}.rs")))?;
         }
-        let message = budget.add("extra.rs").unwrap_err().to_string();
+        let message = budget
+            .add(BudgetDirKey::from_raw("extra.rs"))
+            .unwrap_err()
+            .to_string();
         assert!(
             message.contains(&format!("\n  - <root>/ ({named_root} files)")),
             "{message}"
@@ -371,7 +362,7 @@ mod tests {
 
         let err = selector
             .observe(Candidate::<Body<&[u8]>>::Unstorable(
-                ("dir/", b"dir/\xff".as_slice()).into(),
+                b"dir/\xff".as_slice().into(),
             ))
             .unwrap_err();
         assert!(matches!(err, DomainError::CandidateLimitExceeded(..)));
@@ -422,7 +413,7 @@ mod tests {
             file("bad_utf8", Body::Bytes(b"\xff")),
             file("over.txt", Body::OverLimit),
             file("gone.txt", Body::Unavailable),
-            Candidate::Unstorable(("dir/", b"dir/\xff".as_slice()).into()),
+            Candidate::Unstorable(b"dir/\xff".as_slice().into()),
             file("empty.txt", Body::Bytes(b"")),
         ];
         let selector = observations
@@ -440,7 +431,7 @@ mod tests {
             let mut identity = prefix.as_bytes().to_vec();
             identity.push(0xff);
             let selector = Selector::new().observe(Candidate::<Body<&[u8]>>::Unstorable(
-                (prefix, identity.as_slice()).into(),
+                identity.as_slice().into(),
             ))?;
             assert_eq!(selector.candidates.count, 1);
             let collection = selector.finish("test".into(), None)?;

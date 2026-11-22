@@ -2,7 +2,9 @@
 //! and API error types.
 
 use std::fmt::{Display, Formatter, Result, Write as _};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
+
+use zeroize::Zeroizing;
 
 use crate::core::error::ErrorDetail;
 use crate::core::policy::{
@@ -10,12 +12,50 @@ use crate::core::policy::{
 };
 
 pub(crate) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
+pub(crate) const GITHUB_API_VERSION: &str = "2022-11-28";
 
 /// Exact-origin match: returns `true` if `url == GITHUB_API_BASE_URL` or starts with `GITHUB_API_BASE_URL + "/"`.
 #[must_use]
-pub(crate) fn is_github_api_origin(url: &str) -> bool {
+fn is_github_api_origin(url: &str) -> bool {
     url.strip_prefix(GITHUB_API_BASE_URL)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// Origin classification for an outgoing HTTP request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequestTarget {
+    /// GitHub API origin (`GITHUB_API_BASE_URL`): receives API version and optional authorization headers.
+    GithubApi,
+    /// Any other origin (redirect targets or mock servers): never receives API credentials or version headers.
+    External,
+}
+
+impl RequestTarget {
+    /// Classifies `url` once at the request boundary.
+    #[must_use]
+    pub(crate) fn classify(url: &str) -> Self {
+        if is_github_api_origin(url) {
+            Self::GithubApi
+        } else {
+            Self::External
+        }
+    }
+
+    /// Derives error-classification [`Auth`] from the same origin classification and token presence.
+    #[must_use]
+    pub(crate) const fn auth(self, has_token: bool) -> Auth {
+        match (self, has_token) {
+            (Self::GithubApi, true) => Auth::Token,
+            (Self::GithubApi, false) | (Self::External, _) => Auth::Anonymous,
+        }
+    }
+}
+
+/// Normalizes a raw token string into a `Bearer <token>` header value, returning `None` if blank.
+#[must_use]
+pub(crate) fn format_bearer_token(raw: &str) -> Option<Zeroizing<String>> {
+    let trimmed = raw.trim_ascii();
+    (!trimmed.is_empty()).then(|| Zeroizing::new(format!("Bearer {trimmed}")))
 }
 
 /// Canonical public web URL for a repository, used as the digest label for remote sources.
@@ -227,30 +267,51 @@ pub(crate) enum RateLimitHeaders {
     Limited { retry_after: Option<Duration> },
 }
 
+/// Parses a trimmed decimal integer, saturating all-digit overflow to `u64::MAX`.
+fn parse_saturating_u64(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    trimmed.parse().ok().or_else(|| {
+        // All-digit overflow is still a delay above the retry cap, not a missing hint.
+        (!trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit())).then_some(u64::MAX)
+    })
+}
+
+/// Resolves a Unix epoch timestamp in seconds against `now_secs`; due or past timestamps wait 0.
+const fn wait_until(target_secs: u64, now_secs: u64) -> Duration {
+    Duration::from_secs(target_secs.saturating_sub(now_secs))
+}
+
 impl RateLimitHeaders {
-    /// Parses numeric header values against `now_secs`, where `None` means the header was absent.
-    /// The shell resolves valid HTTP-date values before numeric parsing.
+    /// Parses raw header bytes against `now_secs`, where `None` means the header was absent.
+    /// A present but non-UTF-8 `Retry-After` still marks the response rate-limited with no delay.
+    #[must_use]
     pub(crate) fn parse(
-        retry_after: Option<&str>,
-        remaining: Option<&str>,
-        reset: Option<&str>,
+        retry_after: Option<&[u8]>,
+        remaining: Option<&[u8]>,
+        reset: Option<&[u8]>,
         now_secs: u64,
     ) -> Self {
-        if let Some(secs) = retry_after.and_then(|value| {
-            let value = value.trim();
-            value.parse().ok().or_else(|| {
-                // All-digit overflow is still a delay above the retry cap, not a missing hint.
-                (!value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())).then_some(u64::MAX)
-            })
-        }) {
+        let retry_text = retry_after.and_then(|b| std::str::from_utf8(b).ok());
+        if let Some(secs) = retry_text
+            .and_then(|v| httpdate::parse_http_date(v.trim()).ok())
+            .and_then(|date| date.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+        {
+            Self::Limited {
+                retry_after: Some(wait_until(secs, now_secs)),
+            }
+        } else if let Some(secs) = retry_text.and_then(parse_saturating_u64) {
             Self::Limited {
                 retry_after: Some(Duration::from_secs(secs)),
             }
-        } else if remaining.is_some_and(|v| v.trim() == "0") {
+        } else if remaining
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .is_some_and(|v| v.trim() == "0")
+        {
             let retry_after = reset
-                .and_then(|v| v.trim().parse::<u64>().ok())
-                .filter(|&reset| reset > now_secs)
-                .map(|reset| Duration::from_secs(reset - now_secs));
+                .and_then(|b| std::str::from_utf8(b).ok())
+                .and_then(parse_saturating_u64)
+                .map(|reset_secs| wait_until(reset_secs, now_secs));
             Self::Limited { retry_after }
         } else if retry_after.is_some() {
             Self::Limited { retry_after: None }
@@ -317,21 +378,20 @@ impl AttemptState {
         if self.attempt >= MAX_ATTEMPTS - 1 {
             return Transition::Fail;
         }
-        match outcome {
-            RequestOutcome::HttpStatus { status, rate_limit } => {
-                if !is_retryable_http_status(*status, rate_limit.is_rate_limited()) {
-                    return Transition::Fail;
-                }
-                match rate_limit.retry_after() {
-                    Some(d) if d.as_millis() > RETRY_MAX_DELAY_MS as u128 => Transition::Fail,
-                    Some(d) => self.retry(d),
-                    None => self.retry(retry_delay(self.attempt)),
-                }
-            }
-            RequestOutcome::TransportError { retryable: true } => {
-                self.retry(retry_delay(self.attempt))
-            }
-            RequestOutcome::TransportError { retryable: false } => Transition::Fail,
+        let (retryable, server_delay) = match outcome {
+            RequestOutcome::HttpStatus { status, rate_limit } => (
+                is_retryable_http_status(*status, rate_limit.is_rate_limited()),
+                rate_limit.retry_after(),
+            ),
+            RequestOutcome::TransportError { retryable } => (*retryable, None),
+        };
+        if !retryable {
+            return Transition::Fail;
+        }
+        match server_delay {
+            Some(d) if d.as_millis() > RETRY_MAX_DELAY_MS as u128 => Transition::Fail,
+            Some(d) => self.retry(d),
+            None => self.retry(retry_delay(self.attempt)),
         }
     }
 
@@ -606,28 +666,102 @@ mod tests {
     }
 
     #[test]
+    fn retry_after_http_dates_and_non_utf8_resolve_in_parse() {
+        const DATE: u64 = 784_111_777;
+        for value in [
+            "Sun, 06 Nov 1994 08:49:37 GMT",
+            "Sunday, 06-Nov-94 08:49:37 GMT",
+            "Sun Nov  6 08:49:37 1994",
+        ] {
+            for (now, expected) in [(DATE - 2, 2), (DATE, 0), (DATE + 1, 0), (u64::MAX, 0)] {
+                let facts = RateLimitHeaders::parse(
+                    Some(value.as_bytes()),
+                    Some(b"0"),
+                    Some(b"1000000000"),
+                    now,
+                );
+                assert_eq!(
+                    facts.retry_after(),
+                    Some(Duration::from_secs(expected)),
+                    "{value}: now={now}"
+                );
+            }
+        }
+        // Pre-epoch or malformed values fall back to quota-reset, or remain Limited with no delay.
+        for value in [
+            &b"soon"[..],
+            &b"Sun, 07 Nov 1994 08:49:37 GMT"[..],
+            &b""[..],
+            &[0xFF, 0xFE][..],
+        ] {
+            assert_eq!(
+                RateLimitHeaders::parse(Some(value), None, None, DATE),
+                RateLimitHeaders::Limited { retry_after: None },
+                "{value:?}"
+            );
+            assert_eq!(
+                RateLimitHeaders::parse(
+                    Some(value),
+                    Some(b"0"),
+                    Some((DATE + 2).to_string().as_bytes()),
+                    DATE
+                )
+                .retry_after(),
+                Some(Duration::from_secs(2)),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn request_target_couples_origin_and_auth() {
+        assert_eq!(
+            RequestTarget::classify("https://api.github.com/repos/foo/bar"),
+            RequestTarget::GithubApi
+        );
+        assert_eq!(
+            RequestTarget::classify("https://codeload.github.com/foo/bar"),
+            RequestTarget::External
+        );
+        assert_eq!(RequestTarget::GithubApi.auth(true), Auth::Token);
+        assert_eq!(RequestTarget::GithubApi.auth(false), Auth::Anonymous);
+        assert_eq!(RequestTarget::External.auth(true), Auth::Anonymous);
+        assert_eq!(RequestTarget::External.auth(false), Auth::Anonymous);
+    }
+
+    #[test]
+    fn format_bearer_token_trims_and_rejects_blank() {
+        assert_eq!(
+            format_bearer_token("  tok  "),
+            Some(Zeroizing::new("Bearer tok".to_string()))
+        );
+        assert_eq!(format_bearer_token("   "), None);
+        assert_eq!(format_bearer_token(""), None);
+    }
+
+    #[test]
     fn retry_after_honors_quota_state() {
         const NOW: u64 = 1_000_000;
         // (retry-after, x-ratelimit-remaining, x-ratelimit-reset, now, expected delay in seconds)
         type Row<'a> = (
-            Option<&'a str>,
-            Option<&'a str>,
-            Option<&'a str>,
+            Option<&'a [u8]>,
+            Option<&'a [u8]>,
+            Option<&'a [u8]>,
             u64,
             Option<u64>,
         );
         let cases: [Row<'_>; 9] = [
-            (None, Some("59"), Some("1002400"), NOW, None),
-            (None, Some("0"), Some("1002400"), NOW, Some(2400)),
-            // A reset at `now` is already due: no wait.
-            (None, Some("0"), Some("1000000"), NOW, None),
-            (Some("2"), Some("0"), Some("1002400"), NOW, Some(2)),
-            (Some("2"), Some("59"), Some("1002400"), NOW, Some(2)),
-            (None, None, Some("1002400"), NOW, None),
-            (None, Some("0"), Some("999"), NOW, None),
-            (None, Some("0"), Some("1002400"), u64::MAX, None),
-            // An invalid hint falls back to backoff; HTTP-dates are resolved by the shell.
-            (Some("soon"), None, None, NOW, None),
+            (None, Some(b"59"), Some(b"1002400"), NOW, None),
+            (None, Some(b"0"), Some(b"1002400"), NOW, Some(2400)),
+            // A reset at or before `now` is already due: no wait.
+            (None, Some(b"0"), Some(b"1000000"), NOW, Some(0)),
+            (Some(b"2"), Some(b"0"), Some(b"1002400"), NOW, Some(2)),
+            (Some(b"2"), Some(b"59"), Some(b"1002400"), NOW, Some(2)),
+            (None, None, Some(b"1002400"), NOW, None),
+            (None, Some(b"0"), Some(b"999"), NOW, Some(0)),
+            (None, Some(b"0"), Some(b"1002400"), u64::MAX, Some(0)),
+            // An invalid hint falls back to backoff.
+            (Some(b"soon"), None, None, NOW, None),
         ];
 
         for (retry_after, remaining, reset, now, expected) in cases {
@@ -645,38 +779,58 @@ mod tests {
     fn equivalent_rate_limit_signals_parse_to_the_same_facts() {
         let parse = RateLimitHeaders::parse;
         assert_eq!(
-            parse(Some("soon"), None, None, 100),
-            parse(None, Some("0"), None, 100)
+            parse(Some(b"soon"), None, None, 100),
+            parse(None, Some(b"0"), None, 100)
         );
         assert_eq!(
-            parse(Some("2"), None, None, 100),
-            parse(None, Some("0"), Some("102"), 100)
+            parse(Some(b"2"), None, None, 100),
+            parse(None, Some(b"0"), Some(b"102"), 100)
+        );
+        assert_eq!(
+            parse(Some(b"0"), None, None, 100),
+            parse(None, Some(b"0"), Some(b"100"), 100)
         );
     }
 
     #[test]
     fn overflowing_retry_after_seconds_exceed_the_retry_cap() {
-        for value in ["18446744073709551616", "999999999999999999999999999999"] {
-            let facts = RateLimitHeaders::parse(Some(value), Some("0"), Some("1000001"), 1_000_000);
+        for value in [
+            &b"18446744073709551616"[..],
+            &b"999999999999999999999999999999"[..],
+        ] {
+            let facts =
+                RateLimitHeaders::parse(Some(value), Some(b"0"), Some(b"1000001"), 1_000_000);
             let delay = facts.retry_after();
-            assert_eq!(delay, Some(Duration::from_secs(u64::MAX)), "{value}");
+            assert_eq!(delay, Some(Duration::from_secs(u64::MAX)), "{value:?}");
             let transition = AttemptState::new().step(&RequestOutcome::HttpStatus {
                 status: 429,
                 rate_limit: facts,
             });
-            assert_eq!(transition, Transition::Fail, "{value}");
+            assert_eq!(transition, Transition::Fail, "{value:?}");
+
+            let reset_facts = RateLimitHeaders::parse(None, Some(b"0"), Some(value), 1_000_000);
+            assert_eq!(
+                reset_facts.retry_after(),
+                Some(Duration::from_secs(u64::MAX - 1_000_000)),
+                "{value:?}"
+            );
+            let reset_transition = AttemptState::new().step(&RequestOutcome::HttpStatus {
+                status: 403,
+                rate_limit: reset_facts,
+            });
+            assert_eq!(reset_transition, Transition::Fail, "{value:?}");
         }
     }
 
     #[test]
     fn rate_limited_when_retry_after_present_or_quota_exhausted() {
         // (retry-after, x-ratelimit-remaining, expected)
-        type Row<'a> = (Option<&'a str>, Option<&'a str>, bool);
+        type Row<'a> = (Option<&'a [u8]>, Option<&'a [u8]>, bool);
         let cases: [Row<'_>; 5] = [
-            (Some("1"), None, true),
-            (Some("soon"), Some("59"), true),
-            (None, Some("0"), true),
-            (None, Some("59"), false),
+            (Some(b"1"), None, true),
+            (Some(b"soon"), Some(b"59"), true),
+            (None, Some(b"0"), true),
+            (None, Some(b"59"), false),
             (None, None, false),
         ];
         for (retry_after, remaining, expected) in cases {
