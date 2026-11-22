@@ -48,9 +48,10 @@ impl ExcludePatterns {
         let patterns: Vec<String> = patterns.into_iter().map(Into::into).collect();
         let mut builder = user_builder();
         for pattern in &patterns {
-            check_one_rule(pattern)?;
+            let rule = trim_rule_end(pattern);
+            check_one_rule(pattern, rule)?;
             // Every line was validated above, so this adds exactly the rule that was checked.
-            let _ = builder.add_line(None, pattern);
+            let _ = builder.add_line(None, rule);
         }
         let rules = builder
             .build()
@@ -99,9 +100,32 @@ pub(crate) fn compile_gitignore(dir: &Path, bytes: &[u8]) -> Result<Gitignore, S
             return Err(format!("line {}: {UNSUPPORTED_POSIX_CLASS}", index + 1));
         }
         // An invalid glob line is skipped; the other lines still apply.
-        let _ = builder.add_line(None, line);
+        let _ = builder.add_line(None, trim_rule_end(line));
     }
     builder.build().map_err(|err| err.to_string())
+}
+
+/// Trims trailing whitespace without discarding a backslash-escaped space.
+fn trim_rule_end(pattern: &str) -> &str {
+    let mut end = pattern.len();
+    for (index, ch) in pattern.char_indices().rev() {
+        if !ch.is_whitespace() {
+            break;
+        }
+        if ch == ' '
+            && pattern.as_bytes()[..index]
+                .iter()
+                .rev()
+                .take_while(|&&b| b == b'\\')
+                .count()
+                % 2
+                == 1
+        {
+            break;
+        }
+        end = index;
+    }
+    &pattern[..end]
 }
 
 /// Appends one path segment to a match prefix, joined with `/` when the prefix is not empty.
@@ -129,14 +153,9 @@ fn push_match_segment(mut prefix: String, segment: &[u8]) -> String {
 
 /// Compiles one pattern and requires exactly one rule.
 ///
-/// Rejects patterns whose body is empty after `add_line`-equivalent trailing-whitespace trimming,
-/// `!`, and `/` stripping (e.g., `!`, `! `); escaped `\ ` preserves its backslash.
-fn check_one_rule(pattern: &str) -> Result<(), DomainError> {
-    let trimmed = pattern.trim_end();
-    let body = trimmed
-        .strip_prefix('!')
-        .unwrap_or(trimmed)
-        .trim_matches('/');
+/// Rejects rules with an empty body after stripping `!` and `/` (e.g., `!`, `! `).
+fn check_one_rule(pattern: &str, rule: &str) -> Result<(), DomainError> {
+    let body = rule.strip_prefix('!').unwrap_or(rule).trim_matches('/');
     if body.is_empty() {
         return Err(no_rule(pattern));
     }
@@ -144,7 +163,7 @@ fn check_one_rule(pattern: &str) -> Result<(), DomainError> {
         return Err(invalid_pattern(pattern, UNSUPPORTED_POSIX_CLASS));
     }
     let single = user_builder()
-        .add_line(None, pattern)
+        .add_line(None, rule)
         .and_then(|line| line.build())
         .map_err(|err| invalid_pattern(pattern, err))?;
     if single.len() == 1 {
@@ -396,6 +415,21 @@ mod tests {
                 "patterns={pats:?}, is_dir={is_dir}"
             );
         }
+    }
+
+    #[test]
+    fn both_rule_sources_preserve_escaped_trailing_spaces() {
+        let root = Path::new("repo");
+        for pattern in ["notes\\  ", "notes\\ \t "] {
+            let name = "notes ";
+            let gitignore = compile_gitignore(root, pattern.as_bytes()).unwrap();
+            let user = patterns(&[pattern]);
+            assert!(gitignore.matched(root.join(name), false).is_ignore());
+            assert!(user.excludes_leaf("", name.as_bytes()));
+            assert!(!gitignore.matched(root.join("notes"), false).is_ignore());
+            assert!(!user.excludes_leaf("", b"notes"));
+        }
+        assert_eq!(trim_rule_end("notes\\\\  "), "notes\\\\");
     }
 
     #[test]

@@ -6,7 +6,7 @@ use memchr::memchr;
 
 use crate::core::error::{DomainError, top_largest};
 use crate::core::model::CollectionResult;
-use crate::core::path::{BudgetDirKey, Candidate};
+use crate::core::path::{BudgetDirKey, Candidate, NormalizedPath, UnstorablePath};
 use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE, OVERFLOW_LARGEST_DIRECTORIES};
 use crate::core::storage::{FileStorage, SortedFiles};
 
@@ -102,45 +102,44 @@ impl Selector {
         }
     }
 
-    /// Observes one candidate entry and settles it.
-    ///
-    /// - [`Candidate::Unstorable`]: consumes budget, requires unique byte identity, skipped.
-    /// - [`Candidate::Valid`]: consumes budget, requires unique path; stores UTF-8 [`Body::Bytes`] within
-    ///   size limit, skips non-UTF-8, over-limit, [`Body::Unavailable`], or [`Body::OverLimit`].
+    /// Admits and settles one local candidate with its body outcome.
     ///
     /// # Errors
     ///
     /// Returns [`DomainError::CandidateLimitExceeded`], [`DomainError::InvalidMetadata`] (duplicate path),
     /// or [`DomainError::OutputTooLarge`].
     pub(crate) fn observe<B: AsRef<[u8]>>(
-        mut self,
+        self,
         candidate: Candidate<Body<B>>,
     ) -> Result<Self, DomainError> {
-        self.candidates = self.candidates.add(candidate.budget_dir())?;
         match candidate {
-            Candidate::Unstorable(path) => {
-                if !self.seen_paths.insert(path.into_identity()) {
-                    return Err(DomainError::invalid_metadata(
-                        "duplicate entry path (unstorable)",
-                    ));
-                }
-            }
-            Candidate::Valid(path, body) => {
-                if self.seen_paths.contains(path.as_bytes()) {
-                    return Err(DomainError::invalid_metadata(format!(
-                        "duplicate entry path: {}",
-                        &*path
-                    )));
-                }
-                if let Body::Bytes(bytes) = body
-                    && let Some(content) = classify_content(bytes.as_ref())
-                {
-                    // Raw arena bytes are a strict lower bound for the rendered digest size, so
-                    // `push` rejects over-limit content before the final rendering pass.
-                    self.storage = self.storage.push(&path, content)?;
-                }
-                self.seen_paths.insert(path.into_bytes());
-            }
+            Candidate::Unstorable(path) => self.admit_unstorable(path),
+            Candidate::Valid(path, body) => self.admit_file(path)?.settle(body),
+        }
+    }
+
+    /// Charges and checks a storable path before its body is available.
+    pub(crate) fn admit_file(mut self, path: NormalizedPath) -> Result<PendingFile, DomainError> {
+        self.candidates = self.candidates.add(path.budget_dir())?;
+        if self.seen_paths.contains(path.as_bytes()) {
+            return Err(DomainError::invalid_metadata(format!(
+                "duplicate entry path: {}",
+                &*path
+            )));
+        }
+        Ok(PendingFile {
+            selector: self,
+            path,
+        })
+    }
+
+    /// Charges and records an unstorable path, which has no body to settle.
+    pub(crate) fn admit_unstorable(mut self, path: UnstorablePath) -> Result<Self, DomainError> {
+        self.candidates = self.candidates.add(path.budget_dir())?;
+        if !self.seen_paths.insert(path.into_identity()) {
+            return Err(DomainError::invalid_metadata(
+                "duplicate entry path (unstorable)",
+            ));
         }
         Ok(self)
     }
@@ -162,6 +161,27 @@ impl Selector {
             files: SortedFiles::new(self.storage)?,
             skipped,
         })
+    }
+}
+
+/// Owns the selector until an admitted, unique file is settled with its body outcome.
+#[must_use]
+pub(crate) struct PendingFile {
+    selector: Selector,
+    path: NormalizedPath,
+}
+
+impl PendingFile {
+    /// Stores bounded UTF-8 text, or records the path alone if its body was skipped.
+    pub(crate) fn settle<B: AsRef<[u8]>>(self, body: Body<B>) -> Result<Selector, DomainError> {
+        let Self { mut selector, path } = self;
+        if let Body::Bytes(bytes) = body
+            && let Some(content) = classify_content(bytes.as_ref())
+        {
+            selector.storage = selector.storage.push(&path, content)?;
+        }
+        selector.seen_paths.insert(path.into_bytes());
+        Ok(selector)
     }
 }
 

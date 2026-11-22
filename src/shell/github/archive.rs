@@ -55,23 +55,23 @@ pub(in crate::shell) fn collect<R: Read>(
                 parsed_revision = parsed_revision.or_else(|| parse_pax_comment(&content_scratch));
             }
             EntryType::Regular | EntryType::Continuous => {
-                let candidate = normalize_tar_entry_path(&entry.path_bytes(), exclude)?;
-                if let Some(candidate) = candidate {
-                    let settled = match candidate {
-                        Candidate::Unstorable(path) => Candidate::Unstorable(path),
-                        Candidate::Valid(path, ()) if entry.size() > MAX_FILE_SIZE => {
-                            Candidate::Valid(path, Body::OverLimit)
-                        }
-                        Candidate::Valid(path, ()) => {
+                selector = match normalize_tar_entry_path(&entry.path_bytes(), exclude)? {
+                    Some(Candidate::Unstorable(path)) => selector.admit_unstorable(path)?,
+                    Some(Candidate::Valid(path, ())) => {
+                        let pending = selector.admit_file(path)?;
+                        let body = if entry.size() > MAX_FILE_SIZE {
+                            Body::OverLimit
+                        } else {
                             (&mut entry)
                                 .take(MAX_FILE_SIZE + 1)
                                 .read_to_end(&mut content_scratch)
                                 .map_err(|err: io::Error| meter.stream_error(&err))?;
-                            Candidate::Valid(path, Body::Bytes(content_scratch.as_slice()))
-                        }
-                    };
-                    selector = selector.observe(settled)?;
-                }
+                            Body::Bytes(content_scratch.as_slice())
+                        };
+                        pending.settle(body)?
+                    }
+                    None => selector,
+                };
             }
             // Skip directories, symlinks, and other special entries before path decoding.
             _ => {}
@@ -729,6 +729,55 @@ mod tests {
                 .unwrap();
         }
         bytes
+    }
+
+    #[test]
+    fn archive_rejects_candidates_before_reading_their_bodies() {
+        use crate::core::policy::MAX_FILE_COUNT;
+
+        struct UnavailableBody;
+        impl Read for UnavailableBody {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::other("body unavailable"))
+            }
+        }
+
+        for (admitted, next) in [(1, 0), (MAX_FILE_COUNT, MAX_FILE_COUNT)] {
+            let mut tar = tar::Builder::new(Vec::new());
+            for i in 0..admitted {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(0);
+                tar.append_data(&mut header, format!("repo-root/{i}.txt"), &[][..])
+                    .unwrap();
+            }
+            let mut header = tar::Header::new_gnu();
+            header.set_size(1);
+            tar.append_data(&mut header, format!("repo-root/{next}.txt"), &b"x"[..])
+                .unwrap();
+            let raw = tar.into_inner().unwrap();
+            let headers = gzip_members(&[&raw[..(admitted + 1) * 512]]);
+            let result = collect(
+                headers.as_slice().chain(UnavailableBody),
+                "fixture",
+                None,
+                &ExcludePatterns::default(),
+            );
+            let err = result.unwrap_err();
+            if admitted == MAX_FILE_COUNT {
+                assert!(
+                    matches!(
+                        err,
+                        IngestError::Domain(DomainError::CandidateLimitExceeded(_))
+                    ),
+                    "{err}"
+                );
+            } else {
+                assert!(
+                    matches!(err, IngestError::Domain(DomainError::InvalidMetadata(_))),
+                    "{err}"
+                );
+            }
+        }
     }
 
     #[test]

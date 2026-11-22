@@ -112,17 +112,6 @@ pub(crate) enum Candidate<B = ()> {
     Unstorable(UnstorablePath),
 }
 
-impl<B> Candidate<B> {
-    /// Returns the bounded candidate-budget directory key for this candidate (I-02, I-05).
-    #[must_use]
-    pub(crate) fn budget_dir(&self) -> BudgetDirKey<'_> {
-        match self {
-            Self::Valid(path, _) => path.budget_dir(),
-            Self::Unstorable(path) => path.budget_dir(),
-        }
-    }
-}
-
 /// Unstorable candidate carrying its complete normalized raw-byte identity.
 ///
 /// Only classification constructs it, preserving non-UTF-8 and overlong paths without lossy collisions.
@@ -408,20 +397,14 @@ mod tests {
                 ),
                 "prefix {prefix:?}: at the limit"
             );
-            let over = classify(MAX_PATH_BYTES + 1).expect("within depth limit");
+            let Some(Candidate::Unstorable(over)) = classify(MAX_PATH_BYTES + 1).unwrap() else {
+                panic!("prefix {prefix:?}: one byte over the limit should be unstorable");
+            };
+            let expected_budget = if prefix.is_empty() { "./" } else { prefix };
+            assert_eq!(over.budget_dir().as_str(), expected_budget);
             let expected_identity =
                 format!("{prefix}{}", "f".repeat(MAX_PATH_BYTES + 1 - prefix.len()));
-            assert_eq!(
-                over,
-                Some(Candidate::Unstorable(expected_identity.as_bytes().into())),
-                "prefix {prefix:?}: one byte over the limit"
-            );
-            let expected_budget = if prefix.is_empty() { "./" } else { prefix };
-            assert_eq!(
-                over.as_ref().map(|c| c.budget_dir().as_str()),
-                Some(expected_budget),
-                "prefix {prefix:?}: accounting prefix"
-            );
+            assert_eq!(over.into_identity(), expected_identity.into_bytes());
         }
     }
 

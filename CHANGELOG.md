@@ -21,6 +21,10 @@ Scope: `### Library consumers and CLI users` lists observable behavior. `### Con
 
 #### Fixed
 
+- **Escaped trailing spaces in ignore rules**: `.gitignore` and `--exclude` preserve a backslash-escaped space even when unescaped whitespace follows it.
+- **Archive candidate admission precedes body reads**: A duplicate or over-budget candidate reports its metadata or count error before a body read can mask it.
+- **Non-UTF-8 output paths**: Inline `--output=<PATH>` preserves native paths on Unix and Windows. As with UTF-8 paths, separate option values cannot start with `-` except for the stdout sentinel.
+- **Parallel local reads**: Workers release the job receiver lock before reading files.
 - **Unsupported POSIX ignore classes fail closed**: Patterns like `[[:digit:]]` fail explicitly in `.gitignore` and `--exclude`, even with an unclosed `[`. Ordinary ranges (`[0-9]`, ranges ending in `[`) still work.
 - **Local traversal stops at depth limit and cancellation**: Unpruned directories beyond the depth limit fail before entry, even when empty. After settlement failure, the walker stops between entries, including ignored/non-candidate ones.
 - **Stdout delivery contract**: Collection and rendering failures emit no digest bytes; stdout write failures can leave a partial stream. File replacement remains atomic.

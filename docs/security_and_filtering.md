@@ -50,7 +50,7 @@ By **S1** and **S2**, both pipelines follow `[Physical/Stream Bounds] -> [Early 
    - Leaf segments run hidden, `--exclude`, noise lockfile, and sensitive patterns (§ 3.2–3.3), returning `Ignored` (omitted from counts).
    - Non-UTF-8 segments or paths `> MAX_PATH_BYTES` become `Unstorable` candidates retaining lossless normalized raw-byte identity (`L2`, `I-05`, `I-10`, `I-11`).
 4. **Candidate observation & assembly:**
-   - Charges candidate slot (`MAX_FILE_COUNT` overflow aborts); duplicate normalized raw-byte paths (including skipped) fail (`InvalidMetadata`, `I-09`).
+   - Charges candidate slot (`MAX_FILE_COUNT` overflow aborts); duplicate normalized raw-byte paths (including skipped) fail (`InvalidMetadata`, `I-09`). Archives check both before reading the candidate body; local workers prefetch within the bounds in § 5.
    - Declared size `> MAX_FILE_SIZE` skips without reading; otherwise bounded read settles inclusion (§ 4).
    - Digest assembly rejects any stored path that is a directory prefix of another (`InvalidMetadata`, `I-01`; skipped candidates excluded).
 
@@ -93,7 +93,7 @@ Governed by **S2**, § 2, § 4, § 8, and [`context.md`](../context.md) (`L2`, `
 
 ### 3.6 User Exclusions (`--exclude`)
 
-- `.gitignore` syntax relative to source root, case-sensitive; each pattern yields one rule after trimming unescaped trailing whitespace. Blank lines, comments, bare `!`, unclosed `[`, invalid globs, or POSIX named character classes fail at parse time (`DomainError::Usage`).
+- `.gitignore` syntax relative to source root, case-sensitive; each pattern yields one rule after trimming trailing whitespace while preserving backslash-escaped spaces. Blank lines, comments, bare `!`, unclosed `[`, invalid globs, or POSIX named character classes fail at parse time (`DomainError::Usage`).
 - `\` in path segments matches `U+FFFD` on all platforms (never a separator).
 - Applies identically to local and GitHub sources, independently of `.gitignore`. `!` re-includes only paths excluded by other user patterns and never under an excluded ancestor directory.
 

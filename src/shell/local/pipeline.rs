@@ -126,7 +126,7 @@ fn fold_candidates<T>(
     let (slot_tx, slot_rx) = sync_channel::<Slot<'_>>(LOCAL_CHANNEL_CAPACITY);
     std::thread::scope(|s| {
         for _ in 0..local_worker_count(std::thread::available_parallelism()) {
-            s.spawn(|| run_worker(&jobs, &aborted, &pool));
+            s.spawn(|| run_worker(&jobs, &aborted, |path| read_candidate(path, &pool)));
         }
         // Senders move into the producer, so they drop before the workers are joined.
         s.spawn(move || {
@@ -171,13 +171,19 @@ fn dispatch<'a>(
 
 /// Answers jobs until the job channel closes. After an abort, workers answer without touching the
 /// filesystem, so the remaining queue drains quickly.
-fn run_worker<'a>(jobs: &Mutex<Receiver<Job<'a>>>, aborted: &AtomicBool, pool: &'a BufferPool) {
-    // The lock covers only the receive, so workers do not serialize on the reads.
-    while let Ok(job) = jobs.lock().unwrap_or_else(PoisonError::into_inner).recv() {
+fn run_worker<'a>(
+    jobs: &Mutex<Receiver<Job<'a>>>,
+    aborted: &AtomicBool,
+    read: impl Fn(&Path) -> WorkerReply<'a>,
+) {
+    loop {
+        // The statement drops the receiver lock before any file I/O.
+        let job = jobs.lock().unwrap_or_else(PoisonError::into_inner).recv();
+        let Ok(job) = job else { break };
         let msg = if aborted.load(Ordering::Relaxed) {
             Ok(None)
         } else {
-            read_candidate(&job.entry_path, pool)
+            read(&job.entry_path)
         };
         // The settling side may already have stopped after an error; the reply is then unused.
         let _ = job.reply.send(msg);
@@ -527,6 +533,21 @@ mod tests {
         );
         assert!(err.is_err());
         Ok(())
+    }
+
+    #[test]
+    fn worker_releases_receiver_before_reading() {
+        let (job_tx, job_rx) = sync_channel(1);
+        let jobs = Mutex::new(job_rx);
+        let (reply, pending) = sync_channel(1);
+        let entry_path = PathBuf::from("test.txt");
+        assert!(job_tx.send(Job { entry_path, reply }).is_ok());
+        drop(job_tx);
+        run_worker(&jobs, &AtomicBool::new(false), |_| {
+            assert!(jobs.try_lock().is_ok());
+            Ok(None)
+        });
+        assert!(matches!(pending.recv(), Ok(Ok(None))));
     }
 
     #[test]
