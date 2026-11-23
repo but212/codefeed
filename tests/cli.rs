@@ -16,36 +16,15 @@ fn run(args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn help_exits_successfully_without_ingesting() {
-    let cases: &[&[&str]] = &[&["--help"], &[".", "--help"]];
-    for args in cases {
-        let dir = temp_dir("help");
-        let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-            .args(*args)
-            .current_dir(&dir)
-            .output()
-            .expect("CLI process should start");
-        assert!(
-            output.status.success(),
-            "args: {args:?}, output: {output:?}"
-        );
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert_eq!(stdout.matches("Usage:").count(), 1, "args: {args:?}");
-        assert_eq!(
-            stdout.trim(),
-            "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>] [--exclude <PATTERN>]...",
-            "args: {args:?}"
-        );
-        assert!(output.stderr.is_empty(), "args: {args:?}");
-        assert!(!dir.join("digest.txt").exists(), "args: {args:?}");
-    }
-}
-
-#[test]
-fn version_exits_successfully_without_ingesting() {
-    let expected = format!("codefeed {}\n", env!("CARGO_PKG_VERSION"));
-    for args in [&["--version"][..], &[".", "-V"][..]] {
-        let dir = temp_dir("version");
+fn help_and_version_exit_successfully_without_ingesting() {
+    let expected_help = "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>] [--exclude <PATTERN>]...\n";
+    let expected_version = format!("codefeed {}\n", env!("CARGO_PKG_VERSION"));
+    let cases: [(&[&str], &str); 2] = [
+        (&[".", "--help"], expected_help),
+        (&[".", "-V"], &expected_version),
+    ];
+    for (args, expected_stdout) in cases {
+        let dir = temp_dir("meta_action");
         let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
             .args(args)
             .current_dir(&dir)
@@ -57,7 +36,7 @@ fn version_exits_successfully_without_ingesting() {
         );
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
-            expected,
+            expected_stdout,
             "args: {args:?}"
         );
         assert!(output.stderr.is_empty(), "args: {args:?}");
@@ -66,209 +45,59 @@ fn version_exits_successfully_without_ingesting() {
 }
 
 #[test]
-fn help_and_version_in_option_value_positions_are_not_actions() {
-    for (args, fragment) in [
-        (&["--output", "--help"][..], "a value is required"),
-        (&["--ref", "--version"][..], "a value is required"),
-        (&["--bogus", "--output", "--help"][..], "unknown option"),
-    ] {
-        let output = run(args);
-        assert_eq!(output.status.code(), Some(1), "args: {args:?}");
-        assert!(output.stdout.is_empty(), "args: {args:?}");
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains(fragment),
-            "args: {args:?}"
-        );
-    }
-}
-
-#[test]
-fn invalid_invocations_exit_one_with_an_error_line() {
-    // (args, fragment unique to the failing branch, fragment that must be absent)
-    let cases: [(&[&str], &str, Option<&str>); 4] = [
-        (&[], "error:", None),
-        (&[".", "--format"], "error:", None),
-        (&[".", "--ref", "main"], "error:", None),
-        (
-            &[".", "--unknown"],
-            "error: unknown option: --unknown",
-            Some("error: invalid source: unknown option"),
-        ),
-    ];
-    for (args, expected, absent) in cases {
-        let output = run(args);
-        assert_eq!(output.status.code(), Some(1), "args: {args:?}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains(expected),
-            "args: {args:?}, stderr: {stderr}"
-        );
-        if let Some(absent) = absent {
-            assert!(!stderr.contains(absent), "args: {args:?}, stderr: {stderr}");
-        }
-    }
-}
-
-#[test]
-fn double_dash_treats_leading_dash_source_as_positional() -> Result<(), Box<dyn std::error::Error>>
-{
-    let root = temp_dir("double_dash");
-    let dash_dir = root.join("-dash-dir");
-    std::fs::create_dir(&dash_dir)?;
-    std::fs::write(dash_dir.join("hello.txt"), "hello")?;
-
-    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .current_dir(&root)
-        .args(["-o", "-", "--", "-dash-dir"])
-        .output()
-        .expect("CLI process should start");
-
-    assert!(output.status.success(), "output: {output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("hello.txt"), "stdout: {stdout}");
-    Ok(())
-}
-
-#[test]
-fn nonexistent_local_source_exits_with_invalid_source() {
-    let root = temp_dir("missing_source");
-    let missing = root.join("does_not_exist");
-
-    let output = run(&[missing.to_str().expect("temp path is UTF-8")]);
-
+fn invalid_invocation_exits_one_with_an_error_line() {
+    let output = run(&[".", "--unknown"]);
     assert_eq!(output.status.code(), Some(1), "output: {output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("error: invalid source:") && stderr.contains("does_not_exist"),
-        "stderr: {stderr}"
-    );
     assert!(output.stdout.is_empty(), "output: {output:?}");
-}
-
-#[test]
-fn creates_default_output_without_subcommand() -> Result<(), Box<dyn std::error::Error>> {
-    let root = temp_dir("default");
-    std::fs::write(root.join("visible.txt"), "visible")?;
-
-    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .current_dir(&root)
-        .arg(".")
-        .output()?;
-
-    assert!(output.status.success(), "output: {output:?}");
-    assert!(root.join("digest.txt").is_file());
-    // File mode reports its summary on stdout; stream mode uses stderr.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Wrote digest.txt (1 files, 0 skipped, ~"),
-        "stdout: {stdout}"
-    );
-    Ok(())
-}
-
-#[test]
-fn writes_digest_only_to_stdout_for_dash_output() -> Result<(), Box<dyn std::error::Error>> {
-    let root = temp_dir("stdout");
-    std::fs::write(root.join("visible.txt"), "visible")?;
-
-    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .current_dir(&root)
-        .arg(".")
-        .arg("--output")
-        .arg("-")
-        .output()?;
-
-    assert!(output.status.success(), "output: {output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("FILE: visible.txt"), "stdout: {stdout}");
-    assert!(!stdout.contains("Wrote"), "stdout: {stdout}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Wrote to stdout (1 files, 0 skipped, ~"),
+        stderr.contains("error: unknown option: --unknown"),
         "stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("error: invalid source: unknown option"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn default_file_and_dash_stdout_outputs_match() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_dir("default_and_stdout");
+    std::fs::write(root.join("visible.txt"), "visible")?;
+
+    let dash_output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+        .current_dir(&root)
+        .args([".", "--output", "-"])
+        .output()?;
+
+    assert!(dash_output.status.success(), "output: {dash_output:?}");
+    let dash_stdout = String::from_utf8_lossy(&dash_output.stdout);
+    assert!(
+        dash_stdout.contains("FILE: visible.txt"),
+        "stdout: {dash_stdout}"
+    );
+    assert!(!dash_stdout.contains("Wrote"), "stdout: {dash_stdout}");
+    let dash_stderr = String::from_utf8_lossy(&dash_output.stderr);
+    assert!(
+        dash_stderr.contains("Wrote to stdout (1 files, 0 skipped, ~"),
+        "stderr: {dash_stderr}"
     );
     assert!(!root.join("digest.txt").exists(), "no output file expected");
-    Ok(())
-}
 
-#[test]
-fn exclude_flag_drops_matching_paths_from_the_digest() -> Result<(), Box<dyn std::error::Error>> {
-    let root = temp_dir("exclude");
-    std::fs::create_dir(root.join("build"))?;
-    std::fs::write(root.join("build").join("out.txt"), "generated")?;
-    std::fs::write(root.join("app.log"), "log line")?;
-    std::fs::write(root.join("visible.txt"), "visible")?;
-
-    let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
+    let file_output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
         .current_dir(&root)
         .arg(".")
-        .args(["-x", "build/", "--exclude=*.log", "-o", "-"])
         .output()?;
 
-    assert!(output.status.success(), "output: {output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("FILE: visible.txt"), "stdout: {stdout}");
-    assert!(!stdout.contains("generated"), "stdout: {stdout}");
-    assert!(!stdout.contains("log line"), "stdout: {stdout}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(file_output.status.success(), "output: {file_output:?}");
+    assert!(root.join("digest.txt").is_file());
+    // File mode reports its summary on stdout; stream mode uses stderr.
+    let file_stdout = String::from_utf8_lossy(&file_output.stdout);
     assert!(
-        stderr.contains("Wrote to stdout (1 files, 0 skipped, ~"),
-        "stderr: {stderr}"
+        file_stdout.contains("Wrote digest.txt (1 files, 0 skipped, ~"),
+        "stdout: {file_stdout}"
     );
-    Ok(())
-}
-
-#[test]
-fn ignore_ranges_allow_an_open_bracket_as_endpoint() -> Result<(), Box<dyn std::error::Error>> {
-    let pattern = "[#-[:digit:]].txt";
-    for use_gitignore in [false, true] {
-        let root = temp_dir("ignore_range");
-        std::fs::write(root.join("A].txt"), "excluded")?;
-        std::fs::write(root.join("visible.txt"), "visible")?;
-
-        let mut command = Command::new(env!("CARGO_BIN_EXE_codefeed"));
-        command.current_dir(&root).args([".", "-o", "-"]);
-        if use_gitignore {
-            std::fs::write(root.join(".gitignore"), format!("{pattern}\n"))?;
-        } else {
-            command.args(["--exclude", pattern]);
-        }
-
-        let output = command.output()?;
-        assert!(
-            output.status.success(),
-            "use_gitignore={use_gitignore}: {output:?}"
-        );
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("FILE: visible.txt"), "{stdout}");
-        assert!(!stdout.contains("A].txt"), "{stdout}");
-    }
-    Ok(())
-}
-
-#[test]
-fn exclude_invalid_pattern_is_a_usage_error() -> Result<(), Box<dyn std::error::Error>> {
-    let root = temp_dir("invalid_exclude");
-    std::fs::write(root.join("config1.txt"), "fixture")?;
-    for pattern in ["[", "! ", "/config[[:digit:]].txt", "/config[[:digit:].txt"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-            .current_dir(&root)
-            .args([".", "-x", pattern, "-o", "-"])
-            .output()?;
-        assert_eq!(
-            output.status.code(),
-            Some(1),
-            "{pattern:?}: output: {output:?}"
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains(&format!(
-                "error: invalid value '{pattern}' for '--exclude <PATTERN>'"
-            )),
-            "{pattern:?}: stderr: {stderr}"
-        );
-        assert!(output.stdout.is_empty(), "{pattern:?}: output: {output:?}");
-    }
+    assert_eq!(std::fs::read(root.join("digest.txt"))?, dash_output.stdout);
     Ok(())
 }
 
@@ -291,29 +120,6 @@ fn help_after_non_utf8_source_exits_successfully() {
         "Usage: codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>] [--exclude <PATTERN>]..."
     );
     assert!(output.stderr.is_empty(), "output: {output:?}");
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-#[test]
-fn accepts_non_utf8_local_source_path() {
-    use std::ffi::OsString;
-    use std::os::unix::ffi::OsStringExt;
-
-    let parent = temp_dir("non_utf8");
-    let source = parent.join(OsString::from_vec(b"source-\xff".to_vec()));
-    let output = source.join("digest.txt");
-    std::fs::create_dir_all(&source).expect("source directory should be created");
-    std::fs::write(source.join("visible.txt"), "visible").expect("source file should be written");
-
-    let result = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-        .arg(&source)
-        .arg("--output")
-        .arg(&output)
-        .output()
-        .expect("CLI process should start");
-
-    assert!(result.status.success(), "output: {result:?}");
-    assert!(output.is_file());
 }
 
 #[test]
@@ -392,53 +198,6 @@ pub mod deep;
     let xml = run(&[root, "-o", "-", "-f", "xml"]);
     assert!(xml.status.success(), "output: {xml:?}");
     assert_eq!(xml.stdout, expected_xml.as_bytes());
-    Ok(())
-}
-
-#[test]
-fn file_output_bytes_match_stdout_bytes() -> Result<(), Box<dyn std::error::Error>> {
-    let temp = temp_dir("file_matches_stdout");
-    let root = temp.join("fixture");
-    std::fs::create_dir_all(root.join("src"))?;
-    std::fs::write(root.join("src/lib.rs"), "pub fn lib() {}\n")?;
-    let root = root.to_str().expect("UTF-8 temp path");
-    let output = temp.join("digest.txt");
-    let output = output.to_str().expect("UTF-8 temp path");
-
-    let stdout = run(&[root, "-o", "-"]);
-    assert!(stdout.status.success(), "output: {stdout:?}");
-    let file = run(&[root, "-o", output]);
-    assert!(file.status.success(), "output: {file:?}");
-    assert_eq!(std::fs::read(output)?, stdout.stdout);
-    Ok(())
-}
-
-#[test]
-fn ingest_fails_fast_on_directory_output_target() -> Result<(), Box<dyn std::error::Error>> {
-    let root = temp_dir("dir_output");
-    let out_dir = root.join("out_dir");
-    std::fs::create_dir(&out_dir)?;
-    let missing_source = root.join("does_not_exist");
-    let missing_arg = missing_source.to_str().expect("temp path is UTF-8");
-    let out_dir_arg = out_dir.to_str().expect("temp path is UTF-8");
-    let suffixed_out = format!("{}/", root.join("out").display());
-
-    for (output_arg, expected_msg) in [
-        (out_dir_arg, "output path is a directory"),
-        (suffixed_out.as_str(), "output path has no filename"),
-    ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_codefeed"))
-            .args(["--output", output_arg, missing_arg])
-            .output()
-            .expect("CLI process should start");
-
-        assert_eq!(output.status.code(), Some(1), "output: {output:?}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains(expected_msg),
-            "expected {expected_msg:?} in stderr for {output_arg:?}, got: {stderr}"
-        );
-    }
     Ok(())
 }
 

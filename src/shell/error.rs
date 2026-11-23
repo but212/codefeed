@@ -56,16 +56,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn domain_wraps_unchanged() {
-        let wrapped = IngestError::from(DomainError::usage("test"));
+    fn display_matches_each_variant() {
+        let wrapped = IngestError::from(DomainError::usage("bad flag"));
         assert!(
-            matches!(&wrapped, IngestError::Domain(DomainError::Usage(message)) if message == "test"),
+            matches!(&wrapped, IngestError::Domain(DomainError::Usage(message)) if message == "bad flag"),
             "{wrapped:?}"
         );
-    }
-
-    #[test]
-    fn display_matches_each_variant() {
         let cases: [(IngestError, String); 4] = [
             (
                 IngestError::Api(crate::core::github::api_error(
@@ -76,7 +72,7 @@ mod tests {
                 )),
                 "GitHub API error: HTTP 500: boom".into(),
             ),
-            (DomainError::usage("bad flag").into(), "bad flag".into()),
+            (wrapped, "bad flag".into()),
             (
                 IngestError::Io(io::Error::other("disk")),
                 "filesystem error: disk".into(),

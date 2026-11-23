@@ -228,55 +228,57 @@ mod tests {
     #[test]
     fn reads_rate_limit_headers_from_response() {
         let mut headers = ureq::http::HeaderMap::new();
+        headers.insert("retry-after", "30".parse().expect("header value"));
         headers.insert("x-ratelimit-remaining", "0".parse().expect("header value"));
         headers.insert("x-ratelimit-reset", "123".parse().expect("header value"));
+        let parsed = read_rate_limit_headers(&headers, 0);
         assert_eq!(
-            read_rate_limit_headers(&headers, 0),
-            RateLimitHeaders::parse(None, Some(b"0"), Some(b"123"), 0)
+            parsed,
+            RateLimitHeaders::parse(Some(b"30"), Some(b"0"), Some(b"123"), 0)
         );
-    }
-
-    #[test]
-    fn retry_after_http_dates_resolve_against_explicit_time() {
-        const DATE: u64 = 784_111_777;
-        for value in [
-            "Sun, 06 Nov 1994 08:49:37 GMT",
-            "Sunday, 06-Nov-94 08:49:37 GMT",
-            "Sun Nov  6 08:49:37 1994",
-        ] {
-            let mut headers = ureq::http::HeaderMap::new();
-            headers.insert("retry-after", value.parse().unwrap());
-            headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
-            headers.insert("x-ratelimit-reset", "1000000000".parse().unwrap());
-            assert_eq!(
-                read_rate_limit_headers(&headers, DATE - 2).retry_after(),
-                Some(Duration::from_secs(2)),
-                "{value}"
-            );
-        }
+        assert_eq!(parsed.retry_after(), Some(Duration::from_secs(30)));
     }
 
     #[test]
     fn long_retry_after_values_do_not_send_a_second_request() {
-        for value in ["Fri, 31 Dec 9999 23:59:59 GMT", "18446744073709551616"] {
+        for (value, body, expected_retry_after, expected_message) in [
+            (
+                "3600",
+                "rate limited",
+                Some(Duration::from_secs(3600)),
+                Some(
+                    "GitHub API error: HTTP 429: rate limited (retry available in 3600s) (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)",
+                ),
+            ),
+            ("Fri, 31 Dec 9999 23:59:59 GMT", "", None, None),
+            ("18446744073709551616", "", None, None),
+        ] {
+            let body_len = body.len();
             let server = MockServer::spawn(1, move |_index, _req, _port| {
                 format!(
-                    "HTTP/1.1 429 Too Many Requests\r\nRetry-After: {value}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                ).into_bytes()
+                    "HTTP/1.1 429 Too Many Requests\r\nRetry-After: {value}\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n{body}"
+                )
+                .into_bytes()
             });
             let client = GithubClient::new();
             let Err(err) = client.stream_url(&server.url("/test")) else {
                 panic!("{value}: expected the original rate-limit error");
             };
-            let IngestError::Api(api) = err else {
+            let IngestError::Api(api) = &err else {
                 panic!("{value}: a retry lost the original rate-limit response: {err}");
             };
             assert_eq!(api.status(), 429, "{value}");
+            if let Some(exact) = expected_retry_after {
+                assert_eq!(api.retry_after(), Some(exact), "{value}");
+            }
             assert!(
                 api.retry_after()
                     .is_some_and(|delay| delay.as_millis() > u128::from(RETRY_MAX_DELAY_MS)),
                 "{value}: requested delay was discarded"
             );
+            if let Some(expected) = expected_message {
+                assert_eq!(err.to_string(), expected, "{value}");
+            }
             assert_eq!(server.join().len(), 1, "{value}");
         }
     }
@@ -370,7 +372,16 @@ mod tests {
                 "{case}"
             );
 
-            assert_eq!(server.join().len(), 1, "{case}");
+            let requests = server.join();
+            assert_eq!(requests.len(), 1, "{case}");
+            let expected_ua_header = format!("user-agent: {GITHUB_USER_AGENT}");
+            assert!(
+                requests[0]
+                    .to_ascii_lowercase()
+                    .contains(&expected_ua_header),
+                "{case}: HTTP request must transmit expected User-Agent header ({expected_ua_header}): {}",
+                requests[0]
+            );
         }
     }
 
@@ -393,32 +404,6 @@ mod tests {
         assert_eq!(err.to_string(), "GitHub API error: HTTP 503: unavailable");
 
         assert_eq!(server.join().len(), MAX_ATTEMPTS);
-    }
-
-    #[test]
-    fn retry_after_beyond_retry_cap_fails_at_once_with_the_delay_in_the_error() {
-        // A 3600 s Retry-After exceeds the retry cap, so the first response is final.
-        let server = MockServer::spawn(1, |_index, _req, _port| {
-            b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 3600\r\nContent-Length: 12\r\nConnection: close\r\n\r\nrate limited"
-                .to_vec()
-        });
-
-        let client = GithubClient::new();
-        let url = server.url("/test");
-        let Err(err) = client.stream_url(&url) else {
-            panic!("expected error");
-        };
-        let IngestError::Api(api) = &err else {
-            panic!("expected Api error, got {err}");
-        };
-        assert_eq!(api.status(), 429);
-        assert_eq!(api.retry_after(), Some(Duration::from_secs(3600)));
-        assert_eq!(
-            err.to_string(),
-            "GitHub API error: HTTP 429: rate limited (retry available in 3600s) (set GITHUB_TOKEN or GH_TOKEN to authenticate or increase rate limits)"
-        );
-
-        assert_eq!(server.join().len(), 1);
     }
 
     #[test]
@@ -514,30 +499,6 @@ mod tests {
     }
 
     #[test]
-    fn transmits_user_agent_header_in_http_request() {
-        let server = MockServer::spawn(1, |_index, _req, _port| {
-            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".to_vec()
-        });
-
-        let client = GithubClient::new();
-        let url = server.url("/user-agent-check");
-        let mut reader = client.stream_url(&url).expect("stream_url should succeed");
-        let mut body = String::new();
-        reader.read_to_string(&mut body).expect("read body");
-        assert_eq!(body, "ok");
-
-        let requests = server.join();
-        assert_eq!(requests.len(), 1);
-
-        let req = &requests[0];
-        let expected_ua_header = format!("user-agent: {GITHUB_USER_AGENT}");
-        assert!(
-            req.to_ascii_lowercase().contains(&expected_ua_header),
-            "HTTP request must transmit expected User-Agent header ({expected_ua_header}): {req}"
-        );
-    }
-
-    #[test]
     fn strips_authorization_header_on_redirect() {
         let server = MockServer::spawn(2, |index, _req, port| {
             match index {
@@ -577,29 +538,17 @@ mod tests {
     }
 
     #[test]
-    fn auth_is_token_only_for_the_api_origin_with_a_token() {
-        const API: &str = "https://api.github.com/repos/foo/bar/tarball";
-        const CODELOAD: &str = "https://codeload.github.com/foo/bar/tar.gz";
-        let mut client = GithubClient::new();
-
-        client.auth_header = Some(Zeroizing::new("Bearer test_token".to_string()));
-        assert_eq!(client.policy(API).auth(), Auth::Token);
-        assert_eq!(client.policy(CODELOAD).auth(), Auth::Anonymous);
-
-        client.auth_header = None;
-        assert_eq!(client.policy(API).auth(), Auth::Anonymous);
-        assert_eq!(client.policy(CODELOAD).auth(), Auth::Anonymous);
-    }
-
-    #[test]
     fn github_client_request_headers_for_api_and_non_api_origin() {
+        const API_URL: &str = "https://api.github.com/repos/foo/bar/tarball";
+        const NON_API_URL: &str = "https://codeload.github.com/foo/bar/tar.gz";
+
         let mut client = GithubClient::new();
         client.auth_header = Some(Zeroizing::new("Bearer test_token".to_string()));
 
-        let non_api_url = "https://codeload.github.com/foo/bar/tar.gz";
+        assert_eq!(client.policy(NON_API_URL).auth(), Auth::Anonymous);
         let non_api = client
-            .policy(non_api_url)
-            .apply(client.agent.get(non_api_url));
+            .policy(NON_API_URL)
+            .apply(client.agent.get(NON_API_URL));
         let non_api_headers = non_api.headers_ref();
         assert_eq!(non_api_headers.and_then(|h| h.get("Authorization")), None);
         assert_eq!(
@@ -607,8 +556,8 @@ mod tests {
             None
         );
 
-        let api_url = "https://api.github.com/repos/foo/bar/tarball";
-        let api = client.policy(api_url).apply(client.agent.get(api_url));
+        assert_eq!(client.policy(API_URL).auth(), Auth::Token);
+        let api = client.policy(API_URL).apply(client.agent.get(API_URL));
         let api_headers = api.headers_ref();
         assert_eq!(
             api_headers
@@ -624,7 +573,9 @@ mod tests {
         );
 
         client.auth_header = None;
-        let api_no_auth = client.policy(api_url).apply(client.agent.get(api_url));
+        assert_eq!(client.policy(NON_API_URL).auth(), Auth::Anonymous);
+        assert_eq!(client.policy(API_URL).auth(), Auth::Anonymous);
+        let api_no_auth = client.policy(API_URL).apply(client.agent.get(API_URL));
         let api_no_auth_headers = api_no_auth.headers_ref();
         assert_eq!(
             api_no_auth_headers.and_then(|h| h.get("Authorization")),

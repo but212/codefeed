@@ -295,59 +295,89 @@ mod tests {
     }
 
     #[test]
-    fn parses_public_github_repository() -> Result<(), Box<dyn std::error::Error>> {
-        let expected = Source::github("rust-lang", "cargo", None).unwrap();
+    fn parses_public_github_repository_and_local_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let name = GithubName::new("codefeed-2.0")?;
+        assert_eq!(&*name, "codefeed-2.0");
+
+        let cases = [
+            ("https://github.com/rust-lang/cargo", "rust-lang", "cargo"),
+            (
+                "https://github.com/rust-lang/cargo.git",
+                "rust-lang",
+                "cargo",
+            ),
+            ("https://github.com/owner/repo.git", "owner", "repo"),
+            ("https://github.com:443/owner/repo", "owner", "repo"),
+            ("https://github.com:/owner/repo", "owner", "repo"),
+            ("HTTPS://github.com/owner/repo", "owner", "repo"),
+            ("Https://GitHub.com/owner/repo", "owner", "repo"),
+        ];
+        for (url, expected_owner, expected_repo) in cases {
+            assert_eq!(
+                Source::parse(url)?,
+                Source::github(expected_owner, expected_repo, None)?,
+                "{url}"
+            );
+            let (owner, repo) = parse_github_url(url)?.expect("expected GitHub URL");
+            assert_eq!(&*owner, expected_owner, "{url}");
+            assert_eq!(&*repo, expected_repo, "{url}");
+        }
+
+        assert_eq!(parse_github_url("local/path")?, None);
         assert_eq!(
-            Source::parse("https://github.com/rust-lang/cargo.git")?,
-            expected
-        );
-        let expected_repo = Source::github("owner", "repo", None).unwrap();
-        assert_eq!(
-            Source::parse("https://github.com:443/owner/repo")?,
-            expected_repo
-        );
-        assert_eq!(
-            Source::parse("https://github.com:/owner/repo")?,
-            expected_repo
+            Source::parse("local/path")?,
+            Source::Local(PathBuf::from("local/path"))
         );
         Ok(())
     }
 
     #[test]
-    fn parse_scheme_is_case_insensitive() {
-        let expected = Source::github("owner", "repo", None).unwrap();
-        assert_eq!(
-            Source::parse("HTTPS://github.com/owner/repo").unwrap(),
-            expected
-        );
-        assert_eq!(
-            Source::parse("Https://GitHub.com/owner/repo").unwrap(),
-            expected
-        );
+    fn rejects_invalid_and_unsupported_repository_urls() {
         for url in [
             "HTTP://github.com/owner/repo",
+            "http://github.com/owner/repo",
             "Git@github.com:o/r",
+            "git@github.com:owner/repo.git",
             "SSH://git@github.com/o/r",
+            "https://notgithub.com/a/b",
         ] {
             assert!(
                 matches!(Source::parse(url), Err(DomainError::UnsupportedSource(_))),
-                "expected unsupported source for: {url}"
+                "expected unsupported source for Source::parse({url})"
+            );
+            assert!(
+                matches!(
+                    parse_github_url(url),
+                    Err(DomainError::UnsupportedSource(_))
+                ),
+                "expected unsupported source for parse_github_url({url})"
             );
         }
-    }
 
-    #[test]
-    fn parse_rejects_malformed_urls() {
-        let invalid_cases = [
-            "git@github.com:owner/repo.git",
+        for url in [
             "https://github.com/owner/.",
             "https://github.com/./repo",
             "https://github.com:99999/owner/repo",
             "https://github.com:abc/owner/repo",
             "https://github.com:8080/owner/repo",
-        ];
-        for url in invalid_cases {
-            assert!(Source::parse(url).is_err(), "expected error for: {url}");
+            "https://github.com/bad name/repo",
+            "https://github.com/owner/re%70o",
+            "https://github.com/../repo",
+            "https://github.com/owner/..",
+            "https://github.com/owner/.git",
+            "https://github.com/owner/repo?tab=readme",
+            "https://github.com/owner/repo#readme",
+            "https:///owner/repo",
+            "https://github.com/a/b/c",
+        ] {
+            assert!(
+                matches!(Source::parse(url), Err(DomainError::InvalidSource(_))),
+                "expected invalid source for Source::parse({url})"
+            );
+            assert!(
+                matches!(parse_github_url(url), Err(DomainError::InvalidSource(_))),
+                "expected invalid source for parse_github_url({url})"
+            );
         }
 
         for url in [
@@ -360,6 +390,14 @@ mod tests {
             let message = error.to_string();
             assert!(!message.contains("tok"), "credentials leaked: {message}");
         }
+
+        let err = parse_github_url("https://github.com:99999/o/r\x1b[2J").unwrap_err();
+        let rendered = err.to_string();
+        assert!(!rendered.contains('\x1b'), "ESC leaked: {rendered:?}");
+        assert_eq!(
+            rendered,
+            "invalid source: https://github.com:99999/o/r\u{FFFD}[2J"
+        );
     }
 
     #[test]
@@ -393,56 +431,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_owner_and_repo() {
-        let name = GithubName::new("codefeed-2.0").unwrap();
-        assert_eq!(&*name, "codefeed-2.0");
-
-        let (owner, repo) = parse_github_url("https://github.com/rust-lang/cargo")
-            .unwrap()
-            .unwrap();
-        assert_eq!(&*owner, "rust-lang");
-        assert_eq!(&*repo, "cargo");
-
-        let (owner, repo) = parse_github_url("https://github.com/owner/repo.git")
-            .unwrap()
-            .unwrap();
-        assert_eq!(&*owner, "owner");
-        assert_eq!(&*repo, "repo");
-
-        assert_eq!(parse_github_url("local/path").unwrap(), None);
-        assert!(parse_github_url("https://notgithub.com/a/b").is_err());
-        assert!(parse_github_url("https://github.com/a/b/c").is_err());
-    }
-
-    #[test]
-    fn rejects_invalid_repository_urls() {
-        for value in [
-            "https://github.com/bad name/repo",
-            "https://github.com/owner/re%70o",
-            "https://github.com/../repo",
-            "https://github.com/owner/..",
-            "https://github.com/owner/.git",
-            "https://github.com/owner/repo?tab=readme",
-            "https://github.com/owner/repo#readme",
-            "https:///owner/repo",
-        ] {
-            let err = parse_github_url(value).unwrap_err();
-            assert!(matches!(err, DomainError::InvalidSource(_)), "{value}");
-        }
-
-        let unsupported = parse_github_url("http://github.com/owner/repo").unwrap_err();
-        assert!(matches!(unsupported, DomainError::UnsupportedSource(_)));
-
-        let err = parse_github_url("https://github.com:99999/o/r\x1b[2J").unwrap_err();
-        let rendered = err.to_string();
-        assert!(!rendered.contains('\x1b'), "ESC leaked: {rendered:?}");
-        assert_eq!(
-            rendered,
-            "invalid source: https://github.com:99999/o/r\u{FFFD}[2J"
-        );
-    }
-
-    #[test]
     fn valid_github_name_accepts_exactly_the_name_alphabet() {
         for byte in 0..128u8 {
             let c = char::from(byte);
@@ -459,10 +447,7 @@ mod tests {
             );
         }
         assert!(!valid_github_name("a\u{e9}"));
-    }
 
-    #[test]
-    fn valid_github_name_rejects_only_empty_and_dot_names_by_length() {
         for accepted in ["a", ".a", "a.", "ab", "..a", "a..", "...", ".-"] {
             assert!(valid_github_name(accepted), "{accepted:?}");
         }

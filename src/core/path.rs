@@ -628,31 +628,10 @@ mod tests {
     }
 
     #[test]
-    fn trailing_separators_never_change_the_classification() {
-        let cases: [(&[u8], Option<Candidate>); 6] = [
-            (
-                b"repo-root/src/a.rs/",
-                Some(Candidate::Valid("src/a.rs".into(), ())),
-            ),
-            (
-                b"repo-root/src/a.rs///",
-                Some(Candidate::Valid("src/a.rs".into(), ())),
-            ),
-            (b"repo-root/", None),
-            (b"repo-root//", None),
-            (b"///", None),
-            (b"./", None),
-        ];
-        for (raw, expected) in cases {
-            assert_eq!(normalize(raw).unwrap(), expected, "{raw:?}");
-        }
-    }
-
-    #[test]
     fn normalizes_archive_entry_path_correctly() {
         // (raw entry path, expected status). Covers root stripping, slash and `.` collapsing,
-        // policy exclusion (noise lockfile, sensitive credential), and non-UTF-8 prefixes.
-        let ok_cases: [(&[u8], Option<Candidate>); 10] = [
+        // trailing separators, dots inside names, policy exclusion, and non-UTF-8 prefixes.
+        let ok_cases: [(&[u8], Option<Candidate>); 16] = [
             (
                 b"but212-codefeed-c1863c8/src/main.rs",
                 Some(Candidate::Valid("src/main.rs".into(), ())),
@@ -669,9 +648,27 @@ mod tests {
                 b"repo-root/././a.rs",
                 Some(Candidate::Valid("a.rs".into(), ())),
             ),
+            (
+                b"repo-root/src/a.rs/",
+                Some(Candidate::Valid("src/a.rs".into(), ())),
+            ),
+            (
+                b"repo-root/src/a.rs///",
+                Some(Candidate::Valid("src/a.rs".into(), ())),
+            ),
+            (
+                b"repo-root/a..b.txt",
+                Some(Candidate::Valid("a..b.txt".into(), ())),
+            ),
+            (
+                b"repo-root/dir../x",
+                Some(Candidate::Valid("dir../x".into(), ())),
+            ),
             (b"but212-codefeed-c1863c8/", None),
             (b"but212-codefeed-c1863c8///", None),
             (b"but212-codefeed-c1863c8", None),
+            (b"///", None),
+            (b"./", None),
             (b"", None),
             // Classification itself is pinned by `path::classification_corpus_is_stable`; one
             // ignored and one unstorable row show that the archive delegates to it.
@@ -721,20 +718,6 @@ mod tests {
                 .contains("Tar entry path exceeds maximum directory depth"),
             "unexpected message: {err}"
         );
-    }
-
-    #[test]
-    fn dots_inside_a_name_are_not_traversal() {
-        for (raw, expected) in [
-            (&b"repo-root/a..b.txt"[..], "a..b.txt"),
-            (b"repo-root/dir../x", "dir../x"),
-        ] {
-            assert_eq!(
-                normalize(raw).unwrap(),
-                Some(Candidate::Valid(expected.into(), ())),
-                "{raw:?}"
-            );
-        }
     }
 
     mod properties {

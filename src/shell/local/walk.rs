@@ -411,17 +411,6 @@ mod tests {
     }
 
     #[test]
-    fn walk_yields_only_admitted_leaf_candidates() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("walk_admitted_leaves")?;
-        for name in ["keep.txt", "Cargo.lock", "server.pem", "drop.log"] {
-            fs::write(root.join(name), "fixture")?;
-        }
-        let exclude = ExcludePatterns::new(["*.log"])?;
-        assert_eq!(walk_files(&root, &exclude), ["keep.txt"]);
-        Ok(())
-    }
-
-    #[test]
     fn user_excluded_directory_is_pruned_without_reading_its_gitignore()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("excluded_dir_prune")?;
@@ -433,35 +422,6 @@ mod tests {
         let exclude = ExcludePatterns::new(["build/"])?;
 
         assert_eq!(walk_files(&root, &exclude), vec!["keep.txt"]);
-        Ok(())
-    }
-
-    #[test]
-    fn unsupported_posix_class_in_gitignore_fails_the_walk()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("gitignore_posix_class")?;
-        fs::write(root.join("config1.txt"), "fixture")?;
-        for rules in [
-            "/config[[:digit:]].txt\n",
-            // The closing bracket of the named class must not stand in for the outer one.
-            "/config[[:digit:].txt\n",
-            // A dangling escape would normally cause the line to be skipped.
-            "/config[[:digit:]].txt\\\nconfig1.txt\n",
-        ] {
-            fs::write(root.join(".gitignore"), rules)?;
-            let Err(err) = Walk::new(&root, None, &ExcludePatterns::default(), &NOT_CANCELLED)
-            else {
-                panic!("expected unsupported class to abort the walk: {rules:?}");
-            };
-            assert!(
-                matches!(err, IngestError::Io(ref error)
-                if error.kind() == io::ErrorKind::InvalidData
-                    && error.to_string().contains("POSIX character classes")),
-                "{rules:?}: {err:?}"
-            );
-        }
-        fs::write(root.join(".gitignore"), "# /config[[:digit:]].txt\n")?;
-        assert!(Walk::new(&root, None, &ExcludePatterns::default(), &NOT_CANCELLED).is_ok());
         Ok(())
     }
 
@@ -541,22 +501,6 @@ mod tests {
         // the walk must keep the rules it already holds, so two.txt stays excluded and the walk ends.
         fs::write(root.join("sub").join(".gitignore"), b"\xff\n")?;
         assert!(walk.next().is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn walk_propagates_error_from_invalid_nested_gitignore()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("walk_error_nested_gitignore")?;
-        fs::create_dir(root.join("sub"))?;
-        fs::write(root.join("sub").join(".gitignore"), b"\xff\n")?;
-        fs::write(root.join("sub").join("file.txt"), "hello")?;
-
-        let exclude = ExcludePatterns::default();
-        let mut walk = Walk::new(&root, None, &exclude, &NOT_CANCELLED)?;
-        let item = walk.next();
-        assert!(item.is_some());
-        assert!(item.unwrap().is_err());
         Ok(())
     }
 

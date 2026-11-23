@@ -141,23 +141,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "invariant: NormalizedPath extends past every tree offset")]
-    fn render_level_panics_on_offset_at_end_of_path() {
-        let storage = FileStorage::new()
-            .push(&NormalizedPath::from("a"), "")
-            .unwrap();
-        let files = SortedFiles::new(storage).unwrap();
-        let _ = render_level(
-            BoundedBuffer::default(),
-            &files,
-            0..1,
-            1,
-            String::new(),
-            BoundedBuffer::push_str,
-        );
-    }
-
-    #[test]
     fn component_at_offset_slices_correctly_and_handles_boundaries() {
         let path = "alpha/beta/gamma.rs";
         assert_eq!(component_at_offset(path, 0), ("alpha", true));

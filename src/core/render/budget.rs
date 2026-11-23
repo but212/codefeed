@@ -160,24 +160,11 @@ mod tests {
     }
 
     #[test]
-    fn render_reports_tokens_of_the_rendered_bytes() -> Result<(), crate::core::error::DomainError>
-    {
-        use crate::core::model::{CollectionResult, DigestFormat};
-        use crate::core::path::NormalizedPath;
-        use crate::core::storage::{FileStorage, SortedFiles};
-
-        let storage = FileStorage::new().push(&NormalizedPath::from("a.txt"), "abc")?;
-        let collection = CollectionResult {
-            label: "repo".into(),
-            revision: None,
-            files: SortedFiles::new(storage).expect("test fixture has no file/directory collision"),
-            skipped: 2,
-        };
-        let digest = collection.render(DigestFormat::Text)?;
-        assert_eq!(
-            digest.estimated_tokens,
-            estimate_tokens_from_bytes(&digest.bytes)
-        );
+    fn bounded_buffer_finish_reports_tokens_of_pushed_bytes() -> Result<(), OutputLimitExceeded> {
+        let payload = b"Repository: repo\nFILE: a.txt\nHello \xec\x95\x88\xeb\x85\x95\n";
+        let digest = BoundedBuffer::default().push_bytes(payload)?.finish();
+        assert_eq!(digest.bytes, payload);
+        assert_eq!(digest.estimated_tokens, estimate_tokens_from_bytes(payload));
         Ok(())
     }
 }

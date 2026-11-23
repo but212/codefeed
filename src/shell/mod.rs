@@ -142,4 +142,33 @@ mod tests {
 
         assert_eq!(server.join().len(), 1);
     }
+
+    #[test]
+    fn ingest_fails_fast_on_directory_output_target() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("dir_output")?;
+        let out_dir = root.join("out_dir");
+        fs::create_dir(&out_dir)?;
+        let missing_source = root.join("does_not_exist");
+        let suffixed_out = std::path::PathBuf::from(format!("{}/", root.join("out").display()));
+
+        for (output_target, expected_msg) in [
+            (OutputTarget::File(out_dir), "output path is a directory"),
+            (
+                OutputTarget::File(suffixed_out),
+                "output path has no filename",
+            ),
+        ] {
+            let config = RunConfig::new(
+                Source::Local(missing_source.clone()),
+                output_target,
+                DigestFormat::Text,
+            );
+            let err = ingest(&config).expect_err("directory output target must fail fast");
+            assert!(
+                err.to_string().contains(expected_msg),
+                "expected {expected_msg:?}, got: {err}"
+            );
+        }
+        Ok(())
+    }
 }

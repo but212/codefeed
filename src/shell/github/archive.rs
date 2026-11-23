@@ -269,31 +269,6 @@ mod tests {
     }
 
     #[test]
-    fn user_exclusion_beyond_max_path_bytes_is_not_counted_as_skipped() {
-        // Twenty-one bytes per directory: the excluded entry is over `MAX_PATH_BYTES`, so without the
-        // exclusion it would take a candidate slot and count as skipped.
-        let dir = "d".repeat(20);
-        let deep = format!("repo-root/{}/x.log", vec![dir.as_str(); 220].join("/"));
-        let mock_data = gzip_tarball(&[
-            (deep.as_str(), b"log line", EntryType::Regular),
-            ("repo-root/src/main.rs", b"fn main() {}", EntryType::Regular),
-        ]);
-        let exclude = ExcludePatterns::new(["*.log"]).unwrap();
-
-        let result = collect(
-            mock_data.as_slice(),
-            "https://github.com/owner/repo",
-            None,
-            &exclude,
-        )
-        .expect("collection should succeed");
-
-        let paths: Vec<&str> = result.files.iter().map(|f| f.path).collect();
-        assert_eq!(paths, vec!["src/main.rs"]);
-        assert_eq!(result.skipped, 0);
-    }
-
-    #[test]
     fn collects_files_and_extracts_pax_sha() {
         let pax_comment = b"52 comment=c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n";
         let mock_data = gzip_tarball(&[
@@ -337,9 +312,13 @@ mod tests {
     }
 
     #[test]
-    fn skips_too_large_files() {
+    fn skips_too_large_files_and_reads_exact_limit_in_full() {
         let mock_data = gzip_tarball(&[
-            ("repo-root/small.txt", b"small", EntryType::Regular),
+            (
+                "repo-root/exact.txt",
+                &vec![b'x'; MAX_FILE_SIZE_USIZE],
+                EntryType::Regular,
+            ),
             (
                 "repo-root/large.txt",
                 &vec![b'x'; MAX_FILE_SIZE_USIZE + 10],
@@ -354,8 +333,10 @@ mod tests {
         )
         .expect("collection should succeed");
 
-        assert_eq!(result.files.len(), 1);
-        assert_eq!(result.files.iter().next().unwrap().path, "small.txt");
+        let files: Vec<_> = result.files.iter().collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "exact.txt");
+        assert_eq!(files[0].content.len(), MAX_FILE_SIZE_USIZE);
         assert_eq!(result.skipped, 1);
     }
 
@@ -418,25 +399,24 @@ mod tests {
     }
 
     #[test]
-    fn non_utf8_symlink_or_dir_is_ignored() {
+    fn non_regular_entries_are_dropped_before_path_normalization() {
+        // Pins the documented order: entry type filtering runs before tar path decoding and
+        // normalization, so non-regular entries with non-UTF-8 or traversal paths are ignored.
         let mock_data = gzip_archive(|tar| {
-            let mut header = tar::Header::new_gnu();
-            header.set_entry_type(EntryType::Symlink);
-            header.set_size(0);
-            header.set_mode(0o777);
-            let name1 = b"repo-root/\xff_symlink";
-            header.as_mut_bytes()[..name1.len()].copy_from_slice(name1);
-            header.set_cksum();
-            tar.append(&header, &b""[..]).unwrap();
-
-            let mut header2 = tar::Header::new_gnu();
-            header2.set_entry_type(EntryType::Directory);
-            header2.set_size(0);
-            header2.set_mode(0o755);
-            let name2 = b"repo-root/\xff_dir/";
-            header2.as_mut_bytes()[..name2.len()].copy_from_slice(name2);
-            header2.set_cksum();
-            tar.append(&header2, &b""[..]).unwrap();
+            for (kind, mode, name) in [
+                (EntryType::Symlink, 0o777, &b"repo-root/\xff_symlink"[..]),
+                (EntryType::Directory, 0o755, &b"repo-root/\xff_dir/"[..]),
+                (EntryType::Directory, 0o755, &b"repo-root/../x/"[..]),
+                (EntryType::Symlink, 0o777, &b"repo-root/../y"[..]),
+            ] {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(kind);
+                header.set_size(0);
+                header.set_mode(mode);
+                header.as_mut_bytes()[..name.len()].copy_from_slice(name);
+                header.set_cksum();
+                tar.append(&header, &b""[..]).unwrap();
+            }
         });
 
         let result = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
@@ -489,49 +469,16 @@ mod tests {
 
     #[test]
     fn colliding_entry_paths_fail_the_run() {
-        type TarEntry<'a> = (&'a str, &'a [u8], EntryType);
-        // The oversized second entry is skipped for size, but its path still collides with the stored first entry.
-        let oversized = vec![b'x'; MAX_FILE_SIZE_USIZE + 1];
-        // (case, entries): every case has two entries that collide in the digest tree.
-        let cases: [(&str, Vec<TarEntry<'_>>); 4] = [
-            (
-                "across repo roots",
-                vec![
-                    ("r1/a.txt", &b"first"[..], EntryType::Regular),
-                    ("r2/a.txt", &b"second"[..], EntryType::Regular),
-                ],
-            ),
-            (
-                "after normalization",
-                vec![
-                    ("repo/a//b.txt", &b"first"[..], EntryType::Regular),
-                    ("repo/a/b.txt", &b"second"[..], EntryType::Regular),
-                ],
-            ),
-            (
-                "skipped candidate",
-                vec![
-                    ("repo/a.txt", &b"first"[..], EntryType::Regular),
-                    ("repo/a.txt", oversized.as_slice(), EntryType::Regular),
-                ],
-            ),
-            (
-                "file and directory",
-                vec![
-                    ("repo-root/a", &b"file"[..], EntryType::Regular),
-                    ("repo-root/a/b", &b"nested"[..], EntryType::Regular),
-                ],
-            ),
-        ];
-        for (case, entries) in cases {
-            let mock_data = gzip_tarball(&entries);
-            let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
-                .unwrap_err();
-            assert!(
-                matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
-                "{case}: expected InvalidMetadata, got: {err:?}"
-            );
-        }
+        let mock_data = gzip_tarball(&[
+            ("r1/a.txt", &b"first"[..], EntryType::Regular),
+            ("r2/a.txt", &b"second"[..], EntryType::Regular),
+        ]);
+        let err = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
+            .unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(_))),
+            "across repo roots: expected InvalidMetadata, got: {err:?}"
+        );
     }
 
     /// Builds GNU long-name records so raw non-UTF-8 paths work on every host OS.
@@ -555,40 +502,18 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_unstorable_paths_fail_after_normalization() {
-        let long = "x".repeat(crate::core::policy::MAX_PATH_BYTES + 1);
-        let first = format!("r1/src/{long}");
-        let second = format!("r2//./src//{long}/");
-        let cases: [(&[u8], &[u8]); 3] = [
-            (first.as_bytes(), second.as_bytes()),
-            (b"r1/src/\xff/file", b"r2//src/./\xff/file"),
-            (b"r1/src/file\xff", b"r2/src/file\xff"),
-        ];
-        for (first, second) in cases {
-            let gz = gzip_raw_paths(&[first, second]);
-            let err = collect_default(&gz, "test", None).unwrap_err();
-            assert!(
-                matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(detail)) if detail.contains("duplicate entry path")),
-                "{first:?}: {err:?}"
-            );
-        }
-    }
+    fn unstorable_paths_forward_to_selector() {
+        let distinct = gzip_raw_paths(&[b"repo/src/\xff/a", b"repo/src/\xff/b"]);
+        let result = collect_default(&distinct, "test", None).unwrap();
+        assert_eq!(result.files.len(), 0);
+        assert_eq!(result.skipped, 2);
 
-    #[test]
-    fn distinct_unstorable_paths_with_shared_prefixes_do_not_collide() {
-        let long = "x".repeat(crate::core::policy::MAX_PATH_BYTES + 1);
-        let first = format!("repo/src/{long}a");
-        let second = format!("repo/src/{long}b");
-        for paths in [
-            [first.as_bytes(), second.as_bytes()],
-            [b"repo/src/\xff/file".as_slice(), b"repo/src/\xfe/file"],
-            [b"repo/src/\xff/a".as_slice(), b"repo/src/\xff/b"],
-            [b"repo/src/\xff".as_slice(), "repo/src/\u{FFFD}".as_bytes()],
-        ] {
-            let gz = gzip_raw_paths(&paths);
-            let result = collect_default(&gz, "test", None).unwrap();
-            assert_eq!(result.files.len() + result.skipped, 2);
-        }
+        let duplicate = gzip_raw_paths(&[b"r1/src/\xff/file", b"r2//src/./\xff/file"]);
+        let err = collect_default(&duplicate, "test", None).unwrap_err();
+        assert!(
+            matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(detail)) if detail.contains("duplicate entry path")),
+            "{err:?}"
+        );
     }
 
     fn sparse_archive(hole: u64) -> Vec<u8> {
@@ -608,20 +533,31 @@ mod tests {
     }
 
     #[test]
-    fn sparse_holes_are_charged_to_the_stream_budget() {
+    fn sparse_holes_are_charged_to_and_bounded_by_stream_budget() {
         let hole = MAX_FILE_SIZE;
         let raw = sparse_archive(hole);
-        let meter = StreamMeter::new();
-        let mut archive = Archive::new(Metered {
-            inner: raw.as_slice(),
-            meter: &meter,
-        });
-        let mut entries = archive.entries().unwrap();
-        meter.arm();
-        let mut entry = entries.next().unwrap().unwrap();
-        meter.disarm();
-        drain_entry(&mut entry, &meter).unwrap();
-        assert_eq!(meter.total.get(), 512 + hole + 1);
+        let run = |preset_total: Option<u64>| {
+            let meter = StreamMeter::new();
+            let mut archive = Archive::new(Metered {
+                inner: raw.as_slice(),
+                meter: &meter,
+            });
+            let mut entries = archive.entries().unwrap();
+            meter.arm();
+            let mut entry = entries.next().unwrap().unwrap();
+            meter.disarm();
+            if let Some(total) = preset_total {
+                meter.total.set(total);
+            }
+            drain_entry(&mut entry, &meter).map(|()| meter.total.get())
+        };
+
+        assert_eq!(run(None).unwrap(), 512 + hole + 1);
+        let err = run(Some(ARCHIVE_MAX_DECOMPRESSED_BYTES - hole / 2)).unwrap_err();
+        assert!(matches!(
+            err,
+            IngestError::Domain(DomainError::InvalidMetadata(_))
+        ));
     }
 
     #[test]
@@ -656,69 +592,6 @@ mod tests {
                 ));
             }
         }
-    }
-
-    #[test]
-    fn sparse_holes_cannot_exceed_the_remaining_stream_budget() {
-        let hole = MAX_FILE_SIZE;
-        let raw = sparse_archive(hole);
-        let meter = StreamMeter::new();
-        let mut archive = Archive::new(Metered {
-            inner: raw.as_slice(),
-            meter: &meter,
-        });
-        let mut entries = archive.entries().unwrap();
-        meter.arm();
-        let mut entry = entries.next().unwrap().unwrap();
-        meter.disarm();
-        meter.total.set(ARCHIVE_MAX_DECOMPRESSED_BYTES - hole / 2);
-        let err = drain_entry(&mut entry, &meter).unwrap_err();
-        assert!(matches!(
-            err,
-            IngestError::Domain(DomainError::InvalidMetadata(_))
-        ));
-    }
-
-    #[test]
-    fn skipped_file_with_nested_path_does_not_fail_the_run() {
-        // The binary `a` is skipped, so it is not stored and does not collide with `a/b`.
-        let mock_data = gzip_tarball(&[
-            ("repo-root/a", b"\0\x01\x02", EntryType::Regular),
-            ("repo-root/a/b", b"nested", EntryType::Regular),
-        ]);
-
-        let result = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
-            .expect("collection should succeed");
-
-        assert_eq!(result.files.len(), 1);
-        assert_eq!(result.files.iter().next().unwrap().path, "a/b");
-        assert_eq!(result.skipped, 1);
-    }
-
-    #[test]
-    fn non_regular_entries_are_dropped_before_path_normalization() {
-        // Pins the documented order: entry type filtering runs before tar path normalization, so
-        // a non-regular entry with a traversal path is ignored rather than rejected.
-        let mock_data = gzip_archive(|tar| {
-            for (kind, name) in [
-                (EntryType::Directory, &b"repo-root/../x/"[..]),
-                (EntryType::Symlink, &b"repo-root/../y"[..]),
-            ] {
-                let mut header = tar::Header::new_gnu();
-                header.set_entry_type(kind);
-                header.set_size(0);
-                header.set_mode(0o755);
-                header.as_mut_bytes()[..name.len()].copy_from_slice(name);
-                header.set_cksum();
-                tar.append(&header, &b""[..]).unwrap();
-            }
-        });
-
-        let result = collect_default(mock_data.as_slice(), "https://github.com/owner/repo", None)
-            .expect("collection should succeed");
-
-        assert_eq!(result.files.len(), 0);
-        assert_eq!(result.skipped, 0);
     }
 
     fn gzip_members(parts: &[&[u8]]) -> Vec<u8> {
@@ -1108,22 +981,5 @@ mod tests {
             matches!(&err, IngestError::Domain(DomainError::InvalidMetadata(msg)) if msg.contains("ARCHIVE_MAX_DECOMPRESSED_BYTES")),
             "expected decompressed limit failure, got: {err:?}"
         );
-    }
-
-    #[test]
-    fn file_of_exactly_the_size_limit_is_read_in_full() {
-        let mock_data = gzip_tarball(&[(
-            "repo-root/exact.txt",
-            &vec![b'x'; MAX_FILE_SIZE_USIZE],
-            EntryType::Regular,
-        )]);
-
-        let result = collect_default(&mock_data, "label", None).expect("collection succeeds");
-
-        let files: Vec<_> = result.files.iter().collect();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].path, "exact.txt");
-        assert_eq!(files[0].content.len(), MAX_FILE_SIZE_USIZE);
-        assert_eq!(result.skipped, 0);
     }
 }

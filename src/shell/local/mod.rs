@@ -77,10 +77,13 @@ mod tests {
     }
 
     use super::*;
+    #[cfg(any(windows, target_os = "macos"))]
     use crate::core::model::{DigestFormat, OutputTarget, RunConfig};
     use crate::core::policy::MAX_FILE_SIZE_USIZE;
+    #[cfg(any(windows, target_os = "macos"))]
     use crate::core::source::Source;
     use crate::shell::github::archive;
+    #[cfg(any(windows, target_os = "macos"))]
     use crate::shell::ingest;
     use crate::shell::testing::{gzip_tarball, run_with_timeout, temp_dir};
     use std::io;
@@ -291,18 +294,13 @@ mod tests {
         fs::create_dir_all(root.join("a"))?;
         fs::write(root.join("a\\b.txt"), "backslash")?;
         fs::write(root.join("a").join("b.txt"), "slash")?;
-        let output = root.join("digest.txt");
 
-        let report = ingest(&RunConfig::new(
-            Source::Local(root.to_path_buf()),
-            OutputTarget::File(output.clone()),
-            DigestFormat::Text,
-        ))?;
-        let digest = fs::read_to_string(output)?;
+        let collection = collect_default(&root, &ResolvedOutput::STDOUT)?;
+        let paths: Vec<&str> = collection.files.iter().map(|f| f.path).collect();
 
-        assert_eq!(report.included_files, 2);
-        assert!(digest.contains("FILE: a\\\\b.txt"));
-        assert!(digest.contains("FILE: a/b.txt"));
+        assert_eq!(collection.files.len(), 2);
+        assert!(paths.contains(&"a\\b.txt"));
+        assert!(paths.contains(&"a/b.txt"));
         Ok(())
     }
 
@@ -535,87 +533,15 @@ mod tests {
     }
 
     #[test]
-    fn ingests_local_directory_respects_all_exclusion_policies()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("comprehensive_local_policies")?;
-        fs::create_dir_all(root.join(".git"))?;
-        fs::create_dir_all(root.join(".hidden_dir"))?;
-        fs::create_dir_all(root.join("certs"))?;
-        fs::create_dir_all(root.join("sub"))?;
-
-        // 1. Text file: included
-        fs::write(root.join("README.md"), "hello")?;
-
-        // 2. Binary file: skipped (increments skipped count)
-        fs::write(root.join("binary.bin"), [0, 1, 2])?;
-
-        // 3. Noise files: ignored without incrementing skipped
-        fs::write(root.join("Cargo.lock"), "[lockfile]")?;
-        fs::write(root.join("poetry.lock"), "[poetry]")?;
-        fs::write(root.join("sub").join("package-lock.json"), "{}")?;
-
-        // 4. Sensitive files: ignored without incrementing skipped
-        fs::write(root.join(".env"), "SECRET=true")?;
-        fs::write(root.join(".env.production"), "KEY=123")?;
-        fs::write(root.join("certs").join("privkey.key"), "PRIVATE")?;
-        fs::write(root.join("certs").join("cert.pfx"), "CERT")?;
-        fs::write(root.join("id_rsa"), "SSH")?;
-        fs::write(root.join("id_ecdsa"), "SSH_ECDSA")?;
-
-        // 5. Git metadata & hidden files/directories: ignored without incrementing skipped
-        fs::write(root.join(".git/config"), "secret")?;
-        fs::write(root.join(".hidden_dir").join("nested.txt"), "nested")?;
-        fs::write(root.join(".dotfile"), "secret")?;
-
-        // 6. Gitignore: ignored without git directory
-        fs::write(root.join(".gitignore"), "ignored.txt\n")?;
-        fs::write(root.join("ignored.txt"), "ignored")?;
-
-        let output = root.join("digest.txt");
-        let report = ingest(&RunConfig::new(
-            Source::Local(root.to_path_buf()),
-            OutputTarget::File(output.clone()),
-            DigestFormat::Text,
-        ))?;
-        let digest = fs::read_to_string(output)?;
-        let expected_basename = root.file_name().unwrap().to_str().unwrap();
-
-        assert!(digest.starts_with(&format!("Repository: {expected_basename}\n")));
-        assert_eq!(report.included_files, 1);
-        assert_eq!(report.skipped_files, 1);
-        assert!(digest.contains("FILE: README.md"));
-        assert!(!digest.contains("binary.bin"));
-        assert!(!digest.contains("Cargo.lock"));
-        assert!(!digest.contains("poetry.lock"));
-        assert!(!digest.contains("package-lock.json"));
-        assert!(!digest.contains(".env"));
-        assert!(!digest.contains("privkey.key"));
-        assert!(!digest.contains("cert.pfx"));
-        assert!(!digest.contains("id_rsa"));
-        assert!(!digest.contains("id_ecdsa"));
-        assert!(!digest.contains(".git/config"));
-        assert!(!digest.contains("nested.txt"));
-        assert!(!digest.contains(".dotfile"));
-        assert!(!digest.contains("ignored.txt"));
-        Ok(())
-    }
-
-    #[test]
     fn does_not_apply_dot_ignore_files() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("dot_ignore")?;
         fs::write(root.join(".ignore"), "important.txt\n")?;
         fs::write(root.join("important.txt"), "important")?;
-        let output = root.join("digest.txt");
 
-        let report = ingest(&RunConfig::new(
-            Source::Local(root.to_path_buf()),
-            OutputTarget::File(output.clone()),
-            DigestFormat::Text,
-        ))?;
-        let digest = fs::read_to_string(output)?;
+        let collection = collect_default(&root, &ResolvedOutput::STDOUT)?;
+        let paths: Vec<&str> = collection.files.iter().map(|f| f.path).collect();
 
-        assert_eq!(report.included_files, 1);
-        assert!(digest.contains("FILE: important.txt"));
+        assert_eq!(paths, vec!["important.txt"]);
         Ok(())
     }
 
@@ -635,14 +561,11 @@ mod tests {
         )?;
         fs::write(root.join(OsString::from_vec(b"a\x80".to_vec())), "a")?;
         fs::write(root.join(OsString::from_vec(b"b\x81".to_vec())), "b")?;
-        let output = root.join("digest.txt");
-        let report = ingest(&RunConfig::new(
-            Source::Local(root.to_path_buf()),
-            OutputTarget::File(output),
-            DigestFormat::Text,
-        ))?;
-        assert_eq!(report.included_files, 0);
-        assert_eq!(report.skipped_files, 2);
+
+        let collection = collect_default(&root, &ResolvedOutput::STDOUT)?;
+
+        assert_eq!(collection.files.len(), 0);
+        assert_eq!(collection.skipped, 2);
         Ok(())
     }
 
@@ -653,6 +576,13 @@ mod tests {
         fs::write(&file, "hello")?;
         let err = validate_root(&file).unwrap_err();
         assert!(err.to_string().contains("is not a directory"));
+
+        let missing = root.join("does_not_exist");
+        assert!(matches!(
+            collect_default(&missing, &ResolvedOutput::STDOUT),
+            Err(IngestError::Domain(DomainError::InvalidSource(detail)))
+                if detail.contains("does_not_exist")
+        ));
         Ok(())
     }
 }

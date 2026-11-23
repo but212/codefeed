@@ -311,13 +311,10 @@ mod tests {
     }
 
     #[test]
-    fn render_stdout_to_ignores_broken_pipe() {
+    fn render_stdout_to_ignores_broken_pipe_and_reports_other_errors() {
         let mut writer = BrokenPipeWriter;
         assert!(render_stdout_to(&mut writer, b"test content").is_ok());
-    }
 
-    #[test]
-    fn stdout_reports_non_broken_pipe_error_after_writing_a_prefix() {
         let mut written = [0; 3];
         // A fixed-size slice accepts the prefix, then returns zero for the remaining bytes.
         let result = render_stdout_to(&mut written.as_mut_slice(), b"digest");
@@ -335,15 +332,8 @@ mod tests {
         let output = root.join("digest.txt");
         let resolved = resolve_output_target(&OutputTarget::File(output.clone()))?;
         assert_eq!(resolved.file(), Some(output.as_path()));
-        Ok(())
-    }
 
-    #[test]
-    fn resolve_output_target_canonicalizes_existing_file() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = temp_dir("output_canonical_test")?;
         fs::create_dir_all(root.join("subdir"))?;
-        let output = root.join("digest.txt");
         fs::write(&output, "output")?;
         let canonical_output = fs::canonicalize(&output)?;
 
@@ -419,7 +409,8 @@ mod tests {
     }
 
     #[test]
-    fn atomic_write_ignores_stale_temporary_file() -> Result<(), Box<dyn std::error::Error>> {
+    fn atomic_write_ignores_stale_temporary_file_and_accepts_long_name()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("atomic")?;
         let output = root.join("digest.txt");
         fs::write(root.join(".codefeed.123.0.tmp"), "stale")?;
@@ -429,15 +420,10 @@ mod tests {
             fs::read_to_string(root.join(".codefeed.123.0.tmp"))?,
             "stale"
         );
-        Ok(())
-    }
 
-    #[test]
-    fn write_atomic_accepts_long_file_name() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("long_file_name")?;
-        let output = root.join("a".repeat(244));
-        write_atomic(&output, b"new")?;
-        assert_eq!(fs::read(&output)?, b"new");
+        let long_output = root.join("a".repeat(244));
+        write_atomic(&long_output, b"new")?;
+        assert_eq!(fs::read(&long_output)?, b"new");
         Ok(())
     }
 
@@ -494,8 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn write_atomic_fails_and_cleans_up_for_directory_target()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn write_atomic_fails_cleans_up_and_names_path() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("output_dir_test")?;
         let existing_dir = root.join("existing_subdir");
         fs::create_dir(&existing_dir)?;
@@ -514,15 +499,9 @@ mod tests {
             temp_count, 0,
             "temporary file must be unlinked on write_atomic failure"
         );
-        Ok(())
-    }
 
-    #[test]
-    fn atomic_write_error_names_path() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("error_names_path")?;
-        let output = root.join("missing").join("out.txt");
-
-        let Err(err) = write_atomic(&output, b"new") else {
+        let missing_output = root.join("missing").join("out.txt");
+        let Err(err) = write_atomic(&missing_output, b"new") else {
             return Err("write into a missing directory must fail".into());
         };
         assert!(
@@ -569,21 +548,6 @@ mod tests {
             "permissions must remain 0600 after overwrite"
         );
         assert_eq!(fs::read_to_string(&output)?, "overwritten content");
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unix_atomic_write_creates_non_existent_target() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("output_non_existent_test")?;
-        let output = root.join("new_file.txt");
-
-        assert!(!output.exists());
-
-        write_atomic(&output, b"new content")?;
-
-        assert!(output.exists());
-        assert_eq!(fs::read_to_string(&output)?, "new content");
         Ok(())
     }
 

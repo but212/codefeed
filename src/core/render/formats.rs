@@ -247,59 +247,70 @@ mod tests {
     }
 
     #[test]
-    fn xml_body_escaping_examples() {
-        let cases: &[(&str, &str)] = &[
-            ("", ""),
-            ("plain text", "plain text"),
-            ("plain text\n", "plain text\n"),
-            ("a & b < c > d", "a &amp; b &lt; c &gt; d"),
-            ("let x = a && b;", "let x = a &amp;&amp; b;"),
+    fn escaping_examples_match_documented_tables() {
+        // Literal anchors for the per-character models in `properties`.
+        let cases: &[(&[u8; 256], &str, &str)] = &[
+            (&XML_BODY_ESCAPE, "", ""),
+            (&XML_BODY_ESCAPE, "plain text", "plain text"),
+            (&XML_BODY_ESCAPE, "plain text\n", "plain text\n"),
+            (&XML_BODY_ESCAPE, "a & b < c > d", "a &amp; b &lt; c &gt; d"),
             (
+                &XML_BODY_ESCAPE,
+                "let x = a && b;",
+                "let x = a &amp;&amp; b;",
+            ),
+            (
+                &XML_BODY_ESCAPE,
                 "<tag attr=\"val\">'hello'</tag>",
                 "&lt;tag attr=&quot;val&quot;&gt;&apos;hello&apos;&lt;/tag&gt;",
             ),
-            ("hello\x0Cworld", "hello\u{FFFD}world"),
-            ("valid\t\n\rwhitespace", "valid\t\n\rwhitespace"),
+            (&XML_BODY_ESCAPE, "hello\x0Cworld", "hello\u{FFFD}world"),
             (
+                &XML_BODY_ESCAPE,
+                "valid\t\n\rwhitespace",
+                "valid\t\n\rwhitespace",
+            ),
+            (
+                &XML_BODY_ESCAPE,
                 "code\u{0000}\u{0001}\u{0008}\u{000B}\u{001F}",
                 "code\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}",
             ),
             (
+                &XML_BODY_ESCAPE,
                 "한글과 이모지 🦀 & 특수문자\n",
                 "한글과 이모지 🦀 &amp; 특수문자\n",
             ),
-            ("끝이 개행이 아닌 &amp", "끝이 개행이 아닌 &amp;amp"),
             (
+                &XML_BODY_ESCAPE,
+                "끝이 개행이 아닌 &amp",
+                "끝이 개행이 아닌 &amp;amp",
+            ),
+            (
+                &XML_BODY_ESCAPE,
                 "prefix \u{FFFD} & <\u{FEFF}> middle \u{FF01} suffix \u{FFFE} and \u{FFFF}",
                 "prefix \u{FFFD} &amp; &lt;\u{FEFF}&gt; middle \u{FF01} suffix \u{FFFD} and \u{FFFD}",
             ),
+            (&HEADER_ESCAPE, "clean_path", "clean_path"),
+            (&HEADER_ESCAPE, "", ""),
+            (
+                &HEADER_ESCAPE,
+                "a\\b\rc\nd\\\\e\r\n\x1b]0;title\x07\x7f\t",
+                "a\\\\b\\rc\\nd\\\\\\\\e\\r\\n\u{FFFD}]0;title\u{FFFD}\u{FFFD}\t",
+            ),
+            (
+                &XML_SINGLE_LINE_ESCAPE,
+                "tab\tnewline\r\nquote\"amp&apos'<tag>",
+                "tab&#9;newline&#13;&#10;quote&quot;amp&amp;apos&apos;&lt;tag&gt;",
+            ),
         ];
 
-        for &(text, expected_escaped) in cases {
+        for &(spec, text, expected_escaped) in cases {
             assert_eq!(
-                escape_with(&XML_BODY_ESCAPE, text),
+                escape_with(spec, text),
                 expected_escaped,
                 "escape mismatch for {text:?}"
             );
         }
-    }
-
-    #[test]
-    fn header_and_attribute_escaping_examples() {
-        // Literal anchors for the per-character models in `properties`.
-        assert_eq!(escape_with(&HEADER_ESCAPE, "clean_path"), "clean_path");
-        assert_eq!(escape_with(&HEADER_ESCAPE, ""), "");
-        assert_eq!(
-            escape_with(&HEADER_ESCAPE, "a\\b\rc\nd\\\\e\r\n\x1b]0;title\x07\x7f\t"),
-            "a\\\\b\\rc\\nd\\\\\\\\e\\r\\n\u{FFFD}]0;title\u{FFFD}\u{FFFD}\t"
-        );
-        assert_eq!(
-            escape_with(
-                &XML_SINGLE_LINE_ESCAPE,
-                "tab\tnewline\r\nquote\"amp&apos'<tag>"
-            ),
-            "tab&#9;newline&#13;&#10;quote&quot;amp&amp;apos&apos;&lt;tag&gt;"
-        );
     }
 
     mod properties {
@@ -463,15 +474,22 @@ mod tests {
     }
 
     #[test]
-    fn text_escapes_revision_header() {
+    fn text_escapes_revision_and_filename_headers_and_tree() {
         let revision = "feature\\x\r\nFiles: 9";
-        let rendered = render_text_digest("repo", Some(revision), &[], 0).unwrap();
+        let files = [FileRecord {
+            path: "x\x1b]0;title\x07.md",
+            content: "content\n",
+        }];
+        let rendered = render_text_digest("repo", Some(revision), &files, 0).unwrap();
 
         assert_eq!(
             rendered.lines().nth(1),
             Some("Revision: feature\\\\x\\r\\nFiles: 9")
         );
         assert!(!rendered.contains(revision));
+        assert!(!rendered.contains('\x1b'));
+        assert!(!rendered.contains('\x07'));
+        assert!(rendered.contains("x\u{FFFD}]0;title\u{FFFD}.md"));
     }
 
     #[test]
@@ -522,19 +540,6 @@ FILE: b.txt\n\
 hello\n\
 \n";
         assert_eq!(streamed_str, expected);
-    }
-
-    #[test]
-    fn text_escapes_control_characters_in_filename_headers_and_tree() {
-        let filename = "x\x1b]0;title\x07.md";
-        let files = [FileRecord {
-            path: filename,
-            content: "content\n",
-        }];
-        let text_rendered = render_text_digest("repo", None, &files, 0).unwrap();
-        assert!(!text_rendered.contains('\x1b'));
-        assert!(!text_rendered.contains('\x07'));
-        assert!(text_rendered.contains("x\u{FFFD}]0;title\u{FFFD}.md"));
     }
 
     #[test]

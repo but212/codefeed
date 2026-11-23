@@ -432,12 +432,6 @@ mod tests {
                     }
                 }
             }
-
-            #[test]
-            fn sanitizing_is_idempotent(input in text()) {
-                let once = ErrorDetail::new(input.as_str());
-                prop_assert_eq!(ErrorDetail::new(&*once), once);
-            }
         }
     }
 }

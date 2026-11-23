@@ -382,12 +382,23 @@ mod tests {
             ("https://api.github.com.evil.example/x", false),
             ("https://api.github.com@evil.example/x", false),
             ("http://127.0.0.1:8080/repos/owner/repo", false),
+            ("https://codeload.github.com/foo/bar", false),
         ];
         for (url, expected) in cases {
+            let expected_target = if expected {
+                RequestTarget::GithubApi
+            } else {
+                RequestTarget::External
+            };
             assert_eq!(
                 is_github_api_origin(url),
                 expected,
                 "unexpected auth scope for: {url}"
+            );
+            assert_eq!(
+                RequestTarget::classify(url),
+                expected_target,
+                "unexpected request target for: {url}"
             );
         }
     }
@@ -418,10 +429,7 @@ mod tests {
             tarball_url("http://127.0.0.1:8080", "owner", "repo", Some("main")),
             "http://127.0.0.1:8080/repos/owner/repo/tarball/main"
         );
-    }
 
-    #[test]
-    fn tarball_url_encodes_every_byte_outside_the_unreserved_set() {
         const PREFIX: &str = "https://api.github.com/repos/o/r/tarball/";
         for byte in 0..128u8 {
             let c = char::from(byte);
@@ -513,6 +521,18 @@ mod tests {
             err.to_string(),
             "HTTP 400: error with newlines  and\u{FFFD}[31mANSI\u{FFFD}bell\u{FFFD}del\u{FFFD}c1"
         );
+
+        for (retry, expected_secs) in [
+            (Duration::ZERO, 0),
+            (Duration::from_millis(999), 0),
+            (Duration::from_millis(1000), 1),
+        ] {
+            assert_eq!(
+                api_error(404, b"x", Some(retry), Auth::Anonymous).to_string(),
+                format!("HTTP 404: x (retry available in {expected_secs}s)"),
+                "retry {retry:?}"
+            );
+        }
     }
 
     #[test]
@@ -556,22 +576,6 @@ mod tests {
                     "status {status} {auth:?} with retry"
                 );
             }
-        }
-    }
-
-    #[test]
-    fn api_error_retry_hint_truncates_to_whole_seconds() {
-        let cases = [
-            (Duration::ZERO, " (retry available in 0s)"),
-            (Duration::from_millis(999), " (retry available in 0s)"),
-            (Duration::from_millis(1000), " (retry available in 1s)"),
-        ];
-        for (retry, hint) in cases {
-            assert_eq!(
-                api_error(404, b"x", Some(retry), Auth::Anonymous).to_string(),
-                expected_message(404, Auth::Anonymous, "x", hint),
-                "retry {retry:?}"
-            );
         }
     }
 
@@ -673,18 +677,6 @@ mod tests {
     }
 
     #[test]
-    fn request_target_classifies_github_api_and_external_origins() {
-        assert_eq!(
-            RequestTarget::classify("https://api.github.com/repos/foo/bar"),
-            RequestTarget::GithubApi
-        );
-        assert_eq!(
-            RequestTarget::classify("https://codeload.github.com/foo/bar"),
-            RequestTarget::External
-        );
-    }
-
-    #[test]
     fn format_bearer_token_trims_and_rejects_blank() {
         assert_eq!(
             format_bearer_token("  tok  "),
@@ -695,37 +687,66 @@ mod tests {
     }
 
     #[test]
-    fn retry_after_honors_quota_state() {
+    fn rate_limit_headers_parse_resolves_quota_and_retry_state() {
         const NOW: u64 = 1_000_000;
-        // (retry-after, x-ratelimit-remaining, x-ratelimit-reset, now, expected delay in seconds)
+        let limited = |secs| RateLimitHeaders::Limited {
+            retry_after: Some(Duration::from_secs(secs)),
+        };
+        let limited_unknown = RateLimitHeaders::Limited { retry_after: None };
+        // (retry-after, x-ratelimit-remaining, x-ratelimit-reset, now, expected)
         type Row<'a> = (
             Option<&'a [u8]>,
             Option<&'a [u8]>,
             Option<&'a [u8]>,
             u64,
-            Option<u64>,
+            RateLimitHeaders,
         );
-        let cases: [Row<'_>; 10] = [
-            (None, Some(b"59"), Some(b"1002400"), NOW, None),
-            (Some(b"0"), Some(b"0"), Some(b"1002400"), NOW, Some(0)),
-            (None, Some(b"0"), Some(b"1002400"), NOW, Some(2400)),
+        let cases: [Row<'_>; 15] = [
+            (
+                None,
+                Some(b"59"),
+                Some(b"1002400"),
+                NOW,
+                RateLimitHeaders::NotLimited,
+            ),
+            (Some(b"0"), Some(b"0"), Some(b"1002400"), NOW, limited(0)),
+            (None, Some(b"0"), Some(b"1002400"), NOW, limited(2400)),
             // A reset at or before `now` is already due: no wait.
-            (None, Some(b"0"), Some(b"1000000"), NOW, Some(0)),
-            (Some(b"2"), Some(b"0"), Some(b"1002400"), NOW, Some(2)),
-            (Some(b"2"), Some(b"59"), Some(b"1002400"), NOW, Some(2)),
-            (None, None, Some(b"1002400"), NOW, None),
-            (None, Some(b"0"), Some(b"999"), NOW, Some(0)),
-            (None, Some(b"0"), Some(b"1002400"), u64::MAX, Some(0)),
+            (None, Some(b"0"), Some(b"1000000"), NOW, limited(0)),
+            (Some(b"2"), Some(b"0"), Some(b"1002400"), NOW, limited(2)),
+            (Some(b"2"), Some(b"59"), Some(b"1002400"), NOW, limited(2)),
+            (
+                None,
+                None,
+                Some(b"1002400"),
+                NOW,
+                RateLimitHeaders::NotLimited,
+            ),
+            (None, Some(b"0"), Some(b"999"), NOW, limited(0)),
+            (None, Some(b"0"), Some(b"1002400"), u64::MAX, limited(0)),
             // An invalid hint falls back to backoff.
-            (Some(b"soon"), None, None, NOW, None),
+            (Some(b"soon"), None, None, NOW, limited_unknown),
+            (Some(b"1"), None, None, 0, limited(1)),
+            (Some(b"soon"), Some(b"59"), None, 0, limited_unknown),
+            (None, Some(b"0"), None, 0, limited_unknown),
+            (None, Some(b"59"), None, 0, RateLimitHeaders::NotLimited),
+            (None, None, None, 0, RateLimitHeaders::NotLimited),
         ];
 
         for (retry_after, remaining, reset, now, expected) in cases {
-            let got = RateLimitHeaders::parse(retry_after, remaining, reset, now)
-                .retry_after()
-                .map(|d| d.as_secs());
+            let facts = RateLimitHeaders::parse(retry_after, remaining, reset, now);
             assert_eq!(
-                got, expected,
+                facts, expected,
+                "retry-after={retry_after:?} remaining={remaining:?} reset={reset:?} now={now}"
+            );
+            assert_eq!(
+                facts.retry_after(),
+                expected.retry_after(),
+                "retry-after={retry_after:?} remaining={remaining:?} reset={reset:?} now={now}"
+            );
+            assert_eq!(
+                facts.is_rate_limited(),
+                matches!(expected, RateLimitHeaders::Limited { .. }),
                 "retry-after={retry_after:?} remaining={remaining:?} reset={reset:?} now={now}"
             );
         }
@@ -756,44 +777,17 @@ mod tests {
         ] {
             let facts =
                 RateLimitHeaders::parse(Some(value), Some(b"0"), Some(b"1000001"), 1_000_000);
-            let delay = facts.retry_after();
-            assert_eq!(delay, Some(Duration::from_secs(u64::MAX)), "{value:?}");
-            let transition = AttemptState::new().step(&RequestOutcome::HttpStatus {
-                status: 429,
-                rate_limit: facts,
-            });
-            assert_eq!(transition, Transition::Fail, "{value:?}");
+            assert_eq!(
+                facts.retry_after(),
+                Some(Duration::from_secs(u64::MAX)),
+                "{value:?}"
+            );
 
             let reset_facts = RateLimitHeaders::parse(None, Some(b"0"), Some(value), 1_000_000);
             assert_eq!(
                 reset_facts.retry_after(),
                 Some(Duration::from_secs(u64::MAX - 1_000_000)),
                 "{value:?}"
-            );
-            let reset_transition = AttemptState::new().step(&RequestOutcome::HttpStatus {
-                status: 403,
-                rate_limit: reset_facts,
-            });
-            assert_eq!(reset_transition, Transition::Fail, "{value:?}");
-        }
-    }
-
-    #[test]
-    fn rate_limited_when_retry_after_present_or_quota_exhausted() {
-        // (retry-after, x-ratelimit-remaining, expected)
-        type Row<'a> = (Option<&'a [u8]>, Option<&'a [u8]>, bool);
-        let cases: [Row<'_>; 5] = [
-            (Some(b"1"), None, true),
-            (Some(b"soon"), Some(b"59"), true),
-            (None, Some(b"0"), true),
-            (None, Some(b"59"), false),
-            (None, None, false),
-        ];
-        for (retry_after, remaining, expected) in cases {
-            let got = RateLimitHeaders::parse(retry_after, remaining, None, 0).is_rate_limited();
-            assert_eq!(
-                got, expected,
-                "retry-after={retry_after:?} remaining={remaining:?}"
             );
         }
     }

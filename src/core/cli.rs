@@ -347,9 +347,6 @@ mod tests {
 
     #[test]
     fn cli_parses_valid_invocations() {
-        assert_eq!(parse(["codefeed", "--help"]).unwrap(), CliAction::Help);
-        assert_eq!(parse(["codefeed", ".", "-h"]).unwrap(), CliAction::Help);
-
         let standard_cases: [&[&str]; 3] = [
             &["codefeed", ".", "--format", "xml", "--output", "-"],
             &["codefeed", "-f", "xml", "-o", "-", "."],
@@ -362,7 +359,7 @@ mod tests {
             assert_eq!(config.output, OutputTarget::Stdout);
         }
 
-        for path in ["-notes.txt", "", "a=b", "-/."] {
+        for path in ["-notes.txt", "", "a=b", "-/.", "--help"] {
             let arg = format!("--output={path}");
             let config = parse_run(["codefeed", ".", &arg]);
             assert!(
@@ -389,99 +386,182 @@ mod tests {
             config.source,
             Source::github("rust-lang", "cargo", Some(GitRef::new("main").unwrap())).unwrap()
         );
+
+        let config = parse_run(["codefeed", "https://github.com/a/b", "--ref=--version"]);
+        assert_eq!(
+            config.source,
+            Source::github("a", "b", Some(GitRef::new("--version").unwrap())).unwrap()
+        );
     }
 
     #[test]
     fn cli_rejects_invalid_invocations() {
         const GH: &str = "https://github.com/rust-lang/cargo";
-        // (argv, fragment unique to the failing branch). Rows with the same flag but a different
-        // value shape exercise `reject_option_like`: only `-o -` may take a bare dash.
-        let cases: &[(&[&str], &str)] = &[
-            (&["codefeed"], "required arguments were not provided"),
+        // (argv, fragment unique to the failing branch, optional fragment that must be absent).
+        // Rows with the same flag but a different value shape exercise `reject_option_like`:
+        // only `-o -` may take a bare dash, and inline `=` bypasses option classification.
+        let cases: &[(&[&str], &str, Option<&str>)] = &[
+            (&["codefeed"], "required arguments were not provided", None),
             (
                 &["codefeed", "--ref", ""],
                 "required arguments were not provided",
+                None,
             ),
-            (&["codefeed", "src", "tests"], "unexpected argument 'tests'"),
+            (
+                &["codefeed", "--output=--help"],
+                "required arguments were not provided",
+                None,
+            ),
+            (
+                &["codefeed", "--ref=--version"],
+                "required arguments were not provided",
+                None,
+            ),
+            (
+                &["codefeed", "src", "tests"],
+                "unexpected argument 'tests'",
+                None,
+            ),
             (
                 &["codefeed", "--", ".", "extra"],
                 "unexpected argument 'extra'",
+                None,
             ),
-            (&["codefeed", ".", "--bogus"], "unknown option: --bogus"),
-            (&["codefeed", "--help=x"], "unknown option: --help=x"),
-            (&["codefeed", "-ox="], "unknown option: -ox="),
+            (
+                &["codefeed", ".", "--bogus"],
+                "unknown option: --bogus",
+                None,
+            ),
+            (
+                &["codefeed", ".", "--unknown"],
+                "unknown option: --unknown",
+                Some("invalid source"),
+            ),
+            (&["codefeed", "--help=x"], "unknown option: --help=x", None),
+            (&["codefeed", "-ox="], "unknown option: -ox=", None),
             (
                 &["codefeed", "--format=xml=x"],
                 "invalid value 'xml=x' for '--format",
+                None,
             ),
             (
                 &["codefeed", ".", "--exclude=[", "--format=yaml", "-f=text"],
                 "invalid value 'yaml' for '--format",
+                None,
             ),
             (
                 &["codefeed", ".", "--exclude=[", "--ref=main"],
                 "--ref is only valid for GitHub sources",
+                None,
             ),
             (
                 &["codefeed", ".", "--ref", "main"],
                 "--ref is only valid for GitHub sources",
+                None,
             ),
             (
                 &["codefeed", ".", "--ref", ""],
                 "--ref is only valid for GitHub sources",
+                None,
             ),
-            (&["codefeed", GH, "--ref", ""], "--ref cannot be empty"),
-            (&["codefeed", GH, "--ref", "   "], "--ref cannot be empty"),
-            (&["codefeed", GH, "-r", "-"], "a value is required for '-r'"),
+            (
+                &["codefeed", GH, "--ref", ""],
+                "--ref cannot be empty",
+                None,
+            ),
+            (
+                &["codefeed", GH, "--ref", "   "],
+                "--ref cannot be empty",
+                None,
+            ),
+            (
+                &["codefeed", GH, "-r", "-"],
+                "a value is required for '-r'",
+                None,
+            ),
             (
                 &["codefeed", GH, "--ref", "-"],
                 "a value is required for '--ref'",
+                None,
+            ),
+            (
+                &["codefeed", "--ref", "--version"],
+                "a value is required for '--ref'",
+                None,
             ),
             (
                 &["codefeed", ".", "--output"],
                 "a value is required for '--output'",
+                None,
+            ),
+            (
+                &["codefeed", "--output", "--help"],
+                "a value is required for '--output'",
+                None,
             ),
             (
                 &["codefeed", "src", "-o", "-x"],
                 "a value is required for '-o'",
+                None,
             ),
             (
                 &["codefeed", "src", "-f", "-"],
                 "a value is required for '-f'",
+                None,
+            ),
+            (
+                &["codefeed", ".", "--format"],
+                "a value is required for '--format'",
+                Some("invalid source"),
             ),
             (
                 &["codefeed", "src", "--format", "-"],
                 "a value is required for '--format'",
+                None,
             ),
-            (&["codefeed", ".", "-x"], "a value is required for '-x'"),
+            (
+                &["codefeed", ".", "-x"],
+                "a value is required for '-x'",
+                None,
+            ),
             (
                 &["codefeed", ".", "-x", "-foo"],
                 "a value is required for '-x'",
+                None,
             ),
             (
                 &["codefeed", ".", "--exclude", "-"],
                 "a value is required for '--exclude'",
+                None,
             ),
             (
                 &["codefeed", ".", "-f", "yaml"],
                 "invalid value 'yaml' for '--format",
+                None,
             ),
             (
                 &["codefeed", "src", "--format=-x"],
                 "invalid value '-x' for '--format",
+                None,
             ),
             (
                 &["codefeed", ".", "-x", "["],
                 "invalid value '[' for '--exclude",
+                None,
             ),
             (
                 &["codefeed", ".", "--exclude", "#note"],
                 "invalid value '#note' for '--exclude",
+                None,
             ),
         ];
-        for (args, fragment) in cases {
+        for &(args, fragment, absent) in cases {
             let err = parse(args.iter().copied()).expect_err(&format!("{args:?}"));
-            assert!(err.to_string().contains(fragment), "{args:?}: {err}");
+            let rendered = err.to_string();
+            assert!(rendered.contains(fragment), "{args:?}: {rendered}");
+            if let Some(absent) = absent {
+                assert!(!rendered.contains(absent), "{args:?}: {rendered}");
+            }
         }
     }
 
@@ -505,49 +585,45 @@ mod tests {
     }
 
     #[test]
-    fn cli_help_takes_precedence_over_other_argument_errors() {
-        for args in [
-            &["codefeed", "--ref", "", "--help"][..],
-            &["codefeed", "--help", "--ref", ""][..],
+    fn cli_control_flags_take_precedence_respecting_double_dash() {
+        let action_cases: &[(&[&str], CliAction)] = &[
+            (&["codefeed", "--help"], CliAction::Help),
+            (&["codefeed", ".", "-h"], CliAction::Help),
+            (&["codefeed", "--ref", "", "--help"], CliAction::Help),
+            (&["codefeed", "--help", "--ref", ""], CliAction::Help),
             // Eagerly detected errors before the flag do not mask it either.
-            &["codefeed", "-f", "yaml", "--help"][..],
-            &["codefeed", "--bogus", "--help"][..],
-            &["codefeed", "a", "b", "--help"][..],
-            &["codefeed", "-x", "[", "-h"][..],
-        ] {
-            assert_eq!(parse(args.iter().copied()).unwrap(), CliAction::Help);
-        }
-    }
-
-    #[test]
-    fn cli_version_flag_returns_version_action() {
-        for args in [
-            &["codefeed", "--version"][..],
-            &["codefeed", ".", "-V"][..],
-            // Version takes precedence over later argument errors.
-            &["codefeed", "--ref", "", "-V"][..],
+            (&["codefeed", "-f", "yaml", "--help"], CliAction::Help),
+            (&["codefeed", "--bogus", "--help"], CliAction::Help),
+            (&["codefeed", "a", "b", "--help"], CliAction::Help),
+            (&["codefeed", "-x", "[", "-h"], CliAction::Help),
+            (&["codefeed", "-h", "-V"], CliAction::Help),
+            (&["codefeed", "--version"], CliAction::Version),
+            (&["codefeed", ".", "-V"], CliAction::Version),
+            // Version takes precedence over later and earlier argument errors.
+            (&["codefeed", "--ref", "", "-V"], CliAction::Version),
+            (&["codefeed", "--bogus", "-V"], CliAction::Version),
             // The first of `-h` and `-V` wins.
-            &["codefeed", "-V", "-h"][..],
-        ] {
-            assert_eq!(
-                parse(args.iter().copied()).unwrap(),
-                CliAction::Version,
-                "{args:?}"
-            );
+            (&["codefeed", "-V", "-h"], CliAction::Version),
+        ];
+        for &(args, ref expected) in action_cases {
+            assert_eq!(parse(args.iter().copied()).unwrap(), *expected, "{args:?}");
         }
-        assert_eq!(parse(["codefeed", "-h", "-V"]).unwrap(), CliAction::Help);
-        assert_eq!(
-            parse(["codefeed", "--bogus", "-V"]).unwrap(),
-            CliAction::Version
-        );
 
-        // After `--`, `-h` is a positional, so the earlier error stands.
-        let err = parse(["codefeed", "--", "a", "-h"]).unwrap_err();
-        assert!(err.to_string().contains("unexpected argument '-h'"));
-        let err = parse(["codefeed", "--bogus", "--", "-h"]).unwrap_err();
-        assert!(err.to_string().contains("unknown option: --bogus"));
+        // After `--`, `-h` and `-V` are positionals, so earlier errors or source parsing apply.
+        for (args, fragment) in [
+            (
+                &["codefeed", "--", "a", "-h"][..],
+                "unexpected argument '-h'",
+            ),
+            (
+                &["codefeed", "--bogus", "--", "-h"][..],
+                "unknown option: --bogus",
+            ),
+        ] {
+            let err = parse(args.iter().copied()).unwrap_err();
+            assert!(err.to_string().contains(fragment), "{args:?}: {err}");
+        }
 
-        // After `--`, `-V` is a positional.
         let config = parse_run(["codefeed", "--", "-V"]);
         assert_eq!(config.source, Source::Local(PathBuf::from("-V")));
     }
@@ -588,16 +664,13 @@ mod tests {
             ExcludePatterns::new(["build/", "*.log", "*.tmp", "target"]).unwrap()
         );
 
+        let config = parse_run(["codefeed", ".", "--exclude=-foo"]);
+        assert_eq!(config.exclude, ExcludePatterns::new(["-foo"]).unwrap());
+
         // Only the exclusion flag accumulates: a repeated `--format` keeps its last value.
         let config = parse_run(["codefeed", ".", "-f", "xml", "-f", "text"]);
         assert_eq!(config.format, DigestFormat::Text);
         assert_eq!(config.exclude, ExcludePatterns::default());
-    }
-
-    #[test]
-    fn cli_exclude_value_may_start_with_dash_only_inline() {
-        let config = parse_run(["codefeed", ".", "--exclude=-foo"]);
-        assert_eq!(config.exclude, ExcludePatterns::new(["-foo"]).unwrap());
     }
 
     #[cfg(any(unix, windows))]
@@ -625,9 +698,10 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn inline_output_preserves_non_utf8_path() {
+    fn cli_output_non_utf8_dash_path_inline_vs_separate() {
         let mut path = OsString::from("-notes-");
         path.push(non_utf8_os_value());
+
         let mut arg = OsString::from("--output=");
         arg.push(&path);
         let CliAction::Run(config) =
@@ -635,14 +709,8 @@ mod tests {
         else {
             panic!("expected Run action");
         };
-        assert_eq!(config.output, OutputTarget::File(path.into()));
-    }
+        assert_eq!(config.output, OutputTarget::File(path.clone().into()));
 
-    #[cfg(any(unix, windows))]
-    #[test]
-    fn separate_output_rejects_non_utf8_path_starting_with_dash() {
-        let mut path = OsString::from("-notes-");
-        path.push(non_utf8_os_value());
         let args = [
             OsStr::new("codefeed"),
             OsStr::new("."),

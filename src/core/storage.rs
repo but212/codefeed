@@ -268,8 +268,8 @@ mod tests {
     use crate::core::policy::MAX_OUTPUT_SIZE_USIZE;
 
     #[test]
-    fn largest_files_selects_largest_with_stability() {
-        let files = [
+    fn largest_files_ranks_by_size_and_breaks_ties_by_cmp_path() {
+        let stability_files = [
             FileRecord {
                 path: "f1.txt",
                 content: "1",
@@ -299,25 +299,7 @@ mod tests {
                 content: "666666",
             },
         ];
-        // Full order: descending size, ties by path. The diagnostic keeps the first `OVERFLOW_LARGEST_FILES`.
-        let expected: Vec<(&str, usize)> = [
-            ("f6.txt", 6),
-            ("f5_a.txt", 5),
-            ("f5_b.txt", 5),
-            ("f4.txt", 4),
-            ("f3.txt", 3),
-            ("f2.txt", 2),
-            ("f1.txt", 1),
-        ]
-        .into_iter()
-        .take(OVERFLOW_LARGEST_FILES)
-        .collect();
-        assert_eq!(largest_files(files), expected);
-    }
-
-    #[test]
-    fn largest_files_breaks_ties_by_cmp_path() {
-        let files = [
+        let tie_files = [
             FileRecord {
                 path: "src-test/b.rs",
                 content: "same",
@@ -335,11 +317,39 @@ mod tests {
                 content: "same",
             },
         ];
-        let result = largest_files(files);
-        assert_eq!(result[0].0, "a.rs");
-        assert_eq!(result[1].0, "src/a.rs");
-        assert_eq!(result[2].0, "src-test/b.rs");
-        assert_eq!(result[3].0, "z.rs");
+        // Full order: descending size, ties by `cmp_path`. Kept entries cap at `OVERFLOW_LARGEST_FILES`.
+        type LargestCase<'a> = (&'a [FileRecord<'a>], &'a [(&'a str, usize)]);
+        let cases: [LargestCase<'_>; 2] = [
+            (
+                &stability_files,
+                &[
+                    ("f6.txt", 6),
+                    ("f5_a.txt", 5),
+                    ("f5_b.txt", 5),
+                    ("f4.txt", 4),
+                    ("f3.txt", 3),
+                    ("f2.txt", 2),
+                    ("f1.txt", 1),
+                ],
+            ),
+            (
+                &tie_files,
+                &[
+                    ("a.rs", 4),
+                    ("src/a.rs", 4),
+                    ("src-test/b.rs", 4),
+                    ("z.rs", 4),
+                ],
+            ),
+        ];
+        for (files, ranked) in cases {
+            let expected: Vec<(&str, usize)> = ranked
+                .iter()
+                .copied()
+                .take(OVERFLOW_LARGEST_FILES)
+                .collect();
+            assert_eq!(largest_files(files.iter().copied()), expected);
+        }
     }
 
     #[test]
@@ -439,20 +449,25 @@ mod tests {
     }
 
     #[test]
-    fn sorted_files_rejects_path_that_is_also_a_directory() {
-        for paths in [&["a", "a/b"][..], &["a/b", "a"], &["x/a", "x/a/b/c"]] {
-            let err = sorted_from(paths).unwrap_err();
-            assert!(
-                matches!(&err, DomainError::InvalidMetadata(msg) if msg.starts_with("entry path is both a file and a directory")),
-                "{paths:?}: {err:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn sorted_files_allows_names_that_share_only_a_string_prefix() {
-        for paths in [&["a.txt", "a/b"][..], &["a-b", "a/b"], &["a", "ab/c"]] {
-            assert!(sorted_from(paths).is_ok(), "{paths:?}");
+    fn sorted_files_enforces_directory_prefix_freedom() {
+        let cases: [(&[&str], bool); 6] = [
+            (&["a", "a/b"], false),
+            (&["a/b", "a"], false),
+            (&["x/a", "x/a/b/c"], false),
+            (&["a.txt", "a/b"], true),
+            (&["a-b", "a/b"], true),
+            (&["a", "ab/c"], true),
+        ];
+        for (paths, expected_ok) in cases {
+            if expected_ok {
+                assert!(sorted_from(paths).is_ok(), "{paths:?}");
+            } else {
+                let err = sorted_from(paths).unwrap_err();
+                assert!(
+                    matches!(&err, DomainError::InvalidMetadata(msg) if msg.starts_with("entry path is both a file and a directory")),
+                    "{paths:?}: {err:?}"
+                );
+            }
         }
     }
 

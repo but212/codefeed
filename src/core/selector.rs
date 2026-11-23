@@ -197,42 +197,65 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let vendor = MAX_FILE_COUNT * 4 / 5;
         let src = MAX_FILE_COUNT - vendor;
-        let mut budget = CandidateBudget::default();
-        for index in 0..vendor {
-            budget = budget.add(BudgetDirKey::from_raw(&format!("vendor/pkg_{index}.rs")))?;
-        }
-        for index in 0..src {
-            budget = budget.add(BudgetDirKey::from_raw(&format!("src/file_{index}.rs")))?;
-        }
-        let err = budget
-            .add(BudgetDirKey::from_raw("extra/one.rs"))
-            .unwrap_err();
-        let message = err.to_string();
-        assert!(message.contains(&format!(
-            "repository contains more than {MAX_FILE_COUNT} files"
-        )));
-        assert!(message.contains("largest directories:"));
-        assert!(message.contains(&format!("vendor/ ({vendor} files)")));
-        assert!(message.contains(&format!("src/ ({src} files)")));
-        Ok(())
-    }
+        let named_root = MAX_FILE_COUNT * 3 / 5;
+        let root_files = MAX_FILE_COUNT - named_root;
 
-    #[test]
-    fn candidate_budget_handles_many_distinct_directories_deterministically() {
-        let mut budget = CandidateBudget::default();
-        for i in 0..MAX_FILE_COUNT {
-            let path = format!("dir_{i:05}/file.rs");
-            budget = budget.add(BudgetDirKey::from_raw(&path)).unwrap();
+        let cases: [(Vec<String>, &str, Vec<String>); 3] = [
+            (
+                (0..vendor)
+                    .map(|index| format!("vendor/pkg_{index}.rs"))
+                    .chain((0..src).map(|index| format!("src/file_{index}.rs")))
+                    .collect(),
+                "extra/one.rs",
+                vec![
+                    format!("repository contains more than {MAX_FILE_COUNT} files"),
+                    "largest directories:".into(),
+                    format!("vendor/ ({vendor} files)"),
+                    format!("src/ ({src} files)"),
+                ],
+            ),
+            (
+                (0..MAX_FILE_COUNT)
+                    .map(|i| format!("dir_{i:05}/file.rs"))
+                    .collect(),
+                "dir_00000/extra.rs",
+                vec![
+                    format!("repository contains more than {MAX_FILE_COUNT} files"),
+                    "largest directories:".into(),
+                    "- dir_00000/ (2 files)".into(),
+                ],
+            ),
+            (
+                (0..named_root)
+                    .map(|index| format!("<root>/pkg_{index}.rs"))
+                    .chain((0..root_files).map(|index| format!("f_{index}.rs")))
+                    .collect(),
+                "extra.rs",
+                vec![
+                    format!("\n  - <root>/ ({named_root} files)"),
+                    // The `extra.rs` entry that overflows the budget is itself a root file.
+                    format!("\n  - ./ ({} files)", root_files + 1),
+                ],
+            ),
+        ];
+
+        for (paths, overflow, expected) in cases {
+            let mut budget = CandidateBudget::default();
+            for path in &paths {
+                budget = budget.add(BudgetDirKey::from_raw(path))?;
+            }
+            let message = budget
+                .add(BudgetDirKey::from_raw(overflow))
+                .unwrap_err()
+                .to_string();
+            for snippet in &expected {
+                assert!(
+                    message.contains(snippet),
+                    "missing {snippet:?} in {message}"
+                );
+            }
         }
-        let err = budget
-            .add(BudgetDirKey::from_raw("dir_00000/extra.rs"))
-            .unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains(&format!(
-            "repository contains more than {MAX_FILE_COUNT} files"
-        )));
-        assert!(msg.contains("largest directories:"));
-        assert!(msg.contains("- dir_00000/ (2 files)"));
+        Ok(())
     }
 
     #[test]
@@ -277,34 +300,6 @@ mod tests {
         assert_eq!(budget.dirs.len(), 1);
         assert_eq!(budget.dirs.values().copied().next(), Some(3));
         assert!(budget.dirs.keys().all(|k| k.len() <= MAX_PATH_BYTES));
-        Ok(())
-    }
-
-    #[test]
-    fn candidate_overflow_separates_root_files_from_directory_named_root()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let named_root = MAX_FILE_COUNT * 3 / 5;
-        let root_files = MAX_FILE_COUNT - named_root;
-        let mut budget = CandidateBudget::default();
-        for index in 0..named_root {
-            budget = budget.add(BudgetDirKey::from_raw(&format!("<root>/pkg_{index}.rs")))?;
-        }
-        for index in 0..root_files {
-            budget = budget.add(BudgetDirKey::from_raw(&format!("f_{index}.rs")))?;
-        }
-        let message = budget
-            .add(BudgetDirKey::from_raw("extra.rs"))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            message.contains(&format!("\n  - <root>/ ({named_root} files)")),
-            "{message}"
-        );
-        // The `extra.rs` entry that overflows the budget is itself a root file.
-        assert!(
-            message.contains(&format!("\n  - ./ ({} files)", root_files + 1)),
-            "{message}"
-        );
         Ok(())
     }
 
@@ -362,61 +357,52 @@ mod tests {
     }
 
     #[test]
-    fn observe_enforces_candidate_budget() -> Result<(), DomainError> {
-        let mut selector = Selector::new();
-        for i in 0..MAX_FILE_COUNT {
-            selector = selector.observe(text(&format!("file_{i}.txt")))?;
+    fn observe_enforces_candidate_budget_for_storable_and_unstorable() -> Result<(), DomainError> {
+        for overflow in [
+            text("overflow.txt"),
+            Candidate::Unstorable(b"dir/\xff".as_slice().into()),
+        ] {
+            let mut selector = Selector::new();
+            for i in 0..MAX_FILE_COUNT {
+                selector = selector.observe(text(&format!("file_{i}.txt")))?;
+            }
+            let err = selector.observe(overflow).unwrap_err();
+            assert!(matches!(err, DomainError::CandidateLimitExceeded(..)));
         }
-
-        let err = selector.observe(text("overflow.txt")).unwrap_err();
-        assert!(matches!(err, DomainError::CandidateLimitExceeded(..)));
-        Ok(())
-    }
-
-    #[test]
-    fn unstorable_candidate_consumes_budget_and_fails_when_exhausted() -> Result<(), DomainError> {
-        let mut selector = Selector::new();
-        for i in 0..MAX_FILE_COUNT {
-            selector = selector.observe(text(&format!("file_{i}.txt")))?;
-        }
-
-        let err = selector
-            .observe(Candidate::<Body<&[u8]>>::Unstorable(
-                b"dir/\xff".as_slice().into(),
-            ))
-            .unwrap_err();
-        assert!(matches!(err, DomainError::CandidateLimitExceeded(..)));
         Ok(())
     }
 
     #[test]
     fn observe_counts_candidates_by_content_outcome() -> Result<(), Box<dyn std::error::Error>> {
-        // (path, body, included, skipped)
-        let cases: [(&str, Body<Vec<u8>>, usize, usize); 8] = [
-            ("a.txt", Body::Bytes(b"hello".to_vec()), 1, 0),
-            ("bin.bin", Body::Bytes(vec![0, 1]), 0, 1),
-            ("bad_utf8", Body::Bytes(vec![0xff]), 0, 1),
+        type ObservationCase = (Candidate<Body<Vec<u8>>>, usize, usize);
+        let valid = |path: &str, body: Body<Vec<u8>>| Candidate::Valid(path.into(), body);
+        // (candidate, included, skipped)
+        let cases: [ObservationCase; 9] = [
+            (valid("a.txt", Body::Bytes(b"hello".to_vec())), 1, 0),
+            (valid("bin.bin", Body::Bytes(vec![0, 1])), 0, 1),
+            (valid("bad_utf8", Body::Bytes(vec![0xff])), 0, 1),
             (
-                "exact.txt",
-                Body::Bytes(vec![b'x'; MAX_FILE_SIZE_USIZE]),
+                valid("exact.txt", Body::Bytes(vec![b'x'; MAX_FILE_SIZE_USIZE])),
                 1,
                 0,
             ),
             (
-                "over.txt",
-                Body::Bytes(vec![b'x'; MAX_FILE_SIZE_USIZE + 1]),
+                valid("over.txt", Body::Bytes(vec![b'x'; MAX_FILE_SIZE_USIZE + 1])),
                 0,
                 1,
             ),
-            ("declared_over.txt", Body::OverLimit, 0, 1),
-            ("gone.txt", Body::Unavailable, 0, 1),
-            ("empty.txt", Body::Bytes(Vec::new()), 1, 0),
+            (valid("declared_over.txt", Body::OverLimit), 0, 1),
+            (valid("gone.txt", Body::Unavailable), 0, 1),
+            (valid("empty.txt", Body::Bytes(Vec::new())), 1, 0),
+            (Candidate::Unstorable(b"\xff".as_slice().into()), 0, 1),
         ];
-        for (path, body, included, skipped) in cases {
-            let selector = Selector::new().observe(Candidate::Valid(path.into(), body))?;
+        for (candidate, included, skipped) in cases {
+            let label = format!("{candidate:?}");
+            let selector = Selector::new().observe(candidate)?;
+            assert_eq!(selector.candidates.count, 1, "{label}");
             let collection = selector.finish("test".into(), None)?;
-            assert_eq!(collection.files.len(), included, "{path}");
-            assert_eq!(collection.skipped, skipped, "{path}");
+            assert_eq!(collection.files.len(), included, "{label}");
+            assert_eq!(collection.skipped, skipped, "{label}");
         }
         Ok(())
     }
@@ -446,22 +432,6 @@ mod tests {
     }
 
     #[test]
-    fn unstorable_observation_is_counted_and_skipped() -> Result<(), DomainError> {
-        for prefix in ["", "dir/sub/"] {
-            let mut identity = prefix.as_bytes().to_vec();
-            identity.push(0xff);
-            let selector = Selector::new().observe(Candidate::<Body<&[u8]>>::Unstorable(
-                identity.as_slice().into(),
-            ))?;
-            assert_eq!(selector.candidates.count, 1);
-            let collection = selector.finish("test".into(), None)?;
-            assert_eq!(collection.files.len(), 0);
-            assert_eq!(collection.skipped, 1);
-        }
-        Ok(())
-    }
-
-    #[test]
     fn observe_rejects_duplicate_paths_including_skipped() {
         let stored = || Body::Bytes(&b"x"[..]);
         // A skipped candidate still names its path, so it collides with a stored one in either order.
@@ -480,5 +450,65 @@ mod tests {
                 matches!(&err, DomainError::InvalidMetadata(msg) if msg == "duplicate entry path: a.txt")
             );
         }
+
+        let unstorable =
+            || Candidate::<Body<&[u8]>>::Unstorable(b"dir/\xff/file.rs".as_slice().into());
+        let err = Selector::new()
+            .observe(unstorable())
+            .and_then(|selector| selector.observe(unstorable()))
+            .unwrap_err();
+        assert!(
+            matches!(&err, DomainError::InvalidMetadata(msg) if msg == "duplicate entry path (unstorable)")
+        );
+    }
+
+    #[test]
+    fn unstorable_and_skipped_paths_preserve_raw_byte_identity_and_prefix_rules()
+    -> Result<(), DomainError> {
+        // I-09 / L2: exact raw bytes distinguish non-UTF-8 0xFF from valid UTF-8 U+FFFD.
+        let collection = Selector::new()
+            .observe(Candidate::<Body<&[u8]>>::Unstorable(
+                b"\xff.txt".as_slice().into(),
+            ))?
+            .observe(file("\u{FFFD}.txt", Body::Bytes(b"x")))?
+            .finish("test".into(), None)?;
+        assert_eq!(collection.files.len(), 1);
+        assert_eq!(collection.skipped, 1);
+
+        // L2: distinct overlong unstorable paths sharing a `MAX_PATH_BYTES` prefix do not collide.
+        let long = "a/".repeat(MAX_PATH_BYTES / 2 + 1);
+        let first = format!("{long}a");
+        let second = format!("{long}b");
+        let collection = Selector::new()
+            .observe(Candidate::<Body<&[u8]>>::Unstorable(
+                first.as_bytes().into(),
+            ))?
+            .observe(Candidate::<Body<&[u8]>>::Unstorable(
+                second.as_bytes().into(),
+            ))?
+            .finish("test".into(), None)?;
+        assert_eq!(collection.files.len(), 0);
+        assert_eq!(collection.skipped, 2);
+
+        // I-01 applies only to stored `SortedFiles`, so a skipped file does not conflict with a nested stored file.
+        for (first, second) in [
+            (
+                file("a", Body::OverLimit),
+                file("a/b", Body::Bytes(b"nested")),
+            ),
+            (
+                file("a/b", Body::Bytes(b"nested")),
+                file("a", Body::OverLimit),
+            ),
+        ] {
+            let collection = Selector::new()
+                .observe(first)?
+                .observe(second)?
+                .finish("test".into(), None)?;
+            assert_eq!(collection.files.len(), 1);
+            assert_eq!(collection.files.iter().next().unwrap().path, "a/b");
+            assert_eq!(collection.skipped, 1);
+        }
+        Ok(())
     }
 }

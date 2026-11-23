@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn new_rejects_patterns_that_are_invalid_or_yield_no_rule() {
         for pattern in [
-            "", "   ", "#note", "!", "! ", "!\t", "/ ", "!/ ", "[", "[\x1b[2J",
+            "", "   ", "#note", "!", "! ", "!\t", "/ ", "!/ ", "[", "[\x1b[2J", "foo\\",
         ] {
             let Err(err) = ExcludePatterns::new([pattern]) else {
                 panic!("expected rejection for {pattern:?}");
@@ -393,6 +393,8 @@ mod tests {
     fn posix_character_classes_fail_closed() {
         for pattern in [
             "/config[[:digit:]].txt",
+            "/config[[:digit:].txt",
+            "[[:digit:].txt",
             "*[!ab[:upper:]].txt",
             "[][:alpha:]]",
             "[-[:digit:]]",
@@ -468,6 +470,14 @@ mod tests {
             (&["*.LOG"], &[b"a.LOG"], false, true),
             (&["*.LOG"], &[b"a.log"], false, false),
             (&["*.txt"], &[b"dir", b"\xff.txt"], false, true),
+            // A `\` in a segment is matched as U+FFFD on every platform, never as a separator or escape.
+            (&["secret.md"], &[b"docs\\secret.md"], false, false),
+            (&["/docs/secret.md"], &[b"docs\\secret.md"], false, false),
+            (&["docs\\\\secret.md"], &[b"docs\\secret.md"], false, false),
+            (&["*.md"], &[b"docs\\secret.md"], false, true),
+            // An open bracket as a range endpoint is literal and does not start a POSIX class.
+            (&["[#-[:digit:]].txt"], &[b"A].txt"], false, true),
+            (&["[#-[:digit:]].txt"], &[b"visible.txt"], false, false),
         ];
 
         for &(pats, segments, is_dir, expected) in cases {
@@ -515,17 +525,6 @@ mod tests {
     }
 
     #[test]
-    fn backslash_in_segment_matches_the_same_on_every_platform() {
-        // A `\` in a segment is not a separator on any platform. The segment is matched with its
-        // `\` replaced by U+FFFD, so no pattern matches it by name or by a `\` escape.
-        let segments: [&[u8]; 1] = [b"docs\\secret.md"];
-        assert!(!patterns(&["secret.md"]).excludes(&segments, false));
-        assert!(!patterns(&["/docs/secret.md"]).excludes(&segments, false));
-        assert!(!patterns(&["docs\\\\secret.md"]).excludes(&segments, false));
-        assert!(patterns(&["*.md"]).excludes(&segments, false));
-    }
-
-    #[test]
     fn equality_compares_patterns() {
         assert_eq!(patterns(&["a", "b"]), patterns(&["a", "b"]));
         assert_ne!(patterns(&["a"]), patterns(&["a", "b"]));
@@ -545,12 +544,24 @@ mod tests {
             .expect("double BOM line parses");
         assert!(double_bom.matched("root/x.bak", false).is_ignore());
 
+        let range = compile_gitignore(dir, b"[#-[:digit:]].txt\n")
+            .expect("open bracket range endpoint parses");
+        assert!(range.matched("root/A].txt", false).is_ignore());
+        assert!(!range.matched("root/visible.txt", false).is_ignore());
+
         let err = compile_gitignore(dir, b"ok\n\xff\n").expect_err("non-UTF-8 line is rejected");
         assert_eq!(err, "invalid utf-8 sequence of 1 bytes from index 3");
 
-        let posix_err = compile_gitignore(dir, b"/config[[:digit:]].txt\n")
-            .expect_err("POSIX character class is rejected");
-        assert!(posix_err.contains("POSIX character classes"), "{posix_err}");
+        for rules in [
+            b"/config[[:digit:]].txt\n".as_slice(),
+            b"/config[[:digit:].txt\n",
+            b"[[:digit:].txt\n",
+            b"/config[[:digit:]].txt\\\nconfig1.txt\n",
+        ] {
+            let posix_err =
+                compile_gitignore(dir, rules).expect_err("POSIX character class is rejected");
+            assert!(posix_err.contains("POSIX character classes"), "{posix_err}");
+        }
         assert!(compile_gitignore(dir, b"# /config[[:digit:]].txt\n").is_ok());
 
         let empty = compile_gitignore(dir, b"").expect("empty file parses");

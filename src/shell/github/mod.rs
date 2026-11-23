@@ -36,32 +36,8 @@ mod tests {
 
     #[test]
     fn collect_fetches_and_parses_remote_tarball() {
-        let gz = gzip_tarball(&[("repo-root/file.txt", b"hello github", EntryType::Regular)]);
-        let server = MockServer::spawn(1, move |_index, _req, _port| tarball_response(&gz));
-
-        let result = collect(
-            &server.url(""),
-            "test-owner",
-            "test-repo",
-            Some("main"),
-            &ExcludePatterns::default(),
-        )
-        .expect("github collection succeeds");
-
-        assert_eq!(result.label, "https://github.com/test-owner/test-repo");
-        assert_eq!(result.files.len(), 1);
-        let first = result.files.iter().next().unwrap();
-        assert_eq!(first.path, "file.txt");
-        assert_eq!(first.content, "hello github");
-
-        let requests = server.join();
-        assert_eq!(requests.len(), 1);
-        assert!(requests[0].contains("/repos/test-owner/test-repo/tarball/main"));
-    }
-
-    #[test]
-    fn collect_encodes_reference_extracts_pax_revision_and_applies_exclusions() {
-        let gz = gzip_tarball(&[
+        let gz_basic = gzip_tarball(&[("repo-root/file.txt", b"hello github", EntryType::Regular)]);
+        let gz_pax = gzip_tarball(&[
             (
                 "pax_global_header",
                 b"52 comment=c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n",
@@ -70,10 +46,30 @@ mod tests {
             ("repo-root/src/main.rs", b"fn main() {}", EntryType::Regular),
             ("repo-root/app.log", b"ignored log", EntryType::Regular),
         ]);
-        let server = MockServer::spawn(1, move |_index, _req, _port| tarball_response(&gz));
-        let exclude = ExcludePatterns::new(["*.log"]).expect("valid exclude");
+        let server = MockServer::spawn(2, move |index, _req, _port| match index {
+            0 => tarball_response(&gz_basic),
+            _ => tarball_response(&gz_pax),
+        });
 
-        let result = collect(
+        let basic = collect(
+            &server.url(""),
+            "test-owner",
+            "test-repo",
+            Some("main"),
+            &ExcludePatterns::default(),
+        )
+        .expect("github collection succeeds");
+        assert_eq!(basic.label, "https://github.com/test-owner/test-repo");
+        assert_eq!(basic.revision.as_deref(), Some("main"));
+        let basic_files: Vec<_> = basic
+            .files
+            .iter()
+            .map(|file| (file.path, file.content))
+            .collect();
+        assert_eq!(basic_files, [("file.txt", "hello github")]);
+
+        let exclude = ExcludePatterns::new(["*.log"]).expect("valid exclude");
+        let with_pax = collect(
             &server.url(""),
             "test-owner",
             "test-repo",
@@ -81,16 +77,17 @@ mod tests {
             &exclude,
         )
         .expect("github collection succeeds");
-
         assert_eq!(
-            result.revision.as_deref(),
+            with_pax.revision.as_deref(),
             Some("c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950")
         );
-        let paths: Vec<_> = result.files.iter().map(|file| file.path).collect();
-        assert_eq!(paths, ["src/main.rs"]);
+        let pax_files: Vec<_> = with_pax.files.iter().map(|file| file.path).collect();
+        assert_eq!(pax_files, ["src/main.rs"]);
+
         let requests = server.join();
-        assert_eq!(requests.len(), 1);
-        assert!(requests[0].contains("/repos/test-owner/test-repo/tarball/feature%2Fx"));
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("/repos/test-owner/test-repo/tarball/main"));
+        assert!(requests[1].contains("/repos/test-owner/test-repo/tarball/feature%2Fx"));
     }
 
     #[test]

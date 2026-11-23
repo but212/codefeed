@@ -287,7 +287,6 @@ fn read_bounded<'a>(
 mod tests {
     use super::*;
     use crate::core::policy::MAX_FILE_SIZE_USIZE;
-    use crate::core::selector::Selector;
     #[cfg(unix)]
     use crate::shell::testing::run_with_timeout;
 
@@ -362,45 +361,27 @@ mod tests {
     }
 
     #[test]
-    fn unlinked_before_metadata_is_counted_as_skipped() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("unlinked_after_discovery")?;
-        let file = root.join("a.txt");
-        fs::write(&file, "content")?;
-        fs::remove_file(&file)?;
+    fn read_candidate_classifies_unavailable_oversized_and_directory_entries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_dir("read_candidate_cases")?;
+        let unlinked = root.join("a.txt");
+        fs::write(&unlinked, "content")?;
+        fs::remove_file(&unlinked)?;
+        let large = root.join("large.txt");
+        fs::write(&large, vec![b'x'; MAX_FILE_SIZE_USIZE + 1])?;
+        let sub = root.join("subdir");
+        fs::create_dir(&sub)?;
 
         let pool = BufferPool::new();
-        let body = read_candidate(&file, &pool)?
-            .ok_or("unlinked file must reach the selector as a candidate")?;
-        assert!(
-            matches!(&body, Body::Unavailable),
-            "unlinked file must be an unavailable candidate"
-        );
-        let selector = Selector::new().observe(Candidate::Valid("a.txt".into(), body))?;
-
-        let result = selector.finish("test".to_string(), None)?;
-        assert_eq!(result.files.len(), 0);
-        assert_eq!(result.skipped, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn oversized_file_is_over_limit_without_a_read() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("oversized_over_limit")?;
-        let file = root.join("large.txt");
-        fs::write(&file, vec![b'x'; MAX_FILE_SIZE_USIZE + 1])?;
-
-        let pool = BufferPool::new();
-        let body = read_candidate(&file, &pool)?
-            .ok_or("oversized file must reach the selector as a candidate")?;
-        assert!(
-            matches!(&body, Body::OverLimit),
-            "oversized file must be over the limit and carry no read"
-        );
-        let selector = Selector::new().observe(Candidate::Valid("large.txt".into(), body))?;
-
-        let result = selector.finish("test".to_string(), None)?;
-        assert_eq!(result.files.len(), 0);
-        assert_eq!(result.skipped, 1);
+        assert!(matches!(
+            read_candidate(&unlinked, &pool)?,
+            Some(Body::Unavailable)
+        ));
+        assert!(matches!(
+            read_candidate(&large, &pool)?,
+            Some(Body::OverLimit)
+        ));
+        assert!(read_candidate(&sub, &pool)?.is_none());
         Ok(())
     }
 
@@ -417,18 +398,6 @@ mod tests {
         for (err, expected) in cases {
             assert_eq!(is_unavailable_file(&err), expected, "{err:?}");
         }
-    }
-
-    #[test]
-    fn read_candidate_skips_directory_entry() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_dir("read_candidate_dir")?;
-        let sub = root.join("subdir");
-        fs::create_dir(&sub)?;
-
-        let pool = BufferPool::new();
-        let result = read_candidate(&sub, &pool)?;
-        assert!(result.is_none());
-        Ok(())
     }
 
     #[cfg(unix)]
