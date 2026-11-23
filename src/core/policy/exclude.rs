@@ -18,10 +18,7 @@ pub struct ExcludePatterns {
 
 impl Default for ExcludePatterns {
     fn default() -> Self {
-        Self {
-            patterns: Vec::new(),
-            rules: Gitignore::empty(),
-        }
+        Self::empty()
     }
 }
 
@@ -34,24 +31,94 @@ impl PartialEq for ExcludePatterns {
 impl Eq for ExcludePatterns {}
 
 impl ExcludePatterns {
+    /// Returns an empty exclusion pattern set that admits every path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use codefeed::ExcludePatterns;
+    ///
+    /// let empty = ExcludePatterns::empty();
+    /// assert!(empty.is_empty());
+    /// ```
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            patterns: Vec::new(),
+            rules: Gitignore::empty(),
+        }
+    }
+
+    /// Returns `true` when no exclusion patterns are configured.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use codefeed::ExcludePatterns;
+    ///
+    /// assert!(ExcludePatterns::empty().is_empty());
+    /// assert!(!ExcludePatterns::new(["*.log"])?.is_empty());
+    /// # Ok::<(), codefeed::DomainError>(())
+    /// ```
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.patterns.is_empty()
+    }
+
     /// Compiles `patterns` in order; each must yield exactly one rule.
     ///
     /// # Errors
     ///
-    /// Returns [`DomainError::Usage`] for the first invalid glob, empty/comment/bare-`!` pattern,
-    /// or unsupported POSIX character class (`[[:digit:]]`).
+    /// Returns [`DomainError::Usage`] for an invalid glob, empty/comment/bare-`!` pattern,
+    /// unsupported POSIX character class (`[[:digit:]]`), or rule-set compilation failure.
     pub fn new<I, S>(patterns: I) -> Result<Self, DomainError>
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
         let patterns: Vec<String> = patterns.into_iter().map(Into::into).collect();
+        for pattern in &patterns {
+            check_one_rule(pattern, trim_rule_end(pattern))?;
+        }
+        Self::compile_validated(patterns)
+    }
+
+    /// Combines `self` and `other` in order (`self` rules followed by `other` rules).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::Usage`] if the combined rules cannot be compiled, even if each
+    /// input compiled separately.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use codefeed::ExcludePatterns;
+    ///
+    /// let combined = ExcludePatterns::new(["*.log"])?
+    ///     .try_combine(ExcludePatterns::new(["!keep.log"])?)?;
+    /// assert!(!combined.is_empty());
+    /// # Ok::<(), codefeed::DomainError>(())
+    /// ```
+    pub fn try_combine(mut self, other: Self) -> Result<Self, DomainError> {
+        if self.is_empty() {
+            return Ok(other);
+        }
+        if other.is_empty() {
+            return Ok(self);
+        }
+        drop(self.rules);
+        drop(other.rules);
+        self.patterns.extend(other.patterns);
+        Self::compile_validated(self.patterns)
+    }
+
+    fn compile_validated(patterns: Vec<String>) -> Result<Self, DomainError> {
         let mut builder = user_builder();
         for pattern in &patterns {
-            let rule = trim_rule_end(pattern);
-            check_one_rule(pattern, rule)?;
-            // Every line was validated above, so this adds exactly the rule that was checked.
-            let _ = builder.add_line(None, rule);
+            builder
+                .add_line(None, trim_rule_end(pattern))
+                .map_err(|err| invalid_pattern(pattern, err))?;
         }
         let rules = builder
             .build()
@@ -498,8 +565,40 @@ mod tests {
             "[a-z]{1,8}"
         }
 
+        fn pattern_vec() -> impl Strategy<Value = Vec<String>> {
+            let pat = prop_oneof![
+                name(),
+                name().prop_map(|n| format!("!{n}")),
+                name().prop_map(|n| format!("{n}/")),
+                name().prop_map(|n| format!("*.{n}")),
+            ];
+            prop::collection::vec(pat, 0..4)
+        }
+
         proptest! {
             #![proptest_config(crate::core::proptest_config())]
+
+            /// Combining validated sets preserves the behavior of their concatenated rules.
+            #[test]
+            fn exclude_pattern_combination_matches_concatenated_rules(
+                pa in pattern_vec(),
+                pb in pattern_vec(),
+                seg in "[a-z.]{1,8}",
+            ) {
+                let a = ExcludePatterns::new(pa.clone()).expect("valid patterns");
+                let b = ExcludePatterns::new(pb.clone()).expect("valid patterns");
+                let combined = a.try_combine(b).expect("small rule sets compile together");
+                let concatenated = ExcludePatterns::new(pa.into_iter().chain(pb)).expect("valid concat");
+                prop_assert_eq!(&combined, &concatenated);
+                prop_assert_eq!(
+                    combined.excludes_leaf("sub", seg.as_bytes()),
+                    concatenated.excludes_leaf("sub", seg.as_bytes())
+                );
+                prop_assert_eq!(
+                    combined.advance(String::new(), seg.as_bytes()),
+                    concatenated.advance(String::new(), seg.as_bytes())
+                );
+            }
 
             /// Any text either compiles to a pattern set or is a usage error: it never panics, and a
             /// compiled set answers every query.
@@ -580,5 +679,42 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn combining_valid_batches_reports_regex_set_limit() {
+        let rule = format!("/[ab]/{}", "[cd]".repeat(1536));
+        // NFA states use more memory on 64-bit targets. One batch fits; two do not.
+        let count = 512 / std::mem::size_of::<usize>();
+        let batch = ExcludePatterns::new(std::iter::repeat_n(rule.as_str(), count))
+            .expect("one batch fits the regex set limit");
+
+        assert!(matches!(
+            batch.clone().try_combine(batch),
+            Err(DomainError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn combining_exclusions_preserves_order_and_empty_identity() -> Result<(), DomainError> {
+        let empty = ExcludePatterns::empty();
+        assert!(empty.is_empty());
+        assert_eq!(empty, ExcludePatterns::default());
+
+        let first = patterns(&["build/", "*.log"]);
+        let second = patterns(&["!keep.log", "/top"]);
+        assert!(!first.is_empty());
+
+        assert_eq!(ExcludePatterns::empty().try_combine(first.clone())?, first);
+        assert_eq!(first.clone().try_combine(ExcludePatterns::empty())?, first);
+
+        let combined = first.try_combine(second)?;
+        assert!(!combined.is_empty());
+        assert!(combined.excludes_leaf("", b"app.log"));
+        assert!(!combined.excludes_leaf("", b"keep.log"));
+        assert!(combined.excludes_leaf("", b"top"));
+        assert_eq!(combined.advance(String::new(), b"build"), None);
+
+        Ok(())
     }
 }

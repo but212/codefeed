@@ -44,9 +44,10 @@ impl RequestTarget {
     /// Derives error-classification [`Auth`] from the same origin classification and token presence.
     #[must_use]
     pub(crate) const fn auth(self, has_token: bool) -> Auth {
-        match (self, has_token) {
-            (Self::GithubApi, true) => Auth::Token,
-            (Self::GithubApi, false) | (Self::External, _) => Auth::Anonymous,
+        if matches!(self, Self::GithubApi) && has_token {
+            Auth::Token
+        } else {
+            Auth::Anonymous
         }
     }
 }
@@ -67,31 +68,21 @@ pub(crate) fn repository_url(owner: &str, repo: &str) -> String {
 /// Constructs the tarball download URL under `base` for the given repository and optional Git reference.
 #[must_use]
 pub(crate) fn tarball_url(base: &str, owner: &str, repo: &str, reference: Option<&str>) -> String {
-    let mut url = String::from(base);
-    for segment in ["repos", owner, repo, "tarball"] {
-        url = append_encoded_segment(url, segment);
-    }
-    if let Some(reference) = reference {
-        url = append_encoded_segment(url, reference);
-    }
-    url
-}
-
-/// RFC 3986 unreserved bytes: ASCII alphanumerics plus `-`, `.`, `_`, and `~`.
-const fn is_unreserved(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~')
-}
-
-fn append_encoded_segment(mut url: String, segment: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    url.push('/');
-    for &b in segment.as_bytes() {
-        if is_unreserved(b) {
-            url.push(b as char);
-        } else {
-            url.push('%');
-            url.push(HEX[(b >> 4) as usize] as char);
-            url.push(HEX[(b & 0xF) as usize] as char);
+    let mut url = String::from(base);
+    for segment in ["repos", owner, repo, "tarball"]
+        .into_iter()
+        .chain(reference)
+    {
+        url.push('/');
+        for &b in segment.as_bytes() {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                url.push(b as char);
+            } else {
+                url.push('%');
+                url.push(HEX[(b >> 4) as usize] as char);
+                url.push(HEX[(b & 0xF) as usize] as char);
+            }
         }
     }
     url
@@ -100,8 +91,7 @@ fn append_encoded_segment(mut url: String, segment: &str) -> String {
 /// Parses a 40- or 64-hex-character commit SHA from a `comment=<sha>` PAX record.
 #[must_use]
 pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
-    let text = std::str::from_utf8(bytes).ok()?;
-    text.lines().find_map(|line| {
+    std::str::from_utf8(bytes).ok()?.lines().find_map(|line| {
         let trimmed = line.trim_ascii();
         let payload = match trimmed.split_once(' ') {
             Some((len, rest)) if len.bytes().all(|b| b.is_ascii_digit()) => rest,
@@ -110,14 +100,9 @@ pub(crate) fn parse_pax_comment(bytes: &[u8]) -> Option<String> {
         payload
             .strip_prefix("comment=")
             .map(str::trim_ascii)
-            .filter(|sha| is_valid_commit_sha(sha))
+            .filter(|s| matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit()))
             .map(ToOwned::to_owned)
     })
-}
-
-#[must_use]
-fn is_valid_commit_sha(sha: &str) -> bool {
-    matches!(sha.len(), 40 | 64) && sha.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Non-success GitHub API response. `Display` renders the message without the error-kind prefix.
@@ -178,10 +163,10 @@ pub(crate) fn api_error(
         let _ = write!(message, " (retry available in {}s)", d.as_secs());
     }
     if auth == Auth::Anonymous && matches!(status, 429 | 403) {
+        let vars = TOKEN_ENV_VARS.join(" or ");
         let _ = write!(
             message,
-            " (set {} to authenticate or increase rate limits)",
-            TOKEN_ENV_VARS.join(" or ")
+            " (set {vars} to authenticate or increase rate limits)"
         );
     }
 
@@ -217,12 +202,8 @@ pub(crate) fn transport_retry_warning(
     url: &str,
     delay: Duration,
 ) -> String {
-    retry_warning(
-        format_args!("transport error: {}", ErrorDetail::new(error_text)),
-        attempt,
-        url,
-        delay,
-    )
+    let err = ErrorDetail::new(error_text);
+    retry_warning(format_args!("transport error: {err}"), attempt, url, delay)
 }
 
 /// Returns `true` if HTTP status code is transient/retryable (HTTP 429, 5xx, or rate-limited 403).
@@ -234,29 +215,23 @@ const fn is_retryable_http_status(status_code: u16, is_rate_limit: bool) -> bool
 /// Calculates bounded exponential backoff duration for the given attempt.
 #[must_use]
 const fn retry_delay(attempt: usize) -> Duration {
-    let bounded_attempt = if attempt < 16 { attempt } else { 16 };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "bounded_attempt is clamped to <= 16 which fits in u32"
-    )]
-    let shift = bounded_attempt as u32;
-    let exponential = RETRY_INITIAL_DELAY_MS.saturating_mul(1_u64 << shift);
-    let millis = if exponential < RETRY_MAX_DELAY_MS {
-        exponential
+    let shift = if attempt < 16 { attempt } else { 16 };
+    #[expect(clippy::cast_possible_truncation, reason = "shift <= 16 fits in u32")]
+    let exp = RETRY_INITIAL_DELAY_MS.saturating_mul(1_u64 << (shift as u32));
+    Duration::from_millis(if exp < RETRY_MAX_DELAY_MS {
+        exp
     } else {
         RETRY_MAX_DELAY_MS
-    };
-
-    Duration::from_millis(millis)
+    })
 }
 
-const _: () = {
-    assert!(MAX_ATTEMPTS >= 1);
-    assert!(RETRY_INITIAL_DELAY_MS > 0);
-    assert!(RETRY_INITIAL_DELAY_MS <= RETRY_MAX_DELAY_MS);
-    assert!(retry_delay(0).as_millis() == RETRY_INITIAL_DELAY_MS as u128);
-    assert!(retry_delay(usize::MAX).as_millis() == RETRY_MAX_DELAY_MS as u128);
-};
+const _: () = assert!(
+    MAX_ATTEMPTS >= 1
+        && RETRY_INITIAL_DELAY_MS > 0
+        && RETRY_INITIAL_DELAY_MS <= RETRY_MAX_DELAY_MS
+        && retry_delay(0).as_millis() == RETRY_INITIAL_DELAY_MS as u128
+        && retry_delay(usize::MAX).as_millis() == RETRY_MAX_DELAY_MS as u128
+);
 
 /// Rate-limit facts from one response's headers. The shell reads the raw values; this type decides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,26 +267,27 @@ impl RateLimitHeaders {
         now_secs: u64,
     ) -> Self {
         let retry_text = retry_after.and_then(|b| std::str::from_utf8(b).ok());
-        if let Some(secs) = retry_text
+        let delay = retry_text
             .and_then(|v| httpdate::parse_http_date(v.trim()).ok())
             .and_then(|date| date.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-        {
-            Self::Limited {
-                retry_after: Some(wait_until(secs, now_secs)),
-            }
-        } else if let Some(secs) = retry_text.and_then(parse_saturating_u64) {
-            Self::Limited {
-                retry_after: Some(Duration::from_secs(secs)),
-            }
-        } else if remaining
+            .map(|d| wait_until(d.as_secs(), now_secs))
+            .or_else(|| {
+                retry_text
+                    .and_then(parse_saturating_u64)
+                    .map(Duration::from_secs)
+            });
+        if delay.is_some() {
+            return Self::Limited { retry_after: delay };
+        }
+
+        let quota_exhausted = remaining
             .and_then(|b| std::str::from_utf8(b).ok())
-            .is_some_and(|v| v.trim() == "0")
-        {
+            .is_some_and(|v| v.trim() == "0");
+        if quota_exhausted {
             let retry_after = reset
                 .and_then(|b| std::str::from_utf8(b).ok())
                 .and_then(parse_saturating_u64)
-                .map(|reset_secs| wait_until(reset_secs, now_secs));
+                .map(|secs| wait_until(secs, now_secs));
             Self::Limited { retry_after }
         } else if retry_after.is_some() {
             Self::Limited { retry_after: None }
@@ -375,9 +351,6 @@ impl AttemptState {
     /// Advances state only when another attempt is scheduled.
     #[must_use]
     pub(crate) const fn step(self, outcome: &RequestOutcome) -> Transition {
-        if self.attempt >= MAX_ATTEMPTS - 1 {
-            return Transition::Fail;
-        }
         let (retryable, server_delay) = match outcome {
             RequestOutcome::HttpStatus { status, rate_limit } => (
                 is_retryable_http_status(*status, rate_limit.is_rate_limited()),
@@ -385,18 +358,14 @@ impl AttemptState {
             ),
             RequestOutcome::TransportError { retryable } => (*retryable, None),
         };
-        if !retryable {
+        if self.attempt >= MAX_ATTEMPTS - 1 || !retryable {
             return Transition::Fail;
         }
-        match server_delay {
-            Some(d) if d.as_millis() > RETRY_MAX_DELAY_MS as u128 => Transition::Fail,
-            Some(d) => self.retry(d),
-            None => self.retry(retry_delay(self.attempt)),
-        }
-    }
-
-    /// Consumes one attempt and schedules the next after `delay`.
-    const fn retry(self, delay: Duration) -> Transition {
+        let delay = match server_delay {
+            Some(d) if d.as_millis() > RETRY_MAX_DELAY_MS as u128 => return Transition::Fail,
+            Some(d) => d,
+            None => retry_delay(self.attempt),
+        };
         Transition::Retry {
             next: Self {
                 attempt: self.attempt + 1,
@@ -750,8 +719,9 @@ mod tests {
             u64,
             Option<u64>,
         );
-        let cases: [Row<'_>; 9] = [
+        let cases: [Row<'_>; 10] = [
             (None, Some(b"59"), Some(b"1002400"), NOW, None),
+            (Some(b"0"), Some(b"0"), Some(b"1002400"), NOW, Some(0)),
             (None, Some(b"0"), Some(b"1002400"), NOW, Some(2400)),
             // A reset at or before `now` is already due: no wait.
             (None, Some(b"0"), Some(b"1000000"), NOW, Some(0)),

@@ -19,6 +19,10 @@ Scope: `### Library consumers and CLI users` lists observable behavior. `### Con
 - **`ErrorDetail::new`, `GitRef::new`, `Source::with_reference` accept `Into<Cow<'a, str>>`**: Signatures changed from `impl Into<String>` to `<'a>(impl Into<Cow<'a, str>>)` (`src/core/error.rs`, `src/core/source.rs`). `String`, `&str`, and `Cow<'_, str>` callers are unaffected; `Box<str>`, custom `Into<String>` types, and turbofish type arguments fail to compile.
   - **Action:** Pass `String`, `&str`, or `Cow<'_, str>` and remove explicit turbofish type arguments.
 
+#### Added
+
+- **Library exclusion configuration**: `ExcludePatterns::empty()` creates an empty set, `is_empty()` checks it, and `try_combine(other)` compiles validated sets in `.gitignore` order, returning a usage error if the combined matcher cannot be built (`src/core/policy/exclude.rs`).
+
 #### Fixed
 
 - **Escaped trailing spaces in ignore rules**: `.gitignore` and `--exclude` preserve a backslash-escaped space even when unescaped whitespace follows it.

@@ -16,7 +16,7 @@ Converts a local directory or public GitHub repository into a single text digest
 - `OutputTarget`: `File(PathBuf)` or `Stdout`.
 - `ResolvedOutput`: Filesystem-resolved target (`shell`-private, from `resolve_output_target`).
 - `DigestFormat`: `Text` or `Xml`.
-- `ExcludePatterns`: Validated user patterns in `.gitignore` syntax, relative to source root, case-sensitive. Each pattern yields one rule. `\` matches as U+FFFD on all platforms.
+- `ExcludePatterns`: Validated user patterns in `.gitignore` syntax, relative to source root, case-sensitive. Each pattern yields one rule. `\` matches as U+FFFD on all platforms. Validated sets can be combined in rule order with `ExcludePatterns::try_combine`.
 - `RunConfig`: Aggregate of `source`, `output`, `format`, and `exclude`.
 
 ### Candidate Collection
