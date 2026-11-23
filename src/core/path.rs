@@ -8,7 +8,7 @@ use crate::core::policy::{
 };
 
 /// Non-empty, normalized slash-separated relative UTF-8 path of at most `MAX_PATH_BYTES` bytes (I-10).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NormalizedPath(String);
 
 impl NormalizedPath {
