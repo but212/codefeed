@@ -69,10 +69,6 @@ impl BoundedBuffer {
         self.push_bytes(s.as_bytes())
     }
 
-    pub(super) fn push_usize(self, val: usize) -> Result<Self, OutputLimitExceeded> {
-        self.push_str(&val.to_string())
-    }
-
     pub(super) fn finish(self) -> RenderedDigest {
         let estimated_tokens = estimate_tokens_from_bytes(&self.bytes);
         RenderedDigest {
@@ -100,16 +96,6 @@ mod tests {
                 Some(OutputLimitExceeded),
                 "limit {limit}"
             );
-        }
-    }
-
-    #[test]
-    fn bounded_buffer_push_usize_formats_correctly() {
-        let cases = [0, 1, 42, 10_000, usize::MAX];
-        for val in cases {
-            let buf = BoundedBuffer::default().push_usize(val).unwrap();
-            let digest = buf.finish();
-            assert_eq!(std::str::from_utf8(&digest.bytes).unwrap(), val.to_string());
         }
     }
 

@@ -16,16 +16,15 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Mutex, PoisonError};
 
 use super::walk::Walk;
-use crate::core::path::{Candidate, NormalizedPath, UnstorablePath};
+use crate::core::path::Candidate;
 use crate::core::policy::{
-    ExcludePatterns, LOCAL_CHANNEL_CAPACITY, MAX_FILE_SIZE, MAX_LOCAL_WORKERS,
+    ExcludePatterns, LOCAL_BUFFER_RETAIN_BYTES, LOCAL_CHANNEL_CAPACITY, MAX_FILE_SIZE,
+    MAX_LOCAL_WORKERS,
 };
 use crate::core::selector::{Body, Selector};
 use crate::shell::error::{IngestError, io_error_at};
 
-/// Upper bound on buffer capacity retained in [`BufferPool`], preventing large files from
-/// pinning up to `LOCAL_CHANNEL_CAPACITY * MAX_FILE_SIZE` bytes of RSS.
-const LOCAL_BUFFER_RETAIN_BYTES: usize = 128 * 1024;
+/// Bounded pool capacity matching the maximum concurrent in-flight slots and workers.
 const LOCAL_BUFFER_POOL_CAP: usize = LOCAL_CHANNEL_CAPACITY + MAX_LOCAL_WORKERS;
 
 /// Bounded pool of reusable `Vec<u8>` read buffers scoped to a single local collection run.
@@ -94,22 +93,21 @@ struct Job<'a> {
 }
 
 /// One walk entry in walk order: decided on the producer thread, or waiting for a worker.
-enum Slot<'a> {
-    Pending(NormalizedPath, Receiver<WorkerReply<'a>>),
-    Unstorable(UnstorablePath),
-    Error(IngestError),
-}
+type Slot<'a> = Result<Candidate<Receiver<WorkerReply<'a>>>, IngestError>;
 
-/// Walks `root` in sorted order and settles each candidate into `selector` in that order.
+/// Walks `root` in sorted order and settles each candidate into a new `Selector` in that order.
 pub(super) fn collect_candidates(
     root: &Path,
     output: Option<&Path>,
     exclude: &ExcludePatterns,
-    selector: Selector,
 ) -> Result<Selector, IngestError> {
-    fold_candidates(root, output, exclude, selector, |selector, observation| {
-        Ok(selector.observe(observation)?)
-    })
+    fold_candidates(
+        root,
+        output,
+        exclude,
+        Selector::new(),
+        |selector, observation| Ok(selector.observe(observation)?),
+    )
 }
 
 /// Walks `root` in sorted order and folds each candidate through `step` in that order.
@@ -128,7 +126,7 @@ fn fold_candidates<T>(
     let (slot_tx, slot_rx) = sync_channel::<Slot<'_>>(LOCAL_CHANNEL_CAPACITY);
     std::thread::scope(|s| {
         for _ in 0..local_worker_count(std::thread::available_parallelism()) {
-            s.spawn(|| run_worker(&jobs, &aborted, &pool));
+            s.spawn(|| run_worker(&jobs, &aborted, |path| read_candidate(path, &pool)));
         }
         // Senders move into the producer, so they drop before the workers are joined.
         s.spawn(move || {
@@ -136,7 +134,7 @@ fn fold_candidates<T>(
             let slots = slot_tx;
             for entry in walker {
                 let slot = dispatch(entry, &jobs);
-                let fatal = matches!(slot, Slot::Error(_));
+                let fatal = slot.is_err();
                 if slots.send(slot).is_err() || fatal {
                     break;
                 }
@@ -160,29 +158,32 @@ fn dispatch<'a>(
     entry: Result<Candidate<PathBuf>, IngestError>,
     jobs: &SyncSender<Job<'a>>,
 ) -> Slot<'a> {
-    let (path, entry_path) = match entry {
-        Ok(Candidate::Valid(path, entry_path)) => (path, entry_path),
-        Ok(Candidate::Unstorable(key)) => return Slot::Unstorable(key),
-        Err(err) => return Slot::Error(err),
-    };
-
-    let (reply, pending) = sync_channel(1);
-    let job = Job { entry_path, reply };
-    if jobs.send(job).is_err() {
-        return Slot::Error(worker_stopped());
+    match entry? {
+        Candidate::Unstorable(key) => Ok(Candidate::Unstorable(key)),
+        Candidate::Valid(path, entry_path) => {
+            let (reply, pending) = sync_channel(1);
+            let job = Job { entry_path, reply };
+            jobs.send(job).map_err(|_| worker_stopped())?;
+            Ok(Candidate::Valid(path, pending))
+        }
     }
-    Slot::Pending(path, pending)
 }
 
 /// Answers jobs until the job channel closes. After an abort, workers answer without touching the
 /// filesystem, so the remaining queue drains quickly.
-fn run_worker<'a>(jobs: &Mutex<Receiver<Job<'a>>>, aborted: &AtomicBool, pool: &'a BufferPool) {
-    // The lock covers only the receive, so workers do not serialize on the reads.
-    while let Some(job) = jobs.lock().ok().and_then(|rx| rx.recv().ok()) {
+fn run_worker<'a>(
+    jobs: &Mutex<Receiver<Job<'a>>>,
+    aborted: &AtomicBool,
+    read: impl Fn(&Path) -> WorkerReply<'a>,
+) {
+    loop {
+        // The statement drops the receiver lock before any file I/O.
+        let job = jobs.lock().unwrap_or_else(PoisonError::into_inner).recv();
+        let Ok(job) = job else { break };
         let msg = if aborted.load(Ordering::Relaxed) {
             Ok(None)
         } else {
-            read_candidate(&job.entry_path, pool)
+            read(&job.entry_path)
         };
         // The settling side may already have stopped after an error; the reply is then unused.
         let _ = job.reply.send(msg);
@@ -199,10 +200,9 @@ fn settle<'a, T>(
     acc: T,
     step: &mut impl FnMut(T, Candidate<Body<PooledBuf<'a>>>) -> Result<T, IngestError>,
 ) -> Result<T, IngestError> {
-    match slot {
-        Slot::Unstorable(key) => step(acc, Candidate::Unstorable(key)),
-        Slot::Error(err) => Err(err),
-        Slot::Pending(path, reply) => {
+    match slot? {
+        Candidate::Unstorable(key) => step(acc, Candidate::Unstorable(key)),
+        Candidate::Valid(path, reply) => {
             let msg = reply.recv().unwrap_or_else(|_| Err(worker_stopped()))?;
             match msg {
                 Some(body) => step(acc, Candidate::Valid(path, body)),
@@ -270,8 +270,11 @@ fn read_bounded<'a>(
         Err(err) if is_unavailable_file(&err) => return Ok(None),
         Err(err) => return Err(io_error_at(path, &err)),
     };
-    let capacity =
-        usize::try_from(file_len).expect("invariant: caller checked file_len <= MAX_FILE_SIZE");
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "caller checked file_len <= MAX_FILE_SIZE and limits.rs asserts MAX_FILE_SIZE fits in usize"
+    )]
+    let capacity = file_len as usize;
     let mut pooled = pool.take(capacity);
     match file.take(MAX_FILE_SIZE + 1).read_to_end(&mut pooled.buf) {
         Ok(_) => Ok(Some(pooled)),
@@ -533,6 +536,21 @@ mod tests {
     }
 
     #[test]
+    fn worker_releases_receiver_before_reading() {
+        let (job_tx, job_rx) = sync_channel(1);
+        let jobs = Mutex::new(job_rx);
+        let (reply, pending) = sync_channel(1);
+        let entry_path = PathBuf::from("test.txt");
+        assert!(job_tx.send(Job { entry_path, reply }).is_ok());
+        drop(job_tx);
+        run_worker(&jobs, &AtomicBool::new(false), |_| {
+            assert!(jobs.try_lock().is_ok());
+            Ok(None)
+        });
+        assert!(matches!(pending.recv(), Ok(Ok(None))));
+    }
+
+    #[test]
     fn local_worker_count_caps_and_defaults() {
         let cores = |n: usize| NonZeroUsize::new(n).unwrap();
         assert_eq!(local_worker_count(Ok(cores(64))), MAX_LOCAL_WORKERS);
@@ -548,7 +566,7 @@ mod tests {
         // 1. dispatch when walk entry is Err
         let walk_err = IngestError::Io(io::Error::other("walk failed"));
         let slot = dispatch(Err(walk_err), &job_tx);
-        assert!(matches!(slot, Slot::Error(_)));
+        assert!(slot.is_err());
 
         let res = settle(slot, 0, &mut |_acc, _c| Ok(1));
         assert!(res.is_err());
@@ -556,44 +574,48 @@ mod tests {
         // 2. dispatch when job_tx is disconnected
         let candidate = Candidate::Valid("test.txt".into(), PathBuf::from("test.txt"));
         let slot = dispatch(Ok(candidate), &job_tx);
-        // jobs.send fails, returning Slot::Error(worker_stopped())
-        assert!(matches!(slot, Slot::Error(_)));
+        // jobs.send fails, returning Err(worker_stopped())
+        assert!(slot.is_err());
         let res = settle(slot, 0, &mut |_acc, _c| Ok(1));
         assert!(res.is_err());
 
-        // 3. settle with Slot::Pending where reply sender is dropped
+        // 3. settle with Valid candidate where reply sender is dropped
         let (reply_tx, reply_rx) = sync_channel(1);
         drop(reply_tx);
         let res = settle(
-            Slot::Pending("test.txt".into(), reply_rx),
+            Ok(Candidate::Valid("test.txt".into(), reply_rx)),
             0,
             &mut |_acc, _c| Ok(1),
         );
         assert!(res.is_err());
 
-        // 4. settle with Slot::Pending where body is None
+        // 4. settle with Valid candidate where body is None
         let (reply_tx, reply_rx) = sync_channel(1);
         reply_tx.send(Ok(None)).unwrap();
         let res = settle(
-            Slot::Pending("test.txt".into(), reply_rx),
+            Ok(Candidate::Valid("test.txt".into(), reply_rx)),
             42,
             &mut |_acc, _c| Ok(1),
         )
         .unwrap();
         assert_eq!(res, 42);
 
-        // 5. settle with Slot::Pending where body is Some, and Slot::Unstorable
+        // 5. settle with Valid candidate where body is Some, and Unstorable candidate
         let (reply_tx, reply_rx) = sync_channel(1);
         reply_tx.send(Ok(Some(Body::Unavailable))).unwrap();
         let res = settle(
-            Slot::Pending("test.txt".into(), reply_rx),
+            Ok(Candidate::Valid("test.txt".into(), reply_rx)),
             42,
             &mut |acc, _c| Ok(acc + 1),
         )
         .unwrap();
         assert_eq!(res, 43);
 
-        let unstorable = Slot::Unstorable(("", b"\xff".as_slice()).into());
+        let unstorable = dispatch(
+            Ok(Candidate::Unstorable(b"\xff".as_slice().into())),
+            &job_tx,
+        );
+        assert!(matches!(unstorable, Ok(Candidate::Unstorable(_))));
         let res = settle(unstorable, 43, &mut |acc, _c| Ok(acc + 1)).unwrap();
         assert_eq!(res, 44);
     }

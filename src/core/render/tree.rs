@@ -1,7 +1,5 @@
 use std::ops::Range;
 
-use memchr::memchr;
-
 use super::budget::{BoundedBuffer, OutputLimitExceeded};
 use crate::core::storage::SortedFiles;
 
@@ -81,7 +79,9 @@ fn component_at_offset(path: &str, offset: usize) -> (&str, bool) {
         !remainder.is_empty(),
         "invariant: NormalizedPath extends past every tree offset"
     );
-    memchr(b'/', remainder.as_bytes()).map_or((remainder, false), |idx| (&remainder[..idx], true))
+    remainder
+        .split_once('/')
+        .map_or((remainder, false), |(name, _)| (name, true))
 }
 
 #[cfg(test)]

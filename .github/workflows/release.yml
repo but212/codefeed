@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  RELEASE_DOCS: README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE NOTICE
+
 jobs:
   gate:
     name: Verify Tag and Test Suite
@@ -22,8 +25,10 @@ jobs:
       - name: Verify tagged commit is on main
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
 
       - name: Verify tag matches Cargo.toml and CHANGELOG.md
         run: |
@@ -74,23 +79,23 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             artifact_name: codefeed
-            archive_ext: tar.gz
+            archive_ext: tgz
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             artifact_name: codefeed
-            archive_ext: tar.gz
+            archive_ext: tgz
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-26.04-arm
             artifact_name: codefeed
-            archive_ext: tar.gz
+            archive_ext: tgz
           - target: x86_64-apple-darwin
             os: macos-latest
             artifact_name: codefeed
-            archive_ext: tar.gz
+            archive_ext: tgz
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact_name: codefeed
-            archive_ext: tar.gz
+            archive_ext: tgz
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             artifact_name: codefeed.exe
@@ -102,10 +107,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
         with:
           targets: ${{ matrix.target }}
+          cache: "false"
 
       - name: Install musl toolchain
         if: matrix.target == 'x86_64-unknown-linux-musl'
@@ -119,7 +125,7 @@ jobs:
         run: |
           mkdir staging
           cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} staging/
-          cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE NOTICE staging/
+          cp $RELEASE_DOCS staging/
           tar -czvf "codefeed-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive_ext }}" -C staging .
 
       - name: Package release assets (Windows)
@@ -128,7 +134,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path staging
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" -Destination staging/
-          Copy-Item "README.md", "CHANGELOG.md", "LICENSE-MIT", "LICENSE-APACHE", "NOTICE" -Destination staging/
+          Copy-Item ($env:RELEASE_DOCS -split ' ') -Destination staging/
           Compress-Archive -Path "staging/*" -DestinationPath "codefeed-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive_ext }}"
 
       - name: Upload artifact
@@ -152,8 +158,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
 
       - name: Authenticate with crates.io
         id: auth

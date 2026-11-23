@@ -42,10 +42,7 @@ impl From<DomainError> for IngestError {
 }
 
 /// Creates an [`IngestError::Io`] with message sanitized of control characters.
-pub(super) fn sanitized_io_error<'a>(
-    kind: io::ErrorKind,
-    message: impl Into<std::borrow::Cow<'a, str>>,
-) -> IngestError {
+pub(super) fn sanitized_io_error(kind: io::ErrorKind, message: String) -> IngestError {
     IngestError::Io(io::Error::new(kind, ErrorDetail::new(message).into_inner()))
 }
 

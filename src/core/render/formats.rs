@@ -42,9 +42,9 @@ pub(super) fn render_digest(
                 buf = buf.push_str(NEWLINE)?;
             }
             buf = buf.push_str(FILES_PREFIX)?;
-            buf = buf.push_usize(collection.files.len())?;
+            buf = buf.push_str(&collection.files.len().to_string())?;
             buf = buf.push_str(SKIPPED_PREFIX)?;
-            buf = buf.push_usize(collection.skipped)?;
+            buf = buf.push_str(&collection.skipped.to_string())?;
             buf = buf.push_str(METADATA_SUFFIX)?;
             buf = buf.push_str(DIRECTORY_HEADER)?;
             buf = render_tree(buf, &collection.files, |buf, name| {

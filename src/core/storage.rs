@@ -8,7 +8,7 @@ use std::iter::once;
 use std::num::TryFromIntError;
 use std::ops::Deref;
 
-use crate::core::error::DomainError;
+use crate::core::error::{DomainError, top_largest};
 use crate::core::path::NormalizedPath;
 use crate::core::policy::{MAX_OUTPUT_SIZE, OVERFLOW_LARGEST_FILES};
 
@@ -46,7 +46,7 @@ impl FileSpan {
 }
 
 #[must_use]
-pub(super) fn arena_slice(arena: &str, offset: u32, len: u32) -> &str {
+fn arena_slice(arena: &str, offset: u32, len: u32) -> &str {
     let start = offset as usize;
     &arena[start..start + len as usize]
 }
@@ -167,7 +167,7 @@ impl FileStorage {
             let candidate = FileRecord { path, content };
             return Err(DomainError::output_too_large(
                 MAX_OUTPUT_SIZE,
-                largest_files(self.iter().chain(once(candidate))),
+                &largest_files(self.iter().chain(once(candidate))),
             ));
         }
         // Accepted total is at most `MAX_OUTPUT_SIZE`, which `policy/limits.rs` asserts is `<= u32::MAX`,
@@ -201,7 +201,7 @@ impl FileStorage {
     /// Error for storage that exceeds the output limit, naming the largest files.
     #[must_use]
     pub(crate) fn output_too_large_error(&self) -> DomainError {
-        DomainError::output_too_large(MAX_OUTPUT_SIZE, largest_files(self.iter()))
+        DomainError::output_too_large(MAX_OUTPUT_SIZE, &largest_files(self.iter()))
     }
 }
 
@@ -255,13 +255,11 @@ pub(crate) fn cmp_path(a: &str, b: &str) -> Ordering {
 /// Sorts by descending file size, tie-breaking by hierarchical path order (`cmp_path`).
 #[must_use]
 fn largest_files<'a>(files: impl IntoIterator<Item = FileRecord<'a>>) -> Vec<(&'a str, usize)> {
-    let mut sized: Vec<(&'a str, usize)> = files
-        .into_iter()
-        .map(|f| (f.path, f.content.len()))
-        .collect();
-    sized.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| cmp_path(a.0, b.0)));
-    sized.truncate(OVERFLOW_LARGEST_FILES);
-    sized
+    top_largest(
+        files.into_iter().map(|f| (f.path, f.content.len())),
+        OVERFLOW_LARGEST_FILES,
+        cmp_path,
+    )
 }
 
 #[cfg(test)]

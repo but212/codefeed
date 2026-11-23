@@ -16,7 +16,6 @@ use super::output::ResolvedOutput;
 use crate::core::error::DomainError;
 use crate::core::model::CollectionResult;
 use crate::core::policy::ExcludePatterns;
-use crate::core::selector::Selector;
 
 /// Collects files from a local directory root, excluding the output file if located inside it.
 ///
@@ -29,7 +28,7 @@ pub(super) fn collect(
 ) -> Result<CollectionResult, IngestError> {
     let canonical_root = validate_root(root)?;
     let label = repository_name(&canonical_root).to_string();
-    let selector = collect_candidates(&canonical_root, output.file(), exclude, Selector::new())?;
+    let selector = collect_candidates(&canonical_root, output.file(), exclude)?;
 
     Ok(selector.finish(label, None)?)
 }
@@ -97,16 +96,24 @@ mod tests {
     #[test]
     fn user_exclusions_select_the_same_files_locally_and_from_an_archive()
     -> Result<(), Box<dyn std::error::Error>> {
-        let entries: [(&str, &[u8]); 7] = [
+        let oversized = vec![b'x'; MAX_FILE_SIZE_USIZE + 1];
+        let entries: [(&str, &[u8]); 13] = [
             ("src/main.rs", b"fn main() {}"),
             ("src/app.log", b"log"),
+            ("src/keep.log", b"keep"),
             ("build/out.txt", b"out"),
+            ("build/keep.log", b"pruned"),
             ("lib/build/x.txt", b"x"),
             ("top", b"anchored"),
             ("lib/top", b"nested"),
+            (".hidden", b"hidden"),
+            ("Cargo.lock", b"[lockfile]"),
+            (".env", b"SECRET=true"),
+            ("oversized.txt", oversized.as_slice()),
             ("data.bin", b"\0\x01"),
         ];
-        let exclude = ExcludePatterns::new(["build/", "*.log", "/top"])?;
+        let exclude = ExcludePatterns::new(["build/", "*.log"])?
+            .try_combine(ExcludePatterns::new(["!keep.log", "/top"])?)?;
 
         let root = temp_dir("differential_exclude")?;
         for (path, body) in entries {
@@ -130,9 +137,9 @@ mod tests {
 
         let local_paths: Vec<&str> = local.files.iter().map(|f| f.path).collect();
         let remote_paths: Vec<&str> = remote.files.iter().map(|f| f.path).collect();
-        assert_eq!(local_paths, vec!["lib/top", "src/main.rs"]);
+        assert_eq!(local_paths, vec!["lib/top", "src/keep.log", "src/main.rs"]);
         assert_eq!(local_paths, remote_paths);
-        assert_eq!(local.skipped, 1, "data.bin is binary");
+        assert_eq!(local.skipped, 2, "data.bin and oversized.txt are skipped");
         assert_eq!(local.skipped, remote.skipped);
         Ok(())
     }

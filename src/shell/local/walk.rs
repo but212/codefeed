@@ -76,12 +76,11 @@ impl<'a> Walk<'a> {
             }
             let parent = &self.frames[top].admitted;
             if kind.is_dir() {
-                if let Some(child) = admit_dir(parent.clone(), name, self.exclude) {
-                    child.check_depth("local path")?;
+                if let Some(child) = admit_dir(parent.clone(), name, self.exclude, "local path")? {
                     self.frames.push(Frame::enter(&path, child)?);
                 }
             } else if self.output != Some(path.as_path()) {
-                match classify_leaf(parent, name, self.exclude, "local path")? {
+                match classify_leaf(parent, name, self.exclude) {
                     Some(Candidate::Valid(relative, ())) => {
                         return Ok(Some(Candidate::Valid(relative, path)));
                     }

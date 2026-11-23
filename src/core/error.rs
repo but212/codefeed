@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::fmt::{Display, Formatter, Result};
 
 /// Error text that may echo user input or a remote payload. It holds no control character (I-04):
@@ -90,9 +91,9 @@ impl DomainError {
     /// Constructs a [`CandidateLimitExceeded`](Self::CandidateLimitExceeded) error with diagnostic directory counts.
     /// The directory names are sanitized.
     #[cold]
-    pub(crate) fn candidate_limit_exceeded<'a, S: Into<Cow<'a, str>>>(
+    pub(crate) fn candidate_limit_exceeded(
         limit: usize,
-        largest_directories: impl IntoIterator<Item = (S, usize)>,
+        largest_directories: &[(&str, usize)],
     ) -> Self {
         Self::CandidateLimitExceeded(LimitExceededError {
             limit: limit as u64,
@@ -121,10 +122,7 @@ impl DomainError {
     /// Constructs an [`OutputTooLarge`](Self::OutputTooLarge) error with diagnostic largest file entries.
     /// The file names are sanitized.
     #[cold]
-    pub(crate) fn output_too_large<'a, S: Into<Cow<'a, str>>>(
-        limit: u64,
-        largest_files: impl IntoIterator<Item = (S, usize)>,
-    ) -> Self {
+    pub(crate) fn output_too_large(limit: u64, largest_files: &[(&str, usize)]) -> Self {
         Self::OutputTooLarge(LimitExceededError {
             limit,
             largest: sanitized_counts(largest_files),
@@ -132,13 +130,37 @@ impl DomainError {
     }
 }
 
-fn sanitized_counts<'a, S: Into<Cow<'a, str>>>(
-    entries: impl IntoIterator<Item = (S, usize)>,
-) -> Vec<(ErrorDetail, usize)> {
+fn sanitized_counts(entries: &[(&str, usize)]) -> Vec<(ErrorDetail, usize)> {
     entries
-        .into_iter()
-        .map(|(name, count)| (ErrorDetail::new(name), count))
+        .iter()
+        .map(|&(name, count)| (ErrorDetail::new(name), count))
         .collect()
+}
+
+/// Selects up to `limit` entries with the largest counts, tie-breaking equal counts with `tie_break`.
+#[must_use]
+pub(crate) fn top_largest<'a>(
+    entries: impl IntoIterator<Item = (&'a str, usize)>,
+    limit: usize,
+    tie_break: impl Fn(&str, &str) -> Ordering,
+) -> Vec<(&'a str, usize)> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let cmp =
+        |a: (&'a str, usize), b: (&'a str, usize)| b.1.cmp(&a.1).then_with(|| tie_break(a.0, b.0));
+    let mut top: Vec<(&'a str, usize)> = Vec::with_capacity(limit);
+    for item in entries {
+        if top.len() == limit && cmp(top[limit - 1], item).is_le() {
+            continue;
+        }
+        let pos = top.partition_point(|&existing| cmp(existing, item).is_le());
+        if top.len() == limit {
+            top.pop();
+        }
+        top.insert(pos, item);
+    }
+    top
 }
 
 impl Display for DomainError {
@@ -167,8 +189,7 @@ impl Display for DomainError {
                 if !err.largest.is_empty() {
                     write!(f, "\nlargest files:")?;
                     for (path, size) in &err.largest {
-                        let formatted_size = format_size(*size);
-                        write!(f, "\n  - {path} ({formatted_size})")?;
+                        write!(f, "\n  - {path} ({})", FormattedSize(*size))?;
                     }
                 }
                 Ok(())
@@ -183,15 +204,19 @@ const MIB: f64 = 1024.0 * 1024.0;
 // 1023.95 * 1024 = 1_048_524.8, so values >= 1_048_525 must be formatted as MiB.
 const MIB_ROUNDING_THRESHOLD: usize = 1_048_525;
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "diagnostic byte sizes in error messages are well below f64 53-bit mantissa limit"
-)]
-fn format_size(bytes: usize) -> String {
-    match bytes {
-        b @ MIB_ROUNDING_THRESHOLD.. => format!("{:.1} MiB", b as f64 / MIB),
-        b @ 1024.. => format!("{:.1} KiB", b as f64 / KIB),
-        b => format!("{b} B"),
+struct FormattedSize(usize);
+
+impl Display for FormattedSize {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "diagnostic byte sizes in error messages are well below f64 53-bit mantissa limit"
+    )]
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        match self.0 {
+            b @ MIB_ROUNDING_THRESHOLD.. => write!(f, "{:.1} MiB", b as f64 / MIB),
+            b @ 1024.. => write!(f, "{:.1} KiB", b as f64 / KIB),
+            b => write!(f, "{b} B"),
+        }
     }
 }
 
@@ -205,9 +230,46 @@ mod tests {
     #[test]
     fn output_too_large_message_derives_from_payload_limit() {
         assert_eq!(
-            DomainError::output_too_large(7 * 1024 * 1024, Vec::<(&str, usize)>::new()).to_string(),
+            DomainError::output_too_large(7 * 1024 * 1024, &[]).to_string(),
             "digest exceeds the 7 MiB output limit"
         );
+    }
+
+    #[test]
+    fn top_largest_selects_and_truncates_across_boundary_sizes() {
+        type Entry<'a> = (&'a str, usize);
+        type TopCase<'a> = (&'a [Entry<'a>], usize, &'a [Entry<'a>]);
+        let less = [("a", 1), ("b", 3)];
+        let exact = [("a", 1), ("b", 3), ("c", 2)];
+        let more = [("a", 1), ("b", 5), ("c", 2), ("d", 5), ("e", 3)];
+        let tie_evict = [("m", 5), ("z", 5), ("a", 5), ("c", 5), ("b", 5)];
+        let cases: [TopCase<'_>; 7] = [
+            (&[], 0, &[]),
+            (&more, 0, &[]),
+            (&[], 3, &[]),
+            (&less, 3, &[("b", 3), ("a", 1)]),
+            (&exact, 3, &[("b", 3), ("c", 2), ("a", 1)]),
+            (&more, 3, &[("b", 5), ("d", 5), ("e", 3)]),
+            (&tie_evict, 2, &[("a", 5), ("b", 5)]),
+        ];
+        for (entries, limit, expected) in cases {
+            let got = top_largest(entries.iter().copied(), limit, str::cmp);
+            assert_eq!(got, expected, "limit={limit}");
+        }
+    }
+
+    #[test]
+    fn top_largest_uses_caller_tie_break() {
+        let entries = [("src/", 4), ("src-test/", 4)];
+        let by_component = |a: &str, b: &str| a.split('/').cmp(b.split('/'));
+
+        // Byte order puts '-' (0x2D) before '/' (0x2F); component order has "src" < "src-test".
+        let by_byte = top_largest(entries, 2, str::cmp);
+        assert_eq!(by_byte, [("src-test/", 4), ("src/", 4)]);
+        let by_comp = top_largest(entries, 2, by_component);
+        assert_eq!(by_comp, [("src/", 4), ("src-test/", 4)]);
+        assert_eq!(top_largest(entries, 1, str::cmp), [("src-test/", 4)]);
+        assert_eq!(top_largest(entries, 1, by_component), [("src/", 4)]);
     }
 
     #[test]
@@ -224,7 +286,11 @@ mod tests {
         ];
 
         for (bytes, expected) in cases {
-            assert_eq!(format_size(bytes), expected, "failed for {bytes} bytes");
+            assert_eq!(
+                FormattedSize(bytes).to_string(),
+                expected,
+                "failed for {bytes} bytes"
+            );
         }
     }
 
@@ -283,8 +349,8 @@ mod tests {
         use std::fmt::Write as _;
 
         let errors = [
-            DomainError::candidate_limit_exceeded(MAX_FILE_COUNT, [("dir_a", 3), ("dir_b", 2)]),
-            DomainError::output_too_large(MAX_OUTPUT_SIZE, [("big.txt", 2_000_000)]),
+            DomainError::candidate_limit_exceeded(MAX_FILE_COUNT, &[("dir_a", 3), ("dir_b", 2)]),
+            DomainError::output_too_large(MAX_OUTPUT_SIZE, &[("big.txt", 2_000_000)]),
         ];
         for err in errors {
             let full = err.to_string();
@@ -310,7 +376,7 @@ mod tests {
     #[test]
     fn overflow_diagnostics_sanitize_control_characters() {
         let candidates =
-            DomainError::candidate_limit_exceeded(MAX_FILE_COUNT, [("d\x1b]0;t\x07/", 3)])
+            DomainError::candidate_limit_exceeded(MAX_FILE_COUNT, &[("d\x1b]0;t\x07/", 3)])
                 .to_string();
         assert_eq!(
             candidates,
@@ -321,7 +387,7 @@ mod tests {
 
         let mib = MAX_OUTPUT_SIZE / (1024 * 1024);
         let output =
-            DomainError::output_too_large(MAX_OUTPUT_SIZE, [("f\x1b[31m\n.txt", 1)]).to_string();
+            DomainError::output_too_large(MAX_OUTPUT_SIZE, &[("f\x1b[31m\n.txt", 1)]).to_string();
         assert_eq!(
             output,
             format!(

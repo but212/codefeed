@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
@@ -11,21 +12,21 @@ pub(crate) const HELP: &str = "Usage: codefeed <SOURCE> [--output <PATH|->] [--r
 /// Text printed for `-V` and `--version`.
 pub(crate) const VERSION: &str = concat!(env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"));
 
+const STDOUT_ARG: &str = "-";
+
 /// One-line summary of a finished run, naming where the digest went.
 #[must_use]
 pub(crate) fn completion_message(report: &IngestReport) -> String {
     let included = report.included_files;
     let skipped = report.skipped_files;
     let tokens = report.estimated_tokens;
-    match &report.output {
+    let destination = match &report.output {
         OutputTarget::File(path) => {
-            let path_display = ErrorDetail::new(path.display().to_string());
-            format!("Wrote {path_display} ({included} files, {skipped} skipped, ~{tokens} tokens)")
+            Cow::Owned(ErrorDetail::new(path.to_string_lossy()).into_inner())
         }
-        OutputTarget::Stdout => {
-            format!("Wrote to stdout ({included} files, {skipped} skipped, ~{tokens} tokens)")
-        }
-    }
+        OutputTarget::Stdout => Cow::Borrowed("to stdout"),
+    };
+    format!("Wrote {destination} ({included} files, {skipped} skipped, ~{tokens} tokens)")
 }
 
 /// Action determined by parsing command-line arguments.
@@ -47,19 +48,12 @@ enum Flag {
     Exclude,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ParseState {
-    Normal,
-    ExpectValue(Flag, &'static str),
-    PositionalOnly,
-}
-
 /// Option values folded in argument order. A repeated flag keeps its last value, except `--exclude`,
 /// whose patterns accumulate in the order given.
 #[derive(Debug, Default)]
 struct Parsed {
     source: Option<OsString>,
-    output: Option<OsString>,
+    output: Option<OutputTarget>,
     reference: Option<String>,
     format: DigestFormat,
     exclude: Vec<String>,
@@ -69,7 +63,13 @@ impl Parsed {
     /// Stores one flag value after validating it for that flag.
     fn with_value(mut self, flag: Flag, val: OsString) -> Result<Self, DomainError> {
         match flag {
-            Flag::Output => self.output = Some(val),
+            Flag::Output => {
+                self.output = Some(if val == STDOUT_ARG {
+                    OutputTarget::Stdout
+                } else {
+                    OutputTarget::File(val.into())
+                });
+            }
             Flag::Reference => {
                 let val_str = val
                     .into_string()
@@ -77,13 +77,13 @@ impl Parsed {
                 self.reference = Some(val_str);
             }
             Flag::Format => {
-                let val_str = val.to_string_lossy();
-                self.format = match val_str.as_ref() {
-                    "text" => DigestFormat::Text,
-                    "xml" => DigestFormat::Xml,
+                self.format = match val.as_encoded_bytes() {
+                    b"text" => DigestFormat::Text,
+                    b"xml" => DigestFormat::Xml,
                     _ => {
                         return Err(DomainError::usage(format!(
-                            "invalid value '{val_str}' for '--format <text|xml>'"
+                            "invalid value '{}' for '--format <text|xml>'",
+                            val.to_string_lossy()
                         )));
                     }
                 };
@@ -116,23 +116,19 @@ impl Parsed {
             DomainError::usage("the following required arguments were not provided: <SOURCE>")
         })?;
 
-        let output = match self.output {
-            Some(o) if o == "-" => OutputTarget::Stdout,
-            Some(o) => OutputTarget::File(PathBuf::from(o)),
-            None => OutputTarget::File(PathBuf::from("digest.txt")),
-        };
-
         let source = Source::parse_os(&source_os)?.with_reference(self.reference)?;
         Ok(CliAction::Run(Box::new(RunConfig {
             source,
-            output,
+            output: self
+                .output
+                .unwrap_or_else(|| OutputTarget::File(PathBuf::from("digest.txt"))),
             format: self.format,
             exclude: ExcludePatterns::new(self.exclude)?,
         })))
     }
 }
 
-/// Meaning of one argument seen in `ParseState::Normal`.
+/// Meaning of one argument in option position.
 enum Arg<'a> {
     /// `--`: every later argument is positional.
     Separator,
@@ -140,123 +136,139 @@ enum Arg<'a> {
     Help,
     /// `-V` or `--version`.
     Version,
-    /// A known flag, with its inline `=value` when one is given.
-    Flag(Flag, &'static str, Option<&'a str>),
-    /// An option-like argument that is not a known flag.
+    /// A value option, preserving its spelling for diagnostics.
+    Flag {
+        flag: Flag,
+        spelling: &'a str,
+        inline: Option<Cow<'a, OsStr>>,
+    },
+    /// An option-like Unicode argument that is not a known flag.
     Unknown(&'a str),
-    /// The source positional. Also `-` and any argument that is not valid UTF-8.
+    /// The source positional, including `-` and non-UTF-8 paths without a known option name.
     Positional,
 }
 
-/// Classifies one argument. Checks run in order: separator, help, version, known flag, unknown option.
+/// Matches control tokens exactly and splits value options at their first `=`.
 fn classify_arg(arg: &OsStr) -> Arg<'_> {
-    let Some(s) = arg.to_str() else {
+    let bytes = arg.as_encoded_bytes();
+    match bytes {
+        b"--" => return Arg::Separator,
+        b"-h" | b"--help" => return Arg::Help,
+        b"-V" | b"--version" => return Arg::Version,
+        b"-" => return Arg::Positional,
+        [b'-', ..] => {}
+        _ => return Arg::Positional,
+    }
+
+    let separator = bytes.iter().position(|&byte| byte == b'=');
+    let Ok(spelling) = std::str::from_utf8(&bytes[..separator.unwrap_or(bytes.len())]) else {
         return Arg::Positional;
     };
-    if s == "--" {
-        return Arg::Separator;
+    let flag = match spelling {
+        "-o" | "--output" => Flag::Output,
+        "-r" | "--ref" => Flag::Reference,
+        "-f" | "--format" => Flag::Format,
+        "-x" | "--exclude" => Flag::Exclude,
+        _ => return arg.to_str().map_or(Arg::Positional, Arg::Unknown),
+    };
+    let inline = if let Some(separator) = separator {
+        let Some(value) = inline_value(arg, separator + 1) else {
+            return Arg::Positional;
+        };
+        Some(value)
+    } else {
+        None
+    };
+    Arg::Flag {
+        flag,
+        spelling,
+        inline,
     }
-    if s == "-h" || s == "--help" {
-        return Arg::Help;
+}
+
+/// Borrows the value after the matched ASCII `flag=` prefix or reconstructs it losslessly.
+fn inline_value(arg: &OsStr, value_start: usize) -> Option<Cow<'_, OsStr>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        Some(Cow::Borrowed(OsStr::from_bytes(
+            &arg.as_bytes()[value_start..],
+        )))
     }
-    if s == "-V" || s == "--version" {
-        return Arg::Version;
-    }
-    for (flag, flag_str) in [
-        (Flag::Output, "-o"),
-        (Flag::Output, "--output"),
-        (Flag::Reference, "-r"),
-        (Flag::Reference, "--ref"),
-        (Flag::Format, "-f"),
-        (Flag::Format, "--format"),
-        (Flag::Exclude, "-x"),
-        (Flag::Exclude, "--exclude"),
-    ] {
-        if s == flag_str {
-            return Arg::Flag(flag, flag_str, None);
+    #[cfg(not(unix))]
+    {
+        if let Some(text) = arg.to_str() {
+            return Some(Cow::Borrowed(OsStr::new(&text[value_start..])));
         }
-        if let Some(rest) = s.strip_prefix(flag_str)
-            && let Some(inline) = rest.strip_prefix('=')
+        #[cfg(windows)]
         {
-            return Arg::Flag(flag, flag_str, Some(inline));
+            use std::os::windows::ffi::{OsStrExt, OsStringExt};
+            // Every byte of the matched ASCII prefix is also one UTF-16 code unit.
+            let value: Vec<_> = arg.encode_wide().skip(value_start).collect();
+            Some(Cow::Owned(OsString::from_wide(&value)))
         }
+        #[cfg(not(windows))]
+        None
     }
-    if s.starts_with('-') && s != "-" {
-        return Arg::Unknown(s);
-    }
-    Arg::Positional
 }
 
 /// Parses `args` (skipping the binary name) into a [`CliAction`].
 ///
 /// # Errors
 ///
-/// Returns [`DomainError::Usage`] on missing arguments, unknown options, or invalid flag values.
+/// Returns [`DomainError::Usage`] for invalid CLI syntax or option values, or a source error
+/// for an invalid or unsupported source or revision.
 pub(crate) fn parse<I, T>(args: I) -> Result<CliAction, DomainError>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
-    let mut args_iter = args.into_iter().map(Into::into);
-    let _bin = args_iter.next();
+    let mut args = args.into_iter().map(Into::into);
+    let _bin = args.next();
 
-    let mut state = ParseState::Normal;
-    // `-h` and `-V` win over an earlier error unless that error came after `--`, so the loop
-    // remembers the first error and keeps stepping `state` until `--` or end-of-arguments.
-    let mut acc: Result<Parsed, DomainError> = Ok(Parsed::default());
-
-    for arg in args_iter {
-        match state {
-            ParseState::ExpectValue(flag, flag_str) => {
-                state = ParseState::Normal;
+    // A help/version option can preempt the first error until `--` ends option parsing.
+    let mut acc = Ok(Parsed::default());
+    while let Some(arg) = args.next() {
+        match classify_arg(&arg) {
+            Arg::Separator => return args.try_fold(acc?, Parsed::with_positional)?.finish(),
+            Arg::Help => return Ok(CliAction::Help),
+            Arg::Version => return Ok(CliAction::Version),
+            Arg::Flag {
+                flag,
+                inline: Some(value),
+                ..
+            } => {
+                acc = acc.and_then(|parsed| parsed.with_value(flag, value.into_owned()));
+            }
+            Arg::Flag {
+                flag,
+                spelling,
+                inline: None,
+            } => {
+                // The value position consumes one token even after an earlier error.
+                let Some(value) = args.next() else {
+                    return acc.and_then(|_| Err(missing_value(spelling)));
+                };
                 acc = acc.and_then(|parsed| {
-                    reject_option_like(flag, flag_str, &arg)?;
-                    parsed.with_value(flag, arg)
+                    reject_option_like(flag, spelling, &value)?;
+                    parsed.with_value(flag, value)
                 });
             }
-            ParseState::PositionalOnly => {
-                acc = Ok(acc?.with_positional(arg)?);
+            Arg::Unknown(s) => {
+                acc = acc.and_then(|_| Err(DomainError::usage(format!("unknown option: {s}"))));
             }
-            ParseState::Normal => match classify_arg(&arg) {
-                Arg::Separator => {
-                    acc = Ok(acc?);
-                    state = ParseState::PositionalOnly;
-                }
-                Arg::Help => return Ok(CliAction::Help),
-                Arg::Version => return Ok(CliAction::Version),
-                Arg::Flag(flag, _, Some(inline)) => {
-                    acc = acc.and_then(|parsed| parsed.with_value(flag, OsString::from(inline)));
-                }
-                Arg::Flag(flag, flag_str, None) => {
-                    state = ParseState::ExpectValue(flag, flag_str);
-                }
-                Arg::Unknown(s) => {
-                    acc = acc.and_then(|_| Err(DomainError::usage(format!("unknown option: {s}"))));
-                }
-                Arg::Positional => {
-                    acc = acc.and_then(|parsed| parsed.with_positional(arg));
-                }
-            },
+            Arg::Positional => {
+                acc = acc.and_then(|parsed| parsed.with_positional(arg));
+            }
         }
     }
-
-    let parsed = acc?;
-    if let ParseState::ExpectValue(_, flag_str) = state {
-        return Err(missing_value(flag_str));
-    }
-    parsed.finish()
+    acc?.finish()
 }
 
-/// Rejects a separate-argument flag value that starts with `-`, so `-o -x` cannot
-/// swallow the next option. `-o -` is the stdout sentinel and stays allowed.
-/// Inline `--flag=value` forms never reach this check.
-fn reject_option_like(flag: Flag, flag_str: &str, val: &OsStr) -> Result<(), DomainError> {
-    let allow_dash = matches!(flag, Flag::Output);
-    if let Some(s) = val.to_str()
-        && s.starts_with('-')
-        && !(allow_dash && s == "-")
-    {
-        return Err(missing_value(flag_str));
+/// Rejects dash-prefixed separate values except the stdout sentinel for output.
+fn reject_option_like(flag: Flag, spelling: &str, val: &OsStr) -> Result<(), DomainError> {
+    if val.as_encoded_bytes().starts_with(b"-") && !(flag == Flag::Output && val == STDOUT_ARG) {
+        return Err(missing_value(spelling));
     }
     Ok(())
 }
@@ -350,11 +362,14 @@ mod tests {
             assert_eq!(config.output, OutputTarget::Stdout);
         }
 
-        let config = parse_run(["codefeed", ".", "--output=-notes.txt"]);
-        assert_eq!(
-            config.output,
-            OutputTarget::File(PathBuf::from("-notes.txt"))
-        );
+        for path in ["-notes.txt", "", "a=b", "-/."] {
+            let arg = format!("--output={path}");
+            let config = parse_run(["codefeed", ".", &arg]);
+            assert!(
+                matches!(config.output, OutputTarget::File(file) if file.as_os_str() == path),
+                "{arg}"
+            );
+        }
 
         let config = parse_run(["codefeed", "--", "-weird-path"]);
         assert_eq!(config.source, Source::Local(PathBuf::from("-weird-path")));
@@ -366,6 +381,7 @@ mod tests {
         let config = parse_run([
             "codefeed",
             "https://github.com/rust-lang/cargo",
+            "--ref=.", // Only the final revision is validated against the source.
             "--ref",
             "main",
         ]);
@@ -392,6 +408,20 @@ mod tests {
                 "unexpected argument 'extra'",
             ),
             (&["codefeed", ".", "--bogus"], "unknown option: --bogus"),
+            (&["codefeed", "--help=x"], "unknown option: --help=x"),
+            (&["codefeed", "-ox="], "unknown option: -ox="),
+            (
+                &["codefeed", "--format=xml=x"],
+                "invalid value 'xml=x' for '--format",
+            ),
+            (
+                &["codefeed", ".", "--exclude=[", "--format=yaml", "-f=text"],
+                "invalid value 'yaml' for '--format",
+            ),
+            (
+                &["codefeed", ".", "--exclude=[", "--ref=main"],
+                "--ref is only valid for GitHub sources",
+            ),
             (
                 &["codefeed", ".", "--ref", "main"],
                 "--ref is only valid for GitHub sources",
@@ -511,10 +541,6 @@ mod tests {
             CliAction::Version
         );
 
-        // A `-h` taken as a flag value is not an early action.
-        let err = parse(["codefeed", "--bogus", "-o", "-h"]).unwrap_err();
-        assert!(err.to_string().contains("unknown option: --bogus"));
-
         // After `--`, `-h` is a positional, so the earlier error stands.
         let err = parse(["codefeed", "--", "a", "-h"]).unwrap_err();
         assert!(err.to_string().contains("unexpected argument '-h'"));
@@ -524,6 +550,25 @@ mod tests {
         // After `--`, `-V` is a positional.
         let config = parse_run(["codefeed", "--", "-V"]);
         assert_eq!(config.source, Source::Local(PathBuf::from("-V")));
+    }
+
+    #[test]
+    fn cli_separate_option_consumes_one_token_even_after_an_error() {
+        assert_eq!(
+            parse(["codefeed", "--bogus", "--output", "--", "--help"]).unwrap(),
+            CliAction::Help
+        );
+        assert_eq!(
+            parse(["codefeed", "--output", "--help", "-V"]).unwrap(),
+            CliAction::Version
+        );
+        for args in [
+            &["codefeed", "--bogus", "-o", "-h"][..],
+            &["codefeed", "--bogus", "--output"][..],
+        ] {
+            let err = parse(args.iter().copied()).unwrap_err();
+            assert!(err.to_string().contains("unknown option: --bogus"));
+        }
     }
 
     #[test]
@@ -565,28 +610,62 @@ mod tests {
             (".", "-x", "exclude pattern must be valid utf-8"),
         ];
         for (source, flag, fragment) in cases {
-            let args = [
-                std::ffi::OsString::from("codefeed"),
-                std::ffi::OsString::from(source),
-                std::ffi::OsString::from(flag),
-                non_utf8_os_value(),
-            ];
-            let err = parse(args.iter()).unwrap_err();
-            assert!(err.to_string().contains(fragment), "{flag}: {err}");
+            let mut inline = OsString::from(format!("{flag}="));
+            inline.push(non_utf8_os_value());
+            let separate = [OsString::from(flag), non_utf8_os_value()];
+            for values in [separate.as_slice(), std::slice::from_ref(&inline)] {
+                let args = [OsStr::new("codefeed"), OsStr::new(source)]
+                    .into_iter()
+                    .chain(values.iter().map(OsString::as_os_str));
+                let err = parse(args).unwrap_err();
+                assert!(err.to_string().contains(fragment), "{flag}: {err}");
+            }
         }
     }
 
     #[cfg(any(unix, windows))]
     #[test]
-    fn cli_non_utf8_source_is_a_local_path() {
-        let raw_source = non_utf8_os_value();
-        let args = [std::ffi::OsString::from("codefeed"), raw_source.clone()];
-        let CliAction::Run(config) = parse(args.iter()).expect("non-UTF-8 source is a path") else {
+    fn inline_output_preserves_non_utf8_path() {
+        let mut path = OsString::from("-notes-");
+        path.push(non_utf8_os_value());
+        let mut arg = OsString::from("--output=");
+        arg.push(&path);
+        let CliAction::Run(config) =
+            parse([OsStr::new("codefeed"), OsStr::new("."), &arg]).unwrap()
+        else {
             panic!("expected Run action");
         };
-        assert!(
-            matches!(&config.source, Source::Local(path) if path.as_os_str() == raw_source.as_os_str()),
-            "expected local path source"
-        );
+        assert_eq!(config.output, OutputTarget::File(path.into()));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn separate_output_rejects_non_utf8_path_starting_with_dash() {
+        let mut path = OsString::from("-notes-");
+        path.push(non_utf8_os_value());
+        let args = [
+            OsStr::new("codefeed"),
+            OsStr::new("."),
+            OsStr::new("-o"),
+            &path,
+        ];
+        assert!(matches!(parse(args), Err(DomainError::Usage(_))));
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn cli_non_utf8_source_is_a_local_path() {
+        for prefix in ["", "-", "--unknown="] {
+            let mut raw_source = OsString::from(prefix);
+            raw_source.push(non_utf8_os_value());
+            let args = [OsStr::new("codefeed"), raw_source.as_os_str()];
+            let CliAction::Run(config) = parse(args).expect("non-UTF-8 source is a path") else {
+                panic!("expected Run action");
+            };
+            assert!(
+                matches!(&config.source, Source::Local(path) if path.as_os_str() == raw_source),
+                "expected local path source: {raw_source:?}"
+            );
+        }
     }
 }

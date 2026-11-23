@@ -14,28 +14,38 @@ Scope: `### Library consumers and CLI users` lists observable behavior. `### Con
 
 #### Breaking
 
-- **Unified `LimitExceededError`**: `CandidateLimitExceededError` and `OutputTooLargeError` are unified into [`LimitExceededError`](src/core/error.rs) (`{ limit: u64, largest: Vec<(ErrorDetail, usize)> }`), carried by `DomainError::CandidateLimitExceeded` and `DomainError::OutputTooLarge` and re-exported from `src/lib.rs`.
-  - **Action:** Replace `CandidateLimitExceededError` / `OutputTooLargeError` with `LimitExceededError`; update `largest_directories` / `largest_files` accesses to `largest`.
-- **`ErrorDetail::new`, `GitRef::new`, `Source::with_reference` accept `Into<Cow<'a, str>>`**: Signatures changed from `impl Into<String>` to `<'a>(impl Into<Cow<'a, str>>)` (`src/core/error.rs`, `src/core/source.rs`). `String`, `&str`, and `Cow<'_, str>` callers are unaffected; `Box<str>`, custom `Into<String>` types, and turbofish type arguments fail to compile.
-  - **Action:** Pass `String`, `&str`, or `Cow<'_, str>` and remove explicit turbofish type arguments.
+- **Unified `LimitExceededError`**: Replaces `CandidateLimitExceededError` and `OutputTooLargeError` with [`LimitExceededError`](src/core/error.rs) (`{ limit: u64, largest: Vec<(ErrorDetail, usize)> }`) on `DomainError::{CandidateLimitExceeded, OutputTooLarge}` (re-exported in `src/lib.rs`).
+  - **Action:** Migrate to `LimitExceededError` and rename `largest_directories` / `largest_files` to `largest`.
+- **`ErrorDetail::new`, `GitRef::new`, `Source::with_reference` take `Into<Cow<'a, str>>`**: Changed from `impl Into<String>` to `<'a>(impl Into<Cow<'a, str>>)` (`src/core/error.rs`, `src/core/source.rs`); breaks `Box<str>`, custom `Into<String>`, and turbofish callers (`String`, `&str`, `Cow<'_, str>` unaffected).
+  - **Action:** Pass `String`, `&str`, or `Cow<'_, str>` without turbofish arguments.
+
+#### Added
+
+- **`ExcludePatterns` composition**: Added `ExcludePatterns::empty()`, `is_empty()`, and `try_combine(other)` (compiles validated sets in `.gitignore` order; returns a usage error on matcher build failure) (`src/core/policy/exclude.rs`).
 
 #### Fixed
 
-- **Unsupported POSIX ignore classes fail closed**: Patterns like `[[:digit:]]` fail explicitly in `.gitignore` and `--exclude`, even with an unclosed `[`. Ordinary ranges (`[0-9]`, ranges ending in `[`) still work.
-- **Local traversal stops at depth limit and cancellation**: Unpruned directories beyond the depth limit fail before entry, even when empty. After settlement failure, the walker stops between entries, including ignored/non-candidate ones.
-- **Stdout delivery contract**: Collection and rendering failures emit no digest bytes; stdout write failures can leave a partial stream. File replacement remains atomic.
-- **Concatenated gzip members are fully processed**: GitHub archive ingestion reads all gzip members as one tar stream rather than truncating at the first member.
-- **Gzip trailers are validated before delivery**: Archive collection drains the metered gzip decoder after tar termination within the decompressed stream budget, rejecting corrupted payloads, invalid checksum/size trailers, or missing trailer bytes without creating or replacing output.
-- **Long `Retry-After` delays are honored**: HTTP-date values and overflowing decimal delays no longer fall back to short retries. Valid dates override quota resets; waits exceeding the retry cap fail on the original response without retrying.
+- **Escaped trailing spaces in ignore rules**: `.gitignore` and `--exclude` preserve backslash-escaped spaces followed by unescaped whitespace.
+- **Archive admission before body reads**: Duplicate or over-budget candidates report metadata/count errors before reading bodies.
+- **Non-UTF-8 output paths**: Inline `--output=<PATH>` preserves native Unix/Windows paths; separate values still reject leading `-` except the stdout sentinel.
+- **Parallel local reads**: Workers release the job receiver lock before reading files.
+- **POSIX ignore classes fail closed**: Patterns like `[[:digit:]]` fail in `.gitignore` and `--exclude`, even with an unclosed `[`; ordinary ranges (`[0-9]`, ranges ending in `[`) still work.
+- **Local traversal depth and cancellation**: Unpruned directories past the depth limit fail before entry, even if empty; settlement failure stops the walker between entries (including ignored/non-candidate ones).
+- **Stdout delivery**: Collection and rendering failures emit no digest bytes; stdout write failures may leave a partial stream; file replacement remains atomic.
+- **Complete multi-member gzip validation**: GitHub archive ingestion decodes all concatenated gzip members as one tar stream and drains the metered decoder after tar termination within the decompressed stream budget, rejecting corrupt payloads or invalid/missing checksum/size trailers before writing output.
+- **Long `Retry-After` delays**: HTTP-date and overflowing decimal delays no longer fall back to short retries; valid dates override quota resets, and waits above the retry cap fail on the original response without retrying.
 - **Sparse archive expansion is bounded**: Reconstructed GNU sparse holes consume the cumulative archive stream budget; entries whose logical bodies exceed remaining budget fail before expansion.
-- **Duplicate unstorable paths are rejected**: Overlong and non-UTF-8 paths retain full normalized byte identity for duplicate detection; distinct paths sharing an accounting prefix or lossy UTF-8 spelling remain separate candidates.
+- **Duplicate unstorable paths**: Overlong and non-UTF-8 paths keep full normalized byte identity for duplicate detection; distinct paths sharing an accounting prefix or lossy UTF-8 spelling stay separate.
 - **Directory-suffixed output paths**: `--output` (`-o`) paths ending in a separator (`out/`) or `/.` (`out/.`) fail with a usage error before filesystem resolution instead of writing to the stripped path.
 - **Empty file rendering**: Empty files (`""`) no longer get a synthetic trailing newline in Text or XML output, keeping `""` distinct from `"\n"`.
 
 #### Changed
 
+- **Uniform directory depth enforcement**: Tar classification enforces `MAX_PATH_DEPTH` at each directory admission step (after hidden/`--exclude` checks), matching local traversal. Ignored files past `MAX_PATH_DEPTH` (e.g. `Cargo.lock`, hidden entries) now fail with `InvalidMetadata` instead of being ignored.
+- **Unified `x-ratelimit-reset` resolution**: With `x-ratelimit-remaining: 0`, due/past `x-ratelimit-reset` timestamps resolve to 0s and overflowing all-digit timestamps saturate to `u64::MAX` (aborting without backoff), matching `Retry-After` HTTP-date and decimal-seconds semantics.
 - **Help/version documentation**: English and Korean READMEs clarify precedence exceptions for option-value positions and arguments after `--`; CLI behavior is unchanged.
-- **Install docs**: `README.md` and `docs/README.ko.md` lead with `cargo install codefeed` (source build); `cargo binstall codefeed` remains optional. `[package.metadata.binstall]` is unchanged.
+- **Install docs**: `README.md` and `docs/README.ko.md` lead with `cargo install codefeed` (source build); `cargo binstall codefeed` remains optional.
+- **Unix release archive extension**: Linux and macOS GitHub Release archives now use `.tgz` instead of `.tar.gz`, matching `cargo-binstall` metadata (`.github/workflows/release.yml`, `Cargo.toml`).
 
 ### Contributors
 
@@ -49,16 +59,16 @@ Internal change. No consumer action required. Output is unchanged.
 
 #### Changed
 
-- **Directory count storage**: Specialized private arena map for directory tallies while retaining shared bucket index and collision checks.
-- **GitHub HTTP execution boundary**: `src/shell/github/client.rs` owns request execution, retries, rate-limit header parsing, and response errors alongside TLS and credentials. `auth` and `request` are private; collection uses `new` and `stream_url`. HTTP unit tests moved to `client.rs`; collection/archive integration tests remain in `mod.rs`. Core retry policy and observable behavior are unchanged.
-- **Document ownership**: `README.md` (Output) owns output format; `docs/security_and_filtering.md` header owns limit authority; `AGENTS.md` § 6 routes `CONTRIBUTING.md` and `SECURITY.md`. Contributor docs no longer link `AGENTS.md`: `CONTRIBUTING.md` owns the verification checklist, `AGENTS.md` links it, and the PR template mirrors the commands inline. `context.md` § 5 lists module responsibilities only; `docs/security_and_filtering.md` drops implementation identifiers.
-- **Unstorable identity and sparse accounting invariants**: `CandidatePath::Unstorable` and `Observation::Unstorable` carry `UnstorablePath`. I-09 records exact byte-identity enforcement; I-12 records cumulative sparse-expansion accounting (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/github/archive.rs`, `context.md`).
+- **Path admission and unstorable identity**: `admit_dir` enforces `MAX_PATH_DEPTH` directly (removing `AdmittedDir::check_depth`, `MAX_PATH_DEPTH + 1` match-window guards, and `Result` from `classify_leaf`). `DirPrefix` transitions to `Unstorable(Vec<u8>)` on non-UTF-8 or `> MAX_PATH_BYTES`; `UnstorablePath` stores raw byte identity and derives its accounting prefix from the first segment (`src/core/path.rs`, `src/shell/local/walk.rs`, `context.md`, `docs/security_and_filtering.md`).
+- **GitHub HTTP boundary**: `src/shell/github/client.rs` owns request execution, retries, response errors, TLS, and credentials (`policy`, `RequestPolicy` private; collection calls `new`/`stream_url`). HTTP unit tests moved to `client.rs`; collection/archive integration tests stay in `mod.rs`. Retry policy and behavior unchanged.
+- **Document ownership & governing laws**: `README.md` (Output) owns output format; `docs/security_and_filtering.md` header owns limit authority, adds `S5` (complete-stream integrity) and `S6` (monotonic saturating server-wait), and drops implementation identifiers; `CONTRIBUTING.md` owns the verification checklist (linked by `AGENTS.md` and `.github/PULL_REQUEST_TEMPLATE.md`, no back-links to `AGENTS.md`); `AGENTS.md` § 2 routes `CONTRIBUTING.md` and `SECURITY.md`; `context.md` extends `L2` to CLI `OsStr` boundaries and § 5 lists module responsibilities only.
+- **Invariants I-09 & I-12**: `Candidate::Unstorable` carries `UnstorablePath`; I-09 records exact byte-identity enforcement and I-12 records cumulative sparse-expansion accounting (`src/core/path.rs`, `src/core/selector.rs`, `src/shell/github/archive.rs`, `context.md`).
 - **Derived skipped tally**: `Selector` drops its skipped counter; `finish` derives it from candidate count minus stored file count (`src/core/selector.rs`).
 - **`Cow<'a, str>` string constructors**: `ErrorDetail::new`, `GitRef::new`, `Source::with_reference`, and `DomainError::{usage, invalid_source, unsupported_source, invalid_metadata}` accept `impl Into<Cow<'a, str>>`, avoiding reallocation when owned inputs need no sanitization or trimming (`src/core/error.rs`, `src/core/source.rs`).
-- **Allocation reductions and `RateLimitHeaders` enum**:
-  - `RateLimitHeaders` is an enum (`NotLimited`, `UnparsedRetryAfter`, `RetryAfterSecs`, `QuotaExhausted`) making contradictory header states unrepresentable (`src/core/github/retry.rs`).
-  - `Selector::observe` accepts `B: AsRef<[u8]>` (`src/core/selector.rs`), paired with `BufferPool`/`PooledBuf<'a>` reuse in `src/shell/local/pipeline.rs` and `ExcludePatterns::is_empty` in `src/core/policy/exclude.rs`.
-  - `Selector` and `CandidateBudget` replace `HashMap`/`HashSet` with open-addressed `ArenaMap<V>` backed by `u32` indices, with compile-time bounds assertions in `src/core/policy/limits.rs`.
+- **Boundary and prefix encapsulation**:
+  - Flattened `src/core/github.rs` exposes `RateLimitHeaders::{NotLimited, Limited { retry_after }}` and parses raw HTTP-date/numeric header bytes in `RateLimitHeaders::parse`.
+  - `DirPrefix::{advance, into_unstorable}` encapsulate closed path-prefix transitions (`src/core/path.rs`).
+- **Selection storage and buffer reuse**: `Selector` and `CandidateBudget` use `HashSet<Vec<u8>>` (`seen_paths`) and `HashMap<String, usize>` (`src/core/selector.rs`); `Selector::observe` accepts `Candidate<Body<B>>` (`B: AsRef<[u8]>`); `BufferPool`/`PooledBuf<'a>` reuse buffers (`src/shell/local/pipeline.rs`); added `ExcludePatterns::excludes_leaf` (`src/core/policy/exclude.rs`).
 
 ---
 

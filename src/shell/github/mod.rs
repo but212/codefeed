@@ -25,7 +25,7 @@ pub(super) fn collect(
     let url = tarball_url(api_base, owner, repo, reference);
     let reader = client.stream_url(&url)?;
     let label = repository_url(owner, repo);
-    archive::collect(reader, &label, reference, exclude)
+    archive::collect(reader, label, reference, exclude)
 }
 
 #[cfg(test)]
@@ -60,21 +60,36 @@ mod tests {
     }
 
     #[test]
-    fn collect_percent_encodes_reference_in_request_path() {
-        let gz = gzip_tarball(&[("repo-root/file.txt", b"hello github", EntryType::Regular)]);
+    fn collect_encodes_reference_extracts_pax_revision_and_applies_exclusions() {
+        let gz = gzip_tarball(&[
+            (
+                "pax_global_header",
+                b"52 comment=c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950\n",
+                EntryType::XGlobalHeader,
+            ),
+            ("repo-root/src/main.rs", b"fn main() {}", EntryType::Regular),
+            ("repo-root/app.log", b"ignored log", EntryType::Regular),
+        ]);
         let server = MockServer::spawn(1, move |_index, _req, _port| tarball_response(&gz));
+        let exclude = ExcludePatterns::new(["*.log"]).expect("valid exclude");
 
         let result = collect(
             &server.url(""),
             "test-owner",
             "test-repo",
             Some("feature/x"),
-            &ExcludePatterns::default(),
+            &exclude,
         )
         .expect("github collection succeeds");
 
-        assert_eq!(result.files.len(), 1);
+        assert_eq!(
+            result.revision.as_deref(),
+            Some("c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950")
+        );
+        let paths: Vec<_> = result.files.iter().map(|file| file.path).collect();
+        assert_eq!(paths, ["src/main.rs"]);
         let requests = server.join();
+        assert_eq!(requests.len(), 1);
         assert!(requests[0].contains("/repos/test-owner/test-repo/tarball/feature%2Fx"));
     }
 
@@ -95,7 +110,12 @@ mod tests {
             panic!("expected 404 to fail collection");
         };
         assert!(matches!(err, IngestError::Api(_)), "{err}");
-        server.join();
+        let requests = server.join();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].split_ascii_whitespace().nth(1),
+            Some("/repos/test-owner/test-repo/tarball")
+        );
     }
 
     #[test]
@@ -110,10 +130,13 @@ mod tests {
             response
         });
 
-        let client = GithubClient::new();
-        let url = server.url("/archive");
-        let reader = client.stream_url(&url).expect("200 headers are accepted");
-        let Err(err) = archive::collect(reader, "x", None, &ExcludePatterns::default()) else {
+        let Err(err) = collect(
+            &server.url(""),
+            "test-owner",
+            "test-repo",
+            None,
+            &ExcludePatterns::default(),
+        ) else {
             panic!("expected error");
         };
         assert!(matches!(err, IngestError::Http(_)), "{err}");

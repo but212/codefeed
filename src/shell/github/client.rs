@@ -11,8 +11,8 @@ use zeroize::Zeroizing;
 
 use crate::core::error::ErrorDetail;
 use crate::core::github::{
-    AttemptState, Auth, RateLimitHeaders, RequestOutcome, Transition, api_error,
-    is_github_api_origin, status_retry_warning, transport_retry_warning,
+    AttemptState, Auth, GITHUB_API_VERSION, RateLimitHeaders, RequestOutcome, RequestTarget,
+    Transition, api_error, format_bearer_token, status_retry_warning, transport_retry_warning,
 };
 use crate::core::policy::{
     ARCHIVE_MAX_SECS, GITHUB_ERROR_BODY_BYTES, GITHUB_TIMEOUT_SECS, TOKEN_ENV_VARS,
@@ -52,9 +52,9 @@ impl GithubClient {
     /// Opens a response stream, retrying request failures according to the core policy.
     pub(super) fn stream_url(&self, url: &str) -> Result<impl Read + Send, IngestError> {
         let mut attempt_state = AttemptState::new();
-        let auth = self.auth(url);
+        let policy = self.policy(url);
         loop {
-            let (attempt, outcome) = match self.request(url).call() {
+            let (attempt, outcome) = match policy.apply(self.agent.get(url)).call() {
                 Ok(resp) if resp.status().is_success() => {
                     return Ok(resp.into_body().into_reader());
                 }
@@ -67,36 +67,44 @@ impl GithubClient {
                     attempt.warn(next.retry_count(), url, delay);
                     std::thread::sleep(delay);
                 }
-                Transition::Fail => return Err(attempt.into_error(auth)),
+                Transition::Fail => return Err(attempt.into_error(policy.auth())),
             }
         }
     }
 
-    /// Token sent with a request to `url`. Only the GitHub API origin receives it.
-    fn credentials(&self, url: &str) -> Option<&Zeroizing<String>> {
-        if is_github_api_origin(url) {
-            self.auth_header.as_ref()
-        } else {
-            None
+    /// Classifies `url` once so headers and error-classification `Auth` derive from the same origin check.
+    fn policy(&self, url: &str) -> RequestPolicy<'_> {
+        RequestPolicy::new(url, self.auth_header.as_ref())
+    }
+}
+
+/// Origin-bound request policy pairing `Auth` with the headers permitted for that origin (I-07).
+enum RequestPolicy<'a> {
+    GithubApi(Option<&'a Zeroizing<String>>),
+    External,
+}
+
+impl<'a> RequestPolicy<'a> {
+    fn new(url: &str, configured_token: Option<&'a Zeroizing<String>>) -> Self {
+        match RequestTarget::classify(url) {
+            RequestTarget::GithubApi => Self::GithubApi(configured_token),
+            RequestTarget::External => Self::External,
         }
     }
 
-    /// Whether a request to `url` carries a token, for error classification.
-    fn auth(&self, url: &str) -> Auth {
-        match self.credentials(url) {
-            Some(_) => Auth::Token,
-            None => Auth::Anonymous,
+    const fn auth(&self) -> Auth {
+        match self {
+            Self::GithubApi(Some(_)) => Auth::Token,
+            Self::GithubApi(None) | Self::External => Auth::Anonymous,
         }
     }
 
-    /// Builds a GET for `url`. Auth and API-version headers are sent only to the GitHub API origin.
-    fn request(&self, url: &str) -> RequestBuilder<WithoutBody> {
-        let mut request = self.agent.get(url);
-        if let Some(auth) = self.credentials(url) {
-            request = request.header("Authorization", auth.as_str());
-        }
-        if is_github_api_origin(url) {
-            request = request.header("X-Github-Api-Version", "2022-11-28");
+    fn apply(&self, mut request: RequestBuilder<WithoutBody>) -> RequestBuilder<WithoutBody> {
+        if let Self::GithubApi(token) = self {
+            request = request.header("X-Github-Api-Version", GITHUB_API_VERSION);
+            if let Some(token) = token {
+                request = request.header("Authorization", token.as_str());
+            }
         }
         request
     }
@@ -179,26 +187,15 @@ const fn is_retryable_transport(error: &ureq::Error) -> bool {
     )
 }
 
-/// Reads rate-limit headers, resolving HTTP-dates against the supplied Unix time.
-/// A present but non-UTF-8 header counts as present with no value.
+/// Reads raw rate-limit header bytes from the HTTP response for core parsing.
 fn read_rate_limit_headers(headers: &ureq::http::HeaderMap, now_secs: u64) -> RateLimitHeaders {
-    let text = |name: &str| headers.get(name).map(|v| v.to_str().unwrap_or(""));
-    text("retry-after")
-        .and_then(|value| httpdate::parse_http_date(value.trim()).ok())
-        .and_then(|date| date.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or_else(
-            || {
-                RateLimitHeaders::parse(
-                    text("retry-after"),
-                    text("x-ratelimit-remaining"),
-                    text("x-ratelimit-reset"),
-                    now_secs,
-                )
-            },
-            |date| RateLimitHeaders::Limited {
-                retry_after: Some(Duration::from_secs(date.as_secs().saturating_sub(now_secs))),
-            },
-        )
+    let raw = |name: &str| headers.get(name).map(ureq::http::HeaderValue::as_bytes);
+    RateLimitHeaders::parse(
+        raw("retry-after"),
+        raw("x-ratelimit-remaining"),
+        raw("x-ratelimit-reset"),
+        now_secs,
+    )
 }
 
 /// Current Unix time in seconds. A clock before the epoch maps to `u64::MAX`, so no reset is ever in the future.
@@ -214,8 +211,7 @@ where
 {
     TOKEN_ENV_VARS.into_iter().find_map(|key| {
         let raw = Zeroizing::new(lookup(key).ok()?);
-        let trimmed = raw.trim_ascii();
-        (!trimmed.is_empty()).then(|| Zeroizing::new(format!("Bearer {trimmed}")))
+        format_bearer_token(&raw)
     })
 }
 
@@ -236,7 +232,7 @@ mod tests {
         headers.insert("x-ratelimit-reset", "123".parse().expect("header value"));
         assert_eq!(
             read_rate_limit_headers(&headers, 0),
-            RateLimitHeaders::parse(None, Some("0"), Some("123"), 0)
+            RateLimitHeaders::parse(None, Some(b"0"), Some(b"123"), 0)
         );
     }
 
@@ -248,32 +244,12 @@ mod tests {
             "Sunday, 06-Nov-94 08:49:37 GMT",
             "Sun Nov  6 08:49:37 1994",
         ] {
-            for (now, expected) in [(DATE - 2, 2), (DATE, 0), (DATE + 1, 0), (u64::MAX, 0)] {
-                let mut headers = ureq::http::HeaderMap::new();
-                headers.insert("retry-after", value.parse().unwrap());
-                // A valid date takes precedence even when the quota reset is later.
-                headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
-                headers.insert("x-ratelimit-reset", "1000000000".parse().unwrap());
-                let facts = read_rate_limit_headers(&headers, now);
-                assert_eq!(
-                    facts.retry_after(),
-                    Some(Duration::from_secs(expected)),
-                    "{value}: now={now}"
-                );
-            }
-        }
-        for value in ["soon", "Sun, 07 Nov 1994 08:49:37 GMT", ""] {
             let mut headers = ureq::http::HeaderMap::new();
             headers.insert("retry-after", value.parse().unwrap());
-            assert_eq!(
-                read_rate_limit_headers(&headers, DATE),
-                RateLimitHeaders::Limited { retry_after: None },
-                "{value}"
-            );
             headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
-            headers.insert("x-ratelimit-reset", (DATE + 2).to_string().parse().unwrap());
+            headers.insert("x-ratelimit-reset", "1000000000".parse().unwrap());
             assert_eq!(
-                read_rate_limit_headers(&headers, DATE).retry_after(),
+                read_rate_limit_headers(&headers, DATE - 2).retry_after(),
                 Some(Duration::from_secs(2)),
                 "{value}"
             );
@@ -607,12 +583,12 @@ mod tests {
         let mut client = GithubClient::new();
 
         client.auth_header = Some(Zeroizing::new("Bearer test_token".to_string()));
-        assert_eq!(client.auth(API), Auth::Token);
-        assert_eq!(client.auth(CODELOAD), Auth::Anonymous);
+        assert_eq!(client.policy(API).auth(), Auth::Token);
+        assert_eq!(client.policy(CODELOAD).auth(), Auth::Anonymous);
 
         client.auth_header = None;
-        assert_eq!(client.auth(API), Auth::Anonymous);
-        assert_eq!(client.auth(CODELOAD), Auth::Anonymous);
+        assert_eq!(client.policy(API).auth(), Auth::Anonymous);
+        assert_eq!(client.policy(CODELOAD).auth(), Auth::Anonymous);
     }
 
     #[test]
@@ -620,7 +596,10 @@ mod tests {
         let mut client = GithubClient::new();
         client.auth_header = Some(Zeroizing::new("Bearer test_token".to_string()));
 
-        let non_api = client.request("https://codeload.github.com/foo/bar/tar.gz");
+        let non_api_url = "https://codeload.github.com/foo/bar/tar.gz";
+        let non_api = client
+            .policy(non_api_url)
+            .apply(client.agent.get(non_api_url));
         let non_api_headers = non_api.headers_ref();
         assert_eq!(non_api_headers.and_then(|h| h.get("Authorization")), None);
         assert_eq!(
@@ -628,7 +607,8 @@ mod tests {
             None
         );
 
-        let api = client.request("https://api.github.com/repos/foo/bar/tarball");
+        let api_url = "https://api.github.com/repos/foo/bar/tarball";
+        let api = client.policy(api_url).apply(client.agent.get(api_url));
         let api_headers = api.headers_ref();
         assert_eq!(
             api_headers
@@ -640,11 +620,11 @@ mod tests {
             api_headers
                 .and_then(|h| h.get("X-Github-Api-Version"))
                 .and_then(|v| v.to_str().ok()),
-            Some("2022-11-28")
+            Some(GITHUB_API_VERSION)
         );
 
         client.auth_header = None;
-        let api_no_auth = client.request("https://api.github.com/repos/foo/bar/tarball");
+        let api_no_auth = client.policy(api_url).apply(client.agent.get(api_url));
         let api_no_auth_headers = api_no_auth.headers_ref();
         assert_eq!(
             api_no_auth_headers.and_then(|h| h.get("Authorization")),
@@ -654,7 +634,7 @@ mod tests {
             api_no_auth_headers
                 .and_then(|h| h.get("X-Github-Api-Version"))
                 .and_then(|v| v.to_str().ok()),
-            Some("2022-11-28")
+            Some(GITHUB_API_VERSION)
         );
     }
 }
