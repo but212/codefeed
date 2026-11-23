@@ -4,9 +4,12 @@
 
 ## Validation
 
-- [ ] Passed all checks in [CONTRIBUTING.md Verification Checklist](CONTRIBUTING.md#verification-checklist) in exact order.
+- [ ] `cargo fmt --check`
+- [ ] `cargo clippy --all-targets --locked -- -D warnings`
+- [ ] `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked`
+- [ ] `cargo test --locked`
 - [ ] Documentation, examples, and benchmarks were updated if needed.
-- [ ] [`CHANGELOG.md`](CHANGELOG.md) (`## [Unreleased]`) was updated for user-visible changes.
+- [ ] `CHANGELOG.md` was updated for user-visible changes.
 
 ## API and compatibility
 
