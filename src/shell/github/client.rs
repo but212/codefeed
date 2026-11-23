@@ -79,31 +79,32 @@ impl GithubClient {
 }
 
 /// Origin-bound request policy pairing `Auth` with the headers permitted for that origin (I-07).
-struct RequestPolicy<'a> {
-    target: RequestTarget,
-    token: Option<&'a Zeroizing<String>>,
+enum RequestPolicy<'a> {
+    GithubApi(Option<&'a Zeroizing<String>>),
+    External,
 }
 
 impl<'a> RequestPolicy<'a> {
     fn new(url: &str, configured_token: Option<&'a Zeroizing<String>>) -> Self {
-        let target = RequestTarget::classify(url);
-        let token = match target {
-            RequestTarget::GithubApi => configured_token,
-            RequestTarget::External => None,
-        };
-        Self { target, token }
+        match RequestTarget::classify(url) {
+            RequestTarget::GithubApi => Self::GithubApi(configured_token),
+            RequestTarget::External => Self::External,
+        }
     }
 
     const fn auth(&self) -> Auth {
-        self.target.auth(self.token.is_some())
+        match self {
+            Self::GithubApi(Some(_)) => Auth::Token,
+            Self::GithubApi(None) | Self::External => Auth::Anonymous,
+        }
     }
 
     fn apply(&self, mut request: RequestBuilder<WithoutBody>) -> RequestBuilder<WithoutBody> {
-        if self.target == RequestTarget::GithubApi {
+        if let Self::GithubApi(token) = self {
             request = request.header("X-Github-Api-Version", GITHUB_API_VERSION);
-        }
-        if let Some(token) = self.token {
-            request = request.header("Authorization", token.as_str());
+            if let Some(token) = token {
+                request = request.header("Authorization", token.as_str());
+            }
         }
         request
     }

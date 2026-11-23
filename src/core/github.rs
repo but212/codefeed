@@ -40,16 +40,6 @@ impl RequestTarget {
             Self::External
         }
     }
-
-    /// Derives error-classification [`Auth`] from the same origin classification and token presence.
-    #[must_use]
-    pub(crate) const fn auth(self, has_token: bool) -> Auth {
-        if matches!(self, Self::GithubApi) && has_token {
-            Auth::Token
-        } else {
-            Auth::Anonymous
-        }
-    }
 }
 
 /// Normalizes a raw token string into a `Bearer <token>` header value, returning `None` if blank.
@@ -683,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn request_target_couples_origin_and_auth() {
+    fn request_target_classifies_github_api_and_external_origins() {
         assert_eq!(
             RequestTarget::classify("https://api.github.com/repos/foo/bar"),
             RequestTarget::GithubApi
@@ -692,10 +682,6 @@ mod tests {
             RequestTarget::classify("https://codeload.github.com/foo/bar"),
             RequestTarget::External
         );
-        assert_eq!(RequestTarget::GithubApi.auth(true), Auth::Token);
-        assert_eq!(RequestTarget::GithubApi.auth(false), Auth::Anonymous);
-        assert_eq!(RequestTarget::External.auth(true), Auth::Anonymous);
-        assert_eq!(RequestTarget::External.auth(false), Auth::Anonymous);
     }
 
     #[test]

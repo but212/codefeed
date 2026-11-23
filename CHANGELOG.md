@@ -45,6 +45,7 @@ Scope: `### Library consumers and CLI users` lists observable behavior. `### Con
 - **Unified `x-ratelimit-reset` resolution**: With `x-ratelimit-remaining: 0`, due/past `x-ratelimit-reset` timestamps resolve to 0s and overflowing all-digit timestamps saturate to `u64::MAX` (aborting without backoff), matching `Retry-After` HTTP-date and decimal-seconds semantics.
 - **Help/version documentation**: English and Korean READMEs clarify precedence exceptions for option-value positions and arguments after `--`; CLI behavior is unchanged.
 - **Install docs**: `README.md` and `docs/README.ko.md` lead with `cargo install codefeed` (source build); `cargo binstall codefeed` remains optional.
+- **Unix release archive extension**: Linux and macOS GitHub Release archives now use `.tgz` instead of `.tar.gz`, matching `cargo-binstall` metadata (`.github/workflows/release.yml`, `Cargo.toml`).
 
 ### Contributors
 
