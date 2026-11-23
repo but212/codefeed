@@ -8,6 +8,8 @@
 - **S2 (Pre-Charge Bounds & Error Partition):** Stream, directory, structural, uniqueness, and prefix bounds are checked before reading or allocating and abort the run (`InvalidMetadata`, except `MAX_FILE_COUNT` -> `CandidateLimitExceeded`); per-entry path, size, encoding, and availability failures consume a candidate slot and skip.
 - **S3 (Candidate Accounting Identity):** Every non-ignored entry consumes one candidate slot; `Included` iff all pre-read checks and bounded UTF-8 body read succeed (`Skipped = Candidates - Included`).
 - **S4 (Contextual Single-Pass Sanitization):** Untrusted paths, metadata, and diagnostics escape in a single pass per output context (`I-04`); only Text file bodies emit verbatim UTF-8.
+- **S5 (Complete-Stream Integrity):** Compressed archives decode all concatenated members and verify every member trailer through EOF within `ARCHIVE_MAX_DECOMPRESSED_BYTES` before delivery; stream, gzip, or tar decoding failures abort (`IngestError::Http`).
+- **S6 (Monotonic Saturating Server-Wait):** Server wait hints (relative decimal seconds or absolute timestamps resolved via `saturating_sub(now)`, so due/past values wait 0s) map monotonically to `Duration` with overflowing all-digit integers saturating to `u64::MAX` instead of falling back to backoff; precedence is `valid Retry-After > x-ratelimit-reset (when x-ratelimit-remaining == 0) > local backoff`, and any server wait `> RETRY_MAX_DELAY_MS` aborts immediately.
 
 ---
 
@@ -137,15 +139,15 @@ Enforces built-in Mozilla root certificates (`rustls-webpki-roots`). OS stores a
 ### 6.4 Streaming
 
 - Streams `/repos/{owner}/{repo}/tarball/{ref}` through gzip/tar into candidate observation without disk spooling (`L3`, `L4`).
-- Concatenated gzip members form one tar stream. After tar termination, remaining members are drained and every trailer is validated before delivery (`IngestError::Http` on missing/invalid checksum or size); post-tar decoded bytes charge `ARCHIVE_MAX_DECOMPRESSED_BYTES`, not `ARCHIVE_MAX_HEADER_BYTES`.
+- By **S5**, concatenated gzip members form one tar stream and remaining members are drained after tar termination to validate every trailer before delivery; post-tar decoded bytes charge `ARCHIVE_MAX_DECOMPRESSED_BYTES`, not `ARCHIVE_MAX_HEADER_BYTES`.
 - Per `I-03` and `I-12`, tar header reads (including padding, `L`/`K`, `x`, and sparse blocks) meter against `ARCHIVE_MAX_HEADER_BYTES`, and sparse entries exceeding remaining `ARCHIVE_MAX_DECOMPRESSED_BYTES` fail (`InvalidMetadata`) before expansion (entries within budget remain excluded as non-regular files).
 
 ### 6.5 Retries
 
 - **Retried:** Transport timeouts/errors, HTTP 429, HTTP 5xx, HTTP 403 with `Retry-After` or zero quota.
 - **Not Retried:** Other HTTP 4xx, non-transient transport errors.
-- Valid `Retry-After` (decimal seconds or HTTP-date, including legacy forms) overrides quota-reset headers. Dates and `x-ratelimit-reset` resolve against current Unix time (due/past values wait 0); overflowing all-digit seconds saturate instead of falling back to backoff; malformed values fall back to quota-reset or backoff.
-- Attempts cap at `MAX_ATTEMPTS`; exponential backoff spans `RETRY_INITIAL_DELAY_MS` to `RETRY_MAX_DELAY_MS`. Server waits (`Retry-After` or `x-ratelimit-reset`) exceeding `RETRY_MAX_DELAY_MS` abort immediately.
+- By **S6**, `Retry-After` accepts decimal seconds or HTTP-date (including legacy forms), and `x-ratelimit-reset` accepts Unix epoch seconds; malformed values fall through the precedence chain.
+- Attempts cap at `MAX_ATTEMPTS`; local exponential backoff spans `RETRY_INITIAL_DELAY_MS` to `RETRY_MAX_DELAY_MS`.
 
 ### 6.6 Time Limits
 

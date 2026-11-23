@@ -6,22 +6,15 @@ Guidelines for collaboration, technical debate, and project moderation.
 
 ## Scope
 
-Applies strictly to repository spaces (Issues, Pull Requests, Discussions, commit messages, and reviews). External activities, personal lives, and independent social media are exempt.
+Applies strictly to activity within this repository. External activities, personal lives, and independent social media are exempt.
 
-## Principles
+## Standards
 
 - **Critique the Work, Not the Person**: Rigorous, direct critique of code, architecture, and design is encouraged. Technical disagreement is not a conduct violation.
-- **Professional Collaboration**: Address arguments and technical trade-offs with professional respect.
-
-## Unacceptable Behavior
-
-- Personal attacks, insults, or derogatory remarks.
-- Harassment, stalking, or unwelcome contact.
-- Discrimination or hate speech.
-- Publishing private personal information without consent.
-- Bad-faith derailment or disruption of technical discussions.
+- **Good-Faith Collaboration**: Engage with technical arguments and trade-offs respectfully and in good faith. Personal attacks, bad-faith derailment, and disruption are unacceptable.
+- **Safety and Privacy**: Harassment, unwelcome contact, discrimination, hate speech, and publishing private personal information without consent are prohibited.
 
 ## Enforcement
 
 - **Reporting**: Report violations privately to `wjddlf211@naver.com`. Reports remain confidential.
-- **Actions**: Maintainers may edit or remove content, lock threads, or suspend repository interaction permissions. Actions are proportionate to the severity and recurrence of the violation.
+- **Actions**: Maintainers enforce these standards within the repository through proportionate moderation—such as editing or removing content, locking threads, or suspending repository interaction permissions—based on severity and recurrence.

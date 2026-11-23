@@ -13,16 +13,16 @@ Fast CLI converting a local directory or public GitHub repository into a single 
 
 ## Sources
 
-- **Local directory**: `./path/to/project`
-- **GitHub repository**: `https://github.com/{owner}/{repo}` (trailing `.git` accepted; queries, fragments, `user@`, and non-443 ports rejected).
+`codefeed` never invokes `git` or clones repositories. Accepted sources:
 
-Unsupported protocols (`git@`, `ssh://`, `http://`) and non-GitHub hosts must be cloned locally first:
+- **Local directory**: `./path/to/project`
+- **GitHub repository**: canonical `https://github.com/{owner}/{repo}` (optional trailing `.git`; `user@`, queries, fragments, and non-443 ports are rejected).
+
+Any other protocol or host must be cloned locally first:
 
 ```bash
 git clone --depth 1 <URL> ./repo && codefeed ./repo
 ```
-
-`codefeed` never runs `git` or clones repositories.
 
 ## Install
 
@@ -41,21 +41,17 @@ Requires Rust 1.88+.
 codefeed <SOURCE> [--output <PATH|->] [--ref <REF>] [--format <text|xml>] [--exclude <PATTERN>]...
 ```
 
-Options may appear before or after `<SOURCE>`. Short flags accept `=` syntax (`--format=xml`, `-o=output.txt`).
-
 ### Options
 
-- `-o`, `--output <PATH|->`: Destination (default: `digest.txt`). `-` streams to stdout.
+- `-o`, `--output <PATH|->`: Destination (default: `digest.txt`; `-` streams to stdout).
 - `-r`, `--ref <BRANCH|TAG|COMMIT>`: GitHub revision (default: default branch). Rejects empty, whitespace-only, `.`, and `..`.
 - `-f`, `--format <text|xml>`: Digest format (default: `text`).
-- `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern, relative to source root. Repeatable, applied in order. Invalid patterns, patterns yielding no rule (blank, comment, bare `!`), and unsupported POSIX named character classes are usage errors. Syntax: [`docs/security_and_filtering.md`](docs/security_and_filtering.md) § 3.6.
-- `-h`, `--help`: Print usage and exit 0.
-- `-V`, `--version`: Print `codefeed <version>` and exit 0.
+- `-x`, `--exclude <PATTERN>`: Drop paths matching a `.gitignore`-style pattern relative to source root (repeatable, applied in order; invalid or empty patterns are usage errors; syntax: [`docs/security_and_filtering.md`](docs/security_and_filtering.md) § 3.6).
+- `-h`, `--help`: Print usage and exit `0`.
+- `-V`, `--version`: Print `codefeed <version>` and exit `0`.
 - `--`: Treat subsequent arguments as positionals.
 
-Help/version preempt other argument errors only when parsed as options; the first one wins. An occurrence in a separate option-value position (even a rejected value, as in `--output --help`) or after `--` does not trigger either action.
-
-Inline values (`--flag=value`) may start with `-` (e.g. `--output=-notes.txt`). Separate values may not, except `-o -`.
+**Parsing rules:** Options may appear before or after `<SOURCE>` up to `--`. Value options take either an inline value (`--format=xml`, `-o=output.txt`; may start with `-`, e.g. `--output=-notes.txt`) or the next token (may not start with `-`, except `-o -`); tokens in a separate value position are never parsed as options (even when rejected, as in `--output --help`). Among tokens parsed as options, the first `-h`/`--help` or `-V`/`--version` wins and preempts other argument errors.
 
 ### Examples
 
@@ -70,61 +66,34 @@ codefeed -- -my-directory
 
 ## Output
 
-- **File output** (`-o <PATH>`): Atomic write via temporary file, sync, and rename. Preserves Unix permissions. Parent directory sync failure warns without failing. Prints `Wrote <PATH> (<N> files, <N> skipped, ~<N> tokens)` to stdout (`<PATH>` as given).
-- **Stream output** (`-o -`): Digest to stdout; summary to stderr. Writes nothing to stdout if collection or rendering fails. A write failure can leave a partial stream.
-- **Header**: Local digests start with `Repository: <directory name>`; GitHub digests start with `Repository: https://github.com/{owner}/{repo}`.
-- **Text format** (`text`): Verbatim UTF-8 file contents; binary (NUL) or invalid UTF-8 files skipped. Header labels and paths escaped; ANSI sequences preserved.
-- **XML format** (`xml`): `<repository>`, `<directory_structure>`, and `<files>`. Entities escaped; disallowed XML 1.0 characters become `\u{FFFD}`.
-- **Token count**: Heuristic estimate (floor(ASCII bytes / ratio) from [security § 8](docs/security_and_filtering.md#8-limit-values) + one token per non-ASCII character; at least 1 for non-empty digest, 0 for empty), not an exact tokenizer count.
-- **Exit status**: `0` on success, help, or version; `1` on usage or ingest error. Exits `0` on broken pipe when stdout reader closes early.
+- **Buffered delivery**: Collection and rendering finish in memory before anything is emitted; failures produce no digest.
+  - **File** (`-o <PATH>`): Atomic replacement preserving Unix permissions (parent-directory sync failure warns without failing; [security § 5](docs/security_and_filtering.md#5-local-filesystem-safety)). Prints `Wrote <PATH> (<N> files, <N> skipped, ~<N> tokens)` to stdout (`<PATH>` as given).
+  - **Stream** (`-o -`): Digest to stdout, summary to stderr (a downstream write failure can leave a partial stream).
+- **Header**: `Repository: <directory name>` for local sources; `Repository: https://github.com/{owner}/{repo}` for GitHub sources.
+- **Formats**: `text` emits verbatim UTF-8 file bodies (ANSI preserved) with escaped headers and paths; `xml` emits `<repository>`, `<directory_structure>`, and `<files>` with full XML 1.0 escaping ([security § 7](docs/security_and_filtering.md#7-output-sanitization)).
+- **Token count**: Heuristic estimate (`floor(ASCII bytes / ratio)` from [security § 8](docs/security_and_filtering.md#8-limit-values) + 1 per non-ASCII character; at least 1 for non-empty digest, 0 for empty), not an exact tokenizer count.
+- **Exit status**: `0` on success, help, version, or broken stdout pipe; `1` on usage or ingest error.
 
 ## What Is Included
 
-Excluded entries are dropped silently and omitted from skipped counts (exception: oversized tar headers fail the run; [`docs/security_and_filtering.md`](docs/security_and_filtering.md) § 2):
+Every entry falls into one of three disjoint outcomes ([`docs/security_and_filtering.md`](docs/security_and_filtering.md) § 2–4):
 
-- Hidden entries: path segments starting with `.` (excluding source root itself).
-- Symlinks and non-regular files (local and archive).
-- Dependency lockfiles (§ 3.2).
-- Credential and key files by prefix or extension (§ 3.3).
-- Files matched by in-tree `.gitignore` (local only; unsafe or unreadable `.gitignore` fails the run, § 3.5).
-- Paths matched by `--exclude` patterns (§ 3.6).
-
-Filtering matches paths and names only, never file contents. Keep secrets in ordinary-named files out of the digest with `.gitignore` or `--exclude` ([`docs/security_and_filtering.md`](docs/security_and_filtering.md) § 1.2; complete rules: § 3).
-
-Skipped entries (counted in summary):
-
-- Files exceeding `MAX_FILE_SIZE`.
-- Binary (NUL byte) or invalid UTF-8 files.
-- Paths exceeding `MAX_PATH_BYTES` or non-UTF-8.
-- Unreadable files (permission denied, locked).
+- **Excluded** (dropped silently, omitted from skipped counts, never read): Non-regular entries (symlinks, etc.) and path/name-only exclusions — hidden segments (`.`-prefixed, excluding source root), dependency lockfiles (§ 3.2), sensitive credential/key names (§ 3.3), in-tree `.gitignore` (local only, § 3.5), and `--exclude` (§ 3.6). Filtering never inspects file contents; keep secrets in ordinary-named files out via `.gitignore` or `--exclude` (§ 1.2).
+- **Skipped** (counted in summary): Regular files failing per-entry checks — exceeding `MAX_FILE_SIZE` or `MAX_PATH_BYTES`, non-UTF-8 paths, binary (NUL) or invalid UTF-8 contents, or unreadable/locked files.
+- **Included**: All remaining valid UTF-8 regular files.
 
 ## Limits
 
-Limits either skip an entry or abort the run. Values and enforcement: [`docs/security_and_filtering.md`](docs/security_and_filtering.md) § 8. Timeouts and retries: § 6.5-6.6.
+Values and enforcement: [`docs/security_and_filtering.md`](docs/security_and_filtering.md#8-limit-values) § 8. Timeouts and retries: § 6.5–6.6.
 
-| Limit | On Reach |
-| :--- | :--- |
-| `MAX_FILE_SIZE` | File skipped and counted in summary; oversized `.gitignore` fails the run. |
-| `MAX_PATH_BYTES` | File skipped and counted in summary. |
-| `MAX_PATH_DEPTH` | Run fails, including when a local directory beyond the limit is empty. |
-| `MAX_FILE_COUNT` | Run fails; error lists largest directories. |
-| `MAX_OUTPUT_SIZE` | Run fails; no digest written; error lists largest files. |
-| `ARCHIVE_MAX_HEADER_BYTES` | Run fails. |
-| `ARCHIVE_MAX_DECOMPRESSED_BYTES` | Run fails. |
-| `MAX_DIR_ENTRIES` | Run fails. |
+- **Per-entry limits skip** (counted in summary): `MAX_FILE_SIZE`, `MAX_PATH_BYTES`.
+- **Structural, archive, and global limits abort** the run: `MAX_PATH_DEPTH` (including empty local directories), `MAX_DIR_ENTRIES`, `MAX_FILE_COUNT` (error lists largest directories), `MAX_OUTPUT_SIZE` (error lists largest files), `ARCHIVE_MAX_HEADER_BYTES` (even for entries that would be excluded), and `ARCHIVE_MAX_DECOMPRESSED_BYTES`.
+- **Control-file exception**: Unsafe, unreadable, or oversized (`> MAX_FILE_SIZE`) `.gitignore` files abort the run rather than skipping (§ 3.5).
 
-## Authentication
+## GitHub Access & Trust
 
-Public repositories require no credentials. Private access or higher rate limits read credentials from:
-
-- `GITHUB_TOKEN` (checked first).
-- `GH_TOKEN` (fallback when `GITHUB_TOKEN` is unset, empty, or whitespace-only).
-
-Tokens are sent as `Authorization: Bearer <token>` strictly to `https://api.github.com`; redirects never receive credentials.
-
-## Network Trust
-
-GitHub TLS certificates validate strictly against bundled Mozilla root certificates. OS stores and proxy CAs are rejected.
+- **Authentication**: Public repositories require no credentials. Private access or higher rate limits read `GITHUB_TOKEN` first, falling back to `GH_TOKEN` when unset, empty, or whitespace-only.
+- **Strict origin & TLS**: Tokens are sent as `Authorization: Bearer <token>` exclusively to `https://api.github.com` (never on redirects). GitHub TLS validates strictly against bundled Mozilla root certificates; OS stores and proxy CAs are rejected ([security § 6](docs/security_and_filtering.md#6-github-network-safety)).
 
 ## Documentation
 
