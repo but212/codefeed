@@ -9,6 +9,7 @@
 - [ ] `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked`
 - [ ] `cargo test --locked`
 - [ ] Documentation was updated if needed (including `docs/<NAME>.ko.md` translation parity for `README.md`, `CONTRIBUTING.md`, or `CODE_OF_CONDUCT.md`).
+- [ ] Markdown changes pass `markdownlint-cli2` (`.markdownlint.json`).
 - [ ] `CHANGELOG.md` was updated for user-visible changes.
 
 ## API and compatibility

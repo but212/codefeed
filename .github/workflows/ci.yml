@@ -115,7 +115,12 @@ jobs:
         run: cargo package --locked
 
       - name: Lint markdown
-        run: npx --yes markdownlint-cli2@0.24.2 "**/*.md" "#target" "#.git"
+        uses: DavidAnson/markdownlint-cli2-action@3ce8f712b5d8f31acd8e201be6d97e3d2bb23eb7 # v25.1.0
+        with:
+          globs: |
+            **/*.md
+            #target
+            #.git
 
   msrv:
     name: MSRV

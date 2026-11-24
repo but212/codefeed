@@ -21,7 +21,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
 cargo test --locked
 ```
 
-Iterate with narrow targets (`cargo test --locked <name>`). Regressions and contract changes require deterministic unit or integration tests (TDD; see [`docs/coding_convention.md`](docs/coding_convention.md#7-testing)).
+Iterate with narrow targets (`cargo test --locked <name>`). Regressions and contract changes require deterministic unit or integration tests (TDD; see [`docs/coding_convention.md`](docs/coding_convention.md#7-testing)). For Markdown changes, also lint against [`.markdownlint.json`](.markdownlint.json) (`markdownlint-cli2`, matching CI).
 
 ## Canonical References
 

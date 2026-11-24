@@ -23,7 +23,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
 cargo test --locked
 ```
 
-작업 중에는 가장 좁은 대상부터 실행합니다 (`cargo test --locked <name>`). 회귀 및 계약 변경에는 결정론적(deterministic) 단위 또는 통합 테스트가 필수입니다 (TDD; [`coding_convention.md`](coding_convention.md#7-testing) 참조).
+작업 중에는 가장 좁은 대상부터 실행합니다 (`cargo test --locked <name>`). 회귀 및 계약 변경에는 결정론적(deterministic) 단위 또는 통합 테스트가 필수입니다 (TDD; [`coding_convention.md`](coding_convention.md#7-testing) 참조). Markdown 변경 시에는 [`.markdownlint.json`](../.markdownlint.json) 기준으로 린트합니다 (`markdownlint-cli2`, CI와 동일).
 
 ## 정본 문서 참조
 
