@@ -15,7 +15,7 @@ exclude = [".github/", "context.md"]
 ignore = "0.4" # .gitignore rule matching without invoking git
 ureq = { version = "3", default-features = false, features = ["rustls", "rustls-webpki-roots"] } # Minimal synchronous HTTP client for GitHub tarball streams
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] } # Gzip decompression for GitHub archive streams
-tar = "0.4" # Tarball entry streaming without temporary disk extraction
+tar = { version = "0.4", default-features = false } # Tarball entry streaming without temporary disk extraction
 httpdate = "1" # Standards-compliant HTTP-date parsing for Retry-After
 zeroize = "1" # Secure clearing of GitHub authorization tokens from process memory
 memchr = "2" # SIMD-accelerated byte searching for delimiters, NUL byte detection, and fast path scanning
