@@ -13,5 +13,6 @@
 
 ## API and compatibility
 
+<!-- Check one: -->
 - [ ] This change does not alter the public API.
 - [ ] If the public API changed, migration notes and compatibility impact are documented.

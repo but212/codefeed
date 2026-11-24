@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,6 +16,7 @@ jobs:
   gate:
     name: Verify Tag and Test Suite
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,6 +33,7 @@ jobs:
           cache: "false"
 
       - name: Verify tag matches Cargo.toml and CHANGELOG.md
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           MANIFEST_VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
@@ -59,6 +62,7 @@ jobs:
           fi
 
       - name: Upload release notes
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-notes
@@ -68,6 +72,9 @@ jobs:
       - name: Run test suite
         run: cargo test --lib --bins --tests --locked
 
+      - name: Run doc tests
+        run: cargo test --doc --locked
+
       - name: Verify crates.io packaging
         run: cargo publish --dry-run --locked
 
@@ -75,6 +82,7 @@ jobs:
     name: Build (${{ matrix.target }})
     needs: gate
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -138,7 +146,7 @@ jobs:
           New-Item -ItemType Directory -Path staging
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" -Destination staging/
           Copy-Item ($env:RELEASE_DOCS -split ' ') -Destination staging/
-          Compress-Archive -Path "staging/*" -DestinationPath "codefeed-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive_ext }}"
+          Compress-Archive -Path (Get-ChildItem -Force staging).FullName -DestinationPath "codefeed-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive_ext }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -149,8 +157,10 @@ jobs:
 
   publish-github:
     name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
       id-token: write
@@ -174,7 +184,7 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: "dist/codefeed-*"
+          subject-path: "dist/*"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
@@ -184,8 +194,10 @@ jobs:
 
   publish-crates-io:
     name: Publish to crates.io
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [build, publish-github]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: crates-io
     permissions:
       contents: read

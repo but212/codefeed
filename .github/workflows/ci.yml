@@ -20,6 +20,7 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -43,7 +44,7 @@ jobs:
 
       - name: Run ignored Windows symlink tests
         if: runner.os == 'Windows'
-        run: cargo test --lib --locked -- --ignored
+        run: cargo test --lib --bins --tests --locked -- --ignored
 
       - name: Run doc tests
         run: cargo test --doc --locked
@@ -51,6 +52,7 @@ jobs:
   musl:
     name: Test (x86_64-unknown-linux-musl)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -71,6 +73,7 @@ jobs:
   macos-x86_64:
     name: Test (x86_64-apple-darwin)
     runs-on: macos-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -88,6 +91,7 @@ jobs:
   lint:
     name: Lint (fmt and docs)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -108,11 +112,12 @@ jobs:
         run: cargo doc --no-deps --locked
 
       - name: Verify crate packaging
-        run: cargo package --locked --no-verify
+        run: cargo package --locked
 
   msrv:
     name: MSRV
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
