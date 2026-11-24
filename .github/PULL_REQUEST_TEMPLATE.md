@@ -8,10 +8,12 @@
 - [ ] `cargo clippy --all-targets --locked -- -D warnings`
 - [ ] `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked`
 - [ ] `cargo test --locked`
-- [ ] Documentation, examples, and benchmarks were updated if needed.
+- [ ] Documentation was updated if needed (including `docs/<NAME>.ko.md` translation parity for `README.md`, `CONTRIBUTING.md`, or `CODE_OF_CONDUCT.md`).
+- [ ] Markdown changes pass `markdownlint-cli2` (`.markdownlint.json`).
 - [ ] `CHANGELOG.md` was updated for user-visible changes.
 
 ## API and compatibility
 
+<!-- Check one: -->
 - [ ] This change does not alter the public API.
 - [ ] If the public API changed, migration notes and compatibility impact are documented.

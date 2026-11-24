@@ -1,0 +1,40 @@
+name: Bug Report
+description: Report a bug with a minimal reproduction
+title: "fix: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal Reproduction
+      description: Exact command or minimal code snippet to reproduce the issue.
+      placeholder: |
+        codefeed ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      placeholder: "e.g. Windows 11, macOS 15, Ubuntu 24.04"
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: codefeed & rustc Version
+      placeholder: "e.g. codefeed 0.10.0, rustc 1.88.0"
+    validations:
+      required: true

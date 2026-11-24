@@ -1,0 +1,19 @@
+name: Feature Request
+description: Propose a new feature, CLI change, or refactor
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Motivation
+      description: What problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Design
+      description: Describe the proposed behavior, CLI flags, or API changes.
+    validations:
+      required: true

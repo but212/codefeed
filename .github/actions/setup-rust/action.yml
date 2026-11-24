@@ -23,7 +23,7 @@ runs:
   using: composite
   steps:
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@master
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
       with:
         toolchain: ${{ inputs.toolchain }}
         targets: ${{ inputs.targets }}
@@ -31,4 +31,4 @@ runs:
 
     - name: Rust cache
       if: inputs.cache == 'true'
-      uses: swatinem/rust-cache@v2
+      uses: swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
