@@ -88,7 +88,7 @@ pub(in crate::shell) fn collect<R: Read>(
 
 /// Which stream limit a read overran. Recorded on the [`StreamMeter`] so the failure cannot be mistaken
 /// for a transport error once tar or gzip wrap the `io::Error`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Overrun {
     /// One `Entries::next` call read more than `ARCHIVE_MAX_HEADER_BYTES` (I-03).
     Header,
@@ -107,40 +107,70 @@ impl Overrun {
     fn into_error(self) -> IngestError {
         DomainError::invalid_metadata(self.message()).into()
     }
+
+    fn into_io_error(self) -> io::Error {
+        io::Error::other(self.message())
+    }
+}
+
+/// Active metering state (`total <= ARCHIVE_MAX_DECOMPRESSED_BYTES`) or a latched overrun.
+#[derive(Clone, Copy)]
+enum MeterState {
+    Active {
+        /// Bytes left for the armed call, or `None` while disarmed (unmetered).
+        header_remaining: Option<u64>,
+        /// Decompressed bytes and reconstructed sparse holes charged so far.
+        total: u64,
+    },
+    Overrun(Overrun),
 }
 
 /// Byte meters on the decompressed stream. The header budget (I-03) is armed before an `Entries::next`
 /// call and disarmed after it, so only the reads tar makes for headers and extension bodies count
 /// against it. The total counts physical reads and reconstructed sparse holes.
 struct StreamMeter {
-    /// Bytes left for the armed call, or `None` while disarmed (unmetered).
-    header_remaining: Cell<Option<u64>>,
-    /// Decompressed bytes and reconstructed sparse holes charged so far.
-    total: Cell<u64>,
-    overrun: Cell<Option<Overrun>>,
+    state: Cell<MeterState>,
 }
 
 impl StreamMeter {
     const fn new() -> Self {
         Self {
-            header_remaining: Cell::new(None),
-            total: Cell::new(0),
-            overrun: Cell::new(None),
+            state: Cell::new(MeterState::Active {
+                header_remaining: None,
+                total: 0,
+            }),
         }
     }
 
     fn arm(&self) {
-        self.header_remaining.set(Some(ARCHIVE_MAX_HEADER_BYTES));
+        if let MeterState::Active { total, .. } = self.state.get() {
+            self.state.set(MeterState::Active {
+                header_remaining: Some(ARCHIVE_MAX_HEADER_BYTES),
+                total,
+            });
+        }
     }
 
     fn disarm(&self) {
-        self.header_remaining.set(None);
+        if let MeterState::Active { total, .. } = self.state.get() {
+            self.state.set(MeterState::Active {
+                header_remaining: None,
+                total,
+            });
+        }
     }
 
-    /// Records `overrun` and returns the error that stops the read.
-    fn fail(&self, overrun: Overrun) -> io::Error {
-        self.overrun.set(Some(overrun));
-        io::Error::other(overrun.message())
+    /// Records `overrun` and returns it.
+    fn fail(&self, overrun: Overrun) -> Overrun {
+        self.state.set(MeterState::Overrun(overrun));
+        overrun
+    }
+
+    fn active_total(&self) -> Result<u64, Overrun> {
+        match self.state.get() {
+            MeterState::Active { total, .. } => Ok(total),
+            MeterState::Overrun(overrun) => Err(overrun),
+        }
     }
 
     /// Maps a failure while streaming the archive to a run error. A limit overrun is a policy violation
@@ -148,36 +178,52 @@ impl StreamMeter {
     /// `io::Error` here comes from the network body, gzip, or tar decoding, so it never surfaces as a
     /// filesystem error.
     fn stream_error(&self, err: &io::Error) -> IngestError {
-        self.overrun.get().map_or_else(
-            || IngestError::Http(ErrorDetail::new(err.to_string())),
-            Overrun::into_error,
-        )
+        match self.state.get() {
+            MeterState::Overrun(overrun) => overrun.into_error(),
+            MeterState::Active { .. } => IngestError::Http(ErrorDetail::new(err.to_string())),
+        }
     }
 
     /// Largest read allowed now. The total allows one byte past its limit, so an overrun is detected
     /// rather than mistaken for end of stream.
-    fn read_cap(&self, requested: usize) -> io::Result<usize> {
-        let header = match self.header_remaining.get() {
-            Some(0) if requested > 0 => return Err(self.fail(Overrun::Header)),
-            Some(remaining) => remaining,
-            None => u64::MAX,
+    fn read_cap(&self, requested: usize) -> Result<usize, Overrun> {
+        let (header_remaining, total) = match self.state.get() {
+            MeterState::Active {
+                header_remaining,
+                total,
+            } => (header_remaining, total),
+            MeterState::Overrun(overrun) => return Err(overrun),
         };
-        let total = ARCHIVE_MAX_DECOMPRESSED_BYTES.saturating_sub(self.total.get()) + 1;
-        let allowed = header.min(total).min(requested as u64);
-        // `allowed <= requested`, so it fits in `usize`.
-        Ok(usize::try_from(allowed).unwrap_or(requested))
+        let total_cap = (ARCHIVE_MAX_DECOMPRESSED_BYTES - total) + 1;
+        let cap = match header_remaining {
+            Some(0) if requested > 0 => return Err(self.fail(Overrun::Header)),
+            Some(remaining) => remaining.min(total_cap),
+            None => total_cap,
+        };
+        let allowed = cap.min(requested as u64);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "allowed <= requested as u64, so it fits in usize"
+        )]
+        Ok(allowed as usize)
     }
 
     /// Accounts for physical bytes read or sparse holes reconstructed.
-    fn record(&self, read: u64) -> io::Result<()> {
-        let total = self.total.get() + read;
-        self.total.set(total);
-        if total > ARCHIVE_MAX_DECOMPRESSED_BYTES {
+    fn record(&self, read: u64) -> Result<(), Overrun> {
+        let (header_remaining, total) = match self.state.get() {
+            MeterState::Active {
+                header_remaining,
+                total,
+            } => (header_remaining, total),
+            MeterState::Overrun(overrun) => return Err(overrun),
+        };
+        if read > ARCHIVE_MAX_DECOMPRESSED_BYTES - total {
             return Err(self.fail(Overrun::Decompressed));
         }
-        if let Some(remaining) = self.header_remaining.get() {
-            self.header_remaining.set(Some(remaining - read));
-        }
+        self.state.set(MeterState::Active {
+            header_remaining: header_remaining.map(|remaining| remaining - read),
+            total: total + read,
+        });
         Ok(())
     }
 }
@@ -190,9 +236,14 @@ struct Metered<'a, R> {
 
 impl<R: Read> Read for Metered<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let cap = self.meter.read_cap(buf.len())?;
+        let cap = self
+            .meter
+            .read_cap(buf.len())
+            .map_err(Overrun::into_io_error)?;
         let read = self.inner.read(&mut buf[..cap])?;
-        self.meter.record(read as u64)?;
+        self.meter
+            .record(read as u64)
+            .map_err(Overrun::into_io_error)?;
         Ok(read)
     }
 }
@@ -201,19 +252,18 @@ impl<R: Read> Read for Metered<'_, R> {
 /// them without reading the underlying stream. Sparse entries are never read before this call.
 fn drain_entry<R: Read>(entry: &mut tar::Entry<R>, meter: &StreamMeter) -> Result<(), IngestError> {
     let sparse = entry.header().entry_type() == EntryType::GNUSparse;
-    let before = meter.total.get();
-    if sparse && entry.size() > ARCHIVE_MAX_DECOMPRESSED_BYTES.saturating_sub(before) {
-        meter.overrun.set(Some(Overrun::Decompressed));
-        return Err(Overrun::Decompressed.into_error());
+    let before = meter.active_total().map_err(Overrun::into_error)?;
+    if sparse && entry.size() > ARCHIVE_MAX_DECOMPRESSED_BYTES - before {
+        return Err(meter.fail(Overrun::Decompressed).into_error());
     }
     let drained =
         io::copy(entry, &mut io::sink()).map_err(|err: io::Error| meter.stream_error(&err))?;
     if sparse {
         // Physical data was already charged by Metered; charge only the synthesized holes.
-        let physical = meter.total.get() - before;
+        let physical = meter.active_total().map_err(Overrun::into_error)? - before;
         meter
             .record(drained - physical)
-            .map_err(|err| meter.stream_error(&err))?;
+            .map_err(Overrun::into_error)?;
     }
     Ok(())
 }
@@ -226,11 +276,18 @@ mod tests {
     use crate::shell::testing::{gzip_archive, gzip_tarball};
 
     #[test]
-    fn read_cap_after_overrun_does_not_underflow() {
+    fn read_cap_after_overrun_fails_closed() {
         let meter = StreamMeter::new();
         let cap = meter.read_cap(usize::MAX).unwrap();
-        assert!(meter.record(cap as u64).is_err());
-        assert!(meter.read_cap(1).is_ok());
+        assert_eq!(meter.record(cap as u64), Err(Overrun::Decompressed));
+        assert_eq!(meter.read_cap(1), Err(Overrun::Decompressed));
+        meter.disarm();
+        meter.arm();
+        assert_eq!(meter.read_cap(1), Err(Overrun::Decompressed));
+        assert!(matches!(
+            meter.stream_error(&io::Error::other("wrapped")),
+            IngestError::Domain(DomainError::InvalidMetadata(_))
+        ));
     }
 
     fn collect_default(
@@ -547,9 +604,12 @@ mod tests {
             let mut entry = entries.next().unwrap().unwrap();
             meter.disarm();
             if let Some(total) = preset_total {
-                meter.total.set(total);
+                meter.state.set(MeterState::Active {
+                    header_remaining: None,
+                    total,
+                });
             }
-            drain_entry(&mut entry, &meter).map(|()| meter.total.get())
+            drain_entry(&mut entry, &meter).map(|()| meter.active_total().unwrap())
         };
 
         assert_eq!(run(None).unwrap(), 512 + hole + 1);

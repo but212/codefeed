@@ -3,7 +3,6 @@
 /// Maximum individual file size accepted. Larger files are skipped.
 pub(crate) const MAX_FILE_SIZE: u64 = 1024 * 1024;
 /// Companion `usize` constant for [`MAX_FILE_SIZE`] used in buffer allocations and tests.
-#[cfg(test)]
 #[expect(
     clippy::cast_possible_truncation,
     reason = "MAX_FILE_SIZE fits in usize on all supported targets"
@@ -12,7 +11,6 @@ pub(crate) const MAX_FILE_SIZE_USIZE: usize = MAX_FILE_SIZE as usize;
 /// Maximum rendered digest size. Overflows return [`DomainError::OutputTooLarge`](crate::core::error::DomainError::OutputTooLarge).
 pub(crate) const MAX_OUTPUT_SIZE: u64 = 20 * 1024 * 1024;
 /// Companion `usize` constant for [`MAX_OUTPUT_SIZE`] used in buffer allocations and tests.
-#[cfg(test)]
 #[expect(
     clippy::cast_possible_truncation,
     reason = "MAX_OUTPUT_SIZE fits in usize on all supported targets"

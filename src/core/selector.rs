@@ -7,12 +7,12 @@ use memchr::memchr;
 use crate::core::error::{DomainError, top_largest};
 use crate::core::model::CollectionResult;
 use crate::core::path::{BudgetDirKey, Candidate, NormalizedPath, UnstorablePath};
-use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE, OVERFLOW_LARGEST_DIRECTORIES};
+use crate::core::policy::{MAX_FILE_COUNT, MAX_FILE_SIZE_USIZE, OVERFLOW_LARGEST_DIRECTORIES};
 use crate::core::storage::{FileStorage, SortedFiles};
 
 /// UTF-8 text predicate: NUL-free bytes within size limit, returning string slice.
 fn classify_content(bytes: &[u8]) -> Option<&str> {
-    if bytes.len() as u64 > MAX_FILE_SIZE || memchr(0, bytes).is_some() {
+    if bytes.len() > MAX_FILE_SIZE_USIZE || memchr(0, bytes).is_some() {
         return None;
     }
     std::str::from_utf8(bytes).ok()
@@ -188,9 +188,7 @@ impl PendingFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::policy::{
-        MAX_FILE_SIZE_USIZE, MAX_OUTPUT_SIZE, MAX_OUTPUT_SIZE_USIZE, MAX_PATH_BYTES,
-    };
+    use crate::core::policy::{MAX_OUTPUT_SIZE, MAX_OUTPUT_SIZE_USIZE, MAX_PATH_BYTES};
 
     #[test]
     fn candidate_overflow_includes_largest_directories_diagnostic()

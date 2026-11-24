@@ -10,6 +10,7 @@ use crate::core::error::ErrorDetail;
 use crate::core::policy::{
     MAX_ATTEMPTS, RETRY_INITIAL_DELAY_MS, RETRY_MAX_DELAY_MS, TOKEN_ENV_VARS,
 };
+use crate::core::source::GithubName;
 
 pub(crate) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 pub(crate) const GITHUB_API_VERSION: &str = "2022-11-28";
@@ -51,21 +52,26 @@ pub(crate) fn format_bearer_token(raw: &str) -> Option<Zeroizing<String>> {
 
 /// Canonical public web URL for a repository, used as the digest label for remote sources.
 #[must_use]
-pub(crate) fn repository_url(owner: &str, repo: &str) -> String {
+pub(crate) fn repository_url(owner: &GithubName, repo: &GithubName) -> String {
+    let (owner, repo): (&str, &str) = (owner, repo);
     format!("https://github.com/{owner}/{repo}")
 }
 
 /// Constructs the tarball download URL under `base` for the given repository and optional Git reference.
 #[must_use]
-pub(crate) fn tarball_url(base: &str, owner: &str, repo: &str, reference: Option<&str>) -> String {
+pub(crate) fn tarball_url(
+    base: &str,
+    owner: &GithubName,
+    repo: &GithubName,
+    reference: Option<&str>,
+) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut url = String::from(base);
-    for segment in ["repos", owner, repo, "tarball"]
-        .into_iter()
-        .chain(reference)
-    {
+    let (owner, repo): (&str, &str) = (owner, repo);
+    // `GithubName` only permits `[A-Za-z0-9._-]`, which are all RFC 3986 unreserved characters.
+    let mut url = format!("{base}/repos/{owner}/{repo}/tarball");
+    if let Some(reference) = reference {
         url.push('/');
-        for &b in segment.as_bytes() {
+        for &b in reference.as_bytes() {
             if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
                 url.push(b as char);
             } else {
@@ -405,32 +411,56 @@ mod tests {
 
     #[test]
     fn builds_repository_url() {
+        let name = |s: &str| GithubName::new(s).unwrap();
         assert_eq!(
-            repository_url("but212", "codefeed"),
+            repository_url(&name("but212"), &name("codefeed")),
             "https://github.com/but212/codefeed"
         );
     }
 
     #[test]
     fn builds_tarball_urls() {
+        let name = |s: &str| GithubName::new(s).unwrap();
         assert_eq!(
-            tarball_url(GITHUB_API_BASE_URL, "rust-lang", "cargo", None),
+            tarball_url(
+                GITHUB_API_BASE_URL,
+                &name("rust-lang"),
+                &name("cargo"),
+                None
+            ),
             "https://api.github.com/repos/rust-lang/cargo/tarball"
         );
         assert_eq!(
-            tarball_url(GITHUB_API_BASE_URL, "rust-lang", "cargo", Some("main")),
+            tarball_url(
+                GITHUB_API_BASE_URL,
+                &name("rust-lang"),
+                &name("cargo"),
+                Some("main")
+            ),
             "https://api.github.com/repos/rust-lang/cargo/tarball/main"
         );
         assert_eq!(
-            tarball_url(GITHUB_API_BASE_URL, "owner", "repo", Some("feature/test")),
+            tarball_url(
+                GITHUB_API_BASE_URL,
+                &name("owner"),
+                &name("repo"),
+                Some("feature/test")
+            ),
             "https://api.github.com/repos/owner/repo/tarball/feature%2Ftest"
         );
         assert_eq!(
-            tarball_url("http://127.0.0.1:8080", "owner", "repo", Some("main")),
+            tarball_url(
+                "http://127.0.0.1:8080",
+                &name("owner"),
+                &name("repo"),
+                Some("main")
+            ),
             "http://127.0.0.1:8080/repos/owner/repo/tarball/main"
         );
 
         const PREFIX: &str = "https://api.github.com/repos/o/r/tarball/";
+        let o = name("o");
+        let r = name("r");
         for byte in 0..128u8 {
             let c = char::from(byte);
             let expected = if c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '~') {
@@ -439,13 +469,13 @@ mod tests {
                 format!("%{byte:02X}")
             };
             assert_eq!(
-                tarball_url(GITHUB_API_BASE_URL, "o", "r", Some(&c.to_string())),
+                tarball_url(GITHUB_API_BASE_URL, &o, &r, Some(&c.to_string())),
                 format!("{PREFIX}{expected}"),
                 "{c:?}"
             );
         }
         assert_eq!(
-            tarball_url(GITHUB_API_BASE_URL, "o", "r", Some("\u{e9}")),
+            tarball_url(GITHUB_API_BASE_URL, &o, &r, Some("\u{e9}")),
             format!("{PREFIX}%C3%A9")
         );
     }

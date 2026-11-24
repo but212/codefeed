@@ -2,7 +2,7 @@
 
 use crate::core::error::DomainError;
 use crate::core::model::{CollectionResult, DigestFormat, RenderedDigest};
-use crate::core::policy::MAX_OUTPUT_SIZE;
+use crate::core::policy::MAX_OUTPUT_SIZE_USIZE;
 
 mod budget;
 mod formats;
@@ -34,7 +34,7 @@ impl CollectionResult {
             .files
             .total_bytes()
             .saturating_add(extra)
-            .min(usize::try_from(MAX_OUTPUT_SIZE).unwrap_or(usize::MAX));
+            .min(MAX_OUTPUT_SIZE_USIZE);
         let buf = BoundedBuffer::with_capacity(capacity);
         match render_digest(buf, self, format) {
             Ok(buf) => Ok(buf.finish()),
@@ -48,7 +48,6 @@ mod tests {
     use super::*;
     use crate::core::error::DomainError;
     use crate::core::path::NormalizedPath;
-    use crate::core::policy::MAX_OUTPUT_SIZE_USIZE;
     use crate::core::storage::{FileRecord, FileStorage, SortedFiles};
 
     #[test]

@@ -19,7 +19,7 @@ use super::walk::Walk;
 use crate::core::path::Candidate;
 use crate::core::policy::{
     ExcludePatterns, LOCAL_BUFFER_RETAIN_BYTES, LOCAL_CHANNEL_CAPACITY, MAX_FILE_SIZE,
-    MAX_LOCAL_WORKERS,
+    MAX_FILE_SIZE_USIZE, MAX_LOCAL_WORKERS,
 };
 use crate::core::selector::{Body, Selector};
 use crate::shell::error::{IngestError, io_error_at};
@@ -46,9 +46,7 @@ impl BufferPool {
         } else {
             Vec::new()
         };
-        if buf.capacity() < min_capacity {
-            buf.reserve(min_capacity - buf.len());
-        }
+        buf.reserve(min_capacity);
         PooledBuf { buf, pool: self }
     }
 
@@ -169,8 +167,8 @@ fn dispatch<'a>(
     }
 }
 
-/// Answers jobs until the job channel closes. After an abort, workers answer without touching the
-/// filesystem, so the remaining queue drains quickly.
+/// Answers jobs until the job channel closes. After an abort, workers drop remaining queued jobs
+/// without touching the filesystem or replying (the receiver is already gone), draining the queue quickly.
 fn run_worker<'a>(
     jobs: &Mutex<Receiver<Job<'a>>>,
     aborted: &AtomicBool,
@@ -180,13 +178,11 @@ fn run_worker<'a>(
         // The statement drops the receiver lock before any file I/O.
         let job = jobs.lock().unwrap_or_else(PoisonError::into_inner).recv();
         let Ok(job) = job else { break };
-        let msg = if aborted.load(Ordering::Relaxed) {
-            Ok(None)
-        } else {
-            read(&job.entry_path)
-        };
+        if aborted.load(Ordering::Relaxed) {
+            continue;
+        }
         // The settling side may already have stopped after an error; the reply is then unused.
-        let _ = job.reply.send(msg);
+        let _ = job.reply.send(read(&job.entry_path));
     }
 }
 
@@ -230,15 +226,17 @@ fn read_candidate<'a>(entry_path: &Path, pool: &'a BufferPool) -> WorkerReply<'a
         Err(err) => return Err(io_error_at(entry_path, &err)),
     };
 
-    if meta.is_symlink() || !meta.is_file() {
+    if !meta.is_file() {
         return Ok(None);
     }
 
-    let file_len = meta.len();
-    if file_len > MAX_FILE_SIZE {
+    let Ok(capacity) = usize::try_from(meta.len()) else {
+        return Ok(Some(Body::OverLimit));
+    };
+    if capacity > MAX_FILE_SIZE_USIZE {
         return Ok(Some(Body::OverLimit));
     }
-    let body = read_bounded(entry_path, file_len, pool)?.map_or(Body::Unavailable, Body::Bytes);
+    let body = read_bounded(entry_path, capacity, pool)?.map_or(Body::Unavailable, Body::Bytes);
     Ok(Some(body))
 }
 
@@ -259,10 +257,10 @@ fn is_unavailable_file(err: &io::Error) -> bool {
 
 /// Reads at most `MAX_FILE_SIZE + 1` bytes; the extra byte lets the selector detect overflow.
 /// Returns `Ok(None)` when the file is unavailable at open or read (`is_unavailable_file`).
-/// `file_len` is the metadata length, which the caller has already checked against `MAX_FILE_SIZE`.
+/// `capacity` is the initial buffer capacity hint from metadata.
 fn read_bounded<'a>(
     path: &Path,
-    file_len: u64,
+    capacity: usize,
     pool: &'a BufferPool,
 ) -> Result<Option<PooledBuf<'a>>, IngestError> {
     let file = match fs::File::open(path) {
@@ -270,11 +268,6 @@ fn read_bounded<'a>(
         Err(err) if is_unavailable_file(&err) => return Ok(None),
         Err(err) => return Err(io_error_at(path, &err)),
     };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "caller checked file_len <= MAX_FILE_SIZE and limits.rs asserts MAX_FILE_SIZE fits in usize"
-    )]
-    let capacity = file_len as usize;
     let mut pooled = pool.take(capacity);
     match file.take(MAX_FILE_SIZE + 1).read_to_end(&mut pooled.buf) {
         Ok(_) => Ok(Some(pooled)),
@@ -286,7 +279,6 @@ fn read_bounded<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::policy::MAX_FILE_SIZE_USIZE;
     #[cfg(unix)]
     use crate::shell::testing::run_with_timeout;
 
@@ -305,27 +297,22 @@ mod tests {
         let cases = [
             (
                 &exact,
-                MAX_FILE_SIZE,
+                MAX_FILE_SIZE_USIZE,
                 Some(MAX_FILE_SIZE_USIZE),
                 "exact limit",
             ),
             (
                 &over,
-                MAX_FILE_SIZE + 1,
+                MAX_FILE_SIZE_USIZE + 1,
                 Some(MAX_FILE_SIZE_USIZE + 1),
                 "one byte over",
             ),
-            (
-                &kib,
-                kib_payload.len() as u64,
-                Some(kib_payload.len()),
-                "64 KiB",
-            ),
+            (&kib, kib_payload.len(), Some(kib_payload.len()), "64 KiB"),
             (&missing, 0, None, "unlinked before open"),
         ];
         let pool = BufferPool::new();
-        for (path, file_len, expected_len, label) in cases {
-            let read = read_bounded(path, file_len, &pool)?;
+        for (path, capacity, expected_len, label) in cases {
+            let read = read_bounded(path, capacity, &pool)?;
             assert_eq!(
                 read.as_ref().map(|buf| buf.as_ref().len()),
                 expected_len,
@@ -333,7 +320,7 @@ mod tests {
             );
         }
         assert_eq!(
-            read_bounded(&kib, kib_payload.len() as u64, &pool)?
+            read_bounded(&kib, kib_payload.len(), &pool)?
                 .as_ref()
                 .map(AsRef::as_ref),
             Some(kib_payload.as_slice())
@@ -517,6 +504,20 @@ mod tests {
             Ok(None)
         });
         assert!(matches!(pending.recv(), Ok(Ok(None))));
+    }
+
+    #[test]
+    fn worker_drains_queued_jobs_without_reading_or_replying_when_aborted() {
+        let (job_tx, job_rx) = sync_channel(1);
+        let jobs = Mutex::new(job_rx);
+        let (reply, pending) = sync_channel(1);
+        let entry_path = PathBuf::from("test.txt");
+        assert!(job_tx.send(Job { entry_path, reply }).is_ok());
+        drop(job_tx);
+        run_worker(&jobs, &AtomicBool::new(true), |_| {
+            panic!("must not read after abort");
+        });
+        assert!(pending.recv().is_err());
     }
 
     #[test]

@@ -9,6 +9,7 @@ mod client;
 use crate::core::github::{repository_url, tarball_url};
 use crate::core::model::CollectionResult;
 use crate::core::policy::ExcludePatterns;
+use crate::core::source::GithubName;
 use crate::shell::error::IngestError;
 use client::GithubClient;
 
@@ -16,8 +17,8 @@ use client::GithubClient;
 /// `api_base` is the API origin, `GITHUB_API_BASE_URL` in production.
 pub(super) fn collect(
     api_base: &str,
-    owner: &str,
-    repo: &str,
+    owner: &GithubName,
+    repo: &GithubName,
     reference: Option<&str>,
     exclude: &ExcludePatterns,
 ) -> Result<CollectionResult, IngestError> {
@@ -51,10 +52,12 @@ mod tests {
             _ => tarball_response(&gz_pax),
         });
 
+        let owner = GithubName::new("test-owner").unwrap();
+        let repo = GithubName::new("test-repo").unwrap();
         let basic = collect(
             &server.url(""),
-            "test-owner",
-            "test-repo",
+            &owner,
+            &repo,
             Some("main"),
             &ExcludePatterns::default(),
         )
@@ -69,14 +72,8 @@ mod tests {
         assert_eq!(basic_files, [("file.txt", "hello github")]);
 
         let exclude = ExcludePatterns::new(["*.log"]).expect("valid exclude");
-        let with_pax = collect(
-            &server.url(""),
-            "test-owner",
-            "test-repo",
-            Some("feature/x"),
-            &exclude,
-        )
-        .expect("github collection succeeds");
+        let with_pax = collect(&server.url(""), &owner, &repo, Some("feature/x"), &exclude)
+            .expect("github collection succeeds");
         assert_eq!(
             with_pax.revision.as_deref(),
             Some("c1863c8b05c5d2db4030bc8c8a7d2f10bda4a950")
@@ -97,10 +94,12 @@ mod tests {
                 .to_vec()
         });
 
+        let owner = GithubName::new("test-owner").unwrap();
+        let repo = GithubName::new("test-repo").unwrap();
         let Err(err) = collect(
             &server.url(""),
-            "test-owner",
-            "test-repo",
+            &owner,
+            &repo,
             None,
             &ExcludePatterns::default(),
         ) else {
@@ -127,10 +126,12 @@ mod tests {
             response
         });
 
+        let owner = GithubName::new("test-owner").unwrap();
+        let repo = GithubName::new("test-repo").unwrap();
         let Err(err) = collect(
             &server.url(""),
-            "test-owner",
-            "test-repo",
+            &owner,
+            &repo,
             None,
             &ExcludePatterns::default(),
         ) else {

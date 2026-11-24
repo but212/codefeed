@@ -14,7 +14,8 @@ use ignore::gitignore::Gitignore;
 use crate::core::error::DomainError;
 use crate::core::path::{AdmittedDir, Candidate, admit_dir, classify_leaf};
 use crate::core::policy::{
-    ExcludePatterns, MAX_DIR_ENTRIES, MAX_FILE_SIZE, compile_gitignore, is_hidden_segment,
+    ExcludePatterns, MAX_DIR_ENTRIES, MAX_FILE_SIZE, MAX_FILE_SIZE_USIZE, compile_gitignore,
+    is_hidden_segment,
 };
 use crate::shell::error::{IngestError, io_error_at, sanitized_io_error};
 
@@ -174,7 +175,7 @@ fn read_rules(dir: &Path) -> Result<Gitignore, IngestError> {
     file.take(MAX_FILE_SIZE + 1)
         .read_to_end(&mut bytes)
         .map_err(|err| io_error_at(&gitignore, &err))?;
-    if bytes.len() as u64 > MAX_FILE_SIZE {
+    if bytes.len() > MAX_FILE_SIZE_USIZE {
         return Err(sanitized_io_error(
             io::ErrorKind::FileTooLarge,
             format!("{}: file exceeds the size limit", gitignore.display()),

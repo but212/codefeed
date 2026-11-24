@@ -10,7 +10,7 @@ use std::ops::Deref;
 
 use crate::core::error::{DomainError, top_largest};
 use crate::core::path::NormalizedPath;
-use crate::core::policy::{MAX_OUTPUT_SIZE, OVERFLOW_LARGEST_FILES};
+use crate::core::policy::{MAX_OUTPUT_SIZE, MAX_OUTPUT_SIZE_USIZE, OVERFLOW_LARGEST_FILES};
 
 /// 16-byte POD indexing a file path and content slice in [`FileStorage`].
 ///
@@ -163,7 +163,7 @@ impl FileStorage {
         content: &str,
     ) -> Result<Self, DomainError> {
         let path: &str = path;
-        if (self.total_bytes() + path.len() + content.len()) as u64 > MAX_OUTPUT_SIZE {
+        if self.total_bytes() + path.len() + content.len() > MAX_OUTPUT_SIZE_USIZE {
             let candidate = FileRecord { path, content };
             return Err(DomainError::output_too_large(
                 MAX_OUTPUT_SIZE,
@@ -265,7 +265,6 @@ fn largest_files<'a>(files: impl IntoIterator<Item = FileRecord<'a>>) -> Vec<(&'
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::policy::MAX_OUTPUT_SIZE_USIZE;
 
     #[test]
     fn largest_files_ranks_by_size_and_breaks_ties_by_cmp_path() {
